@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Threads Clean Link",
+  "version": "0.1.0",
+  "description": "右鍵還原 Threads 分享短連結為乾淨貼文網址,並自動去除官方「複製連結」的追蹤參數。",
+  "permissions": ["contextMenus", "scripting", "notifications", "activeTab"],
+  "host_permissions": [
+    "https://*.threads.com/*",
+    "https://*.threads.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.threads.com/*",
+        "https://*.threads.net/*"
+      ],
+      "js": ["clipboard-guard.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.threads.com/*",
+        "https://*.threads.net/*"
+      ],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
