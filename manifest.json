@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Threads Clean Link",
+  "version": "0.1.0",
+  "description": "複製 Threads 貼文連結時自動去除追蹤參數。",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.threads.com/*",
+        "https://www.threads.net/*"
+      ],
+      "js": ["clipboard-guard.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}
