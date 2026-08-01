@@ -66,3 +66,65 @@ jobs:
           gh release create "v${{ steps.version.outputs.version }}" dist/*.zip \
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes
+
+      - name: 上傳新版草稿至 Chrome Web Store
+        if: steps.tagcheck.outputs.exists == 'false'
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+        run: |
+          # 四把 CWS 憑證任一缺漏就優雅跳過:此步驟屬於「錦上添花」的自動
+          # 上架,不應該讓整個發版流程因為還沒設定商店憑證而失敗。
+          if [ -z "$CWS_CLIENT_ID" ] || [ -z "$CWS_CLIENT_SECRET" ] || \
+             [ -z "$CWS_REFRESH_TOKEN" ] || [ -z "$CWS_EXTENSION_ID" ]; then
+            echo "未設定 CWS 憑證,跳過商店上傳。"
+            exit 0
+          fi
+
+          ZIP_PATH=$(ls dist/*.zip 2>/dev/null | head -n1)
+          if [ -z "$ZIP_PATH" ]; then
+            echo "找不到打包好的 zip(dist/*.zip),無法上傳 Chrome Web Store。"
+            exit 1
+          fi
+
+          # ---- 1) 用 refresh token 換一次性 access token ----
+          # 安全紅線:$TOKEN_RESPONSE / access token 本身絕不 echo,只在失敗
+          # 時取 Google 回傳的錯誤說明欄位印出,不印整包回應。
+          TOKEN_RESPONSE=$(curl -sS -X POST 'https://oauth2.googleapis.com/token' \
+            --data-urlencode "client_id=$CWS_CLIENT_ID" \
+            --data-urlencode "client_secret=$CWS_CLIENT_SECRET" \
+            --data-urlencode "refresh_token=$CWS_REFRESH_TOKEN" \
+            --data-urlencode 'grant_type=refresh_token')
+
+          ACCESS_TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "換取 access token 失敗:"
+            printf '%s' "$TOKEN_RESPONSE" | jq -r '
+              if .error_description then "  " + .error_description
+              elif .error then "  " + .error
+              else "  (未取得可辨識的錯誤說明)"
+              end'
+            exit 1
+          fi
+
+          # ---- 2) 上傳 zip(成為商店草稿新版本,不呼叫 publish)----
+          UPLOAD_RESPONSE=$(curl -sS -X PUT \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H 'x-goog-api-version: 2' \
+            -T "$ZIP_PATH" \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$CWS_EXTENSION_ID")
+
+          UPLOAD_STATE=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.uploadState // empty')
+          if [ "$UPLOAD_STATE" != 'SUCCESS' ]; then
+            echo "上傳 Chrome Web Store 失敗(uploadState=${UPLOAD_STATE:-無})"
+            printf '%s' "$UPLOAD_RESPONSE" | jq -r '
+              if .error.message then "  " + .error.message
+              elif (.itemError // [] | length) > 0 then (.itemError[] | "  - " + (.error_detail // .error_code // tostring))
+              else "  (API 未回傳可辨識的錯誤說明)"
+              end'
+            exit 1
+          fi
+
+          echo "草稿已上傳(uploadState=SUCCESS),請至開發者主控台按提交審查。"
