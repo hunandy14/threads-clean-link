@@ -71,13 +71,15 @@ Threads Clean Link 在 Threads 頁面(threads.com / threads.net)裡安裝一層�
 
 尚未上架 Chrome Web Store,目前請以「載入未封裝項目」方式安裝:
 
-1. 下載或 clone 這個 repo 到本機
-   ```
-   git clone https://github.com/hunandy14/threads-clean-link.git
-   ```
+1. 取得原始碼,擇一即可:
+   - 下載或 clone 整個 repo:
+     ```
+     git clone https://github.com/hunandy14/threads-clean-link.git
+     ```
+   - 或直接到 [Releases](https://github.com/hunandy14/threads-clean-link/releases) 頁面下載已打包好的 zip 並解壓縮——每次 main 分支的版本號更新,CI 都會自動打包發布,不想 clone 整個 repo 的話這個方式更快
 2. Chrome 網址列輸入 `chrome://extensions`
 3. 右上角打開「開發人員模式」
-4. 點選「載入未封裝項目」,選擇剛才 clone 下來的資料夾
+4. 點選「載入未封裝項目」,選擇剛才 clone 或解壓縮出來的資料夾
 5. 完成。右鍵還原功能在任何網站的分頁上都能用;自動淨化功能只在 threads.com / threads.net 的頁面上運作
 
 Chrome Web Store 上架(含註冊費、審查與隱私權說明)是後續規劃,屆時會在此更新連結。
