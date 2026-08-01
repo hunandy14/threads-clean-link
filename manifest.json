@@ -3,10 +3,10 @@
   "name": "Threads Clean Link",
   "version": "0.1.0",
   "description": "在 Threads 分享短連結上按右鍵,匿名還原成乾淨貼文網址並複製到剪貼簿。",
-  "permissions": ["contextMenus", "scripting", "notifications"],
+  "permissions": ["contextMenus", "scripting", "notifications", "activeTab"],
   "host_permissions": [
-    "https://www.threads.com/*",
-    "https://www.threads.net/*"
+    "https://*.threads.com/*",
+    "https://*.threads.net/*"
   ],
   "background": {
     "service_worker": "background.js"

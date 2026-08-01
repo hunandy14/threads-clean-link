@@ -14,16 +14,30 @@ const NOTIFICATION_ICON = 'icons/icon128.png';
 // 監聽器必須在每次喚醒時同步掛回去,不能包在其他非同步流程裡面。
 
 chrome.runtime.onInstalled.addListener(() => {
+  createContextMenu().catch((err) => {
+    console.error('[threads-clean-link] 建立右鍵選單失敗', err);
+  });
+});
+
+// 先清空舊選單再建立,避免重新安裝/更新時 id 重複觸發 lastError 雜訊。
+// removeAll 失敗也不該擋住後續建立選單,故在此就地接住、只記錄不中斷。
+async function createContextMenu() {
+  try {
+    await chrome.contextMenus.removeAll();
+  } catch (err) {
+    console.error('[threads-clean-link] 清除舊選單失敗', err);
+  }
+
   chrome.contextMenus.create({
     id: CONTEXT_MENU_ID,
     title: '複製乾淨的 Threads 貼文連結',
     contexts: ['link'],
     targetUrlPatterns: [
-      'https://www.threads.com/share/*',
-      'https://www.threads.net/share/*',
+      'https://*.threads.com/share/*',
+      'https://*.threads.net/share/*',
     ],
   });
-});
+}
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   // onClicked 的回呼是同步事件簽章,這裡用 .catch 包住整段非同步流程,
@@ -89,14 +103,24 @@ async function handleShareLinkClick(info, tab) {
 
 // 對短連結發一次匿名(不帶 cookie)請求並跟隨轉址,只取最終網址。
 // 用 GET 而非 HEAD(補強 1):匿名 HEAD 有時不給 302、或會先跳驗證頁,
-// GET + redirect:'follow' 較穩;不需要讀取 body,省流量。
+// GET + redirect:'follow' 較穩。只需要 response.url,取到後嘗試主動
+// 取消尚未讀取的 body 串流以省流量;取消失敗不影響已經拿到的網址。
 async function resolveFinalUrl(shareUrl) {
   const response = await fetch(shareUrl, {
     method: 'GET',
     credentials: 'omit',
     redirect: 'follow',
   });
-  return response.url;
+  const finalUrl = response.url;
+
+  try {
+    await response.body?.cancel();
+  } catch (err) {
+    // 取消失敗不影響已取得的 finalUrl,僅記錄。
+    console.error('[threads-clean-link] 取消回應 body 失敗', err);
+  }
+
+  return finalUrl;
 }
 
 // 最終網址符合貼文格式才回傳乾淨網址(去掉整段 query 與 hash),否則回傳 null。
@@ -106,25 +130,45 @@ function extractCleanPostUrl(finalUrl) {
 }
 
 // SW 沒有 DOM,寫剪貼簿必須注入目前分頁執行。
-// 若分頁是 chrome:// 等受限頁面,executeScript 會直接 reject,
-// 交由呼叫端的 try/catch 轉成使用者看得懂的錯誤通知。
+// 若分頁是 chrome:// 等受限頁面,executeScript 會直接 reject;
+// 但注入成功不代表頁面內的 clipboard.writeText 就成功(例如分頁未聚焦
+// 時會丟 NotAllowedError),那不保證讓 executeScript 本身 reject,所以
+// 注入函式內部要自己 try/catch 並回傳結果物件,由呼叫端檢查後決定是否
+// throw,交由既有的錯誤路徑統一處理。
 async function writeToClipboard(tabId, text) {
-  await chrome.scripting.executeScript({
+  const [injection] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: (value) => navigator.clipboard.writeText(value),
+    func: async (value) => {
+      try {
+        await navigator.clipboard.writeText(value);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, reason: String((e && e.name) || e) };
+      }
+    },
     args: [text],
   });
+
+  const result = injection && injection.result;
+  if (!result || !result.ok) {
+    throw new Error('剪貼簿寫入失敗:' + (result ? result.reason : '注入無回傳'));
+  }
 }
 
 // 成功回饋(補強 2)與錯誤處理(補強 3)統一走這裡,
 // notifications API 本身出錯也不讓整個流程炸掉。
+// create() 未帶 callback 時回傳 Promise,同步 try/catch 接不到非同步
+// rejection,因此額外對回傳值補 .catch,兩者都只記錄不外拋。
 function safeNotify(id, message) {
   try {
-    chrome.notifications.create(id, {
+    const creating = chrome.notifications.create(id, {
       type: 'basic',
       iconUrl: NOTIFICATION_ICON,
       title: 'Threads 乾淨連結',
       message,
+    });
+    creating?.catch((err) => {
+      console.error('[threads-clean-link] 建立通知失敗(非同步)', err);
     });
   } catch (err) {
     console.error('[threads-clean-link] 建立通知失敗', err);
