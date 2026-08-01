@@ -4,13 +4,13 @@
 
 .DESCRIPTION
     只封裝上架必要的檔案:manifest.json、background.js、clipboard-guard.js、
-    bridge.js,以及 icons/ 資料夾底下的圖示檔(*.png / *.svg / *.ico)。
+    bridge.js，以及 icons/ 資料夾底下的圖示檔(*.png / *.svg / *.ico)。
     README.md、LICENSE、tools/、tmp/、icons/gen-icons.ps1 等開發用檔案一律
     不打包，避免非必要內容混進上架用的壓縮檔。
 
-    輸出到 repo 根目錄的 dist/threads-clean-link-v{版本}.zip,版本號直接讀
+    輸出到 repo 根目錄的 dist/threads-clean-link-v{版本}.zip，版本號直接讀
     manifest.json 的 "version" 欄位，避免手動打錯版號。dist/ 已加入
-    .gitignore,不會被提交進版本控制。
+    .gitignore，不會被提交進版本控制。
 
 .NOTES
     執行方式(於任何目錄皆可，腳本會自行定位 repo 根目錄):

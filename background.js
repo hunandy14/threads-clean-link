@@ -120,7 +120,7 @@ async function handleShareLinkClick(info, tab) {
   safeNotify('threads-clean-link-success', `已複製乾淨網址:${cleanUrl}`);
 }
 
-// 不信任呼叫端傳入的 url,一律用 SHARE_URL_PATTERN 重新驗證，
+// 不信任呼叫端傳入的 url，一律用 SHARE_URL_PATTERN 重新驗證，
 // 不符合就直接拒絕、不對外發送任何請求。
 async function handleResolveShareMessage(message) {
   const shareUrl = message && message.url;
@@ -166,15 +166,15 @@ async function resolveFinalUrl(shareUrl) {
   return finalUrl;
 }
 
-// 最終網址符合貼文格式才回傳乾淨網址(去掉整段 query 與 hash),否則回傳 null。
+// 最終網址符合貼文格式才回傳乾淨網址(去掉整段 query 與 hash)，否則回傳 null。
 function extractCleanPostUrl(finalUrl) {
   const match = CLEAN_POST_URL_PATTERN.exec(finalUrl);
   return match ? match[0] : null;
 }
 
 // SW 沒有 DOM，寫剪貼簿要注入分頁執行；注入的函式內部自行 try/catch
-// 並回傳 { ok, reason },因為 writeText 失敗(如分頁未聚焦)不會讓
-// executeScript 本身 reject,呼叫端要靠回傳值判斷是否該 throw。
+// 並回傳 { ok, reason }，因為 writeText 失敗(如分頁未聚焦)不會讓
+// executeScript 本身 reject，呼叫端要靠回傳值判斷是否該 throw。
 async function writeToClipboard(tabId, text) {
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -196,8 +196,8 @@ async function writeToClipboard(tabId, text) {
 }
 
 // 統一顯示通知，自身出錯不影響呼叫端流程。create() 未帶 callback 時
-// 回傳 Promise,同步 try/catch 接不到非同步 rejection,因此另外對
-// 回傳值補一次 .catch,兩者都只記錄、不外拋。
+// 回傳 Promise，同步 try/catch 接不到非同步 rejection，因此另外對
+// 回傳值補一次 .catch，兩者都只記錄、不外拋。
 function safeNotify(id, message) {
   try {
     const creating = chrome.notifications.create(id, {

@@ -1,4 +1,4 @@
-// clipboard-guard.js — 注入 threads.com / threads.net 頁面 MAIN world,
+// clipboard-guard.js — 注入 threads.com / threads.net 頁面 MAIN world，
 // 攔截官方複製連結寫入剪貼簿的內容，淨化後再放行。任何判斷或呼叫例外一律
 // fallback 呼叫原生函式，不讓網站原本的複製功能因此損壞。
 (function () {
@@ -110,7 +110,7 @@
         if (typeof data === 'string') {
           if (isShareUrl(data)) {
             // 雙參數 .then(onOk, onErr):onErr 只綁定 requestResolveShareUrl
-            // 的 rejection,不會連 nativeWriteText 的 rejection 也接住，確保
+            // 的 rejection，不會連 nativeWriteText 的 rejection 也接住，確保
             // 原生呼叫只被呼叫一次，其 rejection 原樣傳回呼叫端。
             return requestResolveShareUrl(data.trim()).then(
               function (cleanUrl) {
@@ -164,8 +164,8 @@
           var item = items[0];
 
           // decideWhatToWrite 只決定要寫入的內容(讀取 blob、判斷短碼／?xmt、
-          // 橋接解析、重建 ClipboardItem),任何步驟失敗都 fallback 回傳原始
-          // items,但絕不呼叫 nativeWrite,確保原生呼叫只發生一次。
+          // 橋接解析、重建 ClipboardItem)，任何步驟失敗都 fallback 回傳原始
+          // items，但絕不呼叫 nativeWrite，確保原生呼叫只發生一次。
           var decideWhatToWrite = item
             .getType('text/plain')
             .then(function (blob) {

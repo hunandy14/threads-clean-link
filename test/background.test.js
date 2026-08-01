@@ -1,5 +1,5 @@
 // test/background.test.js — background.js(service worker)裡
-// resolveShare 訊息處理路徑的行為契約。fetch 與 chrome.* 全程 mock,
+// resolveShare 訊息處理路徑的行為契約。fetch 與 chrome.* 全程 mock，
 // 不發真實網路請求。
 'use strict';
 
@@ -51,7 +51,7 @@ function makeFetch(calls) {
   };
 }
 
-// 載入 background.js,回傳 resolveShare 的 onMessage 監聽器與 fetch 呼叫紀錄。
+// 載入 background.js，回傳 resolveShare 的 onMessage 監聽器與 fetch 呼叫紀錄。
 function loadBackground() {
   const chrome = makeChrome();
   const calls = [];
@@ -77,7 +77,7 @@ test('resolveShare 訊息屬於非同步處理，監聽器回傳 true 以保持�
   assert.equal(keepAlive, true);
 });
 
-test('合法短碼解析成功時,sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
+test('合法短碼解析成功時，sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
   const { listener } = loadBackground();
   const response = await callListener(listener, { type: 'resolveShare', url: SHARE_URL });
   assert.equal(response.ok, true);

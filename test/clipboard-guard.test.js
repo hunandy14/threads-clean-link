@@ -133,7 +133,7 @@ test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async 
   assert.equal(recorder[0], shareUrl);
 });
 
-test('短碼橋接逾時(2500ms)後,原樣寫入原始短碼(fail-open)', async () => {
+test('短碼橋接逾時(2500ms)後，原樣寫入原始短碼(fail-open)', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'timeout');
@@ -145,7 +145,7 @@ test('短碼橋接逾時(2500ms)後,原樣寫入原始短碼(fail-open)', async 
   const elapsed = Date.now() - startedAt;
 
   assert.equal(recorder[0], shareUrl);
-  assert.ok(elapsed >= 2500, `應等滿 2500ms 才 fail-open,實際 ${elapsed}ms`);
+  assert.ok(elapsed >= 2500, `應等滿 2500ms 才 fail-open，實際 ${elapsed}ms`);
 });
 
 test('threads.net 短碼(無 www)經橋接成功解析後，寫入乾淨貼文網址', async () => {
@@ -159,7 +159,7 @@ test('threads.net 短碼(無 www)經橋接成功解析後，寫入乾淨貼文�
   assert.equal(recorder[0], CLEAN_POST_URL);
 });
 
-test('短碼前後帶空白且附 query 時,trim 後仍判定為短碼並解析成功', async () => {
+test('短碼前後帶空白且附 query 時，trim 後仍判定為短碼並解析成功', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success');
@@ -283,9 +283,9 @@ test('write() 多格式(text/plain + text/html)item 原樣放行，不嘗試改�
   assert.equal(recorder[0][0].text, plainUrl);
 });
 
-// ---- 原生寫入被拒時:只呼叫一次,rejection 原樣傳回呼叫端 ----
+// ---- 原生寫入被拒時:只呼叫一次，rejection 原樣傳回呼叫端 ----
 
-test('writeText 短碼路徑:原生寫入被拒時只呼叫一次,rejection 原樣傳回', async () => {
+test('writeText 短碼路徑:原生寫入被拒時只呼叫一次，rejection 原樣傳回', async () => {
   const rejectError = new Error('NotAllowedError: native writeText rejected');
   const callCounter = { count: 0 };
   const win = createWindow();
@@ -299,7 +299,7 @@ test('writeText 短碼路徑:原生寫入被拒時只呼叫一次,rejection 原�
   assert.equal(callCounter.count, 1);
 });
 
-test('write() 短碼路徑:原生寫入被拒時只呼叫一次,rejection 原樣傳回', async () => {
+test('write() 短碼路徑:原生寫入被拒時只呼叫一次，rejection 原樣傳回', async () => {
   const rejectError = new Error('NotAllowedError: native write rejected');
   const callCounter = { count: 0 };
   const win = createWindow();
@@ -316,7 +316,7 @@ test('write() 短碼路徑:原生寫入被拒時只呼叫一次,rejection 原樣
   assert.equal(callCounter.count, 1);
 });
 
-test('write() ?xmt 路徑:原生寫入被拒時只呼叫一次,rejection 原樣傳回', async () => {
+test('write() ?xmt 路徑:原生寫入被拒時只呼叫一次，rejection 原樣傳回', async () => {
   const rejectError = new Error('NotAllowedError: native write rejected');
   const callCounter = { count: 0 };
   const win = createWindow();
@@ -332,7 +332,7 @@ test('write() ?xmt 路徑:原生寫入被拒時只呼叫一次,rejection 原樣�
   assert.equal(callCounter.count, 1);
 });
 
-test('writeText ?xmt 路徑:原生寫入被拒時只呼叫一次,rejection 原樣傳回', async () => {
+test('writeText ?xmt 路徑:原生寫入被拒時只呼叫一次，rejection 原樣傳回', async () => {
   const rejectError = new Error('NotAllowedError: native writeText rejected');
   const callCounter = { count: 0 };
   const win = createWindow();
@@ -376,7 +376,7 @@ test('write() 橋接回傳非貼文格式的 cleanUrl 時，視同解析失敗�
 
 // ---- 競態:逾時後才送達的回應，不得觸發第二次原生寫入 ----
 
-test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫一次(fail-open 原值),遲到回應不再觸發第二次寫入', async () => {
+test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫一次(fail-open 原值)，遲到回應不再觸發第二次寫入', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'late');
@@ -453,7 +453,7 @@ test('guard 端:event.source 非本視窗的回應不被採信，落入逾時 fa
   assert.ok(elapsed >= 2500, `非本視窗來源應被忽略、落入逾時路徑，實際 ${elapsed}ms`);
 });
 
-// ---- 解析流程結束後,message 監聽器須正確移除，不累積洩漏 ----
+// ---- 解析流程結束後，message 監聽器須正確移除，不累積洩漏 ----
 
 test('guard 端:短碼解析成功後，已移除自己的 message 監聽器，不累積洩漏', async () => {
   const recorder = [];
@@ -467,7 +467,7 @@ test('guard 端:短碼解析成功後，已移除自己的 message 監聽器，�
   assert.equal(win.getMessageListenerCount(), baselineListenerCount);
 });
 
-// ---- write():不符合單一 text/plain 條件的 items,以參照相等原樣放行 ----
+// ---- write():不符合單一 text/plain 條件的 items，以參照相等原樣放行 ----
 
 test('write():多格式(text/plain + text/html)ClipboardItem 以參照相等原樣放行，不重建新陣列', async () => {
   const recorder = [];

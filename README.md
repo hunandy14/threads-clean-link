@@ -18,8 +18,8 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 Chrome Web Store 上架審查中。目前提供兩種安裝方式:
 
-1. 取得原始碼:`git clone https://github.com/hunandy14/threads-clean-link.git`,或於 [Releases](https://github.com/hunandy14/threads-clean-link/releases) 下載 CI 自動打包的 zip 並解壓縮。
-2. Chrome 網址列輸入 `chrome://extensions`,開啟「開發人員模式」，選擇「載入未封裝項目」並指向上述資料夾。
+1. 取得原始碼:`git clone https://github.com/hunandy14/threads-clean-link.git`，或於 [Releases](https://github.com/hunandy14/threads-clean-link/releases) 下載 CI 自動打包的 zip 並解壓縮。
+2. Chrome 網址列輸入 `chrome://extensions`，開啟「開發人員模式」，選擇「載入未封裝項目」並指向上述資料夾。
 
 ## 運作原理與隱私
 
@@ -27,12 +27,12 @@ Chrome Web Store 上架審查中。目前提供兩種安裝方式:
 
 | 情境 | 觸發方式 | 網路請求 | 讀取既有剪貼簿內容 |
 |---|---|---|---|
-| 右鍵還原分享短碼 | 使用者手動點選右鍵選單 | 1 次匿名 GET(`credentials: 'omit'`,不帶 cookie),隨轉址讀取最終網址 | 否 |
-| 複製連結攔到短碼 | 使用者於已登入分頁按下官方「複製連結」時自動觸發 | 同上,1 次匿名 GET | 否 |
+| 右鍵還原分享短碼 | 使用者手動點選右鍵選單 | 1 次匿名 GET(`credentials: 'omit'`，不帶 cookie)，隨轉址讀取最終網址 | 否 |
+| 複製連結攔到短碼 | 使用者於已登入分頁按下官方「複製連結」時自動觸發 | 同上，1 次匿名 GET | 否 |
 | 複製連結攔到帶追蹤參數的完整網址 | 同上，自動觸發 | 零，純本地字串處理(去除 query 與 hash) | 否 |
 
 - 匿名 GET 不帶登入憑證，但會暴露來源 IP、瀏覽器特徵，及可辨識為本擴充功能的 Origin 標頭。
-- 功能②於已登入分頁按下複製鍵時自動觸發解析，時間與貼文對應明確,IP 層級關聯性高於①。
+- 功能②於已登入分頁按下複製鍵時自動觸發解析，時間與貼文對應明確，IP 層級關聯性高於①。
 - 不蒐集、不留存使用者資料，不含遠端程式碼。
 - 與 ClearURLs 類工具的差異:短碼不是參數，整條網址不含目標，必須先兌換。
 
@@ -58,4 +58,4 @@ Chrome Web Store 上架審查中。目前提供兩種安裝方式:
 
 ## License
 
-MIT License,詳見 [LICENSE](./LICENSE)。
+MIT License，詳見 [LICENSE](./LICENSE)。

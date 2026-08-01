@@ -15,9 +15,9 @@ class FakeClipboardItem {
   }
 }
 
-// 建立具備 addEventListener/postMessage 的假 window,模擬同一分頁內
+// 建立具備 addEventListener/postMessage 的假 window，模擬同一分頁內
 // MAIN world 與 ISOLATED world 用 postMessage 互通的行為;派送採
-// setTimeout(0) 排程,貼近瀏覽器 postMessage 的非同步時序。
+// setTimeout(0) 排程，貼近瀏覽器 postMessage 的非同步時序。
 function createWindow(origin = 'https://www.threads.com') {
   const listeners = [];
   const win = {

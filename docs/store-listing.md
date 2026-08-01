@@ -2,7 +2,7 @@
 
 給開發者主控台(Chrome Web Store Developer Dashboard)逐欄位填寫用，標題即欄位名稱，內文都是可直接複製貼上的文字。所有隱私相關表述均與 [README.md](../README.md) 的〈誠實隱私聲明〉一節保持一致，不得在此加碼、也不得弱化。
 
-> **範例網址一律使用虛構佔位字串**:`https://www.threads.com/share/AbCdEfGhI`、`https://www.threads.com/@username/post/AbCd123EfGh`。這兩條是刻意做成「格式擬真但明顯是佔位」的假資料(大小寫混合、`@username`),不對應任何真實帳號或真實短碼，與 background.js 註解、README 範例區塊用的是同一組。
+> **範例網址一律使用虛構佔位字串**:`https://www.threads.com/share/AbCdEfGhI`、`https://www.threads.com/@username/post/AbCd123EfGh`。這兩條是刻意做成「格式擬真但明顯是佔位」的假資料(大小寫混合、`@username`)，不對應任何真實帳號或真實短碼，與 background.js 註解、README 範例區塊用的是同一組。
 
 ---
 
@@ -12,11 +12,11 @@
 Threads Clean Link
 ```
 
-備註:中文顯示名「脆連結清潔工」為候選暱稱，尚未定案,**v1 上架先用英文名稱**;v1.1 若要雙語顯示，改用 `_locales/zh_TW/messages.json` + `_locales/en/messages.json` 搭配 `manifest.json` 的 `"name": "__MSG_extName__"` 做 i18n,現有 manifest 尚未這樣設定，屬於後續工作。
+備註:中文顯示名「脆連結清潔工」為候選暱稱，尚未定案，**v1 上架先用英文名稱**;v1.1 若要雙語顯示，改用 `_locales/zh_TW/messages.json` + `_locales/en/messages.json` 搭配 `manifest.json` 的 `"name": "__MSG_extName__"` 做 i18n，現有 manifest 尚未這樣設定，屬於後續工作。
 
 ---
 
-## 2. 簡短描述(Short description,上限 132 字元)
+## 2. 簡短描述(Short description，上限 132 字元)
 
 **繁體中文版**(49 字元):
 
@@ -30,13 +30,13 @@ Threads Clean Link
 Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes from the web Copy Link button.
 ```
 
-字元數以 JS 字串長度(UTF-16 code unit,與商店表單計數方式一致)實測皆遠低於 132 上限。
+字元數以 JS 字串長度(UTF-16 code unit，與商店表單計數方式一致)實測皆遠低於 132 上限。
 
 ---
 
 ## 3. 詳細描述(Detailed description)
 
-商店描述欄位只吃純文字與簡單斷行,**不要**把下面的 Markdown 語法(`##`、`**`)貼進去，貼「內容」就好;項目符號 `•` 是純文字符號，可以直接用。
+商店描述欄位只吃純文字與簡單斷行，**不要**把下面的 Markdown 語法(`##`、`**`)貼進去，貼「內容」就好;項目符號 `•` 是純文字符號，可以直接用。
 
 ### 繁體中文版(主要語言，直接複製貼上)
 
@@ -53,7 +53,7 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 本擴充功能不蒐集、不儲存、不上傳任何使用者資料，不讀取剪貼簿裡原本的內容，不含任何遠端程式碼，也不會取得 <all_urls> 這種瀏覽所有網站的權限。
 
-開源(MIT License),原始碼與完整說明:
+開源(MIT License)，原始碼與完整說明:
 https://github.com/hunandy14/threads-clean-link
 ```
 
@@ -82,12 +82,12 @@ https://github.com/hunandy14/threads-clean-link
 | 欄位 | 建議值 | 備註 |
 |---|---|---|
 | Category(類別) | Workflow & Planning(或當下主控台裡最接近「工具類」的選項，例如 Developer Tools) | Chrome Web Store 類別清單會不定期調整，送出前請以主控台當下的下拉選單為準，找不到 Workflow & Planning 就選語意最接近「生產力工具」的項目 |
-| Language(項目語言) | 主要語言:zh-TW(繁體中文) | 目前只有繁中 UI 字串(右鍵選單文字、通知文字皆為繁中),故主要語言填 zh-TW |
-| 補充語言 | en(可選) | 若之後補上 `_locales` i18n,再回來勾選英文為支援語言;目前 UI 沒有英文字串，不建議先勾 |
+| Language(項目語言) | 主要語言:zh-TW(繁體中文) | 目前只有繁中 UI 字串(右鍵選單文字、通知文字皆為繁中)，故主要語言填 zh-TW |
+| 補充語言 | en(可選) | 若之後補上 `_locales` i18n，再回來勾選英文為支援語言;目前 UI 沒有英文字串，不建議先勾 |
 
 ---
 
-## 5. 單一用途聲明(Single purpose statement,審查必填，英文)
+## 5. 單一用途聲明(Single purpose statement，審查必填，英文)
 
 ```
 This extension's single purpose is to convert Threads (threads.com/threads.net) share-link short codes and tracking-parameter post URLs into clean post URLs, either on demand via a right-click menu action or automatically when a Threads web page writes a link to the clipboard.
@@ -101,9 +101,9 @@ This extension's single purpose is to convert Threads (threads.com/threads.net) 
 
 ---
 
-## 6. 權限理由逐項(Permission justification,審查表單逐項必填)
+## 6. 權限理由逐項(Permission justification，審查表單逐項必填)
 
-表單通常要求英文作答;下面每項先給送審用英文，再附繁中對照方便內部核對意思是否有跑掉。四個 `permissions` 加 host permissions,對應 `manifest.json` 目前的宣告:`contextMenus`、`scripting`、`notifications`、`activeTab`、`https://*.threads.com/*`、`https://*.threads.net/*`。
+表單通常要求英文作答;下面每項先給送審用英文，再附繁中對照方便內部核對意思是否有跑掉。四個 `permissions` 加 host permissions，對應 `manifest.json` 目前的宣告:`contextMenus`、`scripting`、`notifications`、`activeTab`、`https://*.threads.com/*`、`https://*.threads.net/*`。
 
 ### contextMenus
 
@@ -138,7 +138,7 @@ Used to show a single basic notification after a right-click resolve action comp
 
 **繁中對照:**
 ```
-用於在右鍵還原動作完成後顯示一則基本通知，告知成功(已複製乾淨網址)或失敗(例如連結無效、網路錯誤),讓使用者不必手動檢查剪貼簿就知道結果。
+用於在右鍵還原動作完成後顯示一則基本通知，告知成功(已複製乾淨網址)或失敗(例如連結無效、網路錯誤)，讓使用者不必手動檢查剪貼簿就知道結果。
 ```
 
 ### Host permissions:`https://*.threads.com/*`、`https://*.threads.net/*`
@@ -153,8 +153,8 @@ Host permissions are limited to these two Threads domains and used for exactly t
 **繁中對照:**
 ```
 host permissions 限定在這兩個 Threads 網域，只用於兩件事:
-①背景 service worker 對 Threads 分享短連結發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit'),跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
-②content script 只注入這兩個網域的頁面，攔截網站自己呼叫的 navigator.clipboard.writeText()/write(),在追蹤參數或分享短碼進入剪貼簿前先行剪除或解析。這個 content script 不會讀取剪貼簿裡原本的內容，也不會在其他任何網站上執行或傳送資料。
+①背景 service worker 對 Threads 分享短連結發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
+②content script 只注入這兩個網域的頁面，攔截網站自己呼叫的 navigator.clipboard.writeText()/write()，在追蹤參數或分享短碼進入剪貼簿前先行剪除或解析。這個 content script 不會讀取剪貼簿裡原本的內容，也不會在其他任何網站上執行或傳送資料。
 ```
 
 ### Remote code(遠端程式碼)
@@ -166,7 +166,7 @@ None. This extension does not download, fetch, or execute any remote code. All l
 
 **繁中對照:**
 ```
-無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET,目的僅是把分享短碼解析成最終網址——回應內容只拿來讀取解析後的網址，絕不會被當成程式碼執行。
+無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的僅是把分享短碼解析成最終網址——回應內容只拿來讀取解析後的網址，絕不會被當成程式碼執行。
 ```
 
 ---
@@ -182,14 +182,14 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Personally identifiable information | 不勾 | 不蒐集任何個人識別資訊 |
 | Health information | 不勾 | 無關 |
 | Financial and payment information | 不勾 | 無關 |
-| Authentication information | 不勾 | 匿名請求刻意 `credentials: 'omit'`,不讀取、不傳送任何登入憑證或 cookie |
+| Authentication information | 不勾 | 匿名請求刻意 `credentials: 'omit'`，不讀取、不傳送任何登入憑證或 cookie |
 | Personal communications | 不勾 | 不讀取頁面內容、不讀取剪貼簿既有內容 |
 | Location | 不勾 | 不存取地理位置 |
 | Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用 |
 | User activity | 不勾 | 不追蹤點擊、捲動等使用者行為 |
 | Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
 
-若表單有「This item does not collect or use user data」這類總結選項,**選是 / 勾選**。
+若表單有「This item does not collect or use user data」這類總結選項，**選是 / 勾選**。
 
 ### 三項認證聲明 —— 全部勾選(皆為真)
 
@@ -209,7 +209,7 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 https://github.com/hunandy14/threads-clean-link#誠實隱私聲明請務必讀完這段
 ```
 
-**驗證結果(已實測，非推測)**:直接 `curl` 抓取 `https://github.com/hunandy14/threads-clean-link` 的渲染後 HTML,確認 GitHub 為〈誠實隱私聲明(請務必讀完這段)〉這個 `##` 標題產出了:
+**驗證結果(已實測，非推測)**:直接 `curl` 抓取 `https://github.com/hunandy14/threads-clean-link` 的渲染後 HTML，確認 GitHub 為〈誠實隱私聲明(請務必讀完這段)〉這個 `##` 標題產出了:
 
 ```html
 <a id="user-content-誠實隱私聲明請務必讀完這段" class="anchor"
@@ -217,29 +217,29 @@ https://github.com/hunandy14/threads-clean-link#誠實隱私聲明請務必讀�
    href="#誠實隱私聲明請務必讀完這段">
 ```
 
-`href` 值與上面這個 anchor URL 的 `#` 後半段完全一致，是 GitHub 標題錨點的標準做法(`href="#slug"` 對應 `id="user-content-slug"`),點擊會正確捲動到隱私聲明段落。**此連結可直接使用，不需要改用 README 頂部連結。**
+`href` 值與上面這個 anchor URL 的 `#` 後半段完全一致，是 GitHub 標題錨點的標準做法(`href="#slug"` 對應 `id="user-content-slug"`)，點擊會正確捲動到隱私聲明段落。**此連結可直接使用，不需要改用 README 頂部連結。**
 
-若之後 README 標題文字有任何調動(例如拿掉「請務必讀完這段」這幾個字),錨點會跟著變，屆時需要重新用同樣方式驗證一次。
+若之後 README 標題文字有任何調動(例如拿掉「請務必讀完這段」這幾個字)，錨點會跟著變，屆時需要重新用同樣方式驗證一次。
 
 ---
 
-## 9. 截圖拍攝清單(3 張,1280×800)
+## 9. 截圖拍攝清單(3 張，1280×800)
 
-Chrome Web Store 建議尺寸 1280×800(或 640×400),以下皆用前者。**所有截圖一律使用測試帳號、測試貼文與虛構範例網址，不得出現任何真實使用者的帳號名稱、頭像、貼文內容或真實短碼**——這點與這次程式碼/README 消毒的原則一致，截圖是最容易被忽略但最容易外流真實個資的地方，務必比照辦理。
+Chrome Web Store 建議尺寸 1280×800(或 640×400)，以下皆用前者。**所有截圖一律使用測試帳號、測試貼文與虛構範例網址，不得出現任何真實使用者的帳號名稱、頭像、貼文內容或真實短碼**——這點與這次程式碼/README 消毒的原則一致，截圖是最容易被忽略但最容易外流真實個資的地方，務必比照辦理。
 
 ### Shot 1 — `01-context-menu-gmail.png`:在其他網站對 share 連結按右鍵
 
-- 場景:開一個**非 threads.com** 的頁面(範例用 Gmail,也可以用任何聊天室/論壇測試頁),內文貼一段可點擊的 Threads 分享短連結，連結文字直接用範例假短碼 `https://www.threads.com/share/AbCdEfGhI`(**不要**用任何真實貼文產生的短碼)。
+- 場景:開一個**非 threads.com** 的頁面(範例用 Gmail，也可以用任何聊天室/論壇測試頁)，內文貼一段可點擊的 Threads 分享短連結，連結文字直接用範例假短碼 `https://www.threads.com/share/AbCdEfGhI`(**不要**用任何真實貼文產生的短碼)。
 - 瀏覽器視窗裁切或縮放到 1280×800。
 - 滑鼠對著該連結按右鍵，截圖時完整保留右鍵選單，「複製乾淨的 Threads 貼文連結」這個選單項目文字要清楚可讀、置中或靠上皆可，重點是可讀性。
-- 畫面其餘部分(寄件者、主旨、聊天對象等)一律用測試帳號或占位文字(例如 `test@example.com`、「測試信件主旨」),不得出現任何真實聯絡人或真實信件內容。
+- 畫面其餘部分(寄件者、主旨、聊天對象等)一律用測試帳號或占位文字(例如 `test@example.com`、「測試信件主旨」)，不得出現任何真實聯絡人或真實信件內容。
 
 ### Shot 2 — `02-success-notification.png`:成功通知 + 貼上乾淨網址
 
 - 承接 Shot 1 的情境，點擊選單項目後立刻截圖，畫面需同時看到:
   - Chrome 系統通知(`chrome.notifications`)顯示「已複製乾淨網址:…」的內容
   - 背景視窗貼上(Ctrl+V)到記事本或網址列的乾淨網址
-- 通知與貼上結果裡出現的網址一律使用範例假網址 `https://www.threads.com/@username/post/AbCd123EfGh`,不得貼真實貼文網址。
+- 通知與貼上結果裡出現的網址一律使用範例假網址 `https://www.threads.com/@username/post/AbCd123EfGh`，不得貼真實貼文網址。
 - 若一張截圖很難同時清楚呈現通知與貼上結果，可以拍兩張再合成一張左右對照圖，但仍算「一張成品」計入 3 張額度。
 
 ### Shot 3 — `03-before-after-clean-copy.png`:網頁版複製連結，淨化前後對比
@@ -251,6 +251,6 @@ Chrome Web Store 建議尺寸 1280×800(或 640×400),以下皆用前者。**所
 
 ### 共通事項
 
-- 一律存 PNG,檔名照上面建議命名，方便主控台上傳順序對應。
+- 一律存 PNG，檔名照上面建議命名，方便主控台上傳順序對應。
 - 截圖前確認書籤列、分頁列、通知歷史等其他區域沒有殘留真實帳號、真實網址或其他敏感資訊。
-- 若使用作業系統/瀏覽器语言為非 zh-TW,請切回 zh-TW 再拍，確保選單與通知文字與商店文案語言一致。
+- 若使用作業系統/瀏覽器语言為非 zh-TW，請切回 zh-TW 再拍，確保選單與通知文字與商店文案語言一致。
