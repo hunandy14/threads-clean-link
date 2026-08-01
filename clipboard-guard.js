@@ -122,15 +122,24 @@
       try {
         if (typeof data === 'string') {
           if (isShareUrl(data)) {
-            return requestResolveShareUrl(data.trim())
-              .then(function (cleanUrl) {
-                var toWrite = typeof cleanUrl === 'string' && cleanUrl ? cleanUrl : data;
+            // 雙參數 .then(onOk, onErr)：onErr 只會看到 requestResolveShareUrl
+            // 這個 promise 本身的 rejection，看不到 nativeWriteText 的 rejection，
+            // 避免原生寫入被拒時又被下面的 catch 接住、重打第二次。
+            return requestResolveShareUrl(data.trim()).then(
+              function (cleanUrl) {
+                // 縱深防禦：cleanUrl 還要通過貼文網址格式驗證才信任，
+                // 否則（橋接回傳了格式不對的內容）一律退回原始參數。
+                var toWrite =
+                  typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)
+                    ? cleanUrl
+                    : data;
                 return nativeWriteText(toWrite);
-              })
-              .catch(function () {
+              },
+              function () {
                 // fail-open：橋接／解析任何失敗，一律用原始參數放行。
                 return nativeWriteText(data);
-              });
+              }
+            );
           }
 
           var toWrite = data;
@@ -167,42 +176,59 @@
           typeof window.ClipboardItem === 'function'
         ) {
           var item = items[0];
-          return item
+
+          // decideWhatToWrite：只負責「決定要寫入的 items 是什麼」，涵蓋讀取
+          // blob、判斷短碼／?xmt、橋接解析、重建 ClipboardItem 等所有可能出錯
+          // 的步驟；任何一步失敗都 fallback 回傳原始 items，但這條鏈**絕不**
+          // 呼叫 nativeWrite——避免原生呼叫的 rejection 被這裡的 catch 誤吞、
+          // 導致重打第二次。
+          var decideWhatToWrite = item
             .getType('text/plain')
             .then(function (blob) {
               return blob.text();
             })
             .then(function (text) {
               if (isShareUrl(text)) {
-                return requestResolveShareUrl(text.trim())
-                  .then(function (cleanUrl) {
-                    if (typeof cleanUrl === 'string' && cleanUrl) {
-                      var resolvedItem = new window.ClipboardItem({
-                        'text/plain': new Blob([cleanUrl], { type: 'text/plain' }),
-                      });
-                      return nativeWrite([resolvedItem]);
+                return requestResolveShareUrl(text.trim()).then(
+                  function (cleanUrl) {
+                    // 縱深防禦：cleanUrl 還要通過貼文網址格式驗證才信任。
+                    if (typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)) {
+                      return [
+                        new window.ClipboardItem({
+                          'text/plain': new Blob([cleanUrl], { type: 'text/plain' }),
+                        }),
+                      ];
                     }
-                    // fail-open：橋接／解析任何失敗，一律用原始 items 放行。
-                    return nativeWrite(items);
-                  })
-                  .catch(function () {
-                    return nativeWrite(items);
-                  });
+                    // fail-open：cleanUrl 缺失或格式不符，一律用原始 items。
+                    return items;
+                  },
+                  function () {
+                    // fail-open：橋接／解析任何失敗，一律用原始 items。
+                    return items;
+                  }
+                );
               }
 
               var cleaned = sanitizeIfTrackedPostUrl(text);
               if (cleaned === null) {
-                return nativeWrite(items);
+                return items;
               }
-              var newItem = new window.ClipboardItem({
-                'text/plain': new Blob([cleaned], { type: 'text/plain' }),
-              });
-              return nativeWrite([newItem]);
+              return [
+                new window.ClipboardItem({
+                  'text/plain': new Blob([cleaned], { type: 'text/plain' }),
+                }),
+              ];
             })
             .catch(function () {
-              // 讀取／重建 ClipboardItem 過程任何例外：原封不動放行原始 items。
-              return nativeWrite(items);
+              // 讀取／判斷／重建過程任何例外：原封不動用原始 items。
+              return items;
             });
+
+          // 真正呼叫原生 write 的地方，刻意不包 catch：原生呼叫的 rejection
+          // 要原樣傳回頁面，我們永不重試原生寫入，且只在這唯一一處呼叫。
+          return decideWhatToWrite.then(function (toWrite) {
+            return nativeWrite(toWrite);
+          });
         }
 
         return nativeWrite(items);
