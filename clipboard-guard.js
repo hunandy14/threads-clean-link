@@ -18,7 +18,7 @@
   // 貼文網址規則：https://(www.)threads.(com|net)/@handle/post/id [?query][#hash]
   // 第 1 組：不含 query/hash 的乾淨網址本體。
   // 第 2 組：query 與 hash 的原始尾段（可能不存在）。
-  var POST_URL_RE = /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^/?#]+\/post\/[^/?#]+)([?#].*)?$/;
+  var POST_URL_RE = /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/@[^/?#\s]+\/post\/[^/?#\s]+)([?#]\S*)?$/;
 
   // 判斷字串是否需要淨化；不需要（含格式不符、沒有 query/hash 可剪）回傳 null，
   // 需要則回傳去掉 query/hash 後的乾淨網址字串。

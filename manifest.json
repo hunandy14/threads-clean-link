@@ -6,8 +6,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.threads.com/*",
-        "https://www.threads.net/*"
+        "https://*.threads.com/*",
+        "https://*.threads.net/*"
       ],
       "js": ["clipboard-guard.js"],
       "run_at": "document_start",
