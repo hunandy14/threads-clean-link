@@ -41,7 +41,7 @@ function loadBridge({ sendMessage }) {
   return { win, sentMessages, dispatch };
 }
 
-test('合法短碼解析請求,轉發為一次 chrome.runtime.sendMessage(resolveShare)', async () => {
+test('合法短碼解析請求，轉發為一次 chrome.runtime.sendMessage(resolveShare)', async () => {
   const { sentMessages, dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
   });
@@ -73,7 +73,7 @@ test('service worker 解析成功時,cleanUrl 原樣經 postMessage 傳回 MAIN 
   assert.equal(result.cleanUrl, 'https://www.threads.com/@x/post/y');
 });
 
-test('service worker 回應 ok:false 時,原樣轉發失敗結果與 reason', async () => {
+test('service worker 回應 ok:false 時，原樣轉發失敗結果與 reason', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: false, reason: 'format-error' }),
   });
@@ -103,7 +103,7 @@ test('service worker 未回應(response 為 undefined)時,reason 標示為 no-re
   assert.equal(result.reason, 'no-response');
 });
 
-test('chrome.runtime.lastError 視為解析失敗,不視為致命錯誤', async () => {
+test('chrome.runtime.lastError 視為解析失敗，不視為致命錯誤', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback, runtime) => {
       runtime.lastError = { message: 'context invalidated' };
@@ -135,7 +135,7 @@ test('回應一律帶回與請求相同的 requestId,供 MAIN world 端配對', 
   assert.equal(result.requestId, 'req-unique-5');
 });
 
-test('event.source 不是本視窗時,忽略訊息且不轉發 chrome.runtime.sendMessage', async () => {
+test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.sendMessage', async () => {
   const { win, sentMessages } = loadBridge({
     sendMessage: () => {},
   });

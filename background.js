@@ -45,7 +45,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   // 確保任何錯誤都被攔截，不會變成未捕捉的 Promise rejection。
   handleShareLinkClick(info, tab).catch((err) => {
     console.error('[threads-clean-link] 未預期的錯誤', err);
-    safeNotify('threads-clean-link-unexpected', '發生未預期的錯誤,請稍後再試一次。');
+    safeNotify('threads-clean-link-unexpected', '發生未預期的錯誤，請稍後再試一次。');
   });
 });
 
@@ -54,7 +54,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // 呼叫端自行決定要不要用原始短碼放行。
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'resolveShare') {
-    return false; // 不是我們認得的訊息類型,不佔用 sendResponse 通道。
+    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
   }
 
   handleResolveShareMessage(message)
@@ -64,7 +64,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, reason: 'internal-error' });
     });
 
-  return true; // 非同步回應,保持訊息通道開啟直到 sendResponse 被呼叫。
+  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
 // 核心流程
@@ -84,7 +84,7 @@ async function handleShareLinkClick(info, tab) {
     console.error('[threads-clean-link] 解析短連結失敗', err);
     safeNotify(
       'threads-clean-link-network-error',
-      '解析短連結失敗,請確認網路連線後再試一次。'
+      '解析短連結失敗，請確認網路連線後再試一次。'
     );
     return;
   }
@@ -93,7 +93,7 @@ async function handleShareLinkClick(info, tab) {
   if (!cleanUrl) {
     safeNotify(
       'threads-clean-link-format-error',
-      '轉址結果不是貼文網址,短連結可能已失效或 Threads 網址格式已變動。'
+      '轉址結果不是貼文網址，短連結可能已失效或 Threads 網址格式已變動。'
     );
     return;
   }
@@ -101,7 +101,7 @@ async function handleShareLinkClick(info, tab) {
   if (!tab || tab.id === undefined || tab.id === chrome.tabs.TAB_ID_NONE) {
     safeNotify(
       'threads-clean-link-no-tab',
-      `已解析出乾淨網址,但找不到可寫入剪貼簿的分頁:${cleanUrl}`
+      `已解析出乾淨網址，但找不到可寫入剪貼簿的分頁:${cleanUrl}`
     );
     return;
   }
@@ -112,7 +112,7 @@ async function handleShareLinkClick(info, tab) {
     console.error('[threads-clean-link] 寫入剪貼簿失敗', err);
     safeNotify(
       'threads-clean-link-clipboard-error',
-      `目前分頁無法寫入剪貼簿(可能是瀏覽器限制頁面),乾淨網址為:${cleanUrl}`
+      `目前分頁無法寫入剪貼簿(可能是瀏覽器限制頁面)，乾淨網址為:${cleanUrl}`
     );
     return;
   }

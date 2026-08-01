@@ -1,6 +1,6 @@
 // test/clipboard-guard.test.js — clipboard-guard.js(MAIN world 剪貼簿
 // 攔截淨化)的行為契約。全程用 vm sandbox 離線模擬 navigator.clipboard 與
-// window.postMessage 橋接,不發真實網路請求、不碰真實剪貼簿。
+// window.postMessage 橋接，不發真實網路請求、不碰真實剪貼簿。
 'use strict';
 
 const test = require('node:test');
@@ -98,8 +98,8 @@ function rejectingWrite(rejectError, callCounter) {
   };
 }
 
-// 記錄原生 write() 收到的「原始參數陣列」本身(參照,不轉換內容),
-// 用來斷言「原樣放行」時傳給原生函式的就是同一個陣列物件,不是重建的複本。
+// 記錄原生 write() 收到的「原始參數陣列」本身(參照，不轉換內容)，
+// 用來斷言「原樣放行」時傳給原生函式的就是同一個陣列物件，不是重建的複本。
 function recordingWriteRaw(recorder) {
   return {
     async write(items) {
@@ -110,7 +110,7 @@ function recordingWriteRaw(recorder) {
 
 // ---- 短碼分支:writeText ----
 
-test('短碼(帶尾斜線)經橋接成功解析後,寫入乾淨貼文網址', async () => {
+test('短碼(帶尾斜線)經橋接成功解析後，寫入乾淨貼文網址', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success');
@@ -121,7 +121,7 @@ test('短碼(帶尾斜線)經橋接成功解析後,寫入乾淨貼文網址', as
   assert.equal(recorder[0], CLEAN_POST_URL);
 });
 
-test('短碼橋接回應失敗時,原樣寫入原始短碼(fail-open)', async () => {
+test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'failure');
@@ -148,7 +148,7 @@ test('短碼橋接逾時(2500ms)後,原樣寫入原始短碼(fail-open)', async 
   assert.ok(elapsed >= 2500, `應等滿 2500ms 才 fail-open,實際 ${elapsed}ms`);
 });
 
-test('threads.net 短碼(無 www)經橋接成功解析後,寫入乾淨貼文網址', async () => {
+test('threads.net 短碼(無 www)經橋接成功解析後，寫入乾淨貼文網址', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success');
@@ -172,7 +172,7 @@ test('短碼前後帶空白且附 query 時,trim 後仍判定為短碼並解析�
 
 // ---- 短碼分支:write() ----
 
-test('write() 寫入單一 text/plain 短碼,經橋接成功解析後寫入乾淨貼文網址', async () => {
+test('write() 寫入單一 text/plain 短碼，經橋接成功解析後寫入乾淨貼文網址', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success');
@@ -186,7 +186,7 @@ test('write() 寫入單一 text/plain 短碼,經橋接成功解析後寫入乾�
   assert.equal(recorder[0][0].text, CLEAN_POST_URL);
 });
 
-test('write() 短碼橋接回應失敗時,原樣放行原始內容(fail-open)', async () => {
+test('write() 短碼橋接回應失敗時，原樣放行原始內容(fail-open)', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'failure');
@@ -201,9 +201,9 @@ test('write() 短碼橋接回應失敗時,原樣放行原始內容(fail-open)', 
   assert.equal(recorder[0][0].text, shareUrl);
 });
 
-// ---- 既有 ?xmt 淨化邏輯(短碼分支之外的既有行為,須與短碼分支共存不受影響) ----
+// ---- 既有 ?xmt 淨化邏輯(短碼分支之外的既有行為，須與短碼分支共存不受影響) ----
 
-test('帶 ?xmt 追蹤參數的貼文網址,同步去除 query 後放行', async () => {
+test('帶 ?xmt 追蹤參數的貼文網址，同步去除 query 後放行', async () => {
   const recorder = [];
   const win = createWindow();
   const sandbox = loadGuard(recordingWriteText(recorder), win);
@@ -246,7 +246,7 @@ test('非字串輸入原樣放行', async () => {
   assert.equal(recorder[0], 12345);
 });
 
-test('貼文網址後接空白與其他文字時,不誤判為單一網址、原樣放行', async () => {
+test('貼文網址後接空白與其他文字時，不誤判為單一網址、原樣放行', async () => {
   const recorder = [];
   const win = createWindow();
   const sandbox = loadGuard(recordingWriteText(recorder), win);
@@ -257,7 +257,7 @@ test('貼文網址後接空白與其他文字時,不誤判為單一網址、原�
   assert.equal(recorder[0], text);
 });
 
-test('非 threads 網域的 /share/ 路徑不觸發短碼解析,原樣放行', async () => {
+test('非 threads 網域的 /share/ 路徑不觸發短碼解析，原樣放行', async () => {
   const recorder = [];
   const win = createWindow();
   const sandbox = loadGuard(recordingWriteText(recorder), win);
@@ -268,7 +268,7 @@ test('非 threads 網域的 /share/ 路徑不觸發短碼解析,原樣放行', a
   assert.equal(recorder[0], url);
 });
 
-test('write() 多格式(text/plain + text/html)item 原樣放行,不嘗試改寫', async () => {
+test('write() 多格式(text/plain + text/html)item 原樣放行，不嘗試改寫', async () => {
   const recorder = [];
   const win = createWindow();
   const sandbox = loadGuard(recordingWrite(recorder), win);
@@ -347,7 +347,7 @@ test('writeText ?xmt 路徑:原生寫入被拒時只呼叫一次,rejection 原�
 
 // ---- 縱深防禦:cleanUrl 需通過貼文網址格式驗證才信任 ----
 
-test('橋接回傳非貼文格式的 cleanUrl 時,視同解析失敗、寫回原始短碼', async () => {
+test('橋接回傳非貼文格式的 cleanUrl 時，視同解析失敗、寫回原始短碼', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success', { cleanUrl: 'https://evil.com/not-a-post-url' });
@@ -359,7 +359,7 @@ test('橋接回傳非貼文格式的 cleanUrl 時,視同解析失敗、寫回原
   assert.equal(recorder[0], shareUrl);
 });
 
-test('write() 橋接回傳非貼文格式的 cleanUrl 時,視同解析失敗、維持原始短碼', async () => {
+test('write() 橋接回傳非貼文格式的 cleanUrl 時，視同解析失敗、維持原始短碼', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success', { cleanUrl: 'not even a url' });
@@ -374,7 +374,7 @@ test('write() 橋接回傳非貼文格式的 cleanUrl 時,視同解析失敗、�
   assert.equal(recorder[0][0].text, shareUrl);
 });
 
-// ---- 競態:逾時後才送達的回應,不得觸發第二次原生寫入 ----
+// ---- 競態:逾時後才送達的回應，不得觸發第二次原生寫入 ----
 
 test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫一次(fail-open 原值),遲到回應不再觸發第二次寫入', async () => {
   const recorder = [];
@@ -394,7 +394,7 @@ test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫�
 
 // ---- guard 端訊息驗證:requestId 與 event.source 都必須符合才採信 ----
 
-test('guard 端:requestId 不符的回應會被忽略,落入逾時 fail-open', async () => {
+test('guard 端:requestId 不符的回應會被忽略，落入逾時 fail-open', async () => {
   const recorder = [];
   const win = createWindow();
   win.addEventListener('message', (event) => {
@@ -418,10 +418,10 @@ test('guard 端:requestId 不符的回應會被忽略,落入逾時 fail-open', a
 
   assert.equal(recorder.length, 1);
   assert.equal(recorder[0], shareUrl);
-  assert.ok(elapsed >= 2500, `requestId 不符應被忽略、落入逾時路徑,實際 ${elapsed}ms`);
+  assert.ok(elapsed >= 2500, `requestId 不符應被忽略、落入逾時路徑，實際 ${elapsed}ms`);
 });
 
-test('guard 端:event.source 非本視窗的回應不被採信,落入逾時 fail-open', async () => {
+test('guard 端:event.source 非本視窗的回應不被採信，落入逾時 fail-open', async () => {
   const recorder = [];
   const win = createWindow();
   const fakeOtherWindow = {};
@@ -450,12 +450,12 @@ test('guard 端:event.source 非本視窗的回應不被採信,落入逾時 fail
 
   assert.equal(recorder.length, 1);
   assert.equal(recorder[0], shareUrl);
-  assert.ok(elapsed >= 2500, `非本視窗來源應被忽略、落入逾時路徑,實際 ${elapsed}ms`);
+  assert.ok(elapsed >= 2500, `非本視窗來源應被忽略、落入逾時路徑，實際 ${elapsed}ms`);
 });
 
-// ---- 解析流程結束後,message 監聽器須正確移除,不累積洩漏 ----
+// ---- 解析流程結束後,message 監聽器須正確移除，不累積洩漏 ----
 
-test('guard 端:短碼解析成功後,已移除自己的 message 監聽器,不累積洩漏', async () => {
+test('guard 端:短碼解析成功後，已移除自己的 message 監聽器，不累積洩漏', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success');
@@ -469,7 +469,7 @@ test('guard 端:短碼解析成功後,已移除自己的 message 監聽器,不�
 
 // ---- write():不符合單一 text/plain 條件的 items,以參照相等原樣放行 ----
 
-test('write():多格式(text/plain + text/html)ClipboardItem 以參照相等原樣放行,不重建新陣列', async () => {
+test('write():多格式(text/plain + text/html)ClipboardItem 以參照相等原樣放行，不重建新陣列', async () => {
   const recorder = [];
   const win = createWindow();
   const sandbox = loadGuard(recordingWriteRaw(recorder), win);
