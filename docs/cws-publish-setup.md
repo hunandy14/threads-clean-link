@@ -132,6 +132,6 @@ curl -X POST https://oauth2.googleapis.com/token \
 ## 重要限制與常見錯誤
 
 - **v0.1.0 審查完成前,API 會拒收**:如本文件開頭所述,第一版必須手動上架。在那之前跑這個 CI 步驟(就算四把憑證都設好了),上傳呼叫會失敗,錯誤訊息通常會指出項目不存在或沒有權限。
-- **審查中無法上傳新草稿**:如果前一個版本正在 Google 審查中,此時再上傳新版本草稿可能會被 API 拒絕(常見錯誤訊息類似「目前無法更新這個項目,因為它正在審查中」)。這種情況等審查結果出來(不論通過或退回)再重新觸發一次即可,`release.yml` 會把這類錯誤原文印出來,不會吞掉。
+- **審查中無法上傳新草稿**:如果前一個版本正在 Google 審查中,此時再上傳新版本草稿可能會被 API 拒絕(常見錯誤訊息類似「目前無法更新這個項目,因為它正在審查中」)。這種情況等審查結果出來(不論通過或退回)再重新觸發一次即可,`release.yml` 會把這類錯誤挑選過的說明欄位印出來,不會吞掉。
 - **refresh token 過期**:見步驟 3 的已知限制,測試中狀態的應用程式核發的 refresh token 是 7 天效期,過期後需要重新走一次步驟 5。
-- **安全性**:四把憑證只存在 GitHub Secrets 裡,`release.yml` 的 log 全程不會 `echo` 或印出 access token、client secret、refresh token 本身;失敗時只印 Google API 回傳的錯誤說明文字,方便除錯又不外洩憑證。
+- **安全性**:四把憑證只存在 GitHub Secrets 裡,`release.yml` 的 log 全程不會 `echo` 或印出 access token、client secret、refresh token 本身;失敗時只印挑選過的錯誤說明欄位,方便除錯又不外洩憑證。

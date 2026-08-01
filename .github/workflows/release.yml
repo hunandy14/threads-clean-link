@@ -63,7 +63,8 @@ jobs:
       - name: 建立 GitHub Release
         if: steps.tagcheck.outputs.exists == 'false'
         run: |
-          gh release create "v${{ steps.version.outputs.version }}" dist/*.zip \
+          gh release create "v${{ steps.version.outputs.version }}" \
+            "dist/threads-clean-link-v${{ steps.version.outputs.version }}.zip" \
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes
 
@@ -83,29 +84,39 @@ jobs:
             exit 0
           fi
 
-          ZIP_PATH=$(ls dist/*.zip 2>/dev/null | head -n1)
-          if [ -z "$ZIP_PATH" ]; then
-            echo "找不到打包好的 zip(dist/*.zip),無法上傳 Chrome Web Store。"
+          ZIP_PATH="dist/threads-clean-link-v${{ steps.version.outputs.version }}.zip"
+          if [ ! -f "$ZIP_PATH" ]; then
+            echo "找不到打包好的 zip:$ZIP_PATH,無法上傳 Chrome Web Store。"
             exit 1
           fi
 
           # ---- 1) 用 refresh token 換一次性 access token ----
           # 安全紅線:$TOKEN_RESPONSE / access token 本身絕不 echo,只在失敗
           # 時取 Google 回傳的錯誤說明欄位印出,不印整包回應。
+          #
+          # GitHub Actions 預設以 bash -eo pipefail 執行 run 區塊:若回應不是
+          # 合法 JSON,jq 解析失敗會讓管線非零結束,「2>/dev/null || true」
+          # 讓這一行本身不觸發 errexit 提前中止,失敗只反映在變數為空,交由
+          # 下面的 if 分支印出我們設計好的錯誤說明。
           TOKEN_RESPONSE=$(curl -sS -X POST 'https://oauth2.googleapis.com/token' \
             --data-urlencode "client_id=$CWS_CLIENT_ID" \
             --data-urlencode "client_secret=$CWS_CLIENT_SECRET" \
             --data-urlencode "refresh_token=$CWS_REFRESH_TOKEN" \
             --data-urlencode 'grant_type=refresh_token')
 
-          ACCESS_TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
+          ACCESS_TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | jq -r '.access_token // empty' 2>/dev/null || true)
           if [ -z "$ACCESS_TOKEN" ]; then
             echo "換取 access token 失敗:"
-            printf '%s' "$TOKEN_RESPONSE" | jq -r '
+            TOKEN_ERROR_DETAIL=$(printf '%s' "$TOKEN_RESPONSE" | jq -r '
               if .error_description then "  " + .error_description
               elif .error then "  " + .error
-              else "  (未取得可辨識的錯誤說明)"
-              end'
+              else empty
+              end' 2>/dev/null || true)
+            if [ -n "$TOKEN_ERROR_DETAIL" ]; then
+              echo "$TOKEN_ERROR_DETAIL"
+            else
+              echo "  (回應不是可解析的 JSON,無法取得錯誤說明)"
+            fi
             exit 1
           fi
 
@@ -116,14 +127,19 @@ jobs:
             -T "$ZIP_PATH" \
             "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$CWS_EXTENSION_ID")
 
-          UPLOAD_STATE=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.uploadState // empty')
+          UPLOAD_STATE=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '.uploadState // empty' 2>/dev/null || true)
           if [ "$UPLOAD_STATE" != 'SUCCESS' ]; then
             echo "上傳 Chrome Web Store 失敗(uploadState=${UPLOAD_STATE:-無})"
-            printf '%s' "$UPLOAD_RESPONSE" | jq -r '
+            UPLOAD_ERROR_DETAIL=$(printf '%s' "$UPLOAD_RESPONSE" | jq -r '
               if .error.message then "  " + .error.message
               elif (.itemError // [] | length) > 0 then (.itemError[] | "  - " + (.error_detail // .error_code // tostring))
-              else "  (API 未回傳可辨識的錯誤說明)"
-              end'
+              else empty
+              end' 2>/dev/null || true)
+            if [ -n "$UPLOAD_ERROR_DETAIL" ]; then
+              echo "$UPLOAD_ERROR_DETAIL"
+            else
+              echo "  (回應不是可解析的 JSON,無法取得錯誤說明)"
+            fi
             exit 1
           fi
 
