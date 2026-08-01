@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Threads Clean Link",
   "version": "0.1.0",
-  "description": "右鍵還原 Threads 分享短連結為乾淨貼文網址,並自動去除官方「複製連結」的追蹤參數。",
+  "description": "右鍵還原 Threads 分享短連結為乾淨貼文網址;網頁版「複製連結」時自動解析短碼並去除追蹤參數。",
   "homepage_url": "https://github.com/hunandy14/threads-clean-link",
   "permissions": ["contextMenus", "scripting", "notifications", "activeTab"],
   "host_permissions": [
