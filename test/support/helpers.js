@@ -43,6 +43,11 @@ function createWindow(origin = 'https://www.threads.com') {
     dispatchRawMessageEvent(event) {
       listeners.slice().forEach((fn) => fn(event));
     },
+    // 測試專用:目前註冊中的 'message' 監聽器數量,用來驗證解析流程
+    // 結束後有無正確 removeEventListener、不累積洩漏。
+    getMessageListenerCount() {
+      return listeners.length;
+    },
   };
   return win;
 }

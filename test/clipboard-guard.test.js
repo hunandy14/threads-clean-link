@@ -15,14 +15,16 @@ const CLEAN_POST_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
 
 // 依情境模擬 bridge.js + background.js 對 TCL_RESOLVE_REQ 的回應:
 // success 回傳 cleanUrl、failure 回傳 ok:false、timeout 永不回應(讓
-// clipboard-guard.js 自己的 2500ms 逾時機制接手)。
+// clipboard-guard.js 自己的 2500ms 逾時機制接手)、late 在逾時之後才
+// 送達一個原本會成功的回應(驗證競態:不能觸發第二次原生寫入)。
 function installBridgeSim(win, scenario, opts = {}) {
   win.addEventListener('message', (event) => {
     const data = event.data;
     if (!data || data.type !== 'TCL_RESOLVE_REQ') return;
     if (scenario === 'timeout') return;
+    const defaultDelay = scenario === 'late' ? 2600 : 5;
     setTimeout(() => {
-      if (scenario === 'success') {
+      if (scenario === 'success' || scenario === 'late') {
         win.postMessage({
           type: 'TCL_RESOLVE_RES',
           requestId: data.requestId,
@@ -37,7 +39,7 @@ function installBridgeSim(win, scenario, opts = {}) {
           reason: 'network-error',
         });
       }
-    }, opts.delay ?? 5);
+    }, opts.delay ?? defaultDelay);
   });
 }
 
@@ -92,6 +94,16 @@ function rejectingWrite(rejectError, callCounter) {
     async write() {
       callCounter.count++;
       throw rejectError;
+    },
+  };
+}
+
+// 記錄原生 write() 收到的「原始參數陣列」本身(參照,不轉換內容),
+// 用來斷言「原樣放行」時傳給原生函式的就是同一個陣列物件,不是重建的複本。
+function recordingWriteRaw(recorder) {
+  return {
+    async write(items) {
+      recorder.push(items);
     },
   };
 }
@@ -360,4 +372,128 @@ test('write() 橋接回傳非貼文格式的 cleanUrl 時,視同解析失敗、�
   await sandbox.navigator.clipboard.write([item]);
 
   assert.equal(recorder[0][0].text, shareUrl);
+});
+
+// ---- 競態:逾時後才送達的回應,不得觸發第二次原生寫入 ----
+
+test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫一次(fail-open 原值),遲到回應不再觸發第二次寫入', async () => {
+  const recorder = [];
+  const win = createWindow();
+  installBridgeSim(win, 'late');
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  const shareUrl = 'https://www.threads.com/share/LATE0001';
+
+  await sandbox.navigator.clipboard.writeText(shareUrl);
+  assert.equal(recorder.length, 1);
+  assert.equal(recorder[0], shareUrl);
+
+  // 遲到回應(2600ms 後送達)此時應該已經抵達;確認沒有觸發第二次原生寫入。
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(recorder.length, 1);
+});
+
+// ---- guard 端訊息驗證:requestId 與 event.source 都必須符合才採信 ----
+
+test('guard 端:requestId 不符的回應會被忽略,落入逾時 fail-open', async () => {
+  const recorder = [];
+  const win = createWindow();
+  win.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || data.type !== 'TCL_RESOLVE_REQ') return;
+    setTimeout(() => {
+      win.postMessage({
+        type: 'TCL_RESOLVE_RES',
+        requestId: 'requestId-does-not-match',
+        ok: true,
+        cleanUrl: CLEAN_POST_URL,
+      });
+    }, 5);
+  });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  const shareUrl = 'https://www.threads.com/share/MISMATCH1';
+
+  const startedAt = Date.now();
+  await sandbox.navigator.clipboard.writeText(shareUrl);
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(recorder.length, 1);
+  assert.equal(recorder[0], shareUrl);
+  assert.ok(elapsed >= 2500, `requestId 不符應被忽略、落入逾時路徑,實際 ${elapsed}ms`);
+});
+
+test('guard 端:event.source 非本視窗的回應不被採信,落入逾時 fail-open', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const fakeOtherWindow = {};
+  win.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || data.type !== 'TCL_RESOLVE_REQ') return;
+    setTimeout(() => {
+      win.dispatchRawMessageEvent({
+        source: fakeOtherWindow,
+        origin: win.location.origin,
+        data: {
+          type: 'TCL_RESOLVE_RES',
+          requestId: data.requestId,
+          ok: true,
+          cleanUrl: CLEAN_POST_URL,
+        },
+      });
+    }, 5);
+  });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  const shareUrl = 'https://www.threads.com/share/SOURCEBAD1';
+
+  const startedAt = Date.now();
+  await sandbox.navigator.clipboard.writeText(shareUrl);
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(recorder.length, 1);
+  assert.equal(recorder[0], shareUrl);
+  assert.ok(elapsed >= 2500, `非本視窗來源應被忽略、落入逾時路徑,實際 ${elapsed}ms`);
+});
+
+// ---- 解析流程結束後,message 監聽器須正確移除,不累積洩漏 ----
+
+test('guard 端:短碼解析成功後,已移除自己的 message 監聽器,不累積洩漏', async () => {
+  const recorder = [];
+  const win = createWindow();
+  installBridgeSim(win, 'success');
+  const baselineListenerCount = win.getMessageListenerCount(); // bridge 模擬器自身的監聽器
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+
+  await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK1');
+
+  assert.equal(win.getMessageListenerCount(), baselineListenerCount);
+});
+
+// ---- write():不符合單一 text/plain 條件的 items,以參照相等原樣放行 ----
+
+test('write():多格式(text/plain + text/html)ClipboardItem 以參照相等原樣放行,不重建新陣列', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+  const item = new FakeClipboardItem({
+    'text/plain': new Blob(['https://www.threads.com/@abc/post/123?xmt=ZZZ'], { type: 'text/plain' }),
+    'text/html': new Blob(['<a href="...">link</a>'], { type: 'text/html' }),
+  });
+  const originalItems = [item];
+
+  await sandbox.navigator.clipboard.write(originalItems);
+
+  assert.equal(recorder[0], originalItems);
+});
+
+test('write():單一 image/png ClipboardItem 以參照相等原樣放行', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+  const item = new FakeClipboardItem({
+    'image/png': new Blob([], { type: 'image/png' }),
+  });
+  const originalItems = [item];
+
+  await sandbox.navigator.clipboard.write(originalItems);
+
+  assert.equal(recorder[0], originalItems);
 });
