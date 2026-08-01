@@ -108,6 +108,10 @@ Chrome Web Store 上架(含註冊費、審查與隱私權說明)是後續規劃,
 
 刻意把範圍維持小:這個擴充功能只做 Threads、只做這件事。通用型清理器已經有成熟方案,但它們都不處理「短碼問題」——這正是本專案存在的理由。
 
+## 開發
+
+執行測試:`node --test test/*.test.js`
+
 ## License
 
 MIT License,詳見 [LICENSE](./LICENSE)。

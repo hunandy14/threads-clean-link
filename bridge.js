@@ -1,13 +1,6 @@
-// threads-clean-link — bridge.js
-//
-// ISOLATED world content script。clipboard-guard.js 跑在 MAIN world，沒有
-// chrome.* API，無法直接呼叫 background 解析分享短碼；本檔案是兩者之間唯一
-// 的橋接：用同一個 window 上的 postMessage 收 MAIN world 的請求，轉成
-// chrome.runtime.sendMessage 送給 service worker，拿到結果後再 postMessage
-// 回 MAIN world。
-//
-// 安全原則：任何步驟出錯，都盡量把「失敗」訊息回傳給 MAIN world；就算連回傳
-// 都失敗，MAIN world 端也有自己的 2500ms 逾時機制會 fail-open，不會卡住。
+// bridge.js — ISOLATED world content script,把 MAIN world(無 chrome.*
+// API)的短碼解析請求經 postMessage 轉為 chrome.runtime.sendMessage 送給
+// service worker,結果再 postMessage 回 MAIN world。
 (function () {
   'use strict';
 

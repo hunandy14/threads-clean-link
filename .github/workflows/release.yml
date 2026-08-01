@@ -1,24 +1,7 @@
 name: 自動發版
 
-# 觸發條件:main 有任何 push 就觸發,故意不加 paths 過濾 manifest.json。
-#
-# 理由(首次補發情境):這個 workflow 本身要被加進 main 的那個 commit,
-# 就不會動到 manifest.json——如果限定 paths: [manifest.json],workflow
-# 就永遠不會被「加入 workflow 這個動作本身」觸發,而目前 main 上的
-# manifest.json version(0.1.0)當下並沒有對應的 git tag,等於這個 repo
-# 一開始就處於「有 workflow 但抓不到第一次該發的版」的狀態,得靠人手動
-# 補救(例如 workflow_dispatch 或再動一次 manifest.json)才能補上第一個
-# release。之後任何一次「忘記 bump 版號的 commit 之後才回頭 bump」也會
-# 遇到類似狀況。
-#
-# 用 paths 過濾省下來的,只是「跑一次 checkout + 讀版本 + 比對 tag」這幾
-# 秒鐘的 CI 分鐘數;真正花時間的打包與建立 release 兩步,已經用下面的
-# tag 是否存在判斷做了短路,version 沒變動時這兩步根本不會執行。用少量
-# 幾乎免費的 CI 分鐘,換掉「release 漏發、需要人記得手動補」這種更貴的
-# 維運成本,划算。
-#
-# 另外加 workflow_dispatch,讓人可以隨時手動重跑一次(例如就是為了補
-# 發現在這個「加 workflow 但版號沒變」的第一次)。
+# 不加 paths 過濾:workflow 需在 version 未變的 push 上也能檢查缺 tag 的
+# 補發情境;真正昂貴的步驟已由 tag 存在檢查短路。
 on:
   push:
     branches: [main]
@@ -67,6 +50,10 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "尚無 tag $TAG,準備打包發版。"
           fi
+
+      - name: 執行測試
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: node --test test/*.test.js
 
       - name: 打包 Chrome Web Store 上架 zip
         if: steps.tagcheck.outputs.exists == 'false'
