@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Threads Clean Link",
+  "version": "0.1.0",
+  "description": "在 Threads 分享短連結上按右鍵,匿名還原成乾淨貼文網址並複製到剪貼簿。",
+  "permissions": ["contextMenus", "scripting", "notifications"],
+  "host_permissions": [
+    "https://www.threads.com/*",
+    "https://www.threads.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
