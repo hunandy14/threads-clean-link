@@ -48,6 +48,27 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   });
 });
 
+// 車道②:網頁版「複製連結」現在寫的是 /share/ 短碼(不再是帶 ?xmt= 的貼文
+// 網址),既有的字串淨化濾網對短碼無用武之地。clipboard-guard.js(MAIN world)
+// 經 bridge.js(ISOLATED world)把短碼送來這裡解析,解析完把乾淨網址回傳,
+// 由 MAIN world 端自行決定寫入什麼——本路徑不寫剪貼簿、不發通知,純粹是
+// 「幫忙問一次伺服器」,靜默升級複製體驗,失敗一律回傳 ok:false 讓對方
+// fail-open 用原始短碼放行,不需要在這裡額外做使用者提示。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'resolveShare') {
+    return false; // 不是我們認得的訊息類型,不佔用 sendResponse 通道。
+  }
+
+  handleResolveShareMessage(message)
+    .then(sendResponse)
+    .catch((err) => {
+      console.error('[threads-clean-link] resolveShare 處理失敗', err);
+      sendResponse({ ok: false, reason: 'internal-error' });
+    });
+
+  return true; // 非同步回應,保持訊息通道開啟直到 sendResponse 被呼叫。
+});
+
 // --- 核心流程 ---
 
 async function handleShareLinkClick(info, tab) {
@@ -99,6 +120,33 @@ async function handleShareLinkClick(info, tab) {
   }
 
   safeNotify('threads-clean-link-success', `已複製乾淨網址:${cleanUrl}`);
+}
+
+// resolveShare 訊息的處理邏輯:不信任 content script 傳來的 url,一律用
+// SHARE_URL_PATTERN 在 SW 端重新驗證,不符合就直接拒絕、不對外發任何請求。
+// 這把「頁面能透過橋接觸發什麼」壓縮到「對已驗證格式的 threads 短連結做一次
+// 匿名解析」,不接受任意網址,詳見 README/回報中的安全評估。
+async function handleResolveShareMessage(message) {
+  const shareUrl = message && message.url;
+
+  if (typeof shareUrl !== 'string' || !SHARE_URL_PATTERN.test(shareUrl)) {
+    return { ok: false, reason: 'invalid-url' };
+  }
+
+  let finalUrl;
+  try {
+    finalUrl = await resolveFinalUrl(shareUrl);
+  } catch (err) {
+    console.error('[threads-clean-link] (bridge) 解析短連結失敗', err);
+    return { ok: false, reason: 'network-error' };
+  }
+
+  const cleanUrl = extractCleanPostUrl(finalUrl);
+  if (!cleanUrl) {
+    return { ok: false, reason: 'format-error' };
+  }
+
+  return { ok: true, cleanUrl };
 }
 
 // 對短連結發一次匿名(不帶 cookie)請求並跟隨轉址,只取最終網址。

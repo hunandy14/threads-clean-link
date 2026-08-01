@@ -20,6 +20,14 @@
       "js": ["clipboard-guard.js"],
       "run_at": "document_start",
       "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.threads.com/*",
+        "https://*.threads.net/*"
+      ],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
     }
   ],
   "icons": {
