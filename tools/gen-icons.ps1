@@ -1,6 +1,6 @@
 <#
   產生擴充功能佔位圖示(icons/icon16.png、icon48.png、icon128.png)。
-  純色圓角底 + 簡單白色圖形,不追求美術,純粹讓 manifest.json 的 icons 欄位有檔案可指。
+  純色圓角底 + 簡單白色圖形，不追求美術，純粹讓 manifest.json 的 icons 欄位有檔案可指。
   用法:pwsh -File tools/gen-icons.ps1
 #>
 

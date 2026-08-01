@@ -4,16 +4,16 @@
 
 .DESCRIPTION
     只封裝上架必要的檔案:manifest.json、background.js、clipboard-guard.js、
-    bridge.js,以及 icons/ 資料夾底下的圖示檔(*.png / *.svg / *.ico)。
+    bridge.js，以及 icons/ 資料夾底下的圖示檔(*.png / *.svg / *.ico)。
     README.md、LICENSE、tools/、tmp/、icons/gen-icons.ps1 等開發用檔案一律
-    不打包,避免非必要內容混進上架用的壓縮檔。
+    不打包，避免非必要內容混進上架用的壓縮檔。
 
-    輸出到 repo 根目錄的 dist/threads-clean-link-v{版本}.zip,版本號直接讀
-    manifest.json 的 "version" 欄位,避免手動打錯版號。dist/ 已加入
-    .gitignore,不會被提交進版本控制。
+    輸出到 repo 根目錄的 dist/threads-clean-link-v{版本}.zip，版本號直接讀
+    manifest.json 的 "version" 欄位，避免手動打錯版號。dist/ 已加入
+    .gitignore，不會被提交進版本控制。
 
 .NOTES
-    執行方式(於任何目錄皆可,腳本會自行定位 repo 根目錄):
+    執行方式(於任何目錄皆可，腳本會自行定位 repo 根目錄):
         pwsh -File tools/build-release.ps1
 #>
 
@@ -33,7 +33,7 @@ if (-not (Test-Path $manifestPath)) {
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 $version = $manifest.version
 if (-not $version) {
-    throw 'manifest.json 沒有 version 欄位,無法決定輸出檔名'
+    throw 'manifest.json 沒有 version 欄位，無法決定輸出檔名'
 }
 
 # 直接複製的檔案(非資料夾)
@@ -47,16 +47,16 @@ $includeFiles = @(
 foreach ($file in $includeFiles) {
     $filePath = Join-Path $repoRoot $file
     if (-not (Test-Path $filePath -PathType Leaf)) {
-        throw "缺少必要檔案,無法打包:$file"
+        throw "缺少必要檔案，無法打包:$file"
     }
 }
 
 $iconsDir = Join-Path $repoRoot 'icons'
 if (-not (Test-Path $iconsDir -PathType Container)) {
-    throw "缺少必要資料夾,無法打包:icons/"
+    throw "缺少必要資料夾，無法打包:icons/"
 }
 
-# icons/ 內只取圖示檔,排除 gen-icons.ps1 這類開發用腳本
+# icons/ 內只取圖示檔，排除 gen-icons.ps1 這類開發用腳本
 $iconFiles = Get-ChildItem -Path $iconsDir -File | Where-Object {
     $_.Extension -in @('.png', '.svg', '.ico')
 }
@@ -76,8 +76,8 @@ if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force -Confirm:$false
 }
 
-# 用暫存資料夾組裝要打包的內容,確保 zip 內檔案在根目錄,而不是多包一層
-# 路徑,符合 Chrome Web Store 對 zip 結構的要求。
+# 用暫存資料夾組裝要打包的內容，確保 zip 內檔案在根目錄，而不是多包一層
+# 路徑，符合 Chrome Web Store 對 zip 結構的要求。
 $stagingDir = Join-Path ([System.IO.Path]::GetTempPath()) ('tcl-release-' + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stagingDir | Out-Null
 

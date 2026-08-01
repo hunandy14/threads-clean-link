@@ -1,5 +1,5 @@
 // test/background.test.js — background.js(service worker)裡
-// resolveShare 訊息處理路徑的行為契約。fetch 與 chrome.* 全程 mock,
+// resolveShare 訊息處理路徑的行為契約。fetch 與 chrome.* 全程 mock，
 // 不發真實網路請求。
 'use strict';
 
@@ -34,7 +34,7 @@ function makeChrome() {
   return chrome;
 }
 
-// 依 url 回傳固定的 fetch 結果,模擬短連結解析伺服器的轉址行為。
+// 依 url 回傳固定的 fetch 結果，模擬短連結解析伺服器的轉址行為。
 function makeFetch(calls) {
   return async (url) => {
     calls.push(url);
@@ -51,7 +51,7 @@ function makeFetch(calls) {
   };
 }
 
-// 載入 background.js,回傳 resolveShare 的 onMessage 監聽器與 fetch 呼叫紀錄。
+// 載入 background.js，回傳 resolveShare 的 onMessage 監聽器與 fetch 呼叫紀錄。
 function loadBackground() {
   const chrome = makeChrome();
   const calls = [];
@@ -71,20 +71,20 @@ test('resolveShare 的 onMessage 監聽器會在腳本載入時註冊', () => {
   assert.equal(typeof listener, 'function');
 });
 
-test('resolveShare 訊息屬於非同步處理,監聽器回傳 true 以保持通道開啟', () => {
+test('resolveShare 訊息屬於非同步處理，監聽器回傳 true 以保持通道開啟', () => {
   const { listener } = loadBackground();
   const keepAlive = listener({ type: 'resolveShare', url: SHARE_URL }, {}, () => {});
   assert.equal(keepAlive, true);
 });
 
-test('合法短碼解析成功時,sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
+test('合法短碼解析成功時，sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
   const { listener } = loadBackground();
   const response = await callListener(listener, { type: 'resolveShare', url: SHARE_URL });
   assert.equal(response.ok, true);
   assert.equal(response.cleanUrl, CLEAN_POST_URL);
 });
 
-test('不符 SHARE_URL_PATTERN 的 url 會被拒絕,且不會發出任何 fetch 請求', async () => {
+test('不符 SHARE_URL_PATTERN 的 url 會被拒絕，且不會發出任何 fetch 請求', async () => {
   const { listener, calls } = loadBackground();
   const response = await callListener(listener, { type: 'resolveShare', url: 'https://evil.com/whatever' });
   assert.equal(response.ok, false);
@@ -92,7 +92,7 @@ test('不符 SHARE_URL_PATTERN 的 url 會被拒絕,且不會發出任何 fetch 
   assert.equal(calls.includes('https://evil.com/whatever'), false);
 });
 
-test('fetch 丟出例外時,回傳 ok:false 與 reason:network-error', async () => {
+test('fetch 丟出例外時，回傳 ok:false 與 reason:network-error', async () => {
   const { listener } = loadBackground();
   const response = await callListener(listener, {
     type: 'resolveShare',
@@ -102,7 +102,7 @@ test('fetch 丟出例外時,回傳 ok:false 與 reason:network-error', async () 
   assert.equal(response.reason, 'network-error');
 });
 
-test('轉址結果不是貼文網址時,回傳 ok:false 與 reason:format-error', async () => {
+test('轉址結果不是貼文網址時，回傳 ok:false 與 reason:format-error', async () => {
   const { listener } = loadBackground();
   const response = await callListener(listener, {
     type: 'resolveShare',
@@ -112,7 +112,7 @@ test('轉址結果不是貼文網址時,回傳 ok:false 與 reason:format-error'
   assert.equal(response.reason, 'format-error');
 });
 
-test('非 resolveShare 類型的訊息,監聽器回傳 false 且不呼叫 sendResponse', () => {
+test('非 resolveShare 類型的訊息，監聽器回傳 false 且不呼叫 sendResponse', () => {
   const { listener } = loadBackground();
   let called = false;
   const keepAlive = listener({ type: 'somethingElse' }, {}, () => {

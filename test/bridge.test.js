@@ -1,5 +1,5 @@
 // test/bridge.test.js — bridge.js(ISOLATED world 訊息橋接)的行為契約。
-// chrome.runtime.sendMessage 全程 mock,不呼叫真實的 service worker。
+// chrome.runtime.sendMessage 全程 mock，不呼叫真實的 service worker。
 'use strict';
 
 const test = require('node:test');
@@ -10,8 +10,8 @@ const { createWindow, runInSandbox } = require('./support/helpers');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'bridge.js'), 'utf8');
 
-// 載入 bridge.js 到一個帶假 chrome.runtime 的 sandbox,回傳
-// { win, sentMessages, dispatch },讓測試可以送出 TCL_RESOLVE_REQ
+// 載入 bridge.js 到一個帶假 chrome.runtime 的 sandbox，回傳
+// { win, sentMessages, dispatch }，讓測試可以送出 TCL_RESOLVE_REQ
 // 並攔截它經 postMessage 送回的 TCL_RESOLVE_RES。
 function loadBridge({ sendMessage }) {
   const win = createWindow();
@@ -41,7 +41,7 @@ function loadBridge({ sendMessage }) {
   return { win, sentMessages, dispatch };
 }
 
-test('合法短碼解析請求,轉發為一次 chrome.runtime.sendMessage(resolveShare)', async () => {
+test('合法短碼解析請求，轉發為一次 chrome.runtime.sendMessage(resolveShare)', async () => {
   const { sentMessages, dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
   });
@@ -58,7 +58,7 @@ test('合法短碼解析請求,轉發為一次 chrome.runtime.sendMessage(resolv
   assert.equal(result.requestId, 'req-1');
 });
 
-test('service worker 解析成功時,cleanUrl 原樣經 postMessage 傳回 MAIN world', async () => {
+test('service worker 解析成功時，cleanUrl 原樣經 postMessage 傳回 MAIN world', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
   });
@@ -73,7 +73,7 @@ test('service worker 解析成功時,cleanUrl 原樣經 postMessage 傳回 MAIN 
   assert.equal(result.cleanUrl, 'https://www.threads.com/@x/post/y');
 });
 
-test('service worker 回應 ok:false 時,原樣轉發失敗結果與 reason', async () => {
+test('service worker 回應 ok:false 時，原樣轉發失敗結果與 reason', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: false, reason: 'format-error' }),
   });
@@ -88,7 +88,7 @@ test('service worker 回應 ok:false 時,原樣轉發失敗結果與 reason', as
   assert.equal(result.reason, 'format-error');
 });
 
-test('service worker 未回應(response 為 undefined)時,reason 標示為 no-response', async () => {
+test('service worker 未回應(response 為 undefined)時，reason 標示為 no-response', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback) => callback(undefined),
   });
@@ -103,7 +103,7 @@ test('service worker 未回應(response 為 undefined)時,reason 標示為 no-re
   assert.equal(result.reason, 'no-response');
 });
 
-test('chrome.runtime.lastError 視為解析失敗,不視為致命錯誤', async () => {
+test('chrome.runtime.lastError 視為解析失敗，不視為致命錯誤', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback, runtime) => {
       runtime.lastError = { message: 'context invalidated' };
@@ -121,7 +121,7 @@ test('chrome.runtime.lastError 視為解析失敗,不視為致命錯誤', async 
   assert.equal(typeof result.reason, 'string');
 });
 
-test('回應一律帶回與請求相同的 requestId,供 MAIN world 端配對', async () => {
+test('回應一律帶回與請求相同的 requestId，供 MAIN world 端配對', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
   });
@@ -135,7 +135,7 @@ test('回應一律帶回與請求相同的 requestId,供 MAIN world 端配對', 
   assert.equal(result.requestId, 'req-unique-5');
 });
 
-test('event.source 不是本視窗時,忽略訊息且不轉發 chrome.runtime.sendMessage', async () => {
+test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.sendMessage', async () => {
   const { win, sentMessages } = loadBridge({
     sendMessage: () => {},
   });

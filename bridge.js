@@ -1,6 +1,6 @@
-// bridge.js — ISOLATED world content script,把 MAIN world(無 chrome.*
+// bridge.js — ISOLATED world content script，把 MAIN world(無 chrome.*
 // API)的短碼解析請求經 postMessage 轉為 chrome.runtime.sendMessage 送給
-// service worker,結果再 postMessage 回 MAIN world。
+// service worker，結果再 postMessage 回 MAIN world。
 (function () {
   'use strict';
 

@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 # 避免兩個 run 同時打包/建立同一個 tag 的 release 互相打架:
-# cancel-in-progress 刻意設 false,新的 run 會排隊等前一個跑完,而不是
+# cancel-in-progress 刻意設 false，新的 run 會排隊等前一個跑完，而不是
 # 把可能正在上傳 release 資產的舊 run 腰斬。
 concurrency:
   group: release
@@ -45,10 +45,10 @@ jobs:
           TAG="v${{ steps.version.outputs.version }}"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "已存在 tag $TAG,略過本次發版。"
+            echo "已存在 tag $TAG，略過本次發版。"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "尚無 tag $TAG,準備打包發版。"
+            echo "尚無 tag $TAG，準備打包發版。"
           fi
 
       - name: 執行測試
@@ -77,26 +77,26 @@ jobs:
           CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
         run: |
           # 四把 CWS 憑證任一缺漏就優雅跳過:此步驟屬於「錦上添花」的自動
-          # 上架,不應該讓整個發版流程因為還沒設定商店憑證而失敗。
+          # 上架，不應該讓整個發版流程因為還沒設定商店憑證而失敗。
           if [ -z "$CWS_CLIENT_ID" ] || [ -z "$CWS_CLIENT_SECRET" ] || \
              [ -z "$CWS_REFRESH_TOKEN" ] || [ -z "$CWS_EXTENSION_ID" ]; then
-            echo "未設定 CWS 憑證,跳過商店上傳。"
+            echo "未設定 CWS 憑證，跳過商店上傳。"
             exit 0
           fi
 
           ZIP_PATH="dist/threads-clean-link-v${{ steps.version.outputs.version }}.zip"
           if [ ! -f "$ZIP_PATH" ]; then
-            echo "找不到打包好的 zip:$ZIP_PATH,無法上傳 Chrome Web Store。"
+            echo "找不到打包好的 zip:$ZIP_PATH，無法上傳 Chrome Web Store。"
             exit 1
           fi
 
           # ---- 1) 用 refresh token 換一次性 access token ----
-          # 安全紅線:$TOKEN_RESPONSE / access token 本身絕不 echo,只在失敗
-          # 時取 Google 回傳的錯誤說明欄位印出,不印整包回應。
+          # 安全紅線:$TOKEN_RESPONSE / access token 本身絕不 echo，只在失敗
+          # 時取 Google 回傳的錯誤說明欄位印出，不印整包回應。
           #
           # GitHub Actions 預設以 bash -eo pipefail 執行 run 區塊:若回應不是
-          # 合法 JSON,jq 解析失敗會讓管線非零結束,「2>/dev/null || true」
-          # 讓這一行本身不觸發 errexit 提前中止,失敗只反映在變數為空,交由
+          # 合法 JSON，jq 解析失敗會讓管線非零結束，「2>/dev/null || true」
+          # 讓這一行本身不觸發 errexit 提前中止，失敗只反映在變數為空，交由
           # 下面的 if 分支印出我們設計好的錯誤說明。
           TOKEN_RESPONSE=$(curl -sS -X POST 'https://oauth2.googleapis.com/token' \
             --data-urlencode "client_id=$CWS_CLIENT_ID" \
@@ -115,12 +115,12 @@ jobs:
             if [ -n "$TOKEN_ERROR_DETAIL" ]; then
               echo "$TOKEN_ERROR_DETAIL"
             else
-              echo "  (回應不是可解析的 JSON,無法取得錯誤說明)"
+              echo "  (回應不是可解析的 JSON，無法取得錯誤說明)"
             fi
             exit 1
           fi
 
-          # ---- 2) 上傳 zip(成為商店草稿新版本,不呼叫 publish)----
+          # ---- 2) 上傳 zip(成為商店草稿新版本，不呼叫 publish)----
           UPLOAD_RESPONSE=$(curl -sS -X PUT \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
             -H 'x-goog-api-version: 2' \
@@ -138,9 +138,9 @@ jobs:
             if [ -n "$UPLOAD_ERROR_DETAIL" ]; then
               echo "$UPLOAD_ERROR_DETAIL"
             else
-              echo "  (回應不是可解析的 JSON,無法取得錯誤說明)"
+              echo "  (回應不是可解析的 JSON，無法取得錯誤說明)"
             fi
             exit 1
           fi
 
-          echo "草稿已上傳(uploadState=SUCCESS),請至開發者主控台按提交審查。"
+          echo "草稿已上傳(uploadState=SUCCESS)，請至開發者主控台按提交審查。"
