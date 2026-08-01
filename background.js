@@ -1,17 +1,18 @@
+// background.js — service worker:解析右鍵選單的分享短連結，並回應
+// clipboard-guard.js 經 bridge.js 送來的短碼解析請求。
 'use strict';
 
-// Threads 分享短連結格式,例如:https://www.threads.com/share/AbCdEfGhI
+// Threads 分享短連結格式，例如：https://www.threads.com/share/AbCdEfGhI
 const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/.+/i;
 
-// 乾淨貼文網址格式,例如:https://www.threads.com/@username/post/AbCd123EfGh
+// 乾淨貼文網址格式，例如：https://www.threads.com/@username/post/AbCd123EfGh
 const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\/post\/[^/?#]+/i;
 
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
 
-// --- 事件監聽器一律註冊在檔案最外層 ---
-// SW 閒置幾十秒會被終止,狀態不能靠全域變數存活;
-// 監聽器必須在每次喚醒時同步掛回去,不能包在其他非同步流程裡面。
+// 事件監聽器一律註冊在檔案最外層：service worker 閒置會被終止，
+// 監聽器需在每次喚醒時同步掛回去，不能包在非同步流程裡面。
 
 chrome.runtime.onInstalled.addListener(() => {
   createContextMenu().catch((err) => {
@@ -19,8 +20,8 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// 先清空舊選單再建立,避免重新安裝/更新時 id 重複觸發 lastError 雜訊。
-// removeAll 失敗也不該擋住後續建立選單,故在此就地接住、只記錄不中斷。
+// 先清空舊選單再建立，避免重新安裝/更新時 id 重複觸發 lastError 雜訊。
+// removeAll 失敗也不該擋住後續建立選單，故在此就地接住、只記錄不中斷。
 async function createContextMenu() {
   try {
     await chrome.contextMenus.removeAll();
@@ -40,20 +41,17 @@ async function createContextMenu() {
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  // onClicked 的回呼是同步事件簽章,這裡用 .catch 包住整段非同步流程,
-  // 確保任何錯誤都被攔截,不會變成未捕捉的 Promise rejection。
+  // onClicked 的回呼是同步事件簽章，這裡用 .catch 包住整段非同步流程，
+  // 確保任何錯誤都被攔截，不會變成未捕捉的 Promise rejection。
   handleShareLinkClick(info, tab).catch((err) => {
     console.error('[threads-clean-link] 未預期的錯誤', err);
     safeNotify('threads-clean-link-unexpected', '發生未預期的錯誤,請稍後再試一次。');
   });
 });
 
-// 車道②:網頁版「複製連結」現在寫的是 /share/ 短碼(不再是帶 ?xmt= 的貼文
-// 網址),既有的字串淨化濾網對短碼無用武之地。clipboard-guard.js(MAIN world)
-// 經 bridge.js(ISOLATED world)把短碼送來這裡解析,解析完把乾淨網址回傳,
-// 由 MAIN world 端自行決定寫入什麼——本路徑不寫剪貼簿、不發通知,純粹是
-// 「幫忙問一次伺服器」,靜默升級複製體驗,失敗一律回傳 ok:false 讓對方
-// fail-open 用原始短碼放行,不需要在這裡額外做使用者提示。
+// 回應 clipboard-guard.js 經 bridge.js 送來的短碼解析請求。本路徑不寫
+// 剪貼簿、不發通知，只負責解析並回傳結果；失敗一律回傳 ok:false，由
+// 呼叫端自行決定要不要用原始短碼放行。
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'resolveShare') {
     return false; // 不是我們認得的訊息類型,不佔用 sendResponse 通道。
@@ -69,7 +67,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // 非同步回應,保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
-// --- 核心流程 ---
+// 核心流程
 
 async function handleShareLinkClick(info, tab) {
   const shareUrl = info.linkUrl;
@@ -122,10 +120,8 @@ async function handleShareLinkClick(info, tab) {
   safeNotify('threads-clean-link-success', `已複製乾淨網址:${cleanUrl}`);
 }
 
-// resolveShare 訊息的處理邏輯:不信任 content script 傳來的 url,一律用
-// SHARE_URL_PATTERN 在 SW 端重新驗證,不符合就直接拒絕、不對外發任何請求。
-// 這把「頁面能透過橋接觸發什麼」壓縮到「對已驗證格式的 threads 短連結做一次
-// 匿名解析」,不接受任意網址,詳見 README/回報中的安全評估。
+// 不信任呼叫端傳入的 url,一律用 SHARE_URL_PATTERN 重新驗證，
+// 不符合就直接拒絕、不對外發送任何請求。
 async function handleResolveShareMessage(message) {
   const shareUrl = message && message.url;
 
@@ -149,10 +145,9 @@ async function handleResolveShareMessage(message) {
   return { ok: true, cleanUrl };
 }
 
-// 對短連結發一次匿名(不帶 cookie)請求並跟隨轉址,只取最終網址。
-// 用 GET 而非 HEAD(補強 1):匿名 HEAD 有時不給 302、或會先跳驗證頁,
-// GET + redirect:'follow' 較穩。只需要 response.url,取到後嘗試主動
-// 取消尚未讀取的 body 串流以省流量;取消失敗不影響已經拿到的網址。
+// 對短連結發一次匿名(不帶 cookie)請求並跟隨轉址，只取最終網址。
+// 用 GET 而非 HEAD:匿名 HEAD 常不回傳 302、或會先跳驗證頁，
+// GET + redirect:'follow' 較穩定。
 async function resolveFinalUrl(shareUrl) {
   const response = await fetch(shareUrl, {
     method: 'GET',
@@ -161,10 +156,10 @@ async function resolveFinalUrl(shareUrl) {
   });
   const finalUrl = response.url;
 
+  // 取消未讀取的 body 串流以省流量；取消失敗不影響已取得的 finalUrl。
   try {
     await response.body?.cancel();
   } catch (err) {
-    // 取消失敗不影響已取得的 finalUrl,僅記錄。
     console.error('[threads-clean-link] 取消回應 body 失敗', err);
   }
 
@@ -177,12 +172,9 @@ function extractCleanPostUrl(finalUrl) {
   return match ? match[0] : null;
 }
 
-// SW 沒有 DOM,寫剪貼簿必須注入目前分頁執行。
-// 若分頁是 chrome:// 等受限頁面,executeScript 會直接 reject;
-// 但注入成功不代表頁面內的 clipboard.writeText 就成功(例如分頁未聚焦
-// 時會丟 NotAllowedError),那不保證讓 executeScript 本身 reject,所以
-// 注入函式內部要自己 try/catch 並回傳結果物件,由呼叫端檢查後決定是否
-// throw,交由既有的錯誤路徑統一處理。
+// SW 沒有 DOM，寫剪貼簿要注入分頁執行；注入的函式內部自行 try/catch
+// 並回傳 { ok, reason },因為 writeText 失敗(如分頁未聚焦)不會讓
+// executeScript 本身 reject,呼叫端要靠回傳值判斷是否該 throw。
 async function writeToClipboard(tabId, text) {
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -203,10 +195,9 @@ async function writeToClipboard(tabId, text) {
   }
 }
 
-// 成功回饋(補強 2)與錯誤處理(補強 3)統一走這裡,
-// notifications API 本身出錯也不讓整個流程炸掉。
-// create() 未帶 callback 時回傳 Promise,同步 try/catch 接不到非同步
-// rejection,因此額外對回傳值補 .catch,兩者都只記錄不外拋。
+// 統一顯示通知，自身出錯不影響呼叫端流程。create() 未帶 callback 時
+// 回傳 Promise,同步 try/catch 接不到非同步 rejection,因此另外對
+// 回傳值補一次 .catch,兩者都只記錄、不外拋。
 function safeNotify(id, message) {
   try {
     const creating = chrome.notifications.create(id, {

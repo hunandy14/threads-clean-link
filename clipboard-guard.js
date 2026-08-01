@@ -1,19 +1,6 @@
-// threads-clean-link — clipboard-guard.js
-//
-// 官方複製連結攔截淨化。注入到 threads.com / threads.net 頁面的 MAIN world，
-// 在頁面呼叫 navigator.clipboard.writeText / navigator.clipboard.write 寫入剪貼簿
-// 的瞬間檢查內容：
-//
-//   1. 帶追蹤參數（?xmt=...）的貼文網址 → 去掉 query／hash 再放行（零網路請求）。
-//   2. 分享短碼（/share/XXXX）→ 經 bridge.js 橋接請 background 解析成乾淨貼文
-//      網址後再放行；橋接逾時／失敗／任何例外一律 fail-open，原始參數照樣寫入，
-//      絕不讓複製功能因此卡住或失敗。
-//
-// 設計立場：此檔只存在於 threads 網域頁面內，經過本包裝層的寫入必然是該網站
-// 自己發起的，因此不做、也不需要任何「來源判斷」。
-//
-// 安全原則：任何非預期情況（內容不符、判斷邏輯例外、原生呼叫例外、橋接逾時
-// 或失敗）一律以「呼叫原生函式」收尾，絕不讓網站原本的複製功能因此中斷或損壞。
+// clipboard-guard.js — 注入 threads.com / threads.net 頁面 MAIN world,
+// 攔截官方複製連結寫入剪貼簿的內容，淨化後再放行。任何判斷或呼叫例外一律
+// fallback 呼叫原生函式，不讓網站原本的複製功能因此損壞。
 (function () {
   'use strict';
 
@@ -122,13 +109,12 @@
       try {
         if (typeof data === 'string') {
           if (isShareUrl(data)) {
-            // 雙參數 .then(onOk, onErr)：onErr 只會看到 requestResolveShareUrl
-            // 這個 promise 本身的 rejection，看不到 nativeWriteText 的 rejection，
-            // 避免原生寫入被拒時又被下面的 catch 接住、重打第二次。
+            // 雙參數 .then(onOk, onErr):onErr 只綁定 requestResolveShareUrl
+            // 的 rejection,不會連 nativeWriteText 的 rejection 也接住，確保
+            // 原生呼叫只被呼叫一次，其 rejection 原樣傳回呼叫端。
             return requestResolveShareUrl(data.trim()).then(
               function (cleanUrl) {
-                // 縱深防禦：cleanUrl 還要通過貼文網址格式驗證才信任，
-                // 否則（橋接回傳了格式不對的內容）一律退回原始參數。
+                // cleanUrl 需通過貼文網址格式驗證才信任，否則視同解析失敗。
                 var toWrite =
                   typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)
                     ? cleanUrl
@@ -136,7 +122,7 @@
                 return nativeWriteText(toWrite);
               },
               function () {
-                // fail-open：橋接／解析任何失敗，一律用原始參數放行。
+                // fail-open:橋接／解析任何失敗，一律用原始參數放行。
                 return nativeWriteText(data);
               }
             );
@@ -163,8 +149,8 @@
 
     clipboard.write = function (items) {
       try {
-        // 只處理「單一 ClipboardItem、且該 item 只有 text/plain 單一格式」的情況，
-        // 對應規格的「寫入內容為單一字串」；其餘一律原封不動交給原生函式。
+        // 只處理「單一 ClipboardItem 且只有 text/plain 單一格式」的情況；
+        // 其餘格式或多個 items 一律原封不動交給原生函式。
         if (
           Array.isArray(items) &&
           items.length === 1 &&
@@ -177,11 +163,9 @@
         ) {
           var item = items[0];
 
-          // decideWhatToWrite：只負責「決定要寫入的 items 是什麼」，涵蓋讀取
-          // blob、判斷短碼／?xmt、橋接解析、重建 ClipboardItem 等所有可能出錯
-          // 的步驟；任何一步失敗都 fallback 回傳原始 items，但這條鏈**絕不**
-          // 呼叫 nativeWrite——避免原生呼叫的 rejection 被這裡的 catch 誤吞、
-          // 導致重打第二次。
+          // decideWhatToWrite 只決定要寫入的內容(讀取 blob、判斷短碼／?xmt、
+          // 橋接解析、重建 ClipboardItem),任何步驟失敗都 fallback 回傳原始
+          // items,但絕不呼叫 nativeWrite,確保原生呼叫只發生一次。
           var decideWhatToWrite = item
             .getType('text/plain')
             .then(function (blob) {
@@ -191,7 +175,7 @@
               if (isShareUrl(text)) {
                 return requestResolveShareUrl(text.trim()).then(
                   function (cleanUrl) {
-                    // 縱深防禦：cleanUrl 還要通過貼文網址格式驗證才信任。
+                    // cleanUrl 需通過貼文網址格式驗證才信任。
                     if (typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)) {
                       return [
                         new window.ClipboardItem({
@@ -199,11 +183,11 @@
                         }),
                       ];
                     }
-                    // fail-open：cleanUrl 缺失或格式不符，一律用原始 items。
+                    // fail-open:cleanUrl 缺失或格式不符，一律用原始 items。
                     return items;
                   },
                   function () {
-                    // fail-open：橋接／解析任何失敗，一律用原始 items。
+                    // fail-open:橋接／解析任何失敗，一律用原始 items。
                     return items;
                   }
                 );
