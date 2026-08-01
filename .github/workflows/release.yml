@@ -1,0 +1,81 @@
+name: 自動發版
+
+# 觸發條件:main 有任何 push 就觸發,故意不加 paths 過濾 manifest.json。
+#
+# 理由(首次補發情境):這個 workflow 本身要被加進 main 的那個 commit,
+# 就不會動到 manifest.json——如果限定 paths: [manifest.json],workflow
+# 就永遠不會被「加入 workflow 這個動作本身」觸發,而目前 main 上的
+# manifest.json version(0.1.0)當下並沒有對應的 git tag,等於這個 repo
+# 一開始就處於「有 workflow 但抓不到第一次該發的版」的狀態,得靠人手動
+# 補救(例如 workflow_dispatch 或再動一次 manifest.json)才能補上第一個
+# release。之後任何一次「忘記 bump 版號的 commit 之後才回頭 bump」也會
+# 遇到類似狀況。
+#
+# 用 paths 過濾省下來的,只是「跑一次 checkout + 讀版本 + 比對 tag」這幾
+# 秒鐘的 CI 分鐘數;真正花時間的打包與建立 release 兩步,已經用下面的
+# tag 是否存在判斷做了短路,version 沒變動時這兩步根本不會執行。用少量
+# 幾乎免費的 CI 分鐘,換掉「release 漏發、需要人記得手動補」這種更貴的
+# 維運成本,划算。
+#
+# 另外加 workflow_dispatch,讓人可以隨時手動重跑一次(例如就是為了補
+# 發現在這個「加 workflow 但版號沒變」的第一次)。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# 避免兩個 run 同時打包/建立同一個 tag 的 release 互相打架:
+# cancel-in-progress 刻意設 false,新的 run 會排隊等前一個跑完,而不是
+# 把可能正在上傳 release 資產的舊 run 腰斬。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 簽出原始碼(含完整歷史與 tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 讀取 manifest.json 版本號
+        id: version
+        shell: pwsh
+        run: |
+          $manifest = Get-Content manifest.json -Raw | ConvertFrom-Json
+          $version = $manifest.version
+          if (-not $version) {
+            throw 'manifest.json 沒有 version 欄位'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: 檢查對應 tag 是否已存在
+        id: tagcheck
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "已存在 tag $TAG,略過本次發版。"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "尚無 tag $TAG,準備打包發版。"
+          fi
+
+      - name: 打包 Chrome Web Store 上架 zip
+        if: steps.tagcheck.outputs.exists == 'false'
+        shell: pwsh
+        run: tools/build-release.ps1
+
+      - name: 建立 GitHub Release
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" dist/*.zip \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes
