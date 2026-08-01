@@ -1,4 +1,17 @@
-tmp/
+# 相依與建置產出
 node_modules/
-.claude/
 dist/
+# 本機工作目錄
+tmp/
+.claude/
+secrets/
+# 環境與憑證
+.env
+.env.*
+# 編輯器與作業系統
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# 日誌
+*.log
