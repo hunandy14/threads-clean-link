@@ -59,14 +59,23 @@
     display: flex;
     flex-direction: column;
   }
+  /* 設定列：標籤在左、switch 靠右(flex + space-between)。這是 iOS HIG 的
+     list row toggle 與 Material 3 list item「trailing slot」的共同慣例，
+     NN/g 也建議窄欄位(設定面板正是)把 switch 放在標籤右側；LTR 的掃視
+     順序與螢幕閱讀器都是先讀標籤再讀控件，標籤在左最不含糊。
+     整列本身就是 <label>，點文字或列上任一處都能切換，不必精準命中
+     34px 寬的 switch。 */
   .setting-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    justify-content: space-between;
+    gap: 12px;
     padding: 8px 0;
-  }
-  .setting-row label {
     cursor: pointer;
+  }
+  /* 標籤過長時在自己這一側折行，不把靠右的 switch 擠出列外。 */
+  .setting-row-label {
+    min-width: 0;
   }
   /* 滑動 switch：取消 checkbox 原生打勾外觀，自行畫軌道與滑塊。
      顏色一律走 CSS 變數（--switch-track-off / --switch-thumb / --accent），
@@ -78,7 +87,8 @@
     width: 34px;
     height: 20px;
     margin: 0;
-    flex: none;
+    /* 靠右的 switch 不得被左側標籤壓縮變形。 */
+    flex-shrink: 0;
     border-radius: 999px;
     background: var(--switch-track-off);
     cursor: pointer;
@@ -116,14 +126,14 @@
     <span class="version" id="version"></span>
   </header>
   <div class="settings">
-    <div class="setting-row">
+    <label class="setting-row" for="autoClean">
+      <span class="setting-row-label">自動淨化剪貼簿</span>
       <input type="checkbox" id="autoClean" class="switch" />
-      <label for="autoClean">自動淨化剪貼簿</label>
-    </div>
-    <div class="setting-row">
+    </label>
+    <label class="setting-row" for="notifySuccess">
+      <span class="setting-row-label">成功時顯示通知</span>
       <input type="checkbox" id="notifySuccess" class="switch" />
-      <label for="notifySuccess">成功時顯示通知</label>
-    </div>
+    </label>
   </div>
   <footer>失敗時一律放行原始連結，右鍵選單不受開關影響。</footer>
   <script src="popup.js"></script>
