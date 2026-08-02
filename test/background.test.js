@@ -66,15 +66,21 @@ function callListener(listener, message) {
   });
 }
 
-test('resolveShare 的 onMessage 監聽器會在腳本載入時註冊', () => {
+// 訊息通道契約:認得的類型回傳 true(保持通道開啟等非同步 sendResponse)，
+// 不認得的類型回傳 false 且不佔用 sendResponse。監聽器有沒有註冊由本測試
+// 順帶驗證(取不到就會在此丟錯)，不另立一條。
+test('onMessage 契約:resolveShare 回傳 true 保持通道，其他類型回傳 false 且不呼叫 sendResponse', () => {
   const { listener } = loadBackground();
-  assert.equal(typeof listener, 'function');
-});
+  assert.equal(typeof listener, 'function', '腳本載入時就該註冊 onMessage 監聽器');
 
-test('resolveShare 訊息屬於非同步處理，監聽器回傳 true 以保持通道開啟', () => {
-  const { listener } = loadBackground();
-  const keepAlive = listener({ type: 'resolveShare', url: SHARE_URL }, {}, () => {});
-  assert.equal(keepAlive, true);
+  assert.equal(listener({ type: 'resolveShare', url: SHARE_URL }, {}, () => {}), true);
+
+  let called = false;
+  const keepAlive = listener({ type: 'somethingElse' }, {}, () => {
+    called = true;
+  });
+  assert.equal(keepAlive, false);
+  assert.equal(called, false);
 });
 
 test('合法短碼解析成功時，sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
@@ -110,16 +116,6 @@ test('轉址結果不是貼文網址時，回傳 ok:false 與 reason:format-erro
   });
   assert.equal(response.ok, false);
   assert.equal(response.reason, 'format-error');
-});
-
-test('非 resolveShare 類型的訊息，監聽器回傳 false 且不呼叫 sendResponse', () => {
-  const { listener } = loadBackground();
-  let called = false;
-  const keepAlive = listener({ type: 'somethingElse' }, {}, () => {
-    called = true;
-  });
-  assert.equal(keepAlive, false);
-  assert.equal(called, false);
 });
 
 // ============================================================
@@ -225,25 +221,29 @@ const SHARE_URL_MUST_NOT_MATCH_CASES = [
   },
 ];
 
-for (const { url, reason } of SHARE_URL_MUST_MATCH_CASES) {
-  test(`SHARE_URL_PATTERN 收緊規格(必須匹配):${url} —— ${reason}`, async () => {
-    const { listener, calls } = loadBackgroundAlwaysSucceed();
-    const response = await callListener(listener, { type: 'resolveShare', url });
-    assert.equal(calls.includes(url), true, '應放行並呼叫 fetch 解析短碼');
-    assert.equal(response.ok, true);
-    assert.equal(response.cleanUrl, CLEAN_POST_URL);
-  });
-}
+// 【精簡】原本每個案例各自成為一條測試(共 16 條)，但兩組案例各自只驗證
+// 「同一個不變量」的多個資料變體，改為兩條多案例測試:案例表原樣保留，
+// 每個 url 的歸類理由仍寫進斷言訊息，失敗時照樣指得出是哪一列。
 
-for (const { url, reason } of SHARE_URL_MUST_NOT_MATCH_CASES) {
-  test(`SHARE_URL_PATTERN 收緊規格(不得匹配):${url} —— ${reason}`, async () => {
+test('SHARE_URL_PATTERN 收緊規格(必須匹配):合法短碼一律放行並送出 fetch', async () => {
+  for (const { url, reason } of SHARE_URL_MUST_MATCH_CASES) {
     const { listener, calls } = loadBackgroundAlwaysSucceed();
     const response = await callListener(listener, { type: 'resolveShare', url });
-    assert.equal(response.ok, false);
-    assert.equal(response.reason, 'invalid-url');
-    assert.equal(calls.includes(url), false, '不應呼叫 fetch，須在比對階段就拒絕');
-  });
-}
+    assert.equal(calls.includes(url), true, `${url} 應放行並呼叫 fetch 解析短碼 —— ${reason}`);
+    assert.equal(response.ok, true, `${url} —— ${reason}`);
+    assert.equal(response.cleanUrl, CLEAN_POST_URL, `${url} —— ${reason}`);
+  }
+});
+
+test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對階段就拒絕，不發 fetch', async () => {
+  for (const { url, reason } of SHARE_URL_MUST_NOT_MATCH_CASES) {
+    const { listener, calls } = loadBackgroundAlwaysSucceed();
+    const response = await callListener(listener, { type: 'resolveShare', url });
+    assert.equal(response.ok, false, `${url} —— ${reason}`);
+    assert.equal(response.reason, 'invalid-url', `${url} —— ${reason}`);
+    assert.equal(calls.includes(url), false, `${url} 不應呼叫 fetch —— ${reason}`);
+  }
+});
 
 // ============================================================
 // v1.1 設定規格 S1、S2:右鍵選單路徑與通知的設定行為。
@@ -276,10 +276,11 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   const executeScriptCalls = [];
   const onClickedListeners = [];
   const state = { clipboardOk: opts.clipboardOk !== false };
+  const onMessageListeners = [];
   const chrome = {
     runtime: {
       onInstalled: { addListener: () => {} },
-      onMessage: { addListener: () => {} },
+      onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
     },
     contextMenus: {
       removeAll: async () => {},
@@ -314,17 +315,18 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     click(info, tab) {
       onClickedListeners[0](info, tab);
     },
+    // 模擬 bridge 經 chrome.runtime.sendMessage 送訊息給 service worker;
+    // 派送給所有已註冊的 onMessage 監聽器，不假設實作註冊了幾支。
+    sendRuntimeMessage(message) {
+      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+    },
   };
 }
 
 // ---- S1:右鍵選單複製功能不受 autoClean 影響 ----
 
 test('S1:autoClean=false 時，右鍵選單仍照常解析短連結並寫入剪貼簿', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: false,
-    resolveShortcode: false,
-    notifySuccess: true,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: false, notifySuccess: true });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -339,11 +341,7 @@ test('S1:autoClean=false 時，右鍵選單仍照常解析短連結並寫入剪�
 // ---- S2:成功類通知受 notifySuccess 控制 ----
 
 test('S2:notifySuccess=false 時，右鍵成功複製不得觸發任何成功通知', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -353,11 +351,7 @@ test('S2:notifySuccess=false 時，右鍵成功複製不得觸發任何成功通
 });
 
 test('S2:notifySuccess=true 時，右鍵成功複製照常觸發成功通知', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: true,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -370,63 +364,35 @@ test('S2:notifySuccess=true 時，右鍵成功複製照常觸發成功通知', a
 
 // ---- S2:失敗／錯誤類通知不受設定影響，永遠觸發 ----
 
-test('S2:notifySuccess=false 時，無效分享短連結的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
+// 【精簡】三種錯誤來源(無效短連結／網路失敗／轉址結果非貼文)驗的是同一個
+// 不變量:錯誤通知不受 notifySuccess 影響，且其後的成功流程仍靜音。三條併為
+// 一條多案例測試，通知 id 逐案例斷言,覆蓋面不減。剪貼簿寫入失敗因為需要
+// 中途翻轉 clipboardOk,harness 形狀不同,仍單獨一條(見下)。
+test('S2:notifySuccess=false 時，各類錯誤通知照常觸發，其後成功流程仍靜音', async () => {
+  const cases = [
+    { linkUrl: 'https://evil.com/whatever', id: 'threads-clean-link-invalid' },
+    { linkUrl: 'https://www.threads.com/share/NETWORKFAIL', id: 'threads-clean-link-network-error' },
+    { linkUrl: 'https://www.threads.com/share/NOTAPOST', id: 'threads-clean-link-format-error' },
+  ];
 
-  bg.click({ linkUrl: 'https://evil.com/whatever' }, { id: 7 });
-  await settle();
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-invalid');
+  for (const { linkUrl, id } of cases) {
+    const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
-  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
-  await settle();
+    bg.click({ linkUrl }, { id: 7 });
+    await settle();
+    assert.equal(bg.notifications.length, 1, `${linkUrl} 的錯誤通知必須照常觸發`);
+    assert.equal(bg.notifications[0].id, id);
 
-  assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
-});
+    bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+    await settle();
 
-test('S2:notifySuccess=false 時，網路解析失敗的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
-
-  bg.click({ linkUrl: 'https://www.threads.com/share/NETWORKFAIL' }, { id: 7 });
-  await settle();
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-network-error');
-
-  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
-  await settle();
-
-  assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
-});
-
-test('S2:notifySuccess=false 時，轉址結果非貼文網址的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
-
-  bg.click({ linkUrl: 'https://www.threads.com/share/NOTAPOST' }, { id: 7 });
-  await settle();
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-format-error');
-
-  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
-  await settle();
-
-  assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+    assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+  }
 });
 
 test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸發，其後成功流程仍靜音', async () => {
   const bg = loadBackgroundWithSettings(
-    { autoClean: true, resolveShortcode: true, notifySuccess: false },
+    { autoClean: true, notifySuccess: false },
     { clipboardOk: false }
   );
 
@@ -440,4 +406,146 @@ test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸
   await settle();
 
   assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+});
+
+// ============================================================
+// R1-2 通知涵蓋自動路徑(service worker 端):notifySuccess=true 時，
+// 右鍵成功「與」自動淨化成功都要通知;notifySuccess=false 時一切成功
+// 通知靜默。自動路徑的成功訊息由 bridge 經 chrome.runtime.sendMessage
+// 送來，形狀為 { type: 'cleanedNotice', cleanUrl }。
+//
+// 【把關位置(規格未明定，本輪測試在此定案)】notifySuccess 的把關由
+// background 負責:它是唯一同時看得到設定與兩條成功路徑的地方，也是
+// 內容腳本訊息的信任邊界。guard 端要不要順手先擋一層由實作自行決定，
+// 本檔只強制「background 收到 cleanedNotice 後必須依 notifySuccess 決定
+// 發不發」。
+// ============================================================
+
+const CLEANED_NOTICE_CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
+
+test('R1-2:notifySuccess=true 時，自動淨化成功的 cleanedNotice 會發出一則成功通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.equal(bg.notifications.length, 1);
+  assert.equal(bg.notifications[0].id, 'threads-clean-link-autoclean-success');
+  assert.ok(bg.storage.calls.get.length >= 1, 'service worker 應讀取 chrome.storage.sync 設定');
+});
+
+test('R1-2:notifySuccess=false 時，自動淨化成功的 cleanedNotice 不得發出任何通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.deepEqual(bg.notifications, []);
+});
+
+test('R1-2:自動路徑的成功通知不影響右鍵路徑;notifySuccess=true 時兩條路徑各自通知一則', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+  assert.equal(bg.notifications.length, 1);
+
+  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle();
+
+  assert.equal(bg.notifications.length, 2);
+  assert.equal(bg.notifications[1].id, SUCCESS_NOTIFICATION_ID);
+});
+
+// R1 審查回饋(阻斷級):cleanedNotice 的 cleanUrl 來自頁面腳本可自由
+// postMessage 的管道，background 是這條路徑上唯一的信任邊界。驗證樣式
+// 若不錨定收尾，「合法貼文網址開頭 + 尾隨任意文字」就會通過驗證，尾隨
+// 內容(含換行、假的系統提示、大量垃圾)原樣進入使用者看到的通知訊息，
+// 等同讓頁面完全操控通知內容。以下三種尾隨形態都必須被擋下。
+
+test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 不得發出通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  const forged = [
+    `${CLEANED_NOTICE_CLEAN_URL}\n【系統】您的帳號異常，請至 evil.example 重新登入`,
+    `${CLEANED_NOTICE_CLEAN_URL}/extra-path-injected`,
+    `${CLEANED_NOTICE_CLEAN_URL}?injected=payload`,
+  ];
+  for (const cleanUrl of forged) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.deepEqual(bg.notifications, [], '尾隨文字必須被錨定驗證擋下，不得發出任何通知');
+
+  // 對照組:整串完全吻合的乾淨網址仍須通知，排除「一律不通知」的假動作。
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.equal(bg.notifications.length, 1);
+});
+
+// R2 審查回饋(阻斷級):只錨定收尾、字元類用排除法(如 [^/?#\s]+)仍有缺口
+// ——尾隨文字只要「不含空白」就整串吻合而過關。中文釣魚句不需要空白，
+// 純英數長串同理;頁面甚至不必偽造 notice，直接 writeText 一個帶中文句的
+// 假貼文網址走完整條自動淨化鏈也會通知。驗證樣式必須收緊到 Threads 實際
+// 使用的 ASCII 字母表並加長度上限。
+
+test('R2:「合法前綴 + 無空白中文文字」的 cleanedNotice 不得發出通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  const forged = [
+    `${CLEANED_NOTICE_CLEAN_URL}帳號異常，請至evil.example重新登入驗證`,
+    `${CLEANED_NOTICE_CLEAN_URL}:您的帳號已被停用。`,
+    `${CLEANED_NOTICE_CLEAN_URL}【系統通知】請立即點擊下方連結`,
+  ];
+  for (const cleanUrl of forged) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.deepEqual(
+    bg.notifications,
+    [],
+    '不含空白的中文尾隨文字必須被擋下，不得發出任何通知'
+  );
+
+  // 對照組:整串完全吻合的乾淨網址仍須通知。
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.equal(bg.notifications.length, 1);
+});
+
+test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  const forged = [
+    `${CLEANED_NOTICE_CLEAN_URL}${'A'.repeat(1000)}`,
+    `${CLEANED_NOTICE_CLEAN_URL}${'0'.repeat(200)}`,
+  ];
+  for (const cleanUrl of forged) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.deepEqual(
+    bg.notifications,
+    [],
+    '純英數長串尾隨必須被長度上限擋下，不得發出任何通知'
+  );
+
+  // 對照組:四種合法寫法(www／無 www、.com／.net)都必須正常通知。
+  const legit = [
+    'https://www.threads.com/@dafucoding/post/DbezfB0gYvP',
+    'https://threads.com/@dafucoding/post/DbezfB0gYvP',
+    'https://www.threads.net/@dafu.coding_1/post/Dbez-fB0_gYvP',
+    'https://threads.net/@dafucoding/post/DbezfB0gYvP',
+  ];
+  for (const cleanUrl of legit) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.equal(bg.notifications.length, legit.length, '合法網址一律照常通知，不得誤殺');
 });

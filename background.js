@@ -6,18 +6,38 @@
 const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s]*)?(#[^\s]*)?$/i;
 
 // 乾淨貼文網址格式，例如：https://www.threads.com/@username/post/AbCd123EfGh
+// 刻意不錨定收尾：extractCleanPostUrl 仰賴它能從帶 query/hash 的轉址結果
+// 「截」出前段乾淨網址，加上 $ 會讓截取失效。
 const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\/post\/[^/?#]+/i;
+
+// cleanedNotice 專用的「錨定」樣式(比照 clipboard-guard.js 的 POST_URL_RE)。
+// 該訊息的 cleanUrl 來自頁面腳本可自由 postMessage 的管道，內容會直接進到
+// 使用者看到的通知訊息，因此必須「整串完全吻合」才採信。
+//
+// 這裡刻意用「白名單字元類 + 長度上限」而非排除法:排除法(如 [^/?#\s]+)
+// 只擋得住帶空白的尾隨文字，中文釣魚句本來就不需要空白，
+// 「合法前綴 + 帳號異常，請至 evil.example 重新登入」照樣整串吻合而過關;
+// 純英數長串同理。Threads 的 handle 與 post id 實際上都只有 ASCII
+// (handle 允許英數、底線、句點;post id 是 base64url 短碼)，收緊到實際
+// 字母表不會誤殺，且誤殺的代價只是少一則通知，屬 fail-safe 方向。
+// 通知路徑的 cleanUrl 一律是已淨化結果，本來就不帶 query 與 hash。
+const NOTICE_CLEAN_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}$/i;
 
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
 
 // v1.1 設定規格 S2:成功類通知由 notifySuccess 把關，失敗／錯誤類通知
-// 永遠觸發、不受設定影響。三鍵的預設值與 popup.js／bridge.js 一致。
+// 永遠觸發、不受設定影響。R1-1 併開關後只剩兩鍵，預設值與
+// popup.js／bridge.js 一致。
 const DEFAULT_SETTINGS = {
   autoClean: true,
-  resolveShortcode: true,
   notifySuccess: false,
 };
+
+// R1-2:自動路徑(clipboard-guard.js 經 bridge.js)成功淨化後的通知，用
+// 獨立的通知 id，避免跟右鍵路徑的 threads-clean-link-success 撞 id 被
+// Chrome 同 id 互相取代(PM 裁決)。
+const AUTOCLEAN_SUCCESS_NOTIFICATION_ID = 'threads-clean-link-autoclean-success';
 
 // 事件監聽器一律註冊在檔案最外層：service worker 閒置會被終止，
 // 監聽器需在每次喚醒時同步掛回去，不能包在非同步流程裡面。
@@ -73,6 +93,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
 
   return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
+});
+
+// R1-2 通知涵蓋自動路徑:clipboard-guard.js 實際把淨化後內容寫入剪貼簿後，
+// 經 bridge.js 送來這則通知。background 是唯一同時看得到設定與「右鍵」
+// 「自動」兩條成功路徑的地方，notifySuccess 的把關統一放在這裡；guard／
+// bridge 端不重複判斷 notifySuccess，只單純轉發「已淨化成功」這件事。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'cleanedNotice') {
+    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+  }
+
+  handleCleanedNotice(message).catch((err) => {
+    console.error('[threads-clean-link] cleanedNotice 處理失敗', err);
+  });
+
+  return false; // 不需要回應，同步處理完就結束，不佔用非同步通道。
 });
 
 // 核心流程
@@ -145,6 +181,22 @@ async function getSettings() {
   } catch (err) {
     console.error('[threads-clean-link] 讀取設定失敗，改用預設值', err);
     return Object.assign({}, DEFAULT_SETTINGS);
+  }
+}
+
+// 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
+// NOTICE_CLEAN_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不發任何
+// 通知;通知訊息只用驗證通過的字串，不夾帶原文的任何其餘部分。
+// notifySuccess 為 false 時整個函式什麼都不做。
+async function handleCleanedNotice(message) {
+  const cleanUrl = message && message.cleanUrl;
+  if (typeof cleanUrl !== 'string' || !NOTICE_CLEAN_URL_PATTERN.test(cleanUrl)) {
+    return;
+  }
+
+  const settings = await getSettings();
+  if (settings.notifySuccess) {
+    safeNotify(AUTOCLEAN_SUCCESS_NOTIFICATION_ID, `已自動淨化並複製乾淨網址:${cleanUrl}`);
   }
 }
 

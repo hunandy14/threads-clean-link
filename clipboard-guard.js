@@ -21,13 +21,27 @@
   var REQ_TYPE = 'TCL_RESOLVE_REQ';
   var RES_TYPE = 'TCL_RESOLVE_RES';
 
+  // R1-2 通知涵蓋自動路徑：實際把淨化後內容寫入剪貼簿成功後，往 bridge.js
+  // 送一則通知，由它轉發給 background 決定要不要顯示（notifySuccess 的
+  // 把關位置在 background，見 background.js）。
+  var CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
+
+  function notifyCleaned(cleanUrl) {
+    try {
+      window.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: cleanUrl }, window.location.origin);
+    } catch (e) {
+      // 通知失敗不影響已經完成的寫入流程。
+    }
+  }
+
   // v1.1 設定規格 S6/S8：常駐監聽 bridge.js 推播的 TCL_SETTINGS_PUSH。
-  // 在收到第一次推播之前一律用預設值（兩者皆開）運作，與現行(v1.0)行為
+  // 在收到第一次推播之前一律用預設值（autoClean 開啟）運作，與現行行為
   // 完全一致，維持向下相容。
+  // R1-1 併開關：resolveShortcode 徹底移除，短碼解析與 ?xmt 剪參都收在
+  // autoClean 這一顆之下。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
   var currentSettings = {
     autoClean: true,
-    resolveShortcode: true,
     notifySuccess: false,
   };
 
@@ -36,7 +50,6 @@
       settings &&
       typeof settings === 'object' &&
       typeof settings.autoClean === 'boolean' &&
-      typeof settings.resolveShortcode === 'boolean' &&
       typeof settings.notifySuccess === 'boolean'
     );
   }
@@ -53,7 +66,6 @@
 
     currentSettings = {
       autoClean: data.settings.autoClean,
-      resolveShortcode: data.settings.resolveShortcode,
       notifySuccess: data.settings.notifySuccess,
     };
   });
@@ -151,25 +163,30 @@
           }
 
           if (isShareUrl(data)) {
-            // S4：resolveShortcode 關閉時，短碼分支不發任何解析請求，
-            // 原樣放行原文；?xmt 剪除分支（下方）不受此設定影響。
-            if (!currentSettings.resolveShortcode) {
-              return nativeWriteText(data);
-            }
             // 雙參數 .then(onOk, onErr):onErr 只綁定 requestResolveShareUrl
             // 的 rejection，不會連 nativeWriteText 的 rejection 也接住，確保
             // 原生呼叫只被呼叫一次，其 rejection 原樣傳回呼叫端。
             return requestResolveShareUrl(data.trim()).then(
               function (cleanUrl) {
                 // cleanUrl 需通過貼文網址格式驗證才信任，否則視同解析失敗。
-                var toWrite =
-                  typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)
-                    ? cleanUrl
-                    : data;
-                return nativeWriteText(toWrite);
+                var resolved = typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl);
+                if (resolved) {
+                  // R1-2：只有「實際把淨化後內容寫入剪貼簿」才發通知——原生
+                  // 寫入先跑，成功之後(.then 的 onFulfilled)才 notifyCleaned，
+                  // 若原生寫入被拒(rejection)則不會進到這裡，也就不會誤發通知。
+                  // Promise.resolve 包一層:原生若回傳非 Promise，直接 .then
+                  // 會丟 TypeError 落到外層 catch，導致原生被「以未淨化的原文」
+                  // 再呼叫一次。包裝後 rejection 語意不變，仍原樣往外傳。
+                  return Promise.resolve(nativeWriteText(cleanUrl)).then(function (result) {
+                    notifyCleaned(cleanUrl);
+                    return result;
+                  });
+                }
+                // fail-open:cleanUrl 缺失或格式不符，一律用原始參數放行，不發通知。
+                return nativeWriteText(data);
               },
               function () {
-                // fail-open:橋接／解析任何失敗，一律用原始參數放行。
+                // fail-open:橋接／解析任何失敗，一律用原始參數放行，不發通知。
                 return nativeWriteText(data);
               }
             );
@@ -179,6 +196,12 @@
           var cleaned = sanitizeIfTrackedPostUrl(data);
           if (cleaned !== null) {
             toWrite = cleaned;
+            // R1-2：?xmt 剪參分支同樣只在原生寫入成功後才發通知。
+            // Promise.resolve 包一層的理由同上(防非 Promise 回傳時重複呼叫原生)。
+            return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
+              notifyCleaned(toWrite);
+              return result;
+            });
           }
           return nativeWriteText(toWrite);
         }
@@ -216,6 +239,11 @@
 
           var item = items[0];
 
+          // R1-2：只有實際重建出新 ClipboardItem(代表真的做了淨化替換)
+          // 才需要在原生寫入成功後發通知；記錄「這次若成功要通知的
+          // cleanUrl」，fail-open／未改寫的路徑保持 null，不發通知。
+          var cleanedUrlForNotice = null;
+
           // decideWhatToWrite 只決定要寫入的內容(讀取 blob、判斷短碼／?xmt、
           // 橋接解析、重建 ClipboardItem)，任何步驟失敗都 fallback 回傳原始
           // items，但絕不呼叫 nativeWrite，確保原生呼叫只發生一次。
@@ -226,15 +254,11 @@
             })
             .then(function (text) {
               if (isShareUrl(text)) {
-                // S4：resolveShortcode 關閉時，短碼分支不發任何解析請求，
-                // 以原始 items 參照原樣放行；?xmt 剪除分支不受此設定影響。
-                if (!currentSettings.resolveShortcode) {
-                  return items;
-                }
                 return requestResolveShareUrl(text.trim()).then(
                   function (cleanUrl) {
                     // cleanUrl 需通過貼文網址格式驗證才信任。
                     if (typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)) {
+                      cleanedUrlForNotice = cleanUrl;
                       return [
                         new window.ClipboardItem({
                           'text/plain': new Blob([cleanUrl], { type: 'text/plain' }),
@@ -255,6 +279,7 @@
               if (cleaned === null) {
                 return items;
               }
+              cleanedUrlForNotice = cleaned;
               return [
                 new window.ClipboardItem({
                   'text/plain': new Blob([cleaned], { type: 'text/plain' }),
@@ -262,14 +287,24 @@
               ];
             })
             .catch(function () {
-              // 讀取／判斷／重建過程任何例外：原封不動用原始 items。
+              // 讀取／判斷／重建過程任何例外：原封不動用原始 items，且視同
+              // 沒有發生任何淨化替換，不得發通知。
+              cleanedUrlForNotice = null;
               return items;
             });
 
           // 真正呼叫原生 write 的地方，刻意不包 catch：原生呼叫的 rejection
           // 要原樣傳回頁面，我們永不重試原生寫入，且只在這唯一一處呼叫。
+          // R1-2：notifyCleaned 只在 nativeWrite 的 Promise 成功(onFulfilled)
+          // 且確實做了替換時才呼叫；原生寫入被拒(rejection)會跳過 onFulfilled，
+          // 自然不會誤發通知，rejection 也原樣往外傳。
           return decideWhatToWrite.then(function (toWrite) {
-            return nativeWrite(toWrite);
+            return nativeWrite(toWrite).then(function (result) {
+              if (cleanedUrlForNotice !== null) {
+                notifyCleaned(cleanedUrlForNotice);
+              }
+              return result;
+            });
           });
         }
 
