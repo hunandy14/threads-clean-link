@@ -5,7 +5,14 @@ name: 自動發版
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      upload_only:
+        description: >-
+          僅重新打包並上傳 Chrome Web Store 草稿，略過建立 GitHub
+          Release(用於審核通過後、tag 已存在時補上傳新草稿)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -24,7 +31,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: 簽出原始碼(含完整歷史與 tags)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -55,10 +62,37 @@ jobs:
         if: steps.tagcheck.outputs.exists == 'false'
         run: node --test test/*.test.js
 
+      # 下面兩個條件式都多 or 了 upload_only 分支:讓「tag 已存在、只想
+      # 補傳 CWS 草稿」的手動情境(過審後重跑)也能執行打包與上傳，同時不
+      # 建立 Release。github.event_name 判斷是安全網:upload_only 這個
+      # input 只有 workflow_dispatch 事件才有值，push 事件時 inputs context
+      # 為空，先擋 event_name 就不會去讀一個不存在的 input。
       - name: 打包 Chrome Web Store 上架 zip
-        if: steps.tagcheck.outputs.exists == 'false'
+        if: steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)
         shell: pwsh
         run: tools/build-release.ps1
+
+      - name: 產生乾淨格式的 release notes
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          # 用 GitHub 原生的 generate-notes API 取得「## What's Changed」清單
+          # (與 gh release create --generate-notes 底層同一支 API，會自動抓
+          # 上一個 release 到現在合併的 PR)，但只留標題與 PR 編號、去掉
+          # 「by @帳號 in 連結」與「## New Contributors」區塊，格式對齊 (A)
+          # 手動整理過的 v0.2.0 release notes。
+          RAW=$(gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="v${{ steps.version.outputs.version }}" --jq '.body')
+
+          {
+            echo "## 更新內容"
+            echo "$RAW" | awk '/^## What.s Changed/{flag=1; next} /^## /{flag=0} flag && /^\* /' \
+              | sed -E 's|^\* (.*) by @[^ ]+ in https://github\.com/[^/]+/[^/]+/pull/([0-9]+)$|- \1（#\2）|'
+            echo ""
+            echo "$RAW" | grep '^\*\*Full Changelog\*\*'
+          } > release-notes.md
+
+          echo "已產生 release notes:"
+          cat release-notes.md
 
       - name: 建立 GitHub Release
         if: steps.tagcheck.outputs.exists == 'false'
@@ -66,10 +100,10 @@ jobs:
           gh release create "v${{ steps.version.outputs.version }}" \
             "dist/threads-clean-link-v${{ steps.version.outputs.version }}.zip" \
             --title "v${{ steps.version.outputs.version }}" \
-            --generate-notes
+            --notes-file release-notes.md
 
       - name: 上傳新版草稿至 Chrome Web Store
-        if: steps.tagcheck.outputs.exists == 'false'
+        if: steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)
         env:
           CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
           CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
