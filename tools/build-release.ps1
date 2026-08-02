@@ -4,7 +4,9 @@
 
 .DESCRIPTION
     只封裝上架必要的檔案:manifest.json、background.js、clipboard-guard.js、
-    bridge.js，以及 icons/ 資料夾底下的圖示檔(*.png / *.svg / *.ico)。
+    bridge.js、popup.html、popup.js、popup-init.js，以及 icons/ 資料夾底下的
+    圖示檔(*.png / *.svg / *.ico)，還有 _locales/ 資料夾底下每個語系的
+    messages.json(雙語門面:en 為 fallback、zh_TW 為繁中)。
     README.md、LICENSE、tools/、tmp/、icons/gen-icons.ps1 等開發用檔案一律
     不打包，避免非必要內容混進上架用的壓縮檔。
 
@@ -41,7 +43,10 @@ $includeFiles = @(
     'manifest.json',
     'background.js',
     'clipboard-guard.js',
-    'bridge.js'
+    'bridge.js',
+    'popup.html',
+    'popup.js',
+    'popup-init.js'
 )
 
 foreach ($file in $includeFiles) {
@@ -62,6 +67,18 @@ $iconFiles = Get-ChildItem -Path $iconsDir -File | Where-Object {
 }
 if (-not $iconFiles -or $iconFiles.Count -eq 0) {
     throw 'icons/ 底下找不到任何圖示檔(*.png / *.svg / *.ico)'
+}
+
+$localesDir = Join-Path $repoRoot '_locales'
+if (-not (Test-Path $localesDir -PathType Container)) {
+    throw "缺少必要資料夾，無法打包:_locales/"
+}
+
+# _locales/ 底下每個語系資料夾各自的 messages.json 都要整包收進去，manifest.json
+# 的 name/description 才能靠 __MSG_xxx__ 依瀏覽器語言顯示對應文案(雙語門面)。
+$localeMessageFiles = Get-ChildItem -Path $localesDir -Recurse -File -Filter 'messages.json'
+if (-not $localeMessageFiles -or $localeMessageFiles.Count -eq 0) {
+    throw '_locales/ 底下找不到任何 messages.json'
 }
 
 $distDir = Join-Path $repoRoot 'dist'
@@ -90,6 +107,14 @@ try {
     New-Item -ItemType Directory -Path $stagingIconsDir | Out-Null
     foreach ($iconFile in $iconFiles) {
         Copy-Item -Path $iconFile.FullName -Destination (Join-Path $stagingIconsDir $iconFile.Name)
+    }
+
+    $stagingLocalesDir = Join-Path $stagingDir '_locales'
+    foreach ($localeFile in $localeMessageFiles) {
+        $localeName = Split-Path -Path (Split-Path -Path $localeFile.FullName -Parent) -Leaf
+        $localeDestDir = Join-Path $stagingLocalesDir $localeName
+        New-Item -ItemType Directory -Path $localeDestDir -Force | Out-Null
+        Copy-Item -Path $localeFile.FullName -Destination (Join-Path $localeDestDir $localeFile.Name)
     }
 
     Compress-Archive -Path (Join-Path $stagingDir '*') -DestinationPath $zipPath -Force

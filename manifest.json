@@ -1,16 +1,25 @@
 {
   "manifest_version": 3,
-  "name": "Threads Clean Link",
-  "version": "0.1.0",
-  "description": "右鍵還原 Threads 分享短連結為乾淨貼文網址;網頁版「複製連結」時自動解析短碼並去除追蹤參數。",
+  "name": "__MSG_extName__",
+  "version": "0.2.0",
+  "description": "__MSG_extDesc__",
+  "default_locale": "en",
   "homepage_url": "https://github.com/hunandy14/threads-clean-link",
-  "permissions": ["contextMenus", "scripting", "notifications", "activeTab"],
+  "permissions": ["contextMenus", "scripting", "notifications", "activeTab", "storage"],
   "host_permissions": [
     "https://*.threads.com/*",
     "https://*.threads.net/*"
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
