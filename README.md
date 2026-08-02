@@ -1,6 +1,8 @@
-# Threads Clean Link
+# Threads Clean Link(脆連結清潔工)
 
-Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。
+[![Chrome Web Store](https://img.shields.io/chrome-web-store-version/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
+
+Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。雙語名稱:英文「Threads Clean Link」、中文「脆連結清潔工」，依瀏覽器語言自動顯示。
 
 ## 功能
 
@@ -14,9 +16,20 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 **自動淨化官方「複製連結」**:Threads 網頁版「複製連結」目前會寫入 `/share/XXXX` 短碼，或帶 `?xmt=` 追蹤參數的完整網址。本功能攔截該寫入動作，短碼自動解析、參數直接剪除，結果均為乾淨網址。解析逾時(2.5 秒)或失敗時，原內容原樣放行，不影響複製功能本身。
 
+**Popup 控制頁**:點擊工具列圖示開啟設定面板，提供兩顆滑動 switch，設定即時生效(寫入 `chrome.storage.sync`，跨裝置同步):
+
+| 設定項 | 預設值 | 說明 |
+|---|---|---|
+| 自動淨化分享按鈕 | 開啟 | 關閉後停用「自動淨化官方複製連結」，右鍵還原功能不受影響 |
+| 成功時顯示通知 | 關閉 | 開啟後右鍵還原成功也會跳通知;失敗通知不受此設定影響，一律顯示 |
+
 ## 安裝
 
-Chrome Web Store 上架審查中。目前提供兩種安裝方式:
+已上架 Chrome Web Store，建議直接安裝:
+
+[Threads Clean Link — Chrome Web Store](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
+
+開發者選項(手動載入未封裝版本):
 
 1. 取得原始碼:`git clone https://github.com/hunandy14/threads-clean-link.git`，或於 [Releases](https://github.com/hunandy14/threads-clean-link/releases) 下載 CI 自動打包的 zip 並解壓縮。
 2. Chrome 網址列輸入 `chrome://extensions`，開啟「開發人員模式」，選擇「載入未封裝項目」並指向上述資料夾。
@@ -43,6 +56,7 @@ Chrome Web Store 上架審查中。目前提供兩種安裝方式:
 | `contextMenus` | 於 `/share/` 連結加入右鍵選單項目 |
 | `scripting` + `activeTab` | 於使用者點選右鍵選單的手勢下，臨時注入當前分頁執行 `navigator.clipboard.writeText` |
 | `notifications` | 顯示還原結果通知 |
+| `storage` | 僅儲存 popup 兩項開關設定(自動淨化分享按鈕、成功時顯示通知)於瀏覽器同步空間(`chrome.storage.sync`)，不蒐集、不外傳任何使用者資料 |
 | `host_permissions`(`*.threads.com`、`*.threads.net`) | 發出短碼解析請求;於 Threads 頁面注入淨化邏輯 |
 
 未宣告 `<all_urls>` 與 `clipboardRead`。
