@@ -157,14 +157,16 @@ test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.
 // chrome.storage.onChanged 觸發時再次推播。
 //
 // 【協定約定】推播訊息形狀:
-//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, resolveShortcode, notifySuccess } }
+//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, notifySuccess } }
+//
+// 【R1-1 開關合併】設定鍵砍為兩顆，resolveShortcode 徹底移除。
 //
 // 【時序紀律】storage mock 的 get 與 onChanged 一律延遲一個 tick 才結算
 // (見 support/helpers.js)，postMessage 亦為 setTimeout(0) 排程，不允許同 tick
 // 直接結算的假綠燈。
 // ============================================================
 
-const DEFAULT_SETTINGS = { autoClean: true, resolveShortcode: true, notifySuccess: false };
+const DEFAULT_SETTINGS = { autoClean: true, notifySuccess: false };
 
 function settle(ms = 30) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -199,24 +201,16 @@ function loadBridgeWithStorage(initialSettings = {}) {
 }
 
 test('S6:bridge 載入後讀取 chrome.storage.sync，並以 TCL_SETTINGS_PUSH 把設定下放至 MAIN world', async () => {
-  const bridge = loadBridgeWithStorage({
-    autoClean: false,
-    resolveShortcode: false,
-    notifySuccess: true,
-  });
+  const bridge = loadBridgeWithStorage({ autoClean: false, notifySuccess: true });
 
   await settle();
 
   assert.equal(bridge.pushes.length, 1);
-  assert.deepEqual(bridge.pushes[0].settings, {
-    autoClean: false,
-    resolveShortcode: false,
-    notifySuccess: true,
-  });
+  assert.deepEqual(bridge.pushes[0].settings, { autoClean: false, notifySuccess: true });
   assert.ok(bridge.storage.calls.get.length >= 1, 'bridge 應向 chrome.storage.sync 讀取設定');
 });
 
-test('S6:chrome.storage.sync 為空時，bridge 推播三個預設值', async () => {
+test('S6:chrome.storage.sync 為空時，bridge 推播兩個預設值', async () => {
   const bridge = loadBridgeWithStorage({});
 
   await settle();
@@ -226,11 +220,7 @@ test('S6:chrome.storage.sync 為空時，bridge 推播三個預設值', async ()
 });
 
 test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變更後的新值', async () => {
-  const bridge = loadBridgeWithStorage({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
+  const bridge = loadBridgeWithStorage({ autoClean: true, notifySuccess: false });
   await settle();
   const pushCountBeforeChange = bridge.pushes.length;
   assert.ok(
@@ -244,6 +234,5 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
   assert.equal(bridge.pushes.length, pushCountBeforeChange + 1);
   const latest = bridge.pushes[bridge.pushes.length - 1];
   assert.equal(latest.settings.autoClean, false);
-  assert.equal(latest.settings.resolveShortcode, true);
   assert.equal(latest.settings.notifySuccess, false);
 });

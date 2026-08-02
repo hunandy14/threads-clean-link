@@ -512,18 +512,23 @@ test('write():單一 image/png ClipboardItem 以參照相等原樣放行', async
 });
 
 // ============================================================
-// v1.1 設定規格:S3(autoClean 關閉)、S4(resolveShortcode 關閉)、
-// S5(兩者皆開時行為不變)、S6(設定經 TCL_SETTINGS_PUSH 下放與即時生效)
+// v1.1 設定規格:S3(autoClean 關閉)、S5(autoClean 開啟時行為不變)、
+// S6(設定經 TCL_SETTINGS_PUSH 下放與即時生效)
+//
+// 【R1-1 開關合併】設定鍵砍為兩顆:autoClean、notifySuccess。resolveShortcode
+// 徹底移除——Threads 的複製連結只會吐 share 短連結，「攔截但不解析」是幾乎
+// 無作用的組合。原 S4(resolveShortcode 關閉)整段隨之刪除;短碼解析與 ?xmt
+// 剪參一律收在 autoClean 這一顆之下。
 //
 // 【協定約定】bridge(ISOLATED world)以 postMessage 下放設定，訊息形狀為
-//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, resolveShortcode, notifySuccess } }
+//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, notifySuccess } }
 //
 // 【時序紀律】設定推播與橋接回應一律經 setTimeout 延遲送達(createWindow 的
 // postMessage 本身即為 setTimeout(0) 排程)，不在同一個 tick 直接結算。
 //
-// 【防假綠燈】凡「行為不得改變」類的條目(S4 的 ?xmt 分支、S5、S6 的預設值)，
-// 測試都先以「設定關閉」的可鑑別情境確認設定確實生效，再驗證開啟時的行為，
-// 避免實作根本沒接上設定卻碰巧通過。
+// 【防假綠燈】凡「行為不得改變」類的條目(S5、S6 的預設值)，測試都先以
+// 「設定關閉」的可鑑別情境確認設定確實生效，再驗證開啟時的行為，避免實作
+// 根本沒接上設定卻碰巧通過。
 // ============================================================
 
 const SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
@@ -563,11 +568,9 @@ async function pushSettings(win, settings) {
   await settle();
 }
 
+// R1-1:settings 只剩兩顆鍵。
 function settings(overrides) {
-  return Object.assign(
-    { autoClean: true, resolveShortcode: true, notifySuccess: false },
-    overrides
-  );
+  return Object.assign({ autoClean: true, notifySuccess: false }, overrides);
 }
 
 // ---- S3:autoClean=false 一律直接放行原始內容 ----
@@ -630,83 +633,28 @@ test('S3:autoClean=false 時，write() 對 /share/ 短碼以參照相等原樣�
   assert.equal(requests.length, 0);
 });
 
-// ---- S4:autoClean=true 且 resolveShortcode=false ----
+// ---- S5:autoClean=true 時，現行淨化行為(短碼解析與 ?xmt 剪參)完全不變 ----
 
-test('S4:resolveShortcode=false 時，writeText 對 /share/ 短碼放行原文且零網路請求', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: false }));
-
-  await sandbox.navigator.clipboard.writeText(SHARE_URL);
-
-  assert.equal(recorder[0], SHARE_URL);
-  assert.equal(requests.length, 0);
-});
-
-test('S4:resolveShortcode=false 時，?xmt 參數剪除分支照常運作(全程零請求)', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: false }));
-
-  // 先以短碼確認 resolveShortcode=false 確實生效(防假綠燈)，再驗證 ?xmt 分支不受影響。
-  await sandbox.navigator.clipboard.writeText(SHARE_URL);
-  assert.equal(recorder[0], SHARE_URL);
-  assert.equal(requests.length, 0);
-
-  await sandbox.navigator.clipboard.writeText(XMT_URL);
-
-  assert.equal(recorder[1], XMT_URL_CLEANED);
-  assert.equal(requests.length, 0);
-});
-
-test('S4:resolveShortcode=false 時，write() 短碼以參照相等放行且零請求；?xmt 分支照常剪除', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWrite(recorder), win);
-  const shareItems = [
-    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
-  ];
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: false }));
-
-  await sandbox.navigator.clipboard.write(shareItems);
-  assert.equal(recorder[0][0].text, SHARE_URL);
-  assert.equal(requests.length, 0);
-
-  await sandbox.navigator.clipboard.write([
-    new FakeClipboardItem({ 'text/plain': new Blob([XMT_URL], { type: 'text/plain' }) }),
-  ]);
-
-  assert.equal(recorder[1][0].text, XMT_URL_CLEANED);
-  assert.equal(requests.length, 0);
-});
-
-// ---- S5:autoClean=true 且 resolveShortcode=true 時，現行淨化行為完全不變 ----
-
-test('S5:兩者皆開時，writeText 短碼解析行為與現行完全一致', async () => {
+test('S5:autoClean=true 時，writeText 短碼解析行為與現行完全一致', async () => {
   const recorder = [];
   const win = createWindow();
   const requests = trackResolveRequests(win, { respond: true });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  // 前置:先推播全關並確認放行，證明設定確實生效(否則下面的「行為不變」是假綠燈)。
-  await pushSettings(win, settings({ autoClean: false, resolveShortcode: false }));
+  // 前置:先推播關閉並確認放行，證明設定確實生效(否則下面的「行為不變」是假綠燈)。
+  await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], SHARE_URL);
   assert.equal(requests.length, 0);
 
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
 
   assert.equal(recorder[1], CLEAN_POST_URL);
   assert.equal(requests.length, 1);
 });
 
-test('S5:兩者皆開時，?xmt 剪除與非網址放行行為與現行完全一致', async () => {
+test('S5:autoClean=true 時，?xmt 剪除與非網址放行行為與現行完全一致', async () => {
   const recorder = [];
   const win = createWindow();
   const sandbox = loadGuard(recordingWriteText(recorder), win);
@@ -715,7 +663,7 @@ test('S5:兩者皆開時，?xmt 剪除與非網址放行行為與現行完全一
   await sandbox.navigator.clipboard.writeText(XMT_URL);
   assert.equal(recorder[0], XMT_URL);
 
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(XMT_URL);
   await sandbox.navigator.clipboard.writeText('hello world, not a url');
 
@@ -723,7 +671,7 @@ test('S5:兩者皆開時，?xmt 剪除與非網址放行行為與現行完全一
   assert.equal(recorder[2], 'hello world, not a url');
 });
 
-test('S5:兩者皆開時，write() 短碼解析行為與現行完全一致', async () => {
+test('S5:autoClean=true 時，write() 短碼解析行為與現行完全一致', async () => {
   const recorder = [];
   const win = createWindow();
   const requests = trackResolveRequests(win, { respond: true });
@@ -737,7 +685,7 @@ test('S5:兩者皆開時，write() 短碼解析行為與現行完全一致', asy
   assert.equal(recorder[0][0].text, SHARE_URL);
   assert.equal(requests.length, 0);
 
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.write(makeItems());
 
   assert.equal(recorder[1][0].text, CLEAN_POST_URL);
@@ -746,13 +694,13 @@ test('S5:兩者皆開時，write() 短碼解析行為與現行完全一致', asy
 
 // ---- S6(MAIN world 端):首次推播前用預設值，收到推播後即時採用新值 ----
 
-test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(兩者皆開)運作', async () => {
+test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(autoClean=true)運作', async () => {
   const recorder = [];
   const win = createWindow();
   const requests = trackResolveRequests(win, { respond: true });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  // 尚未推播任何設定:預設 autoClean=true、resolveShortcode=true。
+  // 尚未推播任何設定:預設 autoClean=true。
   await sandbox.navigator.clipboard.writeText(XMT_URL);
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], XMT_URL_CLEANED);
@@ -773,7 +721,7 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
   const requests = trackResolveRequests(win, { respond: true });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], CLEAN_POST_URL);
   assert.equal(requests.length, 1);
@@ -783,7 +731,7 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
   assert.equal(recorder[1], SHARE_URL);
   assert.equal(requests.length, 1);
 
-  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[2], CLEAN_POST_URL);
   assert.equal(requests.length, 2);
@@ -804,7 +752,7 @@ test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   const fakeOtherWindow = {};
 
-  // 偽造來源、想關掉 autoClean 的推播:必須被忽略，guard 仍以預設值(全開)淨化。
+  // 偽造來源、想關掉 autoClean 的推播:必須被忽略，guard 仍以預設值(autoClean=true)淨化。
   win.dispatchRawMessageEvent({
     source: fakeOtherWindow,
     origin: win.location.origin,

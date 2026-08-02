@@ -320,11 +320,7 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
 // ---- S1:右鍵選單複製功能不受 autoClean 影響 ----
 
 test('S1:autoClean=false 時，右鍵選單仍照常解析短連結並寫入剪貼簿', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: false,
-    resolveShortcode: false,
-    notifySuccess: true,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: false, notifySuccess: true });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -339,11 +335,7 @@ test('S1:autoClean=false 時，右鍵選單仍照常解析短連結並寫入剪�
 // ---- S2:成功類通知受 notifySuccess 控制 ----
 
 test('S2:notifySuccess=false 時，右鍵成功複製不得觸發任何成功通知', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -353,11 +345,7 @@ test('S2:notifySuccess=false 時，右鍵成功複製不得觸發任何成功通
 });
 
 test('S2:notifySuccess=true 時，右鍵成功複製照常觸發成功通知', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: true,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -371,11 +359,7 @@ test('S2:notifySuccess=true 時，右鍵成功複製照常觸發成功通知', a
 // ---- S2:失敗／錯誤類通知不受設定影響，永遠觸發 ----
 
 test('S2:notifySuccess=false 時，無效分享短連結的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
   bg.click({ linkUrl: 'https://evil.com/whatever' }, { id: 7 });
   await settle();
@@ -389,11 +373,7 @@ test('S2:notifySuccess=false 時，無效分享短連結的錯誤通知照常觸
 });
 
 test('S2:notifySuccess=false 時，網路解析失敗的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
   bg.click({ linkUrl: 'https://www.threads.com/share/NETWORKFAIL' }, { id: 7 });
   await settle();
@@ -407,11 +387,7 @@ test('S2:notifySuccess=false 時，網路解析失敗的錯誤通知照常觸發
 });
 
 test('S2:notifySuccess=false 時，轉址結果非貼文網址的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({
-    autoClean: true,
-    resolveShortcode: true,
-    notifySuccess: false,
-  });
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
   bg.click({ linkUrl: 'https://www.threads.com/share/NOTAPOST' }, { id: 7 });
   await settle();
@@ -426,7 +402,7 @@ test('S2:notifySuccess=false 時，轉址結果非貼文網址的錯誤通知照
 
 test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸發，其後成功流程仍靜音', async () => {
   const bg = loadBackgroundWithSettings(
-    { autoClean: true, resolveShortcode: true, notifySuccess: false },
+    { autoClean: true, notifySuccess: false },
     { clipboardOk: false }
   );
 
