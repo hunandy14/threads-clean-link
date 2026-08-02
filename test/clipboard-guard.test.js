@@ -453,18 +453,31 @@ test('guard 端:event.source 非本視窗的回應不被採信，落入逾時 fa
   assert.ok(elapsed >= 2500, `非本視窗來源應被忽略、落入逾時路徑，實際 ${elapsed}ms`);
 });
 
-// ---- 解析流程結束後，message 監聽器須正確移除，不累積洩漏 ----
+// ---- 解析流程結束後，每次請求的 message 監聽器須正確移除，不累積洩漏 ----
+//
+// 【PM 裁決:S6 期望值調整】原斷言為「解析後回到基準」。v1.1 規格 S6 要求 guard
+// 常駐一支 message 監聽器接收 TCL_SETTINGS_PUSH，因此基準值改為「基準 +1」:
+// 常駐的設定監聽器是 S6 的設計，每次解析請求自己那支則仍須用完即移除。
+// 防洩漏的原始意圖以「多輪解析後數量不再增長」保留。
 
-test('guard 端:短碼解析成功後，已移除自己的 message 監聽器，不累積洩漏', async () => {
+test('guard 端:短碼解析成功後，只剩常駐的設定監聽器(基準+1)，多輪解析不再增長', async () => {
   const recorder = [];
   const win = createWindow();
   installBridgeSim(win, 'success');
   const baselineListenerCount = win.getMessageListenerCount(); // bridge 模擬器自身的監聽器
   const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK1');
+  // 載入即常駐一支設定監聽器(S6)。
+  assert.equal(win.getMessageListenerCount(), baselineListenerCount + 1);
 
-  assert.equal(win.getMessageListenerCount(), baselineListenerCount);
+  await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK1');
+  assert.equal(win.getMessageListenerCount(), baselineListenerCount + 1);
+
+  // 多輪解析後仍是同一支常駐監聽器，不累積洩漏。
+  await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK2');
+  await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK3');
+
+  assert.equal(win.getMessageListenerCount(), baselineListenerCount + 1);
 });
 
 // ---- write():不符合單一 text/plain 條件的 items，以參照相等原樣放行 ----
