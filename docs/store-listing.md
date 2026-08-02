@@ -12,7 +12,7 @@
 Threads Clean Link
 ```
 
-備註:中文顯示名「脆連結清潔工」為候選暱稱，尚未定案，**v1 上架先用英文名稱**;v1.1 若要雙語顯示，改用 `_locales/zh_TW/messages.json` + `_locales/en/messages.json` 搭配 `manifest.json` 的 `"name": "__MSG_extName__"` 做 i18n，現有 manifest 尚未這樣設定，屬於後續工作。
+備註:v1.1(0.2.0)起已改用 `_locales/zh_TW/messages.json` + `_locales/en/messages.json`，搭配 `manifest.json` 的 `"name": "__MSG_extName__"` 做 i18n(`default_locale` 為 `en`)，依瀏覽器語言自動顯示雙語名稱:中文「脆連結清潔工」、英文「Threads Clean Link」。
 
 ---
 
@@ -48,6 +48,8 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 • 自動淨化網頁版「複製連結」:Threads 網頁版官方「複製連結」按鈕寫入剪貼簿的內容，不管是 /share/ 短碼還是帶 ?xmt= 追蹤參數的完整網址，都會被自動處理成乾淨貼文網址，無感完成，不需要額外操作。
 
+【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。介面提供繁體中文與英文雙語顯示名稱，依瀏覽器語言自動切換。
+
 【誠實隱私聲明(節錄，完整版請見下方 GitHub README)】
 兩個功能只要攔到的是 /share/ 短碼，都會向 threads.com / threads.net 發出一次不帶 cookie 的匿名 GET 請求，藉此把短碼換成乾淨網址——這是短碼問題「必須向伺服器問一次」的技術本質決定的，沒有繞過的辦法。這次請求不帶登入憑證，但仍會讓 Threads 看到你的來源 IP 與瀏覽器特徵，在意這點的話，請優先使用右鍵方式手動處理，或搭配 VPN。若攔到的內容已經是完整貼文網址、只帶追蹤參數，則是純文字處理，零網路請求。
 
@@ -65,6 +67,9 @@ Threads Clean Link turns Threads share links and "Copy Link" results into clean,
 TWO FEATURES
 • Right-click resolve: Right-click a Threads share link (/share/XXXX) and choose "Copy clean Threads post link" to resolve it and copy the clean post URL — works on any site's tab, not just threads.com.
 • Auto-clean "Copy Link": Threads' official web "Copy Link" button now writes either a /share/ short code or a full URL with tracking parameters. This extension handles both automatically, so what you paste is always clean.
+
+POPUP SETTINGS
+Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting). The interface displays in Traditional Chinese or English automatically based on your browser language.
 
 HONEST PRIVACY NOTE
 Whenever either feature has to resolve a /share/ short code, it sends one anonymous GET request (no cookies) to threads.com/threads.net to look up the real destination — that's the only way to resolve a short code, and it's disclosed in full on the project README. This request carries no login credentials, but Threads will still see your source IP and browser fingerprint; if that matters to you, prefer the manual right-click flow or use a VPN. When the content is already a full post URL with only tracking parameters attached, cleaning is pure local string processing with zero network requests.
@@ -103,7 +108,7 @@ This extension's single purpose is to convert Threads (threads.com/threads.net) 
 
 ## 6. 權限理由逐項(Permission justification，審查表單逐項必填)
 
-表單通常要求英文作答;下面每項先給送審用英文，再附繁中對照方便內部核對意思是否有跑掉。四個 `permissions` 加 host permissions，對應 `manifest.json` 目前的宣告:`contextMenus`、`scripting`、`notifications`、`activeTab`、`https://*.threads.com/*`、`https://*.threads.net/*`。
+表單通常要求英文作答;下面每項先給送審用英文，再附繁中對照方便內部核對意思是否有跑掉。五個 `permissions` 加 host permissions，對應 `manifest.json` 目前的宣告:`contextMenus`、`scripting`、`notifications`、`activeTab`、`storage`、`https://*.threads.com/*`、`https://*.threads.net/*`。
 
 ### contextMenus
 
@@ -139,6 +144,18 @@ Used to show a single basic notification after a right-click resolve action comp
 **繁中對照:**
 ```
 用於在右鍵還原動作完成後顯示一則基本通知，告知成功(已複製乾淨網址)或失敗(例如連結無效、網路錯誤)，讓使用者不必手動檢查剪貼簿就知道結果。
+```
+
+### storage
+
+**English:**
+```
+Used to persist exactly two boolean settings from the popup panel — whether auto-clean of the official "Copy Link" button is enabled, and whether a notification is shown after a successful right-click resolve — via chrome.storage.sync, so the choice follows the signed-in user across their Chrome devices. Nothing else is written to storage, and no page or clipboard content is ever stored.
+```
+
+**繁中對照:**
+```
+用於透過 chrome.storage.sync 保存 popup 面板的兩個布林設定——是否啟用自動淨化官方「複製連結」按鈕、右鍵還原成功時是否顯示通知——讓已登入使用者的選擇能跨 Chrome 裝置同步。除此之外不寫入任何其他內容，也絕不會儲存頁面或剪貼簿內容。
 ```
 
 ### Host permissions:`https://*.threads.com/*`、`https://*.threads.net/*`
