@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "Threads Clean Link"
+  },
+  "extDesc": {
+    "message": "Right-click cleans Threads share links into post URLs; copying a link on the web resolves short codes and strips tracking params."
+  }
+}
