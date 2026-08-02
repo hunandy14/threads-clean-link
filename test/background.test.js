@@ -121,3 +121,126 @@ test('非 resolveShare 類型的訊息，監聽器回傳 false 且不呼叫 send
   assert.equal(keepAlive, false);
   assert.equal(called, false);
 });
+
+// ============================================================
+// SHARE_URL_PATTERN 尾端收緊規格(v1.1 車道 C)——測試先行、紅燈存證
+// 現行 SHARE_URL_PATTERN(background.js:6)為
+//   /^https:\/\/(www\.)?threads\.(com|net)\/share\/.+/i
+// 只錨定開頭(^)、尾端用 .+ 且不錨定 $，只要 /share/ 後有至少 1 個
+// 任意字元(含 /、空白、雜訊)就會判定為合法短碼。以下案例表窮舉
+// 「必須匹配」與「不得匹配(收緊目標)」兩類，鎖住尾端收緊後的規格。
+// 本節只新增測試、不改動上面任何既有斷言。
+// ============================================================
+
+// 一律成功的 fetch mock:只用來觀察 SHARE_URL_PATTERN 是否放行(有沒有
+// 呼叫到 fetch),不模擬個別短碼的轉址內容,一律回傳同一組乾淨貼文網址。
+function makeAlwaysSucceedFetch(calls) {
+  return async (url) => {
+    calls.push(url);
+    return { url: `${CLEAN_POST_URL}?xmt=AQGabc`, body: { cancel: async () => {} } };
+  };
+}
+
+// 載入 background.js,搭配一律成功的 fetch mock,回傳監聽器與 fetch 呼叫紀錄。
+function loadBackgroundAlwaysSucceed() {
+  const chrome = makeChrome();
+  const calls = [];
+  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console });
+  return { listener: chrome.onMessageListeners[0], calls };
+}
+
+// 必須匹配:代表現行合法實務的 /share/ 短碼形式,收緊後仍必須放行、
+// 不得誤傷。每一列附一句歸類理由。
+const SHARE_URL_MUST_MATCH_CASES = [
+  {
+    url: 'https://www.threads.com/share/DHuf91XTf/',
+    reason: '既有 background.test.js 覆蓋的合法短碼(英數混合、含尾斜線)，收緊後仍須放行。',
+  },
+  {
+    url: 'https://www.threads.com/share/NETWORKFAIL',
+    reason: '既有 background.test.js 覆蓋的合法短碼形式(全大寫英文、無尾斜線)，收緊後仍須放行。',
+  },
+  {
+    url: 'https://www.threads.com/share/NOTAPOST',
+    reason: '既有 background.test.js 覆蓋的合法短碼形式，收緊後仍須放行。',
+  },
+  {
+    url: 'https://www.threads.com/share/AbCdEfGhI',
+    reason: 'README/store-listing 文件承諾的範例短碼(大小寫混合英數)，代表官方文件的合法格式。',
+  },
+  {
+    url: 'https://threads.net/share/xyz123',
+    reason: 'clipboard-guard.test.js 覆蓋的合法短碼形式(無 www、threads.net 網域)，跨檔案需一致放行。',
+  },
+  {
+    url: 'https://www.threads.com/share/Abc-123_XYZ',
+    reason: '英數之外常見 URL-safe 字元(連字號、底線)構成的短碼，屬合法短碼字元集。',
+  },
+  {
+    url: 'https://www.threads.com/share/DHuf91XTf?xmt=AQGabc',
+    reason: '邊界:短碼後接 query，屬既有語意，收緊只動短碼本體、不得動到尾隨 query 的放行。',
+  },
+  {
+    url: 'https://www.threads.com/share/DHuf91XTf#section',
+    reason: '邊界:短碼後接 hash，同上，尾隨 hash 的放行語意須維持不變。',
+  },
+];
+
+// 不得匹配(收緊目標):短碼後尾隨額外路徑段、夾帶非法字元/雜訊、或空
+// 短碼。現行正則因尾端用 .+ 且未錨定 $，這些案例目前會被誤判為合法，
+// 屬本車道要收緊掉的紅燈案例;每一列附一句歸類理由。
+const SHARE_URL_MUST_NOT_MATCH_CASES = [
+  {
+    url: 'https://www.threads.com/share/Abc123/extra',
+    reason: '短碼後尾隨額外路徑段(單層)，不是短碼該有的形式，應被拒絕。',
+  },
+  {
+    url: 'https://www.threads.com/share/Abc123/extra/more',
+    reason: '短碼後尾隨額外路徑段(多層)，同上應被拒絕。',
+  },
+  {
+    url: 'https://www.threads.com/share/Abc123/extra?x=1',
+    reason: '短碼後尾隨額外路徑段，即使段落後又接 query 也不能被 query 掩護放行，應被拒絕。',
+  },
+  {
+    url: 'https://www.threads.com/share/Abc 123',
+    reason: '短碼中夾帶空白字元，非 URL-safe，應被拒絕。',
+  },
+  {
+    url: 'https://www.threads.com/share/Abc<123>',
+    reason: '短碼夾帶明顯非短碼雜訊字元(角括號)，應被拒絕。',
+  },
+  {
+    url: 'https://www.threads.com/share/AbCdEfGhI and more text',
+    reason: '短碼後直接空白銜接雜訊文字，非合法短碼延伸，應被拒絕。',
+  },
+  {
+    url: 'https://www.threads.com/share/?xmt=abc',
+    reason: '空短碼(斜線後直接接 query，短碼本體為空)，應被拒絕。',
+  },
+  {
+    url: 'https://www.threads.com/share/',
+    reason: '空短碼(斜線後無任何字元、無 query/hash)。現行正則因 .+ 至少需 1 字元，此案例今日已'
+      + '正確拒絕、非本次新增紅燈，僅為收緊規格窮舉完整性而納入，作為迴歸鎖。',
+  },
+];
+
+for (const { url, reason } of SHARE_URL_MUST_MATCH_CASES) {
+  test(`SHARE_URL_PATTERN 收緊規格(必須匹配):${url} —— ${reason}`, async () => {
+    const { listener, calls } = loadBackgroundAlwaysSucceed();
+    const response = await callListener(listener, { type: 'resolveShare', url });
+    assert.equal(calls.includes(url), true, '應放行並呼叫 fetch 解析短碼');
+    assert.equal(response.ok, true);
+    assert.equal(response.cleanUrl, CLEAN_POST_URL);
+  });
+}
+
+for (const { url, reason } of SHARE_URL_MUST_NOT_MATCH_CASES) {
+  test(`SHARE_URL_PATTERN 收緊規格(不得匹配):${url} —— ${reason}`, async () => {
+    const { listener, calls } = loadBackgroundAlwaysSucceed();
+    const response = await callListener(listener, { type: 'resolveShare', url });
+    assert.equal(response.ok, false);
+    assert.equal(response.reason, 'invalid-url');
+    assert.equal(calls.includes(url), false, '不應呼叫 fetch，須在比對階段就拒絕');
+  });
+}
