@@ -788,3 +788,62 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
   assert.equal(recorder[2], CLEAN_POST_URL);
   assert.equal(requests.length, 2);
 });
+
+// ---- S8:TCL_SETTINGS_PUSH 的來源驗證(PM 裁決採納，與 TCL_RESOLVE_RES 同等級) ----
+//
+// guard 對 TCL_RESOLVE_RES 已要求 event.source 必須是本視窗;設定推播是同一條
+// postMessage 管道，必須做同等級的來源驗證。驗證不過的推播要「完全忽略」——
+// 不是部分套用、也不是先套用再回退，而是設定一點都不得生效。
+// 每支測試都附上「同樣內容改由合法管道下放必須生效」的對照組，避免實作用
+// 「一律忽略所有推播」的假動作通過。
+
+test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設定不得生效', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  const fakeOtherWindow = {};
+
+  // 偽造來源、想關掉 autoClean 的推播:必須被忽略，guard 仍以預設值(全開)淨化。
+  win.dispatchRawMessageEvent({
+    source: fakeOtherWindow,
+    origin: win.location.origin,
+    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: false }) },
+  });
+  await settle();
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  assert.equal(recorder[0], XMT_URL_CLEANED, '偽造來源的推播不得生效');
+
+  // 對照組:同樣的內容改由合法管道(window.postMessage，source === window)下放，必須生效。
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+
+  assert.equal(recorder[1], XMT_URL, '合法來源的推播必須生效');
+  assert.equal(requests.length, 0);
+});
+
+test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  const fakeOtherWindow = {};
+
+  // 先以合法管道關閉 autoClean。
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(requests.length, 0);
+
+  // 偽造來源想把 autoClean 開回來:必須被忽略，設定維持關閉。
+  win.dispatchRawMessageEvent({
+    source: fakeOtherWindow,
+    origin: win.location.origin,
+    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: true }) },
+  });
+  await settle();
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+
+  assert.equal(recorder[1], SHARE_URL, '偽造來源不得覆蓋既有合法設定');
+  assert.equal(requests.length, 0);
+});
