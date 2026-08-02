@@ -219,8 +219,11 @@ test('S6:chrome.storage.sync 為空時，bridge 推播兩個預設值', async ()
   assert.deepEqual(bridge.pushes[0].settings, DEFAULT_SETTINGS);
 });
 
+// R1 審查回饋:初值 notifySuccess 刻意設為 true(非預設值)。若初值取預設值
+// false，一個「onChanged 時把設定洗回預設」的錯誤實作也會照樣通過，這條測試
+// 就失去鑑別力;用非預設初值才能確認未變更的鍵是原值延續而非重置。
 test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變更後的新值', async () => {
-  const bridge = loadBridgeWithStorage({ autoClean: true, notifySuccess: false });
+  const bridge = loadBridgeWithStorage({ autoClean: true, notifySuccess: true });
   await settle();
   const pushCountBeforeChange = bridge.pushes.length;
   assert.ok(
@@ -234,7 +237,7 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
   assert.equal(bridge.pushes.length, pushCountBeforeChange + 1);
   const latest = bridge.pushes[bridge.pushes.length - 1];
   assert.equal(latest.settings.autoClean, false);
-  assert.equal(latest.settings.notifySuccess, false);
+  assert.equal(latest.settings.notifySuccess, true);
 });
 
 // ============================================================
@@ -313,4 +316,29 @@ test('R1-2:cleanUrl 缺失或非字串的 TCL_CLEANED_NOTICE 不得轉發', asyn
   await settle();
 
   assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 0);
+});
+
+// R1 審查回饋:cleanUrl 只驗「非空字串」不足以擋住頁面偽造——頁面腳本可送
+// 一筆「合法貼文網址開頭 + 尾隨任意文字」的通知，內容最終會被塞進使用者
+// 看到的通知訊息。整串形狀驗證的信任邊界在 background(見 background.test.js
+// 同區塊)，bridge 這一層負責先擋掉超長 payload，不讓 100KB 垃圾越過程序邊界。
+
+test('R1-2:合法貼文網址開頭 + 尾隨超長垃圾的 TCL_CLEANED_NOTICE 不得轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  const oversized = `${CLEAN_URL}\n${'A'.repeat(100 * 1024)}`;
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: oversized });
+  await settle();
+
+  assert.equal(
+    sentMessages.filter((m) => m && m.type === 'cleanedNotice').length,
+    0,
+    '超長 cleanUrl 必須在 bridge 就被丟棄，不得轉發給 service worker'
+  );
+
+  // 對照組:長度正常的合法網址仍須轉發，排除「一律不轉發」的假動作。
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL });
+  await settle();
+
+  assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 1);
 });

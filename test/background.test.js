@@ -446,6 +446,7 @@ test('R1-2:notifySuccess=true 時，自動淨化成功的 cleanedNotice 會發�
   await settle();
 
   assert.equal(bg.notifications.length, 1);
+  assert.equal(bg.notifications[0].id, 'threads-clean-link-autoclean-success');
   assert.ok(bg.storage.calls.get.length >= 1, 'service worker 應讀取 chrome.storage.sync 設定');
 });
 
@@ -470,4 +471,32 @@ test('R1-2:自動路徑的成功通知不影響右鍵路徑;notifySuccess=true �
 
   assert.equal(bg.notifications.length, 2);
   assert.equal(bg.notifications[1].id, SUCCESS_NOTIFICATION_ID);
+});
+
+// R1 審查回饋(阻斷級):cleanedNotice 的 cleanUrl 來自頁面腳本可自由
+// postMessage 的管道，background 是這條路徑上唯一的信任邊界。驗證樣式
+// 若不錨定收尾，「合法貼文網址開頭 + 尾隨任意文字」就會通過驗證，尾隨
+// 內容(含換行、假的系統提示、大量垃圾)原樣進入使用者看到的通知訊息，
+// 等同讓頁面完全操控通知內容。以下三種尾隨形態都必須被擋下。
+
+test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 不得發出通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  const forged = [
+    `${CLEANED_NOTICE_CLEAN_URL}\n【系統】您的帳號異常，請至 evil.example 重新登入`,
+    `${CLEANED_NOTICE_CLEAN_URL}/extra-path-injected`,
+    `${CLEANED_NOTICE_CLEAN_URL}?injected=payload`,
+  ];
+  for (const cleanUrl of forged) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.deepEqual(bg.notifications, [], '尾隨文字必須被錨定驗證擋下，不得發出任何通知');
+
+  // 對照組:整串完全吻合的乾淨網址仍須通知，排除「一律不通知」的假動作。
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.equal(bg.notifications.length, 1);
 });
