@@ -497,3 +497,281 @@ test('write():單一 image/png ClipboardItem 以參照相等原樣放行', async
 
   assert.equal(recorder[0], originalItems);
 });
+
+// ============================================================
+// v1.1 設定規格:S3(autoClean 關閉)、S4(resolveShortcode 關閉)、
+// S5(兩者皆開時行為不變)、S6(設定經 TCL_SETTINGS_PUSH 下放與即時生效)
+//
+// 【協定約定】bridge(ISOLATED world)以 postMessage 下放設定，訊息形狀為
+//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, resolveShortcode, notifySuccess } }
+//
+// 【時序紀律】設定推播與橋接回應一律經 setTimeout 延遲送達(createWindow 的
+// postMessage 本身即為 setTimeout(0) 排程)，不在同一個 tick 直接結算。
+//
+// 【防假綠燈】凡「行為不得改變」類的條目(S4 的 ?xmt 分支、S5、S6 的預設值)，
+// 測試都先以「設定關閉」的可鑑別情境確認設定確實生效，再驗證開啟時的行為，
+// 避免實作根本沒接上設定卻碰巧通過。
+// ============================================================
+
+const SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
+const XMT_URL = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7?xmt=AQG0abc';
+const XMT_URL_CLEANED = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7';
+const SHARE_URL = 'https://www.threads.com/share/DHuf91XTf/';
+
+function settle(ms = 30) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 記錄 guard 送出的 TCL_RESOLVE_REQ。respond:true 時模擬 bridge 於 5ms 後
+// 回覆一個「會成功」的解析結果——刻意如此:設定關閉卻仍發請求的實作會立刻
+// 因為內容被改寫而紅燈，不必等 2500ms 逾時。
+function trackResolveRequests(win, opts = {}) {
+  const requests = [];
+  win.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || data.type !== 'TCL_RESOLVE_REQ') return;
+    requests.push(data);
+    if (!opts.respond) return;
+    setTimeout(() => {
+      win.postMessage({
+        type: 'TCL_RESOLVE_RES',
+        requestId: data.requestId,
+        ok: true,
+        cleanUrl: opts.cleanUrl ?? CLEAN_POST_URL,
+      });
+    }, 5);
+  });
+  return requests;
+}
+
+// 模擬 bridge 下放設定:postMessage 一則 TCL_SETTINGS_PUSH，並等它非同步送達。
+async function pushSettings(win, settings) {
+  win.postMessage({ type: SETTINGS_PUSH_TYPE, settings });
+  await settle();
+}
+
+function settings(overrides) {
+  return Object.assign(
+    { autoClean: true, resolveShortcode: true, notifySuccess: false },
+    overrides
+  );
+}
+
+// ---- S3:autoClean=false 一律直接放行原始內容 ----
+
+test('S3:autoClean=false 時，writeText 對帶 ?xmt 的貼文網址原樣放行、不改寫、不發解析請求', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: false }));
+
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+
+  assert.equal(recorder[0], XMT_URL);
+  assert.equal(requests.length, 0);
+});
+
+test('S3:autoClean=false 時，writeText 對 /share/ 短碼原樣放行，且完全不發 TCL_RESOLVE_REQ', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: false }));
+
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(requests.length, 0);
+});
+
+test('S3:autoClean=false 時，write() 對 ?xmt 貼文網址以參照相等原樣放行，不重建 items', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+  await pushSettings(win, settings({ autoClean: false }));
+  const originalItems = [
+    new FakeClipboardItem({ 'text/plain': new Blob([XMT_URL], { type: 'text/plain' }) }),
+  ];
+
+  await sandbox.navigator.clipboard.write(originalItems);
+
+  assert.equal(recorder[0], originalItems);
+  assert.equal(requests.length, 0);
+});
+
+test('S3:autoClean=false 時，write() 對 /share/ 短碼以參照相等原樣放行，且不發解析請求', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+  await pushSettings(win, settings({ autoClean: false }));
+  const originalItems = [
+    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+  ];
+
+  await sandbox.navigator.clipboard.write(originalItems);
+
+  assert.equal(recorder[0], originalItems);
+  assert.equal(requests.length, 0);
+});
+
+// ---- S4:autoClean=true 且 resolveShortcode=false ----
+
+test('S4:resolveShortcode=false 時，writeText 對 /share/ 短碼放行原文且零網路請求', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: false }));
+
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(requests.length, 0);
+});
+
+test('S4:resolveShortcode=false 時，?xmt 參數剪除分支照常運作(全程零請求)', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: false }));
+
+  // 先以短碼確認 resolveShortcode=false 確實生效(防假綠燈)，再驗證 ?xmt 分支不受影響。
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(requests.length, 0);
+
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+
+  assert.equal(recorder[1], XMT_URL_CLEANED);
+  assert.equal(requests.length, 0);
+});
+
+test('S4:resolveShortcode=false 時，write() 短碼以參照相等放行且零請求；?xmt 分支照常剪除', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWrite(recorder), win);
+  const shareItems = [
+    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+  ];
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: false }));
+
+  await sandbox.navigator.clipboard.write(shareItems);
+  assert.equal(recorder[0][0].text, SHARE_URL);
+  assert.equal(requests.length, 0);
+
+  await sandbox.navigator.clipboard.write([
+    new FakeClipboardItem({ 'text/plain': new Blob([XMT_URL], { type: 'text/plain' }) }),
+  ]);
+
+  assert.equal(recorder[1][0].text, XMT_URL_CLEANED);
+  assert.equal(requests.length, 0);
+});
+
+// ---- S5:autoClean=true 且 resolveShortcode=true 時，現行淨化行為完全不變 ----
+
+test('S5:兩者皆開時，writeText 短碼解析行為與現行完全一致', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+
+  // 前置:先推播全關並確認放行，證明設定確實生效(否則下面的「行為不變」是假綠燈)。
+  await pushSettings(win, settings({ autoClean: false, resolveShortcode: false }));
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(requests.length, 0);
+
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+
+  assert.equal(recorder[1], CLEAN_POST_URL);
+  assert.equal(requests.length, 1);
+});
+
+test('S5:兩者皆開時，?xmt 剪除與非網址放行行為與現行完全一致', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  assert.equal(recorder[0], XMT_URL);
+
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  await sandbox.navigator.clipboard.writeText('hello world, not a url');
+
+  assert.equal(recorder[1], XMT_URL_CLEANED);
+  assert.equal(recorder[2], 'hello world, not a url');
+});
+
+test('S5:兩者皆開時，write() 短碼解析行為與現行完全一致', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWrite(recorder), win);
+  const makeItems = () => [
+    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+  ];
+
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.write(makeItems());
+  assert.equal(recorder[0][0].text, SHARE_URL);
+  assert.equal(requests.length, 0);
+
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await sandbox.navigator.clipboard.write(makeItems());
+
+  assert.equal(recorder[1][0].text, CLEAN_POST_URL);
+  assert.equal(requests.length, 1);
+});
+
+// ---- S6(MAIN world 端):首次推播前用預設值，收到推播後即時採用新值 ----
+
+test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(兩者皆開)運作', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+
+  // 尚未推播任何設定:預設 autoClean=true、resolveShortcode=true。
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[0], XMT_URL_CLEANED);
+  assert.equal(recorder[1], CLEAN_POST_URL);
+  assert.equal(requests.length, 1);
+
+  // 推播關閉後必須即時改變行為，證明上面走的是「預設值」而不是「沒接設定」。
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+
+  assert.equal(recorder[2], XMT_URL);
+  assert.equal(requests.length, 1);
+});
+
+test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設定', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[0], CLEAN_POST_URL);
+  assert.equal(requests.length, 1);
+
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[1], SHARE_URL);
+  assert.equal(requests.length, 1);
+
+  await pushSettings(win, settings({ autoClean: true, resolveShortcode: true }));
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[2], CLEAN_POST_URL);
+  assert.equal(requests.length, 2);
+});

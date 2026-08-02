@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createWindow, runInSandbox } = require('./support/helpers');
+const { createWindow, runInSandbox, createChromeStorage } = require('./support/helpers');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'bridge.js'), 'utf8');
 
@@ -149,4 +149,101 @@ test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   assert.equal(sentMessages.length, 0);
+});
+
+// ============================================================
+// v1.1 設定規格 S6(ISOLATED world 端):bridge 負責把 chrome.storage.sync
+// 的設定以新訊息型別 TCL_SETTINGS_PUSH 下放到 MAIN world，並在
+// chrome.storage.onChanged 觸發時再次推播。
+//
+// 【協定約定】推播訊息形狀:
+//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, resolveShortcode, notifySuccess } }
+//
+// 【時序紀律】storage mock 的 get 與 onChanged 一律延遲一個 tick 才結算
+// (見 support/helpers.js)，postMessage 亦為 setTimeout(0) 排程，不允許同 tick
+// 直接結算的假綠燈。
+// ============================================================
+
+const DEFAULT_SETTINGS = { autoClean: true, resolveShortcode: true, notifySuccess: false };
+
+function settle(ms = 30) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 載入 bridge.js 到一個同時具備 chrome.runtime 與 chrome.storage 的 sandbox，
+// 並側錄它 postMessage 出去的 TCL_SETTINGS_PUSH。
+function loadBridgeWithStorage(initialSettings = {}) {
+  const win = createWindow();
+  const storage = createChromeStorage(initialSettings);
+  const sentMessages = [];
+  const pushes = [];
+  const chrome = {
+    runtime: {
+      lastError: undefined,
+      sendMessage(message, callback) {
+        sentMessages.push(message);
+        if (typeof callback === 'function') setTimeout(() => callback(undefined), 0);
+      },
+    },
+    storage: storage.api,
+  };
+
+  win.addEventListener('message', (event) => {
+    const data = event.data;
+    if (data && data.type === 'TCL_SETTINGS_PUSH') pushes.push(data);
+  });
+
+  runInSandbox(SRC, { window: win, chrome, setTimeout, clearTimeout, console });
+
+  return { win, storage, pushes, sentMessages };
+}
+
+test('S6:bridge 載入後讀取 chrome.storage.sync，並以 TCL_SETTINGS_PUSH 把設定下放至 MAIN world', async () => {
+  const bridge = loadBridgeWithStorage({
+    autoClean: false,
+    resolveShortcode: false,
+    notifySuccess: true,
+  });
+
+  await settle();
+
+  assert.equal(bridge.pushes.length, 1);
+  assert.deepEqual(bridge.pushes[0].settings, {
+    autoClean: false,
+    resolveShortcode: false,
+    notifySuccess: true,
+  });
+  assert.ok(bridge.storage.calls.get.length >= 1, 'bridge 應向 chrome.storage.sync 讀取設定');
+});
+
+test('S6:chrome.storage.sync 為空時，bridge 推播三個預設值', async () => {
+  const bridge = loadBridgeWithStorage({});
+
+  await settle();
+
+  assert.equal(bridge.pushes.length, 1);
+  assert.deepEqual(bridge.pushes[0].settings, DEFAULT_SETTINGS);
+});
+
+test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變更後的新值', async () => {
+  const bridge = loadBridgeWithStorage({
+    autoClean: true,
+    resolveShortcode: true,
+    notifySuccess: false,
+  });
+  await settle();
+  const pushCountBeforeChange = bridge.pushes.length;
+  assert.ok(
+    bridge.storage.onChangedListenerCount() >= 1,
+    'bridge 應註冊 chrome.storage.onChanged 監聽器'
+  );
+
+  bridge.storage.emitChange({ autoClean: { oldValue: true, newValue: false } }, 'sync');
+  await settle();
+
+  assert.equal(bridge.pushes.length, pushCountBeforeChange + 1);
+  const latest = bridge.pushes[bridge.pushes.length - 1];
+  assert.equal(latest.settings.autoClean, false);
+  assert.equal(latest.settings.resolveShortcode, true);
+  assert.equal(latest.settings.notifySuccess, false);
 });
