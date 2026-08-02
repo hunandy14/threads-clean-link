@@ -135,3 +135,96 @@ test('MV3 CSP:popup.html 內所有 <script> 都必須帶 src，不得使用內�
     );
   }
 });
+
+// ============================================================
+// R1-3 popup 改版:兩列開關 + 現代滑動 switch。
+//
+// 邏輯層測試照不到版面與外觀，這裡改讀 popup.html 原文做靜態把關:
+//   - 兩列開關(autoClean、notifySuccess)，id 不變，縮排子項整列移除
+//   - DOM 仍是 input[type=checkbox](邏輯與測試介面不變)，外觀改用 CSS
+//     實現的滑動 switch:取消原生打勾外觀、有 :checked 開啟態、有滑動過場
+//   - 深淺色都要成立:深色區塊仍在，且 switch 的顏色一律走 CSS 變數，
+//     不得在 input/switch 規則裡硬編色碼(硬編就等於只有一種主題成立)
+//   - footer 文案不變
+// 樣式「好不好看」無法自動化，本區塊只擋掉會讓 switch 明確不成立的寫法。
+// ============================================================
+
+const fsR13 = require('node:fs');
+
+function readPopupHtml() {
+  return fsR13.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
+}
+
+function readPopupStyle() {
+  const html = readPopupHtml();
+  const match = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+  return match ? match[1] : '';
+}
+
+test('R1-3:popup.html 只有兩個開關控件，id 為 autoClean 與 notifySuccess', () => {
+  const html = readPopupHtml();
+
+  const checkboxes = html.match(/<input\b[^>]*type\s*=\s*["']checkbox["'][^>]*>/gi) || [];
+  assert.equal(checkboxes.length, 2, 'R1-1 併開關後應只剩兩個開關控件');
+
+  const ids = checkboxes.map((tag) => {
+    const m = tag.match(/\bid\s*=\s*["']([^"']+)["']/i);
+    return m ? m[1] : null;
+  });
+  assert.deepEqual(ids.sort(), ['autoClean', 'notifySuccess']);
+});
+
+test('R1-3:popup.html 不得再有 resolveShortcode 控件與縮排子項', () => {
+  const html = readPopupHtml();
+
+  assert.equal(/resolveShortcode/.test(html), false, 'resolveShortcode 應徹底移除');
+  assert.equal(/\bindent\b/.test(html), false, '縮排子項整列移除後不應再有 indent 樣式');
+});
+
+test('R1-3:開關以 CSS 滑動 switch 呈現，取消 checkbox 原生打勾外觀', () => {
+  const style = readPopupStyle();
+
+  assert.ok(
+    /(^|[^-\w])appearance\s*:\s*none/i.test(style),
+    'switch 外觀需以 appearance:none 取消原生打勾框，再自行畫軌道與滑塊'
+  );
+});
+
+test('R1-3:switch 具備開啟狀態樣式與滑動過場', () => {
+  const style = readPopupStyle();
+
+  assert.ok(/:checked/.test(style), 'switch 需有 :checked 的開啟態樣式');
+  assert.ok(/transition\s*:/i.test(style), '滑動 switch 需有 transition 過場，滑塊才會滑動');
+});
+
+test('R1-3:深色主題仍成立，且 switch 顏色一律走 CSS 變數不得硬編色碼', () => {
+  const style = readPopupStyle();
+
+  assert.ok(
+    /@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)/i.test(style),
+    '深色主題區塊不得在改版時弄丟'
+  );
+
+  // 逐條規則檢查:凡選擇器明確指向 input／switch 的規則，宣告區塊內不得
+  // 出現硬編十六進位色碼——硬編就代表該顏色只有一種主題會成立。
+  const offenders = [];
+  const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+  let match;
+  while ((match = ruleRe.exec(style)) !== null) {
+    const selector = match[1];
+    const body = match[2];
+    if (!/\binput\b|switch/i.test(selector)) continue;
+    if (/#[0-9a-f]{3,8}\b/i.test(body)) offenders.push(selector.trim());
+  }
+
+  assert.deepEqual(offenders, [], `switch 相關規則出現硬編色碼:${offenders.join(' / ')}`);
+});
+
+test('R1-3:footer 文案不變', () => {
+  const html = readPopupHtml();
+
+  assert.ok(
+    html.includes('失敗時一律放行原始連結，右鍵選單不受開關影響。'),
+    'footer 文案在改版中必須維持原樣'
+  );
+});

@@ -276,10 +276,11 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   const executeScriptCalls = [];
   const onClickedListeners = [];
   const state = { clipboardOk: opts.clipboardOk !== false };
+  const onMessageListeners = [];
   const chrome = {
     runtime: {
       onInstalled: { addListener: () => {} },
-      onMessage: { addListener: () => {} },
+      onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
     },
     contextMenus: {
       removeAll: async () => {},
@@ -313,6 +314,11 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     state,
     click(info, tab) {
       onClickedListeners[0](info, tab);
+    },
+    // 模擬 bridge 經 chrome.runtime.sendMessage 送訊息給 service worker;
+    // 派送給所有已註冊的 onMessage 監聽器，不假設實作註冊了幾支。
+    sendRuntimeMessage(message) {
+      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
     },
   };
 }
@@ -416,4 +422,52 @@ test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸
   await settle();
 
   assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+});
+
+// ============================================================
+// R1-2 通知涵蓋自動路徑(service worker 端):notifySuccess=true 時，
+// 右鍵成功「與」自動淨化成功都要通知;notifySuccess=false 時一切成功
+// 通知靜默。自動路徑的成功訊息由 bridge 經 chrome.runtime.sendMessage
+// 送來，形狀為 { type: 'cleanedNotice', cleanUrl }。
+//
+// 【把關位置(規格未明定，本輪測試在此定案)】notifySuccess 的把關由
+// background 負責:它是唯一同時看得到設定與兩條成功路徑的地方，也是
+// 內容腳本訊息的信任邊界。guard 端要不要順手先擋一層由實作自行決定，
+// 本檔只強制「background 收到 cleanedNotice 後必須依 notifySuccess 決定
+// 發不發」。
+// ============================================================
+
+const CLEANED_NOTICE_CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
+
+test('R1-2:notifySuccess=true 時，自動淨化成功的 cleanedNotice 會發出一則成功通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.equal(bg.notifications.length, 1);
+  assert.ok(bg.storage.calls.get.length >= 1, 'service worker 應讀取 chrome.storage.sync 設定');
+});
+
+test('R1-2:notifySuccess=false 時，自動淨化成功的 cleanedNotice 不得發出任何通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.deepEqual(bg.notifications, []);
+});
+
+test('R1-2:自動路徑的成功通知不影響右鍵路徑;notifySuccess=true 時兩條路徑各自通知一則', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+  assert.equal(bg.notifications.length, 1);
+
+  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle();
+
+  assert.equal(bg.notifications.length, 2);
+  assert.equal(bg.notifications[1].id, SUCCESS_NOTIFICATION_ID);
 });

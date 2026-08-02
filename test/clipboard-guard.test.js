@@ -795,3 +795,164 @@ test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   assert.equal(recorder[1], SHARE_URL, '偽造來源不得覆蓋既有合法設定');
   assert.equal(requests.length, 0);
 });
+
+// ============================================================
+// R1-2 通知涵蓋自動路徑(MAIN world 端):自動淨化成功時，guard 要往
+// bridge 送出一則成功通知，由 background 決定要不要顯示。
+//
+// 【協定約定】guard → bridge 的訊息形狀:
+//   { type: 'TCL_CLEANED_NOTICE', cleanUrl: <實際寫入剪貼簿的淨化後字串> }
+//
+// 【判定基準(規格明文)】必須以 guard「實際把淨化後內容寫入剪貼簿」為準:
+//   - 解析逾時後才回來的遲到結果不得觸發通知(防 timeout race 假通知)
+//   - fail-open 放行原文(解析失敗／autoClean 關閉／內容本來就乾淨)不算成功
+//   - 原生寫入被拒(rejection)代表根本沒寫進去，也不算成功
+//
+// 【notifySuccess 的把關位置】規格只要求「notifySuccess=false 時一切成功
+// 通知靜默」，未指定把關要放在 guard 還是 background。本檔一律在
+// notifySuccess=true 的設定下測「該不該送出 notice」，不對 notifySuccess=false
+// 時 guard 送不送做任何斷言，把把關位置留給實作;實際的靜默把關由
+// background 端測試強制(見 test/background.test.js 的 R1-2 區塊)。
+// ============================================================
+
+const CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
+
+// 側錄 guard 送出的 TCL_CLEANED_NOTICE。
+function trackCleanedNotices(win) {
+  const notices = [];
+  win.addEventListener('message', (event) => {
+    const data = event.data;
+    if (data && data.type === CLEANED_NOTICE_TYPE) notices.push(data);
+  });
+  return notices;
+}
+
+test('R1-2:短碼解析成功並實際寫入乾淨網址後，guard 送出 TCL_CLEANED_NOTICE', async () => {
+  const recorder = [];
+  const win = createWindow();
+  trackResolveRequests(win, { respond: true });
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle();
+
+  assert.equal(recorder[0], CLEAN_POST_URL);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].cleanUrl, CLEAN_POST_URL, 'notice 的 cleanUrl 應等於實際寫入的內容');
+});
+
+test('R1-2:?xmt 剪參成功寫入後，guard 送出 TCL_CLEANED_NOTICE', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  await settle();
+
+  assert.equal(recorder[0], XMT_URL_CLEANED);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].cleanUrl, XMT_URL_CLEANED);
+});
+
+test('R1-2:write() 路徑淨化成功寫入後，guard 送出 TCL_CLEANED_NOTICE', async () => {
+  const recorder = [];
+  const win = createWindow();
+  trackResolveRequests(win, { respond: true });
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWrite(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+
+  await sandbox.navigator.clipboard.write([
+    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+  ]);
+  await settle();
+
+  assert.equal(recorder[0][0].text, CLEAN_POST_URL);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].cleanUrl, CLEAN_POST_URL);
+});
+
+test('R1-2:解析逾時後才送達的遲到結果，不得觸發通知(防 timeout race 假通知)', async () => {
+  const recorder = [];
+  const win = createWindow();
+  installBridgeSim(win, 'late'); // 2600ms 才回應，已超過 guard 的 2500ms 逾時
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+  const shareUrl = 'https://www.threads.com/share/LATE0002';
+
+  await sandbox.navigator.clipboard.writeText(shareUrl);
+  assert.equal(recorder[0], shareUrl, '逾時後應 fail-open 寫入原文');
+
+  // 等遲到回應確實送達之後再檢查:它不得補送一則成功通知。
+  await settle(500);
+
+  assert.equal(notices.length, 0);
+});
+
+test('R1-2:橋接解析失敗而 fail-open 寫入原文時，不得送出通知', async () => {
+  const recorder = [];
+  const win = createWindow();
+  installBridgeSim(win, 'failure');
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle();
+
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(notices.length, 0);
+});
+
+test('R1-2:autoClean=false 原樣放行時，不得送出通知', async () => {
+  const recorder = [];
+  const win = createWindow();
+  trackResolveRequests(win, { respond: true });
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: false, notifySuccess: true }));
+
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  await settle();
+
+  assert.equal(recorder[0], XMT_URL);
+  assert.equal(notices.length, 0);
+});
+
+test('R1-2:內容本來就乾淨、未做任何改寫時，不得送出通知', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+
+  await sandbox.navigator.clipboard.writeText(CLEAN_POST_URL);
+  await sandbox.navigator.clipboard.writeText('hello world, not a url');
+  await settle();
+
+  assert.equal(notices.length, 0);
+});
+
+test('R1-2:原生寫入被拒(沒真的寫進剪貼簿)時，不得送出通知', async () => {
+  const rejectError = new Error('NotAllowedError: native writeText rejected');
+  const callCounter = { count: 0 };
+  const win = createWindow();
+  trackResolveRequests(win, { respond: true });
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(rejectingWriteText(rejectError, callCounter), win);
+  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+
+  await assert.rejects(
+    () => sandbox.navigator.clipboard.writeText(SHARE_URL),
+    (err) => err === rejectError
+  );
+  await settle();
+
+  assert.equal(callCounter.count, 1);
+  assert.equal(notices.length, 0);
+});

@@ -236,3 +236,81 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
   assert.equal(latest.settings.autoClean, false);
   assert.equal(latest.settings.notifySuccess, false);
 });
+
+// ============================================================
+// R1-2 通知涵蓋自動路徑(ISOLATED world 端):bridge 把 MAIN world 送來的
+// TCL_CLEANED_NOTICE 轉為 chrome.runtime.sendMessage 交給 service worker。
+//
+// 【協定約定】
+//   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl }
+//   bridge → background : { type: 'cleanedNotice', cleanUrl }
+//
+// 【來源驗證(規格明文，比照 S8 等級)】驗證不過的通知必須完全忽略、不得
+// 轉發，否則頁面腳本可以自行 postMessage 偽造「淨化成功」灌出假通知。
+// bridge 對既有的 TCL_RESOLVE_REQ 已同時驗 event.source 與 event.origin，
+// 新訊息型別沿用同一組檢查。
+// ============================================================
+
+const CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
+const CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
+
+function loadBridgeForNotice() {
+  return loadBridge({
+    sendMessage: (message, callback) => {
+      if (typeof callback === 'function') callback(undefined);
+    },
+  });
+}
+
+test('R1-2:合法來源的 TCL_CLEANED_NOTICE 轉發為一次 cleanedNotice 訊息給 service worker', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].cleanUrl, CLEAN_URL);
+});
+
+test('R1-2:event.source 非本視窗的 TCL_CLEANED_NOTICE 完全忽略，不得轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+  const fakeOtherWindow = {};
+
+  win.dispatchRawMessageEvent({
+    source: fakeOtherWindow,
+    origin: win.location.origin,
+    data: { type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL },
+  });
+  await settle();
+  assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 0);
+
+  // 對照組:同樣內容改由合法管道送出必須轉發，排除「一律不轉發」的假動作。
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL });
+  await settle();
+
+  assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 1);
+});
+
+test('R1-2:event.origin 與本頁不符的 TCL_CLEANED_NOTICE 完全忽略，不得轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.dispatchRawMessageEvent({
+    source: win,
+    origin: 'https://evil.example',
+    data: { type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL },
+  });
+  await settle();
+
+  assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 0);
+});
+
+test('R1-2:cleanUrl 缺失或非字串的 TCL_CLEANED_NOTICE 不得轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: 12345 });
+  await settle();
+
+  assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 0);
+});
