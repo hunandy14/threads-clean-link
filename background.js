@@ -3,7 +3,7 @@
 'use strict';
 
 // Threads 分享短連結格式，例如：https://www.threads.com/share/AbCdEfGhI
-const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/.+/i;
+const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s]*)?(#[^\s]*)?$/i;
 
 // 乾淨貼文網址格式，例如：https://www.threads.com/@username/post/AbCd123EfGh
 const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\/post\/[^/?#]+/i;
