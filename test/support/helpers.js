@@ -60,4 +60,144 @@ function runInSandbox(src, sandbox) {
   return sandbox;
 }
 
-module.exports = { FakeClipboardItem, createWindow, runInSandbox };
+// ---- v1.1 設定規格(S1–S7)新增的共用 mock ----
+
+// chrome.storage 的離線假實作(sync 區 + onChanged)。
+// 【時序紀律】get/set/onChanged 一律以 setTimeout(0) 延遲結算，絕不在同一個
+// tick 直接 resolve 或回呼——同 tick 假綠燈是本專案已知風險。
+// get/set 同時支援 Promise 與 callback 兩種呼叫慣例，不預設實作採用哪一種。
+function createChromeStorage(initial = {}) {
+  const data = Object.assign({}, initial);
+  const calls = { get: [], set: [] };
+  const onChangedListeners = [];
+
+  function later(fn) {
+    setTimeout(fn, 0);
+  }
+
+  function has(key) {
+    return Object.prototype.hasOwnProperty.call(data, key);
+  }
+
+  // 比照 chrome.storage 的 keys 語義:null/undefined 取全部;字串取單鍵;
+  // 陣列取多鍵;物件則以其值為「查無此鍵時的預設值」。
+  function read(keys) {
+    if (keys === null || keys === undefined) return Object.assign({}, data);
+    if (typeof keys === 'string') return has(keys) ? { [keys]: data[keys] } : {};
+    if (Array.isArray(keys)) {
+      const out = {};
+      keys.forEach((k) => {
+        if (has(k)) out[k] = data[k];
+      });
+      return out;
+    }
+    const out = Object.assign({}, keys);
+    Object.keys(keys).forEach((k) => {
+      if (has(k)) out[k] = data[k];
+    });
+    return out;
+  }
+
+  const sync = {
+    get(keys, callback) {
+      calls.get.push(keys);
+      if (typeof callback === 'function') {
+        later(() => callback(read(keys)));
+        return undefined;
+      }
+      return new Promise((resolve) => later(() => resolve(read(keys))));
+    },
+    set(items, callback) {
+      calls.set.push(Object.assign({}, items));
+      if (typeof callback === 'function') {
+        later(() => {
+          Object.assign(data, items);
+          callback();
+        });
+        return undefined;
+      }
+      return new Promise((resolve) =>
+        later(() => {
+          Object.assign(data, items);
+          resolve();
+        })
+      );
+    },
+  };
+
+  return {
+    calls,
+    sync,
+    // 直接掛到 sandbox 的 chrome.storage 上使用。
+    api: {
+      sync,
+      onChanged: {
+        addListener(fn) {
+          onChangedListeners.push(fn);
+        },
+      },
+    },
+    snapshot() {
+      return Object.assign({}, data);
+    },
+    onChangedListenerCount() {
+      return onChangedListeners.length;
+    },
+    // 測試專用:模擬使用者在別處改了設定，延遲一個 tick 後觸發 onChanged。
+    emitChange(changes, areaName = 'sync') {
+      Object.keys(changes).forEach((k) => {
+        data[k] = changes[k].newValue;
+      });
+      later(() => {
+        onChangedListeners.slice().forEach((fn) => fn(changes, areaName));
+      });
+    },
+  };
+}
+
+// 只含 checkbox 的假 document，供 popup 邏輯層以注入方式測試
+// (本專案無 DOM harness，popup 邏輯約定為可注入 document 的純函式模組)。
+function createCheckboxDocument(ids) {
+  const elements = {};
+  ids.forEach((id) => {
+    const listeners = {};
+    elements[id] = {
+      id,
+      type: 'checkbox',
+      checked: false,
+      disabled: false,
+      addEventListener(type, fn) {
+        if (!listeners[type]) listeners[type] = [];
+        listeners[type].push(fn);
+      },
+      removeEventListener(type, fn) {
+        const arr = listeners[type];
+        if (!arr) return;
+        const idx = arr.indexOf(fn);
+        if (idx !== -1) arr.splice(idx, 1);
+      },
+      // 測試專用:模擬使用者切換開關——先改 checked，再派送 change 事件。
+      fireChange(nextChecked) {
+        this.checked = nextChecked;
+        (listeners.change || []).slice().forEach((fn) => fn({ type: 'change', target: this }));
+      },
+      listenerCount(type) {
+        return (listeners[type] || []).length;
+      },
+    };
+  });
+  return {
+    elements,
+    getElementById(id) {
+      return Object.prototype.hasOwnProperty.call(elements, id) ? elements[id] : null;
+    },
+  };
+}
+
+module.exports = {
+  FakeClipboardItem,
+  createWindow,
+  runInSandbox,
+  createChromeStorage,
+  createCheckboxDocument,
+};
