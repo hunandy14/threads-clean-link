@@ -174,7 +174,10 @@
                   // R1-2：只有「實際把淨化後內容寫入剪貼簿」才發通知——原生
                   // 寫入先跑，成功之後(.then 的 onFulfilled)才 notifyCleaned，
                   // 若原生寫入被拒(rejection)則不會進到這裡，也就不會誤發通知。
-                  return nativeWriteText(cleanUrl).then(function (result) {
+                  // Promise.resolve 包一層:原生若回傳非 Promise，直接 .then
+                  // 會丟 TypeError 落到外層 catch，導致原生被「以未淨化的原文」
+                  // 再呼叫一次。包裝後 rejection 語意不變，仍原樣往外傳。
+                  return Promise.resolve(nativeWriteText(cleanUrl)).then(function (result) {
                     notifyCleaned(cleanUrl);
                     return result;
                   });
@@ -194,7 +197,8 @@
           if (cleaned !== null) {
             toWrite = cleaned;
             // R1-2：?xmt 剪參分支同樣只在原生寫入成功後才發通知。
-            return nativeWriteText(toWrite).then(function (result) {
+            // Promise.resolve 包一層的理由同上(防非 Promise 回傳時重複呼叫原生)。
+            return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
               notifyCleaned(toWrite);
               return result;
             });

@@ -6,7 +6,17 @@
 const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s]*)?(#[^\s]*)?$/i;
 
 // 乾淨貼文網址格式，例如：https://www.threads.com/@username/post/AbCd123EfGh
+// 刻意不錨定收尾：extractCleanPostUrl 仰賴它能從帶 query/hash 的轉址結果
+// 「截」出前段乾淨網址，加上 $ 會讓截取失效。
 const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\/post\/[^/?#]+/i;
+
+// cleanedNotice 專用的「錨定」樣式(比照 clipboard-guard.js 的 POST_URL_RE)。
+// 該訊息的 cleanUrl 來自頁面腳本可自由 postMessage 的管道，內容會直接進到
+// 使用者看到的通知訊息，因此必須「整串完全吻合」才採信：收尾 $ 且字元類
+// 排除 \s，否則「合法貼文網址開頭 + 尾隨任意文字」會通過驗證，等同讓頁面
+// 操控通知內容。通知路徑的 cleanUrl 一律是已淨化結果，本來就不帶 query
+// 與 hash，故此處也不放行 ?/# 尾段。
+const NOTICE_CLEAN_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#\s]+\/post\/[^/?#\s]+$/i;
 
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
@@ -169,12 +179,13 @@ async function getSettings() {
   }
 }
 
-// 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用
-// CLEAN_POST_URL_PATTERN 重新驗證，不符合就靜默忽略、不發任何通知。
+// 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
+// NOTICE_CLEAN_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不發任何
+// 通知;通知訊息只用驗證通過的字串，不夾帶原文的任何其餘部分。
 // notifySuccess 為 false 時整個函式什麼都不做。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
-  if (typeof cleanUrl !== 'string' || !CLEAN_POST_URL_PATTERN.test(cleanUrl)) {
+  if (typeof cleanUrl !== 'string' || !NOTICE_CLEAN_URL_PATTERN.test(cleanUrl)) {
     return;
   }
 

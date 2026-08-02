@@ -13,6 +13,11 @@
   // notifySuccess 決定要不要顯示通知。
   var NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
+  // cleanUrl 長度上限:這條管道的內容由頁面腳本自由指定，先在 bridge 擋掉
+  // 超長 payload，不讓 100KB 等級的垃圾越過 content script → service worker
+  // 的程序邊界。整串形狀的驗證由 background 以錨定樣式負責(信任邊界在該處)。
+  var MAX_CLEAN_URL_LENGTH = 2048;
+
   window.addEventListener('message', function (event) {
     // 只信任「本頁面自己發給自己」的訊息：
     // - source 必須是同一個 window（排除子 iframe / 其他視窗轉發過來的訊息）
@@ -25,6 +30,7 @@
 
     if (data.type === NOTICE_TYPE) {
       if (typeof data.cleanUrl !== 'string' || !data.cleanUrl) return;
+      if (data.cleanUrl.length > MAX_CLEAN_URL_LENGTH) return;
       try {
         chrome.runtime.sendMessage({ type: 'cleanedNotice', cleanUrl: data.cleanUrl });
       } catch (e) {
