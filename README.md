@@ -1,6 +1,8 @@
 # Threads Clean Link(脆連結清潔工)
 
-[![Chrome Web Store](https://img.shields.io/chrome-web-store-version/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
+[![CI](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml/badge.svg)](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/github/license/hunandy14/threads-clean-link)](./LICENSE)
 
 Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。雙語名稱:英文「Threads Clean Link」、中文「脆連結清潔工」，依瀏覽器語言自動顯示。
 
@@ -60,6 +62,8 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 | `host_permissions`(`*.threads.com`、`*.threads.net`) | 發出短碼解析請求;於 Threads 頁面注入淨化邏輯 |
 
 未宣告 `<all_urls>` 與 `clipboardRead`。
+
+各權限的實際觸發情境見[運作原理與隱私](#運作原理與隱私)。
 
 ## 已知限制
 
