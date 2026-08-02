@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     只封裝上架必要的檔案:manifest.json、background.js、clipboard-guard.js、
-    bridge.js，以及 icons/ 資料夾底下的圖示檔(*.png / *.svg / *.ico)。
+    bridge.js、popup.html、popup.js，以及 icons/ 資料夾底下的圖示檔
+    (*.png / *.svg / *.ico)。
     README.md、LICENSE、tools/、tmp/、icons/gen-icons.ps1 等開發用檔案一律
     不打包，避免非必要內容混進上架用的壓縮檔。
 
@@ -41,7 +42,9 @@ $includeFiles = @(
     'manifest.json',
     'background.js',
     'clipboard-guard.js',
-    'bridge.js'
+    'bridge.js',
+    'popup.html',
+    'popup.js'
 )
 
 foreach ($file in $includeFiles) {

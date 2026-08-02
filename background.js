@@ -11,6 +11,14 @@ const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
 
+// v1.1 設定規格 S2:成功類通知由 notifySuccess 把關，失敗／錯誤類通知
+// 永遠觸發、不受設定影響。三鍵的預設值與 popup.js／bridge.js 一致。
+const DEFAULT_SETTINGS = {
+  autoClean: true,
+  resolveShortcode: true,
+  notifySuccess: false,
+};
+
 // 事件監聽器一律註冊在檔案最外層：service worker 閒置會被終止，
 // 監聽器需在每次喚醒時同步掛回去，不能包在非同步流程裡面。
 
@@ -117,7 +125,27 @@ async function handleShareLinkClick(info, tab) {
     return;
   }
 
-  safeNotify('threads-clean-link-success', `已複製乾淨網址:${cleanUrl}`);
+  const settings = await getSettings();
+  if (settings.notifySuccess) {
+    safeNotify('threads-clean-link-success', `已複製乾淨網址:${cleanUrl}`);
+  }
+}
+
+// 讀取使用者設定。刻意放在點擊流程「內」呼叫，不在模組頂層同步觸碰
+// chrome.storage：舊測試的 chrome mock 沒有 storage 屬性，頂層碰會讓
+// 那些測試在 sandbox 載入階段就丟 TypeError。對 chrome.storage 缺席
+// 或讀取失敗都容錯，一律退回預設值。
+async function getSettings() {
+  if (!chrome.storage || !chrome.storage.sync || typeof chrome.storage.sync.get !== 'function') {
+    return Object.assign({}, DEFAULT_SETTINGS);
+  }
+  try {
+    const stored = await chrome.storage.sync.get(DEFAULT_SETTINGS);
+    return Object.assign({}, DEFAULT_SETTINGS, stored);
+  } catch (err) {
+    console.error('[threads-clean-link] 讀取設定失敗，改用預設值', err);
+    return Object.assign({}, DEFAULT_SETTINGS);
+  }
 }
 
 // 不信任呼叫端傳入的 url，一律用 SHARE_URL_PATTERN 重新驗證，
