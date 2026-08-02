@@ -7,6 +7,12 @@
   var REQ_TYPE = 'TCL_RESOLVE_REQ';
   var RES_TYPE = 'TCL_RESOLVE_RES';
 
+  // R1-2 通知涵蓋自動路徑：MAIN world(clipboard-guard.js)實際把淨化後
+  // 內容寫入剪貼簿後，會送一則 TCL_CLEANED_NOTICE 過來，這裡原樣轉發成
+  // chrome.runtime.sendMessage(cleanedNotice) 給 service worker，由它依
+  // notifySuccess 決定要不要顯示通知。
+  var NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
+
   window.addEventListener('message', function (event) {
     // 只信任「本頁面自己發給自己」的訊息：
     // - source 必須是同一個 window（排除子 iframe / 其他視窗轉發過來的訊息）
@@ -16,6 +22,17 @@
 
     var data = event.data;
     if (!data || typeof data !== 'object') return;
+
+    if (data.type === NOTICE_TYPE) {
+      if (typeof data.cleanUrl !== 'string' || !data.cleanUrl) return;
+      try {
+        chrome.runtime.sendMessage({ type: 'cleanedNotice', cleanUrl: data.cleanUrl });
+      } catch (e) {
+        // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而為。
+      }
+      return;
+    }
+
     if (data.type !== REQ_TYPE) return;
     if (typeof data.requestId !== 'string' || !data.requestId) return;
     if (typeof data.url !== 'string' || !data.url) return;
@@ -67,11 +84,11 @@
   // 觸發時（例如使用者在 popup 切換開關）再次推播最新值。
   // ------------------------------------------------------------
 
+  // R1-1 併開關：resolveShortcode 徹底移除，設定只剩兩顆鍵。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
-  var SETTINGS_KEYS = ['autoClean', 'resolveShortcode', 'notifySuccess'];
+  var SETTINGS_KEYS = ['autoClean', 'notifySuccess'];
   var SETTINGS_DEFAULTS = {
     autoClean: true,
-    resolveShortcode: true,
     notifySuccess: false,
   };
 
@@ -141,7 +158,6 @@
 
       var next = {
         autoClean: lastKnownSettings.autoClean,
-        resolveShortcode: lastKnownSettings.resolveShortcode,
         notifySuccess: lastKnownSettings.notifySuccess,
       };
       var mutated = false;

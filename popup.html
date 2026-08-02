@@ -11,6 +11,8 @@
     --muted: #6b6b6b;
     --border: #e3e3e3;
     --accent: #0d6efd;
+    --switch-track-off: #d0d3d9;
+    --switch-thumb: #ffffff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -19,6 +21,8 @@
       --muted: #a3a3a3;
       --border: #3a3b3d;
       --accent: #6ea8ff;
+      --switch-track-off: #55575c;
+      --switch-thumb: #e8e8e8;
     }
   }
   * {
@@ -58,32 +62,44 @@
   .setting-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 0;
-  }
-  .setting-row.indent {
-    margin-left: 22px;
-  }
-  .setting-row:has(input:disabled) {
-    opacity: 0.5;
-  }
-  .setting-row input[type="checkbox"] {
-    width: 15px;
-    height: 15px;
-    margin: 0;
-    flex: none;
-    accent-color: var(--accent);
+    gap: 10px;
+    padding: 8px 0;
   }
   .setting-row label {
     cursor: pointer;
   }
-  .setting-row:has(input:disabled) label {
-    cursor: default;
+  /* 滑動 switch：取消 checkbox 原生打勾外觀，自行畫軌道與滑塊。
+     顏色一律走 CSS 變數（--switch-track-off / --switch-thumb / --accent），
+     深淺色主題各自在 :root 覆寫變數值，這裡不得出現任何硬編色碼。 */
+  .switch {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 34px;
+    height: 20px;
+    margin: 0;
+    flex: none;
+    border-radius: 999px;
+    background: var(--switch-track-off);
+    cursor: pointer;
+    transition: background-color 0.15s ease;
   }
-  .setting-hint {
-    font-size: 11px;
-    color: var(--muted);
-    margin-left: 22px;
+  .switch::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--switch-thumb);
+    transition: transform 0.15s ease;
+  }
+  .switch:checked {
+    background: var(--accent);
+  }
+  .switch:checked::before {
+    transform: translateX(14px);
   }
   footer {
     padding: 8px 14px 12px;
@@ -101,15 +117,11 @@
   </header>
   <div class="settings">
     <div class="setting-row">
-      <input type="checkbox" id="autoClean" />
+      <input type="checkbox" id="autoClean" class="switch" />
       <label for="autoClean">自動淨化剪貼簿</label>
     </div>
-    <div class="setting-row indent">
-      <input type="checkbox" id="resolveShortcode" />
-      <label for="resolveShortcode">短碼解析（需連網）</label>
-    </div>
     <div class="setting-row">
-      <input type="checkbox" id="notifySuccess" />
+      <input type="checkbox" id="notifySuccess" class="switch" />
       <label for="notifySuccess">成功時顯示通知</label>
     </div>
   </div>
