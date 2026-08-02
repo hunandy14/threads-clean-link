@@ -24,7 +24,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: 簽出原始碼(含完整歷史與 tags)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
