@@ -16,7 +16,14 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 ## 安裝
 
-Chrome Web Store 上架審查中。目前提供兩種安裝方式:
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
+
+已上架 Chrome Web Store，於商店頁面點擊「加到 Chrome」即可安裝:
+https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj
+
+### 開發者安裝
+
+若想使用開發中版本或參與開發，可手動載入未封裝擴充功能:
 
 1. 取得原始碼:`git clone https://github.com/hunandy14/threads-clean-link.git`，或於 [Releases](https://github.com/hunandy14/threads-clean-link/releases) 下載 CI 自動打包的 zip 並解壓縮。
 2. Chrome 網址列輸入 `chrome://extensions`，開啟「開發人員模式」，選擇「載入未封裝項目」並指向上述資料夾。
