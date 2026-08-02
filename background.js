@@ -12,11 +12,16 @@ const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\
 
 // cleanedNotice 專用的「錨定」樣式(比照 clipboard-guard.js 的 POST_URL_RE)。
 // 該訊息的 cleanUrl 來自頁面腳本可自由 postMessage 的管道，內容會直接進到
-// 使用者看到的通知訊息，因此必須「整串完全吻合」才採信：收尾 $ 且字元類
-// 排除 \s，否則「合法貼文網址開頭 + 尾隨任意文字」會通過驗證，等同讓頁面
-// 操控通知內容。通知路徑的 cleanUrl 一律是已淨化結果，本來就不帶 query
-// 與 hash，故此處也不放行 ?/# 尾段。
-const NOTICE_CLEAN_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#\s]+\/post\/[^/?#\s]+$/i;
+// 使用者看到的通知訊息，因此必須「整串完全吻合」才採信。
+//
+// 這裡刻意用「白名單字元類 + 長度上限」而非排除法:排除法(如 [^/?#\s]+)
+// 只擋得住帶空白的尾隨文字，中文釣魚句本來就不需要空白，
+// 「合法前綴 + 帳號異常，請至 evil.example 重新登入」照樣整串吻合而過關;
+// 純英數長串同理。Threads 的 handle 與 post id 實際上都只有 ASCII
+// (handle 允許英數、底線、句點;post id 是 base64url 短碼)，收緊到實際
+// 字母表不會誤殺，且誤殺的代價只是少一則通知，屬 fail-safe 方向。
+// 通知路徑的 cleanUrl 一律是已淨化結果，本來就不帶 query 與 hash。
+const NOTICE_CLEAN_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}$/i;
 
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';

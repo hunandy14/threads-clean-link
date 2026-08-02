@@ -500,3 +500,68 @@ test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 
 
   assert.equal(bg.notifications.length, 1);
 });
+
+// R2 審查回饋(阻斷級):只錨定收尾、字元類用排除法(如 [^/?#\s]+)仍有缺口
+// ——尾隨文字只要「不含空白」就整串吻合而過關。中文釣魚句不需要空白，
+// 純英數長串同理;頁面甚至不必偽造 notice，直接 writeText 一個帶中文句的
+// 假貼文網址走完整條自動淨化鏈也會通知。驗證樣式必須收緊到 Threads 實際
+// 使用的 ASCII 字母表並加長度上限。
+
+test('R2:「合法前綴 + 無空白中文文字」的 cleanedNotice 不得發出通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  const forged = [
+    `${CLEANED_NOTICE_CLEAN_URL}帳號異常，請至evil.example重新登入驗證`,
+    `${CLEANED_NOTICE_CLEAN_URL}:您的帳號已被停用。`,
+    `${CLEANED_NOTICE_CLEAN_URL}【系統通知】請立即點擊下方連結`,
+  ];
+  for (const cleanUrl of forged) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.deepEqual(
+    bg.notifications,
+    [],
+    '不含空白的中文尾隨文字必須被擋下，不得發出任何通知'
+  );
+
+  // 對照組:整串完全吻合的乾淨網址仍須通知。
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  await settle();
+
+  assert.equal(bg.notifications.length, 1);
+});
+
+test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+
+  const forged = [
+    `${CLEANED_NOTICE_CLEAN_URL}${'A'.repeat(1000)}`,
+    `${CLEANED_NOTICE_CLEAN_URL}${'0'.repeat(200)}`,
+  ];
+  for (const cleanUrl of forged) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.deepEqual(
+    bg.notifications,
+    [],
+    '純英數長串尾隨必須被長度上限擋下，不得發出任何通知'
+  );
+
+  // 對照組:四種合法寫法(www／無 www、.com／.net)都必須正常通知。
+  const legit = [
+    'https://www.threads.com/@dafucoding/post/DbezfB0gYvP',
+    'https://threads.com/@dafucoding/post/DbezfB0gYvP',
+    'https://www.threads.net/@dafu.coding_1/post/Dbez-fB0_gYvP',
+    'https://threads.net/@dafucoding/post/DbezfB0gYvP',
+  ];
+  for (const cleanUrl of legit) {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+  }
+  await settle();
+
+  assert.equal(bg.notifications.length, legit.length, '合法網址一律照常通知，不得誤殺');
+});
