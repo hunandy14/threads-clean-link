@@ -222,7 +222,7 @@ test('R1-3:footer 文案不變', () => {
   const html = readPopupHtml();
 
   assert.ok(
-    html.includes('失敗時一律放行原始連結，右鍵選單不受開關影響。'),
+    html.includes('盡力而為，處理失敗不影響原功能。'),
     'footer 文案在改版中必須維持原樣'
   );
 });
