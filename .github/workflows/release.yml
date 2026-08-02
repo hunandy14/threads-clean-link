@@ -60,13 +60,35 @@ jobs:
         shell: pwsh
         run: tools/build-release.ps1
 
+      - name: 產生乾淨格式的 release notes
+        if: steps.tagcheck.outputs.exists == 'false'
+        run: |
+          # 用 GitHub 原生的 generate-notes API 取得「## What's Changed」清單
+          # (與 gh release create --generate-notes 底層同一支 API，會自動抓
+          # 上一個 release 到現在合併的 PR)，但只留標題與 PR 編號、去掉
+          # 「by @帳號 in 連結」與「## New Contributors」區塊，格式對齊 (A)
+          # 手動整理過的 v0.2.0 release notes。
+          RAW=$(gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="v${{ steps.version.outputs.version }}" --jq '.body')
+
+          {
+            echo "## 更新內容"
+            echo "$RAW" | awk '/^## What.s Changed/{flag=1; next} /^## /{flag=0} flag && /^\* /' \
+              | sed -E 's|^\* (.*) by @[^ ]+ in https://github\.com/[^/]+/[^/]+/pull/([0-9]+)$|- \1（#\2）|'
+            echo ""
+            echo "$RAW" | grep '^\*\*Full Changelog\*\*'
+          } > release-notes.md
+
+          echo "已產生 release notes:"
+          cat release-notes.md
+
       - name: 建立 GitHub Release
         if: steps.tagcheck.outputs.exists == 'false'
         run: |
           gh release create "v${{ steps.version.outputs.version }}" \
             "dist/threads-clean-link-v${{ steps.version.outputs.version }}.zip" \
             --title "v${{ steps.version.outputs.version }}" \
-            --generate-notes
+            --notes-file release-notes.md
 
       - name: 上傳新版草稿至 Chrome Web Store
         if: steps.tagcheck.outputs.exists == 'false'
