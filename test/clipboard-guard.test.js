@@ -110,15 +110,26 @@ function recordingWriteRaw(recorder) {
 
 // ---- 短碼分支:writeText ----
 
-test('短碼(帶尾斜線)經橋接成功解析後，寫入乾淨貼文網址', async () => {
-  const recorder = [];
-  const win = createWindow();
-  installBridgeSim(win, 'success');
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
+// 【精簡】原本「帶尾斜線」「threads.net 無 www」「前後帶空白且附 query」
+// 三條各自一測，驗的是同一個不變量:形態合法的短碼一律經橋接解析後寫入
+// 乾淨貼文網址。併為一條多案例測試，三種形態逐一跑過。
+test('短碼經橋接成功解析後寫入乾淨貼文網址(尾斜線／無 www 的 threads.net／前後空白加 query)', async () => {
+  const cases = [
+    ['https://www.threads.com/share/DHuf91XTf/', '帶尾斜線'],
+    ['https://threads.net/share/xyz123', 'threads.net 且無 www'],
+    ['  https://www.threads.com/share/DHuf91XTf?foo=bar  ', '前後帶空白且附 query，須 trim 後判定'],
+  ];
 
-  await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/DHuf91XTf/');
+  for (const [input, label] of cases) {
+    const recorder = [];
+    const win = createWindow();
+    installBridgeSim(win, 'success');
+    const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  assert.equal(recorder[0], CLEAN_POST_URL);
+    await sandbox.navigator.clipboard.writeText(input);
+
+    assert.equal(recorder[0], CLEAN_POST_URL, label);
+  }
 });
 
 test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async () => {
@@ -146,28 +157,6 @@ test('短碼橋接逾時(2500ms)後，原樣寫入原始短碼(fail-open)', asyn
 
   assert.equal(recorder[0], shareUrl);
   assert.ok(elapsed >= 2500, `應等滿 2500ms 才 fail-open，實際 ${elapsed}ms`);
-});
-
-test('threads.net 短碼(無 www)經橋接成功解析後，寫入乾淨貼文網址', async () => {
-  const recorder = [];
-  const win = createWindow();
-  installBridgeSim(win, 'success');
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-
-  await sandbox.navigator.clipboard.writeText('https://threads.net/share/xyz123');
-
-  assert.equal(recorder[0], CLEAN_POST_URL);
-});
-
-test('短碼前後帶空白且附 query 時，trim 後仍判定為短碼並解析成功', async () => {
-  const recorder = [];
-  const win = createWindow();
-  installBridgeSim(win, 'success');
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-
-  await sandbox.navigator.clipboard.writeText('  https://www.threads.com/share/DHuf91XTf?foo=bar  ');
-
-  assert.equal(recorder[0], CLEAN_POST_URL);
 });
 
 // ---- 短碼分支:write() ----
@@ -215,46 +204,30 @@ test('帶 ?xmt 追蹤參數的貼文網址，同步去除 query 後放行', asyn
   assert.equal(recorder[0], 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7');
 });
 
-test('已乾淨的貼文網址原樣放行', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  const url = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7';
+// 【精簡】「已乾淨的貼文網址」「非網址字串」「非字串輸入」「貼文網址後接
+// 空白與其他文字」四條驗的是同一個不變量:沒有東西可淨化的輸入一律原樣
+// 放行、不改寫。併為一條多案例測試。非 threads 網域的 /share/ 屬網域驗證，
+// 仍單獨保留一條(見下)。
+test('沒有東西可淨化的輸入一律原樣放行(已乾淨網址／非網址字串／非字串／網址後接文字)', async () => {
+  const cases = [
+    ['https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7', '已乾淨的貼文網址'],
+    ['hello world, not a url', '非網址字串'],
+    [12345, '非字串輸入'],
+    [
+      'https://www.threads.com/@abc/post/123?xmt=1 and here is my comment',
+      '貼文網址後接空白與其他文字，不得誤判為單一網址',
+    ],
+  ];
 
-  await sandbox.navigator.clipboard.writeText(url);
+  for (const [input, label] of cases) {
+    const recorder = [];
+    const win = createWindow();
+    const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  assert.equal(recorder[0], url);
-});
+    await sandbox.navigator.clipboard.writeText(input);
 
-test('非網址字串原樣放行', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-
-  await sandbox.navigator.clipboard.writeText('hello world, not a url');
-
-  assert.equal(recorder[0], 'hello world, not a url');
-});
-
-test('非字串輸入原樣放行', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-
-  await sandbox.navigator.clipboard.writeText(12345);
-
-  assert.equal(recorder[0], 12345);
-});
-
-test('貼文網址後接空白與其他文字時，不誤判為單一網址、原樣放行', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  const text = 'https://www.threads.com/@abc/post/123?xmt=1 and here is my comment';
-
-  await sandbox.navigator.clipboard.writeText(text);
-
-  assert.equal(recorder[0], text);
+    assert.equal(recorder[0], input, label);
+  }
 });
 
 test('非 threads 網域的 /share/ 路徑不觸發短碼解析，原樣放行', async () => {
@@ -268,20 +241,9 @@ test('非 threads 網域的 /share/ 路徑不觸發短碼解析，原樣放行',
   assert.equal(recorder[0], url);
 });
 
-test('write() 多格式(text/plain + text/html)item 原樣放行，不嘗試改寫', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWrite(recorder), win);
-  const plainUrl = 'https://www.threads.com/@abc/post/123?xmt=ZZZ';
-  const item = new FakeClipboardItem({
-    'text/plain': new Blob([plainUrl], { type: 'text/plain' }),
-    'text/html': new Blob(['<a href="...">link</a>'], { type: 'text/html' }),
-  });
-
-  await sandbox.navigator.clipboard.write([item]);
-
-  assert.equal(recorder[0][0].text, plainUrl);
-});
+// 【精簡】原本此處另有一條「write() 多格式 item 原樣放行，不嘗試改寫」，
+// 與後面「以參照相等原樣放行，不重建新陣列」那條是同一個案例的弱化版
+// (後者連陣列參照都比對，嚴格涵蓋前者)，故刪除弱版、只留嚴格版。
 
 // ---- 原生寫入被拒時:只呼叫一次，rejection 原樣傳回呼叫端 ----
 
@@ -482,33 +444,31 @@ test('guard 端:短碼解析成功後，只剩常駐的設定監聽器(基準+1)
 
 // ---- write():不符合單一 text/plain 條件的 items，以參照相等原樣放行 ----
 
-test('write():多格式(text/plain + text/html)ClipboardItem 以參照相等原樣放行，不重建新陣列', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
-  const item = new FakeClipboardItem({
-    'text/plain': new Blob(['https://www.threads.com/@abc/post/123?xmt=ZZZ'], { type: 'text/plain' }),
-    'text/html': new Blob(['<a href="...">link</a>'], { type: 'text/html' }),
-  });
-  const originalItems = [item];
+// 【精簡】「多格式 item」與「單一 image/png」是同一個不變量(不符合單一
+// text/plain 條件者一律以參照相等原樣放行、不重建新陣列)的兩個資料變體，
+// 併為一條多案例測試。
+test('write():不符單一 text/plain 條件的 items 以參照相等原樣放行，不重建新陣列', async () => {
+  const cases = [
+    [
+      {
+        'text/plain': new Blob(['https://www.threads.com/@abc/post/123?xmt=ZZZ'], { type: 'text/plain' }),
+        'text/html': new Blob(['<a href="...">link</a>'], { type: 'text/html' }),
+      },
+      '多格式(text/plain + text/html)',
+    ],
+    [{ 'image/png': new Blob([], { type: 'image/png' }) }, '單一 image/png'],
+  ];
 
-  await sandbox.navigator.clipboard.write(originalItems);
+  for (const [types, label] of cases) {
+    const recorder = [];
+    const win = createWindow();
+    const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+    const originalItems = [new FakeClipboardItem(types)];
 
-  assert.equal(recorder[0], originalItems);
-});
+    await sandbox.navigator.clipboard.write(originalItems);
 
-test('write():單一 image/png ClipboardItem 以參照相等原樣放行', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
-  const item = new FakeClipboardItem({
-    'image/png': new Blob([], { type: 'image/png' }),
-  });
-  const originalItems = [item];
-
-  await sandbox.navigator.clipboard.write(originalItems);
-
-  assert.equal(recorder[0], originalItems);
+    assert.equal(recorder[0], originalItems, label);
+  }
 });
 
 // ============================================================
@@ -575,122 +535,55 @@ function settings(overrides) {
 
 // ---- S3:autoClean=false 一律直接放行原始內容 ----
 
-test('S3:autoClean=false 時，writeText 對帶 ?xmt 的貼文網址原樣放行、不改寫、不發解析請求', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: false }));
+// 【精簡】原本 ?xmt 與 /share/ 兩種輸入各自一測(writeText 與 write() 各兩條)，
+// 驗的是同一個不變量:autoClean=false 時一律原樣放行且完全不發解析請求。
+// 兩條路徑(writeText／write())是不同分支各留一條，路徑內的兩種輸入併成多案例。
+test('S3:autoClean=false 時，writeText 對 ?xmt 與 /share/ 皆原樣放行，且完全不發 TCL_RESOLVE_REQ', async () => {
+  for (const input of [XMT_URL, SHARE_URL]) {
+    const recorder = [];
+    const win = createWindow();
+    const requests = trackResolveRequests(win, { respond: true });
+    const sandbox = loadGuard(recordingWriteText(recorder), win);
+    await pushSettings(win, settings({ autoClean: false }));
 
-  await sandbox.navigator.clipboard.writeText(XMT_URL);
+    await sandbox.navigator.clipboard.writeText(input);
 
-  assert.equal(recorder[0], XMT_URL);
-  assert.equal(requests.length, 0);
+    assert.equal(recorder[0], input, `${input} 應原樣放行`);
+    assert.equal(requests.length, 0, `${input} 不得送出解析請求`);
+  }
 });
 
-test('S3:autoClean=false 時，writeText 對 /share/ 短碼原樣放行，且完全不發 TCL_RESOLVE_REQ', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: false }));
+test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等原樣放行，且不發解析請求', async () => {
+  for (const input of [XMT_URL, SHARE_URL]) {
+    const recorder = [];
+    const win = createWindow();
+    const requests = trackResolveRequests(win, { respond: true });
+    const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+    await pushSettings(win, settings({ autoClean: false }));
+    const originalItems = [
+      new FakeClipboardItem({ 'text/plain': new Blob([input], { type: 'text/plain' }) }),
+    ];
 
-  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+    await sandbox.navigator.clipboard.write(originalItems);
 
-  assert.equal(recorder[0], SHARE_URL);
-  assert.equal(requests.length, 0);
-});
-
-test('S3:autoClean=false 時，write() 對 ?xmt 貼文網址以參照相等原樣放行，不重建 items', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
-  await pushSettings(win, settings({ autoClean: false }));
-  const originalItems = [
-    new FakeClipboardItem({ 'text/plain': new Blob([XMT_URL], { type: 'text/plain' }) }),
-  ];
-
-  await sandbox.navigator.clipboard.write(originalItems);
-
-  assert.equal(recorder[0], originalItems);
-  assert.equal(requests.length, 0);
-});
-
-test('S3:autoClean=false 時，write() 對 /share/ 短碼以參照相等原樣放行，且不發解析請求', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
-  await pushSettings(win, settings({ autoClean: false }));
-  const originalItems = [
-    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
-  ];
-
-  await sandbox.navigator.clipboard.write(originalItems);
-
-  assert.equal(recorder[0], originalItems);
-  assert.equal(requests.length, 0);
+    assert.equal(recorder[0], originalItems, `${input} 應以參照相等原樣放行`);
+    assert.equal(requests.length, 0, `${input} 不得送出解析請求`);
+  }
 });
 
 // ---- S5:autoClean=true 時，現行淨化行為(短碼解析與 ?xmt 剪參)完全不變 ----
-
-test('S5:autoClean=true 時，writeText 短碼解析行為與現行完全一致', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-
-  // 前置:先推播關閉並確認放行，證明設定確實生效(否則下面的「行為不變」是假綠燈)。
-  await pushSettings(win, settings({ autoClean: false }));
-  await sandbox.navigator.clipboard.writeText(SHARE_URL);
-  assert.equal(recorder[0], SHARE_URL);
-  assert.equal(requests.length, 0);
-
-  await pushSettings(win, settings({ autoClean: true }));
-  await sandbox.navigator.clipboard.writeText(SHARE_URL);
-
-  assert.equal(recorder[1], CLEAN_POST_URL);
-  assert.equal(requests.length, 1);
-});
-
-test('S5:autoClean=true 時，?xmt 剪除與非網址放行行為與現行完全一致', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-
-  await pushSettings(win, settings({ autoClean: false }));
-  await sandbox.navigator.clipboard.writeText(XMT_URL);
-  assert.equal(recorder[0], XMT_URL);
-
-  await pushSettings(win, settings({ autoClean: true }));
-  await sandbox.navigator.clipboard.writeText(XMT_URL);
-  await sandbox.navigator.clipboard.writeText('hello world, not a url');
-
-  assert.equal(recorder[1], XMT_URL_CLEANED);
-  assert.equal(recorder[2], 'hello world, not a url');
-});
-
-test('S5:autoClean=true 時，write() 短碼解析行為與現行完全一致', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const requests = trackResolveRequests(win, { respond: true });
-  const sandbox = loadGuard(recordingWrite(recorder), win);
-  const makeItems = () => [
-    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
-  ];
-
-  await pushSettings(win, settings({ autoClean: false }));
-  await sandbox.navigator.clipboard.write(makeItems());
-  assert.equal(recorder[0][0].text, SHARE_URL);
-  assert.equal(requests.length, 0);
-
-  await pushSettings(win, settings({ autoClean: true }));
-  await sandbox.navigator.clipboard.write(makeItems());
-
-  assert.equal(recorder[1][0].text, CLEAN_POST_URL);
-  assert.equal(requests.length, 1);
-});
+//
+// 【精簡:整節刪除】S5 原有三條，形式都是「先推播關閉確認放行、再推播開啟
+// 確認行為與現行一致」——後半段與既有的成功流程測試完全重疊，屬於典型的
+// 「錯誤/關閉路徑後再跑一次成功流程」。逐條對應到仍在的覆蓋:
+//   - writeText 短碼解析     → 上方短碼多案例測試(預設 true)
+//                              + S6「連續推播(開→關→開)」(明示推播 true)
+//   - ?xmt 剪除與非網址放行  → 上方 ?xmt 測試與「原樣放行」多案例測試
+//                              + S6「首次推播前用預設值」
+//   - write() 短碼解析       → 上方 write() 短碼成功測試(預設 true);
+//                              autoClean 這道閘是兩條路徑共用的同一個判斷，
+//                              關閉側由 S3 的 write() 測試覆蓋。
+// 前半段「關閉確實生效」的可鑑別性由 S3 與 S6 各自保留，不因此節刪除而失守。
 
 // ---- S6(MAIN world 端):首次推播前用預設值，收到推播後即時採用新值 ----
 
@@ -827,53 +720,56 @@ function trackCleanedNotices(win) {
   return notices;
 }
 
-test('R1-2:短碼解析成功並實際寫入乾淨網址後，guard 送出 TCL_CLEANED_NOTICE', async () => {
-  const recorder = [];
-  const win = createWindow();
-  trackResolveRequests(win, { respond: true });
-  const notices = trackCleanedNotices(win);
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+// 【精簡】三條淨化成功送 notice 的測試(writeText 短碼／writeText ?xmt／
+// write() 短碼)驗的是同一個不變量:實際寫入淨化後內容就送出一則 notice，
+// 且 notice 的 cleanUrl 等於實際寫入的內容。併為一條三案例測試，三條路徑
+// 都仍各跑一次。
+test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，cleanUrl 等於寫入內容', async () => {
+  const cases = [
+    {
+      label: 'writeText 短碼解析',
+      resolve: true,
+      run: async (sandbox) => sandbox.navigator.clipboard.writeText(SHARE_URL),
+      makeClipboard: recordingWriteText,
+      written: (recorder) => recorder[0],
+      expected: CLEAN_POST_URL,
+    },
+    {
+      label: 'writeText ?xmt 剪參',
+      resolve: false,
+      run: async (sandbox) => sandbox.navigator.clipboard.writeText(XMT_URL),
+      makeClipboard: recordingWriteText,
+      written: (recorder) => recorder[0],
+      expected: XMT_URL_CLEANED,
+    },
+    {
+      label: 'write() 短碼解析',
+      resolve: true,
+      run: async (sandbox) =>
+        sandbox.navigator.clipboard.write([
+          new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+        ]),
+      makeClipboard: recordingWrite,
+      written: (recorder) => recorder[0][0].text,
+      expected: CLEAN_POST_URL,
+    },
+  ];
 
-  await sandbox.navigator.clipboard.writeText(SHARE_URL);
-  await settle();
+  for (const { label, resolve, run, makeClipboard, written, expected } of cases) {
+    const recorder = [];
+    const win = createWindow();
+    if (resolve) trackResolveRequests(win, { respond: true });
+    const notices = trackCleanedNotices(win);
+    const sandbox = loadGuard(makeClipboard(recorder), win);
+    await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
 
-  assert.equal(recorder[0], CLEAN_POST_URL);
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].cleanUrl, CLEAN_POST_URL, 'notice 的 cleanUrl 應等於實際寫入的內容');
-});
+    await run(sandbox);
+    await settle();
 
-test('R1-2:?xmt 剪參成功寫入後，guard 送出 TCL_CLEANED_NOTICE', async () => {
-  const recorder = [];
-  const win = createWindow();
-  const notices = trackCleanedNotices(win);
-  const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
-
-  await sandbox.navigator.clipboard.writeText(XMT_URL);
-  await settle();
-
-  assert.equal(recorder[0], XMT_URL_CLEANED);
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].cleanUrl, XMT_URL_CLEANED);
-});
-
-test('R1-2:write() 路徑淨化成功寫入後，guard 送出 TCL_CLEANED_NOTICE', async () => {
-  const recorder = [];
-  const win = createWindow();
-  trackResolveRequests(win, { respond: true });
-  const notices = trackCleanedNotices(win);
-  const sandbox = loadGuard(recordingWrite(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
-
-  await sandbox.navigator.clipboard.write([
-    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
-  ]);
-  await settle();
-
-  assert.equal(recorder[0][0].text, CLEAN_POST_URL);
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].cleanUrl, CLEAN_POST_URL);
+    assert.equal(written(recorder), expected, `${label}:應實際寫入淨化後內容`);
+    assert.equal(notices.length, 1, `${label}:應送出剛好一則 notice`);
+    assert.equal(notices[0].cleanUrl, expected, `${label}:notice 的 cleanUrl 應等於實際寫入的內容`);
+  }
 });
 
 test('R1-2:解析逾時後才送達的遲到結果，不得觸發通知(防 timeout race 假通知)', async () => {

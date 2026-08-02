@@ -66,15 +66,21 @@ function callListener(listener, message) {
   });
 }
 
-test('resolveShare 的 onMessage 監聽器會在腳本載入時註冊', () => {
+// 訊息通道契約:認得的類型回傳 true(保持通道開啟等非同步 sendResponse)，
+// 不認得的類型回傳 false 且不佔用 sendResponse。監聽器有沒有註冊由本測試
+// 順帶驗證(取不到就會在此丟錯)，不另立一條。
+test('onMessage 契約:resolveShare 回傳 true 保持通道，其他類型回傳 false 且不呼叫 sendResponse', () => {
   const { listener } = loadBackground();
-  assert.equal(typeof listener, 'function');
-});
+  assert.equal(typeof listener, 'function', '腳本載入時就該註冊 onMessage 監聽器');
 
-test('resolveShare 訊息屬於非同步處理，監聽器回傳 true 以保持通道開啟', () => {
-  const { listener } = loadBackground();
-  const keepAlive = listener({ type: 'resolveShare', url: SHARE_URL }, {}, () => {});
-  assert.equal(keepAlive, true);
+  assert.equal(listener({ type: 'resolveShare', url: SHARE_URL }, {}, () => {}), true);
+
+  let called = false;
+  const keepAlive = listener({ type: 'somethingElse' }, {}, () => {
+    called = true;
+  });
+  assert.equal(keepAlive, false);
+  assert.equal(called, false);
 });
 
 test('合法短碼解析成功時，sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
@@ -110,16 +116,6 @@ test('轉址結果不是貼文網址時，回傳 ok:false 與 reason:format-erro
   });
   assert.equal(response.ok, false);
   assert.equal(response.reason, 'format-error');
-});
-
-test('非 resolveShare 類型的訊息，監聽器回傳 false 且不呼叫 sendResponse', () => {
-  const { listener } = loadBackground();
-  let called = false;
-  const keepAlive = listener({ type: 'somethingElse' }, {}, () => {
-    called = true;
-  });
-  assert.equal(keepAlive, false);
-  assert.equal(called, false);
 });
 
 // ============================================================
@@ -225,25 +221,29 @@ const SHARE_URL_MUST_NOT_MATCH_CASES = [
   },
 ];
 
-for (const { url, reason } of SHARE_URL_MUST_MATCH_CASES) {
-  test(`SHARE_URL_PATTERN 收緊規格(必須匹配):${url} —— ${reason}`, async () => {
-    const { listener, calls } = loadBackgroundAlwaysSucceed();
-    const response = await callListener(listener, { type: 'resolveShare', url });
-    assert.equal(calls.includes(url), true, '應放行並呼叫 fetch 解析短碼');
-    assert.equal(response.ok, true);
-    assert.equal(response.cleanUrl, CLEAN_POST_URL);
-  });
-}
+// 【精簡】原本每個案例各自成為一條測試(共 16 條)，但兩組案例各自只驗證
+// 「同一個不變量」的多個資料變體，改為兩條多案例測試:案例表原樣保留，
+// 每個 url 的歸類理由仍寫進斷言訊息，失敗時照樣指得出是哪一列。
 
-for (const { url, reason } of SHARE_URL_MUST_NOT_MATCH_CASES) {
-  test(`SHARE_URL_PATTERN 收緊規格(不得匹配):${url} —— ${reason}`, async () => {
+test('SHARE_URL_PATTERN 收緊規格(必須匹配):合法短碼一律放行並送出 fetch', async () => {
+  for (const { url, reason } of SHARE_URL_MUST_MATCH_CASES) {
     const { listener, calls } = loadBackgroundAlwaysSucceed();
     const response = await callListener(listener, { type: 'resolveShare', url });
-    assert.equal(response.ok, false);
-    assert.equal(response.reason, 'invalid-url');
-    assert.equal(calls.includes(url), false, '不應呼叫 fetch，須在比對階段就拒絕');
-  });
-}
+    assert.equal(calls.includes(url), true, `${url} 應放行並呼叫 fetch 解析短碼 —— ${reason}`);
+    assert.equal(response.ok, true, `${url} —— ${reason}`);
+    assert.equal(response.cleanUrl, CLEAN_POST_URL, `${url} —— ${reason}`);
+  }
+});
+
+test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對階段就拒絕，不發 fetch', async () => {
+  for (const { url, reason } of SHARE_URL_MUST_NOT_MATCH_CASES) {
+    const { listener, calls } = loadBackgroundAlwaysSucceed();
+    const response = await callListener(listener, { type: 'resolveShare', url });
+    assert.equal(response.ok, false, `${url} —— ${reason}`);
+    assert.equal(response.reason, 'invalid-url', `${url} —— ${reason}`);
+    assert.equal(calls.includes(url), false, `${url} 不應呼叫 fetch —— ${reason}`);
+  }
+});
 
 // ============================================================
 // v1.1 設定規格 S1、S2:右鍵選單路徑與通知的設定行為。
@@ -364,46 +364,30 @@ test('S2:notifySuccess=true 時，右鍵成功複製照常觸發成功通知', a
 
 // ---- S2:失敗／錯誤類通知不受設定影響，永遠觸發 ----
 
-test('S2:notifySuccess=false 時，無效分享短連結的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
+// 【精簡】三種錯誤來源(無效短連結／網路失敗／轉址結果非貼文)驗的是同一個
+// 不變量:錯誤通知不受 notifySuccess 影響，且其後的成功流程仍靜音。三條併為
+// 一條多案例測試，通知 id 逐案例斷言,覆蓋面不減。剪貼簿寫入失敗因為需要
+// 中途翻轉 clipboardOk,harness 形狀不同,仍單獨一條(見下)。
+test('S2:notifySuccess=false 時，各類錯誤通知照常觸發，其後成功流程仍靜音', async () => {
+  const cases = [
+    { linkUrl: 'https://evil.com/whatever', id: 'threads-clean-link-invalid' },
+    { linkUrl: 'https://www.threads.com/share/NETWORKFAIL', id: 'threads-clean-link-network-error' },
+    { linkUrl: 'https://www.threads.com/share/NOTAPOST', id: 'threads-clean-link-format-error' },
+  ];
 
-  bg.click({ linkUrl: 'https://evil.com/whatever' }, { id: 7 });
-  await settle();
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-invalid');
+  for (const { linkUrl, id } of cases) {
+    const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
-  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
-  await settle();
+    bg.click({ linkUrl }, { id: 7 });
+    await settle();
+    assert.equal(bg.notifications.length, 1, `${linkUrl} 的錯誤通知必須照常觸發`);
+    assert.equal(bg.notifications[0].id, id);
 
-  assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
-});
+    bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+    await settle();
 
-test('S2:notifySuccess=false 時，網路解析失敗的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
-
-  bg.click({ linkUrl: 'https://www.threads.com/share/NETWORKFAIL' }, { id: 7 });
-  await settle();
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-network-error');
-
-  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
-  await settle();
-
-  assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
-});
-
-test('S2:notifySuccess=false 時，轉址結果非貼文網址的錯誤通知照常觸發，成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
-
-  bg.click({ linkUrl: 'https://www.threads.com/share/NOTAPOST' }, { id: 7 });
-  await settle();
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-format-error');
-
-  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
-  await settle();
-
-  assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+    assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+  }
 });
 
 test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸發，其後成功流程仍靜音', async () => {

@@ -35,12 +35,11 @@ function parseMessages(filePath) {
 
 // ---- 1. 兩份 messages.json 皆可被 JSON.parse(順帶驗證無 BOM) ----
 
-test('locales:_locales/en/messages.json 可被 JSON.parse', () => {
-  assert.doesNotThrow(() => parseMessages(EN_PATH));
-});
-
-test('locales:_locales/zh_TW/messages.json 可被 JSON.parse', () => {
-  assert.doesNotThrow(() => parseMessages(ZH_TW_PATH));
+// 【精簡】en 與 zh_TW 兩條併為一條多案例:同一個不變量、只差檔案。
+test('locales:兩份 messages.json 皆可被 JSON.parse', () => {
+  for (const filePath of [EN_PATH, ZH_TW_PATH]) {
+    assert.doesNotThrow(() => parseMessages(filePath), `${filePath} 應為合法 JSON`);
+  }
 });
 
 test('locales:兩份 messages.json 開頭皆無 UTF-8 BOM', () => {

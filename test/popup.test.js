@@ -91,27 +91,25 @@ test('S7:storage 為空時，init() 以兩個預設值呈現兩個開關', async
 
 // ---- S7:兩開關寫 chrome.storage.sync ----
 
-test('S7:切換 notifySuccess 開關，新值寫回 chrome.storage.sync', async () => {
-  const { storage, doc, controller } = setup({});
-  await controller.init();
-  await settle();
+// 【精簡】兩顆開關各一條併為一條多案例:同一個不變量(切換即寫回
+// chrome.storage.sync)，只差是哪一顆鍵與翻成哪個值。
+test('S7:切換任一開關，新值寫回 chrome.storage.sync', async () => {
+  const cases = [
+    { key: 'notifySuccess', next: true },
+    { key: 'autoClean', next: false },
+  ];
 
-  doc.elements.notifySuccess.fireChange(true);
-  await settle();
+  for (const { key, next } of cases) {
+    const { storage, doc, controller } = setup({ autoClean: true, notifySuccess: false });
+    await controller.init();
+    await settle();
 
-  assert.equal(storage.snapshot().notifySuccess, true);
-  assert.ok(storage.calls.set.length >= 1, 'popup 應把新值寫回 chrome.storage.sync');
-});
+    doc.elements[key].fireChange(next);
+    await settle();
 
-test('S7:切換 autoClean 開關，新值寫回 chrome.storage.sync', async () => {
-  const { storage, doc, controller } = setup({ autoClean: true, notifySuccess: false });
-  await controller.init();
-  await settle();
-
-  doc.elements.autoClean.fireChange(false);
-  await settle();
-
-  assert.equal(storage.snapshot().autoClean, false);
+    assert.equal(storage.snapshot()[key], next, `${key} 的新值應寫回 storage`);
+    assert.ok(storage.calls.set.length >= 1, 'popup 應把新值寫回 chrome.storage.sync');
+  }
 });
 
 // ---- MV3 CSP:popup.html 不得有內嵌 script(靜態防回歸) ----

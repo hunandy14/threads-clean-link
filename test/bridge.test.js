@@ -41,66 +41,49 @@ function loadBridge({ sendMessage }) {
   return { win, sentMessages, dispatch };
 }
 
-test('合法短碼解析請求，轉發為一次 chrome.runtime.sendMessage(resolveShare)', async () => {
+// 【精簡】原本「轉發形狀」「cleanUrl 原樣傳回」「requestId 配對」三條用的是
+// 同一組成功情境的 setup，只是各驗回傳物件的一個欄位，併為一條成功路徑測試。
+test('成功路徑:轉發為一次 sendMessage(resolveShare)，cleanUrl 與 requestId 原樣傳回 MAIN world', async () => {
   const { sentMessages, dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
   });
 
   const result = await dispatch({
     type: 'TCL_RESOLVE_REQ',
-    requestId: 'req-1',
+    requestId: 'req-unique-5',
     url: 'https://www.threads.com/share/ABC',
   });
 
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].type, 'resolveShare');
   assert.equal(sentMessages[0].url, 'https://www.threads.com/share/ABC');
-  assert.equal(result.requestId, 'req-1');
-});
-
-test('service worker 解析成功時，cleanUrl 原樣經 postMessage 傳回 MAIN world', async () => {
-  const { dispatch } = loadBridge({
-    sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
-  });
-
-  const result = await dispatch({
-    type: 'TCL_RESOLVE_REQ',
-    requestId: 'req-1',
-    url: 'https://www.threads.com/share/ABC',
-  });
-
   assert.equal(result.ok, true);
   assert.equal(result.cleanUrl, 'https://www.threads.com/@x/post/y');
+  assert.equal(result.requestId, 'req-unique-5', '回應須帶回同一個 requestId 供 MAIN world 配對');
 });
 
-test('service worker 回應 ok:false 時，原樣轉發失敗結果與 reason', async () => {
-  const { dispatch } = loadBridge({
-    sendMessage: (message, callback) => callback({ ok: false, reason: 'format-error' }),
-  });
+// 【精簡】「ok:false 原樣轉發」與「未回應標示 no-response」是同一個不變量
+// (解析未成功一律轉為 ok:false 並帶上可辨識的 reason)的兩個變體，併為一條。
+test('失敗路徑:ok:false 原樣轉發 reason，未回應則標示 no-response', async () => {
+  const cases = [
+    { respond: (cb) => cb({ ok: false, reason: 'format-error' }), reason: 'format-error' },
+    { respond: (cb) => cb(undefined), reason: 'no-response' },
+  ];
 
-  const result = await dispatch({
-    type: 'TCL_RESOLVE_REQ',
-    requestId: 'req-2',
-    url: 'https://www.threads.com/share/BAD',
-  });
+  for (const { respond, reason } of cases) {
+    const { dispatch } = loadBridge({
+      sendMessage: (message, callback) => respond(callback),
+    });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'format-error');
-});
+    const result = await dispatch({
+      type: 'TCL_RESOLVE_REQ',
+      requestId: 'req-2',
+      url: 'https://www.threads.com/share/BAD',
+    });
 
-test('service worker 未回應(response 為 undefined)時，reason 標示為 no-response', async () => {
-  const { dispatch } = loadBridge({
-    sendMessage: (message, callback) => callback(undefined),
-  });
-
-  const result = await dispatch({
-    type: 'TCL_RESOLVE_REQ',
-    requestId: 'req-3',
-    url: 'https://www.threads.com/share/X',
-  });
-
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'no-response');
+    assert.equal(result.ok, false, `reason=${reason} 的情境須回報失敗`);
+    assert.equal(result.reason, reason);
+  }
 });
 
 test('chrome.runtime.lastError 視為解析失敗，不視為致命錯誤', async () => {
@@ -119,20 +102,6 @@ test('chrome.runtime.lastError 視為解析失敗，不視為致命錯誤', asyn
 
   assert.equal(result.ok, false);
   assert.equal(typeof result.reason, 'string');
-});
-
-test('回應一律帶回與請求相同的 requestId，供 MAIN world 端配對', async () => {
-  const { dispatch } = loadBridge({
-    sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
-  });
-
-  const result = await dispatch({
-    type: 'TCL_RESOLVE_REQ',
-    requestId: 'req-unique-5',
-    url: 'https://www.threads.com/share/X',
-  });
-
-  assert.equal(result.requestId, 'req-unique-5');
 });
 
 test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.sendMessage', async () => {
