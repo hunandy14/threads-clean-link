@@ -1,5 +1,9 @@
 # Threads Clean Link
 
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
+[![CI](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml/badge.svg)](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/github/license/hunandy14/threads-clean-link)](./LICENSE)
+
 Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。
 
 ## 功能
@@ -15,8 +19,6 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 **自動淨化官方「複製連結」**:Threads 網頁版「複製連結」目前會寫入 `/share/XXXX` 短碼，或帶 `?xmt=` 追蹤參數的完整網址。本功能攔截該寫入動作，短碼自動解析、參數直接剪除，結果均為乾淨網址。解析逾時(2.5 秒)或失敗時，原內容原樣放行，不影響複製功能本身。
 
 ## 安裝
-
-[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
 
 已上架 Chrome Web Store，於商店頁面點擊「加到 Chrome」即可安裝:
 https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj
@@ -53,6 +55,8 @@ https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcaj
 | `host_permissions`(`*.threads.com`、`*.threads.net`) | 發出短碼解析請求;於 Threads 頁面注入淨化邏輯 |
 
 未宣告 `<all_urls>` 與 `clipboardRead`。
+
+各權限的實際觸發情境見[運作原理與隱私](#運作原理與隱私)。
 
 ## 已知限制
 
