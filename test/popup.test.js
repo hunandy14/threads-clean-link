@@ -163,3 +163,25 @@ test('S7:autoClean 由 true 切為 false，resolveShortcode 即時進入禁用�
   assert.equal(doc.elements.resolveShortcode.disabled, true);
   assert.equal(storage.snapshot().autoClean, false);
 });
+
+// ---- MV3 CSP:popup.html 不得有內嵌 script(靜態防回歸) ----
+//
+// 上面的測試全跑邏輯層，照不到 HTML 的載入方式。MV3 預設 CSP
+// (script-src 'self') 會靜默擋掉無 src 的內嵌 <script>，接線一旦寫回
+// popup.html 內嵌，popup 會整個失效卻仍然全綠。此測試改讀 popup.html
+// 原文，確保每個 <script 標籤都帶 src。
+
+test('MV3 CSP:popup.html 內所有 <script> 都必須帶 src，不得使用內嵌腳本', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
+
+  const openTags = html.match(/<script\b[^>]*>/gi) || [];
+
+  assert.ok(openTags.length >= 1, 'popup.html 應至少載入一支外部腳本');
+  for (const tag of openTags) {
+    assert.ok(
+      /\bsrc\s*=/i.test(tag),
+      `popup.html 出現無 src 的內嵌 <script>，會被 MV3 預設 CSP 擋掉:${tag}`
+    );
+  }
+});

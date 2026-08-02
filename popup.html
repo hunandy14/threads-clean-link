@@ -115,20 +115,6 @@
   </div>
   <footer>失敗時一律放行原始連結，右鍵選單不受開關影響。</footer>
   <script src="popup.js"></script>
-  <script>
-    // 把真的 chrome.storage.sync 接上邏輯層；popup.js 本身不碰全域 chrome，
-    // 才能在 Node 測試環境離線測試（見 popup.js 檔頭）。
-    document.addEventListener('DOMContentLoaded', function () {
-      var versionEl = document.getElementById('version');
-      if (versionEl && typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest) {
-        versionEl.textContent = 'v' + chrome.runtime.getManifest().version;
-      }
-      var controller = createPopupController({
-        document: document,
-        storage: chrome.storage.sync,
-      });
-      controller.init();
-    });
-  </script>
+  <script src="popup-init.js"></script>
 </body>
 </html>
