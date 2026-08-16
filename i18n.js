@@ -104,6 +104,10 @@
       opRelHour: '{n} 小時前',
       opRelYesterday: '昨天',
       opRelDays: '{n} 天前',
+
+      // ---- post-icon:貼文互動列注入的複製連結 icon ----
+      iconTooltip: '複製連結',
+      iconCopied: '已複製原始連結',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -189,6 +193,9 @@
       opRelHour: '{n} hr ago',
       opRelYesterday: 'yesterday',
       opRelDays: '{n} days ago',
+
+      iconTooltip: 'Copy link',
+      iconCopied: 'Original link copied',
     },
   };
 
