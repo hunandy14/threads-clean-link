@@ -109,15 +109,22 @@
       var ICON_CLASS = 'tcl-copy-icon';
       var STYLE_ID = 'tcl-post-icon-style';
       var TOOLTIP_CLASS = 'tcl-copy-icon-tooltip';
+      var TOOLTIP_VISIBLE_CLASS = 'tcl-copy-icon-tooltip--visible';
       var SVG_WRAP_CLASS = 'tcl-copy-icon-svg';
       var COPIED_RESET_MS = 1500;
       var SCAN_DEBOUNCE_MS = 60;
 
       // 鏈結(link)圖示與勾勾(check)圖示：20px、stroke=currentColor、
-      // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。
+      // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。內建一個空的
+      // <title> 子元素:原生互動列每顆 svg[aria-label] 內都有 <title> 子
+      // 元素做 hover 時的系統原生 tooltip，我們比照同一機制(見
+      // createIconElement 的 applyIconTitle)，不再自己畫 hover tooltip。
+      // <title> 留空字串，內容由 applyIconTitle() 用 textContent 動態填
+      // 入語言字典值，innerHTML 本身仍只含靜態常數。
       var LINK_SVG =
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
         'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<title></title>' +
         '<path d="M9 17H7a5 5 0 0 1 0-10h2"/>' +
         '<path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
         '<line x1="8" y1="12" x2="16" y2="12"/>' +
@@ -125,6 +132,7 @@
       var CHECK_SVG =
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
         'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<title></title>' +
         '<path d="M20 6 9 17l-5-5"/>' +
         '</svg>';
 
@@ -151,7 +159,7 @@
         return FALLBACK_STRINGS[key] || key;
       }
 
-      // ---- 樣式注入:hover 圓底高亮 + tooltip，標 id 防重複注入 ----
+      // ---- 樣式注入:hover 圓底高亮 + 點擊回饋氣泡，標 id 防重複注入 ----
       function injectStyle() {
         if (document.getElementById(STYLE_ID)) return;
         var style = document.createElement('style');
@@ -159,18 +167,26 @@
         style.textContent = [
           '.' + ICON_CLASS + '{position:relative;display:inline-flex;align-items:center;',
           'justify-content:center;width:36px;height:36px;border-radius:9999px;cursor:pointer;',
-          'color:inherit;background-color:transparent;transition:background-color .15s ease;}',
+          'color:inherit;background-color:transparent;}',
           '.' + ICON_CLASS + ':focus-visible{outline:2px solid currentColor;outline-offset:1px;}',
-          '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:rgba(255,255,255,0.1);}}',
+          // hover 圓底:實機量測原生互動列按鈕的 hover 背景，深色主題是
+          // rgb(30,30,30)、瞬間出現(無 transition)，這裡照抄精確值與行
+          // 為。淺色主題目前沒有原生量測值，維持現行近似值
+          // rgba(0,0,0,0.05)，待淺色主題實測校正。
+          '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:rgb(30,30,30);}}',
           '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:rgba(0,0,0,0.05);}}',
           '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + '{display:inline-flex;pointer-events:none;}',
+          // 點擊後「已複製原始連結」的自繪回饋氣泡:hover 提示已改用 SVG
+          // 內建的原生 <title>(見 LINK_SVG/CHECK_SVG 與 createIconElement
+          // 的 applyIconTitle)，這顆 tooltip 元素不再靠 :hover 觸發，只
+          // 在點擊回饋時由 showCopiedFeedback() 加上
+          // TOOLTIP_VISIBLE_CLASS 類別顯示，COPIED_RESET_MS 後自動移除。
           '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{position:absolute;top:calc(100% + 6px);left:50%;',
           'transform:translateX(-50%);padding:4px 8px;border-radius:6px;font-size:12px;line-height:1.4;',
           'white-space:nowrap;background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
           'transition:opacity .12s ease;z-index:1000;}',
           '@media (prefers-color-scheme: light){.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{background:#e5e5e5;color:#050505;}}',
-          // 停留約 300ms 後才浮出，離開立即用預設的無延遲 transition 淡出。
-          '.' + ICON_CLASS + ':hover .' + TOOLTIP_CLASS + '{opacity:1;transition-delay:.3s;}',
+          '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '.' + TOOLTIP_VISIBLE_CLASS + '{opacity:1;}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
@@ -188,6 +204,17 @@
         iconWrap.innerHTML = LINK_SVG;
         el.appendChild(iconWrap);
 
+        // 把目前語言的 iconTooltip 文字填進 SVG 內建的 <title> 子元素
+        // (textContent，不是 innerHTML)，讓滑鼠停留在 icon 上時瀏覽器彈
+        // 出跟原生互動列按鈕一樣的系統 tooltip。iconWrap.innerHTML 每次
+        // 换圖示(LINK_SVG/CHECK_SVG 互換)都要重新呼叫一次，因為 <title>
+        // 節點會跟著整個 innerHTML 一起被換掉。
+        function applyIconTitle() {
+          var titleEl = iconWrap.querySelector('title');
+          if (titleEl) titleEl.textContent = t('iconTooltip');
+        }
+        applyIconTitle();
+
         var tooltip = document.createElement('span');
         tooltip.className = TOOLTIP_CLASS;
         tooltip.textContent = t('iconTooltip');
@@ -195,22 +222,33 @@
 
         var resetTimer = null;
 
+        // 點擊複製成功後的回饋:swap 成勾勾圖示，並顯示自繪的「已複製原
+        // 始連結」氣泡(TOOLTIP_VISIBLE_CLASS 觸發顯示)——hover 提示已改
+        // 用原生 <title>，但原生 title 在 hover 中途不會即時刷新內容，
+        // 只有這顆自繪氣泡能保證「點擊當下」立刻給使用者回饋。
         function showCopiedFeedback() {
           iconWrap.innerHTML = CHECK_SVG;
+          applyIconTitle();
           tooltip.textContent = t('iconCopied');
+          tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
           if (resetTimer) clearTimeout(resetTimer);
           resetTimer = setTimeout(function () {
             resetTimer = null;
             iconWrap.innerHTML = LINK_SVG;
+            applyIconTitle();
             tooltip.textContent = t('iconTooltip');
+            tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
           }, COPIED_RESET_MS);
         }
 
-        // 語言切換時(storage.onChanged)同步既有 icon 的 aria-label 與
-        // tooltip 文字；若正處於「已複製」的暫時狀態就不打斷，等它自己
-        // 復原後自然會用上新語言(resetTimer 內的 t() 每次都即時查字典)。
+        // 語言切換時(storage.onChanged)同步既有 icon 的 aria-label、SVG
+        // <title> 與 tooltip 文字；aria-label／title 這種靜態常駐文案任
+        // 何時候都可以立即刷新，但若正處於「已複製」的暫時狀態就不打斷
+        // 自繪氣泡，等它自己復原後自然會用上新語言(resetTimer 內的 t()
+        // 每次都即時查字典)。
         el._tclApplyLocale = function () {
           el.setAttribute('aria-label', t('iconTooltip'));
+          applyIconTitle();
           if (!resetTimer) {
             tooltip.textContent = t('iconTooltip');
           }
