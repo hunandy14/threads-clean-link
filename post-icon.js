@@ -225,23 +225,18 @@
         return el;
       }
 
-      // ---- 找互動列:容器內某個 display:flex 的 div，直屬子元素 >=4 個，
-      // 每個子元素內都有 [role="button"] 包著 svg[aria-label]（讚/回覆/
-      // 轉發/分享四顆按鈕的 wrapper）----
+      // ---- 找互動列:容器內某個 div，直屬子元素 >=4 個，每個子元素內都有
+      // [role="button"] 包著 svg[aria-label]（讚/回覆/轉發/分享四顆按鈕的
+      // wrapper）。純結構判斷，不再額外查 getComputedStyle(display:flex)
+      // ——這個掃描是熱路徑(MutationObserver 每次 debounce 後對全頁貼文重
+      // 跑一輪)，getComputedStyle 會強制觸發同步版面計算，結構條件本身已
+      // 足夠鎖定唯一候選，犯不著多付這筆效能。----
       function findActionRow(container) {
         var candidates = container.querySelectorAll('div');
         for (var i = 0; i < candidates.length; i++) {
           var row = candidates[i];
           var children = row.children;
           if (!children || children.length < 4) continue;
-
-          var style;
-          try {
-            style = root.getComputedStyle(row);
-          } catch (e) {
-            continue;
-          }
-          if (!style || style.display !== 'flex') continue;
 
           var allMatch = true;
           for (var j = 0; j < children.length; j++) {
@@ -253,7 +248,14 @@
               break;
             }
           }
-          if (allMatch) return row;
+          if (!allMatch) continue;
+
+          // 巢狀容器防護:候選 row 最近的貼文容器祖先必須就是目前掃描的
+          // container 本身，否則代表這顆 row 其實屬於巢狀在裡面的引用/
+          // 回覆貼文，不該被外層容器搶走。
+          if (row.closest && row.closest('[data-pressable-container]') !== container) continue;
+
+          return row;
         }
         return null;
       }
@@ -274,11 +276,48 @@
         }
       }
 
+      // ---- 掃描快取:避免每次 debounce 重掃全頁時，對「已經注入成功」或
+      // 「找不到互動列」的容器一再重複跑 querySelectorAll('div') 這種昂貴
+      // 操作。WeakMap/WeakSet 以容器節點本身當 key，節點被移除(feed 虛擬
+      // 化卸載)後會自然被回收，不會累積記憶體。
+      //   - injectedContainers:已成功注入的容器，快速跳過(hasExistingIcon
+      //     的 querySelector 冪等檢查仍保留當保險，兩者互為備援)。
+      //   - skippedContainers:連續 MAX_SCAN_FAILURES 次找不到互動列的容
+      //     器，判定為「這個容器結構上就不會有互動列」而永久跳過；沒有立
+      //     刻永久跳過是因為 React 可能晚渲染，貼文容器先掛載、互動列稍
+      //     後才補上，太早放棄會漏掉這類貼文。
+      //   - scanFailCounts:每個容器目前連續失敗次數，成功注入後歸零。
+      var hasWeakCollections = typeof WeakMap !== 'undefined' && typeof WeakSet !== 'undefined';
+      var injectedContainers = hasWeakCollections ? new WeakSet() : null;
+      var skippedContainers = hasWeakCollections ? new WeakSet() : null;
+      var scanFailCounts = hasWeakCollections ? new WeakMap() : null;
+      var MAX_SCAN_FAILURES = 3;
+
       // ---- 對單一貼文容器做冪等注入 ----
       function injectIntoContainer(container) {
-        if (hasExistingIcon(container)) return;
+        if (injectedContainers && injectedContainers.has(container)) return;
+        if (skippedContainers && skippedContainers.has(container)) return;
+
+        if (hasExistingIcon(container)) {
+          if (injectedContainers) injectedContainers.add(container);
+          return;
+        }
+
         var row = findActionRow(container);
-        if (!row || hasExistingIcon(row)) return;
+        if (!row) {
+          if (scanFailCounts) {
+            var failCount = (scanFailCounts.get(container) || 0) + 1;
+            scanFailCounts.set(container, failCount);
+            if (failCount >= MAX_SCAN_FAILURES && skippedContainers) {
+              skippedContainers.add(container);
+            }
+          }
+          return;
+        }
+        if (hasExistingIcon(row)) {
+          if (injectedContainers) injectedContainers.add(container);
+          return;
+        }
 
         var lastWrapper = row.children[row.children.length - 1];
         if (!lastWrapper) return;
@@ -286,6 +325,8 @@
         var icon = createIconElement();
         applyNativeColor(icon, row);
         row.insertBefore(icon, lastWrapper.nextSibling);
+        if (scanFailCounts) scanFailCounts.delete(container);
+        if (injectedContainers) injectedContainers.add(container);
       }
 
       // ---- 全頁掃描:找出所有貼文容器並補注入 ----
