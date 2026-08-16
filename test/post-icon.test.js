@@ -201,6 +201,6 @@ test('i18n:zh/en 字典都新增 iconTooltip、iconCopied 兩個 key，且為非
 test('i18n:t() 取出的 iconTooltip／iconCopied 文案內容正確', () => {
   assert.equal(i18n.t('zh', 'iconTooltip'), '複製連結');
   assert.equal(i18n.t('en', 'iconTooltip'), 'Copy link');
-  assert.equal(i18n.t('zh', 'iconCopied'), '已複製');
-  assert.equal(i18n.t('en', 'iconCopied'), 'Copied');
+  assert.equal(i18n.t('zh', 'iconCopied'), '已複製原始連結');
+  assert.equal(i18n.t('en', 'iconCopied'), 'Original link copied');
 });
