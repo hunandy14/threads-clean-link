@@ -126,10 +126,13 @@
       // 鏈結(link)圖示與勾勾(check)圖示：20px、stroke=currentColor、
       // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。內建一個空的
       // <title> 子元素:原生互動列每顆 svg[aria-label] 內都有 <title> 子
-      // 元素做 hover 時的系統原生 tooltip，我們比照同一機制(見
-      // createIconElement 的 applyIconTitle)，不再自己畫 hover tooltip。
-      // <title> 留空字串，內容由 applyIconTitle() 用 textContent 動態填
-      // 入語言字典值，innerHTML 本身仍只含靜態常數。
+      // 元素，仿照同一結構保留無障礙語意(見 createIconElement 的
+      // applyIconTitle)；但實際觸發 hover 原生 tooltip 的是外層 div 的
+      // title 屬性，不是這顆 svg <title>——svg 設了 pointer-events:none
+      // (見 injectStyle 的 SVG_WRAP_CLASS 規則)，游標永遠不會落在 svg
+      // 上，svg 內 <title> 因此不會觸發瀏覽器原生 tooltip。<title> 留空
+      // 字串，內容由 applyIconTitle() 用 textContent 動態填入語言字典
+      // 值，innerHTML 本身仍只含靜態常數。
       var LINK_SVG =
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
         'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -184,12 +187,18 @@
           // prefers-color-scheme 實測)。
           '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:rgb(30,30,30);}}',
           '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:rgb(245, 245, 245);}}',
+          // svg 設 pointer-events:none 讓滑鼠事件穿透到外層可互動的 div
+          // (click/keydown 都綁在 el，見 createIconElement)，副作用是游
+          // 標永遠不會落在 svg 上，svg 內 <title> 的原生 tooltip 因此永
+          // 不觸發(原生互動列按鈕的 svg 是 pointer-events:auto 所以有
+          // 效)。原生 tooltip 改掛在外層 div 的 title 屬性上才會觸發，見
+          // createIconElement 的 el.title 設定。
           '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + '{display:inline-flex;pointer-events:none;}',
-          // 點擊後「已複製原始連結」的自繪回饋氣泡:hover 提示已改用 SVG
-          // 內建的原生 <title>(見 LINK_SVG/CHECK_SVG 與 createIconElement
-          // 的 applyIconTitle)，這顆 tooltip 元素不再靠 :hover 觸發，只
-          // 在點擊回饋時由 showCopiedFeedback() 加上
-          // TOOLTIP_VISIBLE_CLASS 類別顯示，COPIED_RESET_MS 後自動移除。
+          // 點擊後「已複製原始連結」的自繪回饋氣泡:hover 提示已改用外層
+          // div 的原生 title 屬性(見 createIconElement 開頭的 el.title
+          // 設定)，這顆 tooltip 元素不再靠 :hover 觸發，只在點擊回饋時
+          // 由 showCopiedFeedback() 加上 TOOLTIP_VISIBLE_CLASS 類別顯
+          // 示，COPIED_RESET_MS 後自動移除。
           '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{position:absolute;top:calc(100% + 6px);left:50%;',
           'transform:translateX(-50%);padding:4px 8px;border-radius:6px;font-size:12px;line-height:1.4;',
           'white-space:nowrap;background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
@@ -207,6 +216,12 @@
         el.setAttribute('role', 'button');
         el.setAttribute('tabindex', '0');
         el.setAttribute('aria-label', t('iconTooltip'));
+        // 原生 hover tooltip 掛在外層 div 的 title 屬性上(而不是 svg 內
+        // 的 <title>):svg 設了 pointer-events:none 讓事件穿透到這顆可
+        // 互動的 div，游標因此永遠不會落在 svg 上，svg 內 <title> 的原生
+        // tooltip 不會觸發(原生按鈕的 svg 是 pointer-events:auto 才有
+        // 效)。實機驗證掛在這顆 div 的 title 屬性可正常浮出 tooltip。
+        el.setAttribute('title', t('iconTooltip'));
 
         var iconWrap = document.createElement('span');
         iconWrap.className = SVG_WRAP_CLASS;
@@ -214,10 +229,11 @@
         el.appendChild(iconWrap);
 
         // 把目前語言的 iconTooltip 文字填進 SVG 內建的 <title> 子元素
-        // (textContent，不是 innerHTML)，讓滑鼠停留在 icon 上時瀏覽器彈
-        // 出跟原生互動列按鈕一樣的系統 tooltip。iconWrap.innerHTML 每次
-        // 换圖示(LINK_SVG/CHECK_SVG 互換)都要重新呼叫一次，因為 <title>
-        // 節點會跟著整個 innerHTML 一起被換掉。
+        // (textContent，不是 innerHTML)。這顆 <title> 不會觸發瀏覽器原
+        // 生 tooltip(見上方 el.title 一帶的說明)，純粹是仿照原生互動列
+        // 按鈕結構保留的無障礙語意。iconWrap.innerHTML 每次换圖示
+        // (LINK_SVG/CHECK_SVG 互換)都要重新呼叫一次，因為 <title> 節點
+        // 會跟著整個 innerHTML 一起被換掉。
         function applyIconTitle() {
           var titleEl = iconWrap.querySelector('title');
           if (titleEl) titleEl.textContent = t('iconTooltip');
@@ -245,8 +261,9 @@
 
         // 點擊複製成功後的回饋:swap 成勾勾圖示，並顯示自繪的「已複製原
         // 始連結」氣泡(TOOLTIP_VISIBLE_CLASS 觸發顯示)——hover 提示已改
-        // 用原生 <title>，但原生 title 在 hover 中途不會即時刷新內容，
-        // 只有這顆自繪氣泡能保證「點擊當下」立刻給使用者回饋。
+        // 用外層 div 的原生 title 屬性，但原生 title 在 hover 中途不會
+        // 即時刷新內容，只有這顆自繪氣泡能保證「點擊當下」立刻給使用者
+        // 回饋。
         function showCopiedFeedback() {
           iconWrap.innerHTML = CHECK_SVG;
           applyIconTitle();
@@ -269,13 +286,15 @@
           }, COPIED_RESET_MS);
         }
 
-        // 語言切換時(storage.onChanged)同步既有 icon 的 aria-label、SVG
-        // <title> 與 tooltip 文字；aria-label／title 這種靜態常駐文案任
-        // 何時候都可以立即刷新，但若正處於「已複製」的暫時狀態就不打斷
-        // 自繪氣泡，等它自己復原後自然會用上新語言(resetTimer 內的 t()
-        // 每次都即時查字典)。
+        // 語言切換時(storage.onChanged)同步既有 icon 的 aria-label、外層
+        // div 的原生 title 屬性(實際觸發 hover tooltip 的地方)、SVG
+        // <title>(無障礙語意用途)與自繪 tooltip 文字；aria-label／title
+        // 這種靜態常駐文案任何時候都可以立即刷新，但若正處於「已複製」
+        // 的暫時狀態就不打斷自繪氣泡，等它自己復原後自然會用上新語言
+        // (resetTimer 內的 t() 每次都即時查字典)。
         el._tclApplyLocale = function () {
           el.setAttribute('aria-label', t('iconTooltip'));
+          el.setAttribute('title', t('iconTooltip'));
           applyIconTitle();
           if (!resetTimer && !textResetTimer) {
             tooltip.textContent = t('iconTooltip');
