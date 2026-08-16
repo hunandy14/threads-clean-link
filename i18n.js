@@ -106,7 +106,7 @@
       opRelDays: '{n} 天前',
 
       // ---- post-icon:貼文互動列注入的複製連結 icon ----
-      iconTooltip: '複製連結',
+      iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
     },
     en: {
@@ -194,7 +194,7 @@
       opRelYesterday: 'yesterday',
       opRelDays: '{n} days ago',
 
-      iconTooltip: 'Copy link',
+      iconTooltip: 'Copy original link',
       iconCopied: 'Original link copied',
     },
   };
