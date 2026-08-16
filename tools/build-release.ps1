@@ -47,6 +47,7 @@ $includeFiles = @(
     'clipboard-guard.js',
     'bridge.js',
     'i18n.js',
+    'post-icon.js',
     'popup.html',
     'popup.js',
     'popup-init.js',
