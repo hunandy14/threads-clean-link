@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "__MSG_extDesc__",
   "default_locale": "en",
   "homepage_url": "https://github.com/hunandy14/threads-clean-link",
@@ -12,6 +12,10 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "action": {
     "default_popup": "popup.html",

@@ -733,6 +733,7 @@ test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，clean
       makeClipboard: recordingWriteText,
       written: (recorder) => recorder[0],
       expected: CLEAN_POST_URL,
+      expectedKind: 'share',
     },
     {
       label: 'writeText ?xmt 剪參',
@@ -741,6 +742,7 @@ test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，clean
       makeClipboard: recordingWriteText,
       written: (recorder) => recorder[0],
       expected: XMT_URL_CLEANED,
+      expectedKind: 'strip',
     },
     {
       label: 'write() 短碼解析',
@@ -752,10 +754,11 @@ test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，clean
       makeClipboard: recordingWrite,
       written: (recorder) => recorder[0][0].text,
       expected: CLEAN_POST_URL,
+      expectedKind: 'share',
     },
   ];
 
-  for (const { label, resolve, run, makeClipboard, written, expected } of cases) {
+  for (const { label, resolve, run, makeClipboard, written, expected, expectedKind } of cases) {
     const recorder = [];
     const win = createWindow();
     if (resolve) trackResolveRequests(win, { respond: true });
@@ -769,6 +772,7 @@ test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，clean
     assert.equal(written(recorder), expected, `${label}:應實際寫入淨化後內容`);
     assert.equal(notices.length, 1, `${label}:應送出剛好一則 notice`);
     assert.equal(notices[0].cleanUrl, expected, `${label}:notice 的 cleanUrl 應等於實際寫入的內容`);
+    assert.equal(notices[0].kind, expectedKind, `${label}:notice 應標示淨化來源 kind`);
   }
 });
 

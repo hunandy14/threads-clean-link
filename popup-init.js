@@ -14,6 +14,13 @@ document.addEventListener('DOMContentLoaded', function () {
   var controller = createPopupController({
     document: document,
     storage: chrome.storage.sync,
+    i18n: typeof TCLI18N !== 'undefined' ? TCLI18N : null,
+    openOptionsPage:
+      typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.openOptionsPage
+        ? function () {
+            chrome.runtime.openOptionsPage();
+          }
+        : null,
   });
   controller.init();
 });

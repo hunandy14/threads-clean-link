@@ -2,6 +2,12 @@
 // clipboard-guard.js 經 bridge.js 送來的短碼解析請求。
 'use strict';
 
+// 共用 i18n 模組:SW 環境用 importScripts 載入;測試 sandbox 由測試端先把
+// i18n.js 原始碼載進同一個 sandbox(TCLI18N 已存在),此條件式便不執行。
+if (typeof TCLI18N === 'undefined' && typeof importScripts === 'function') {
+  importScripts('i18n.js');
+}
+
 // Threads 分享短連結格式，例如：https://www.threads.com/share/AbCdEfGhI
 const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s]*)?(#[^\s]*)?$/i;
 
@@ -27,12 +33,19 @@ const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
 
 // v1.1 設定規格 S2:成功類通知由 notifySuccess 把關，失敗／錯誤類通知
-// 永遠觸發、不受設定影響。R1-1 併開關後只剩兩鍵，預設值與
-// popup.js／bridge.js 一致。
+// 永遠觸發、不受設定影響。R1-1 併開關後剩兩鍵;淨化紀錄功能再加一鍵
+// saveHistory(只有 background 記錄時把關會讀,guard/bridge 不下放)。
+// autoClean/notifySuccess 的預設值仍與 popup.js／bridge.js 一致。
 const DEFAULT_SETTINGS = {
   autoClean: true,
   notifySuccess: false,
+  saveHistory: true,
 };
+
+// 淨化紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
+// 紀錄量),新到舊排列,上限之外自動汰舊。
+const HISTORY_KEY = 'history';
+const HISTORY_LIMIT = 1000;
 
 // R1-2:自動路徑(clipboard-guard.js 經 bridge.js)成功淨化後的通知，用
 // 獨立的通知 id，避免跟右鍵路徑的 threads-clean-link-success 撞 id 被
@@ -57,9 +70,10 @@ async function createContextMenu() {
     console.error('[threads-clean-link] 清除舊選單失敗', err);
   }
 
+  const locale = await getLocale();
   chrome.contextMenus.create({
     id: CONTEXT_MENU_ID,
-    title: '複製乾淨的 Threads 貼文連結',
+    title: TCLI18N.t(locale, 'bgMenuTitle'),
     contexts: ['link'],
     targetUrlPatterns: [
       'https://*.threads.com/share/*',
@@ -73,9 +87,24 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   // 確保任何錯誤都被攔截，不會變成未捕捉的 Promise rejection。
   handleShareLinkClick(info, tab).catch((err) => {
     console.error('[threads-clean-link] 未預期的錯誤', err);
-    safeNotify('threads-clean-link-unexpected', '發生未預期的錯誤，請稍後再試一次。');
+    notifyByKey('threads-clean-link-unexpected', 'bgUnexpected');
   });
 });
+
+// 使用者在 options 頁切換語言時，同步右鍵選單標題(選單標題在建立時就
+// 固定了,不會自己跟著語言變)。監聽器掛最外層,SW 喚醒時重新掛回。
+if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChanged.addListener === 'function') {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'sync' || !changes || !changes.langPref) return;
+    if (!chrome.contextMenus || typeof chrome.contextMenus.update !== 'function') return;
+    const locale = TCLI18N.resolveLocale(changes.langPref.newValue);
+    try {
+      chrome.contextMenus.update(CONTEXT_MENU_ID, { title: TCLI18N.t(locale, 'bgMenuTitle') });
+    } catch (err) {
+      console.error('[threads-clean-link] 更新右鍵選單標題失敗', err);
+    }
+  });
+}
 
 // 回應 clipboard-guard.js 經 bridge.js 送來的短碼解析請求。本路徑不寫
 // 剪貼簿、不發通知，只負責解析並回傳結果；失敗一律回傳 ok:false，由
@@ -117,7 +146,7 @@ async function handleShareLinkClick(info, tab) {
   const shareUrl = info.linkUrl;
 
   if (!shareUrl || !SHARE_URL_PATTERN.test(shareUrl)) {
-    safeNotify('threads-clean-link-invalid', '這不是有效的 Threads 分享短連結。');
+    notifyByKey('threads-clean-link-invalid', 'bgInvalid');
     return;
   }
 
@@ -126,27 +155,18 @@ async function handleShareLinkClick(info, tab) {
     finalUrl = await resolveFinalUrl(shareUrl);
   } catch (err) {
     console.error('[threads-clean-link] 解析短連結失敗', err);
-    safeNotify(
-      'threads-clean-link-network-error',
-      '解析短連結失敗，請確認網路連線後再試一次。'
-    );
+    notifyByKey('threads-clean-link-network-error', 'bgNetworkError');
     return;
   }
 
   const cleanUrl = extractCleanPostUrl(finalUrl);
   if (!cleanUrl) {
-    safeNotify(
-      'threads-clean-link-format-error',
-      '轉址結果不是貼文網址，短連結可能已失效或 Threads 網址格式已變動。'
-    );
+    notifyByKey('threads-clean-link-format-error', 'bgFormatError');
     return;
   }
 
   if (!tab || tab.id === undefined || tab.id === chrome.tabs.TAB_ID_NONE) {
-    safeNotify(
-      'threads-clean-link-no-tab',
-      `已解析出乾淨網址，但找不到可寫入剪貼簿的分頁:${cleanUrl}`
-    );
+    notifyByKey('threads-clean-link-no-tab', 'bgNoTab', { url: cleanUrl });
     return;
   }
 
@@ -154,16 +174,17 @@ async function handleShareLinkClick(info, tab) {
     await writeToClipboard(tab.id, cleanUrl);
   } catch (err) {
     console.error('[threads-clean-link] 寫入剪貼簿失敗', err);
-    safeNotify(
-      'threads-clean-link-clipboard-error',
-      `目前分頁無法寫入剪貼簿(可能是瀏覽器限制頁面)，乾淨網址為:${cleanUrl}`
-    );
+    notifyByKey('threads-clean-link-clipboard-error', 'bgClipboardError', { url: cleanUrl });
     return;
   }
 
+  // 只有實際寫入剪貼簿成功才留紀錄,與自動路徑的「寫入成功才通知/記錄」
+  // 語意一致;saveHistory 的把關在 recordHistory 內。
+  await recordHistory(cleanUrl, 'menu');
+
   const settings = await getSettings();
   if (settings.notifySuccess) {
-    safeNotify('threads-clean-link-success', `已複製乾淨網址:${cleanUrl}`);
+    notifyByKey('threads-clean-link-success', 'bgSuccess', { url: cleanUrl });
   }
 }
 
@@ -187,17 +208,61 @@ async function getSettings() {
 // 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
 // NOTICE_CLEAN_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不發任何
 // 通知;通知訊息只用驗證通過的字串，不夾帶原文的任何其餘部分。
-// notifySuccess 為 false 時整個函式什麼都不做。
+// kind 同屬頁面可控輸入,白名單驗證(自動路徑只可能是 share/strip),
+// 非法即整則忽略——guard 與 background 同版本出貨,沒有相容性負擔,
+// 形狀不對就是偽造或損毀,fail-safe 丟棄。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
   if (typeof cleanUrl !== 'string' || !NOTICE_CLEAN_URL_PATTERN.test(cleanUrl)) {
     return;
   }
+  const kind = message.kind === 'share' || message.kind === 'strip' ? message.kind : null;
+  if (!kind) {
+    return;
+  }
+
+  // 記錄與通知彼此獨立:不 await 記錄鏈(它自帶序列化與錯誤處理),
+  // 多則 notice 併發時通知不必排在彼此的紀錄寫入後面。
+  recordHistory(cleanUrl, kind);
 
   const settings = await getSettings();
   if (settings.notifySuccess) {
-    safeNotify(AUTOCLEAN_SUCCESS_NOTIFICATION_ID, `已自動淨化並複製乾淨網址:${cleanUrl}`);
+    notifyByKey(AUTOCLEAN_SUCCESS_NOTIFICATION_ID, 'bgAutoSuccess', { url: cleanUrl });
   }
+}
+
+// ---- 淨化紀錄 ----
+
+function hasStorageLocal() {
+  return !!(
+    chrome.storage &&
+    chrome.storage.local &&
+    typeof chrome.storage.local.get === 'function' &&
+    typeof chrome.storage.local.set === 'function'
+  );
+}
+
+// 同一個 SW 內的 append 以 promise chain 序列化,避免兩筆同時 read-modify-write
+// 互相覆蓋。options 頁的清除/刪除/匯入直接寫 storage.local,與這裡的競態只
+// 發生在「清除的同時恰好完成一次淨化」,極罕見且後果僅是多留一筆,接受。
+let historyWriteChain = Promise.resolve();
+
+function recordHistory(url, kind) {
+  historyWriteChain = historyWriteChain
+    .then(async () => {
+      if (!hasStorageLocal()) return;
+      const settings = await getSettings();
+      if (!settings.saveHistory) return;
+      const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
+      const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
+      // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷),組新陣列後裁上限。
+      const next = [{ url, kind, at: Date.now() }].concat(list).slice(0, HISTORY_LIMIT);
+      await chrome.storage.local.set({ [HISTORY_KEY]: next });
+    })
+    .catch((err) => {
+      console.error('[threads-clean-link] 寫入淨化紀錄失敗', err);
+    });
+  return historyWriteChain;
 }
 
 // 不信任呼叫端傳入的 url，一律用 SHARE_URL_PATTERN 重新驗證，
@@ -275,15 +340,42 @@ async function writeToClipboard(tabId, text) {
   }
 }
 
+// 讀取語言偏好並解析成 'zh' | 'en'。防禦與容錯策略同 getSettings:
+// storage 缺席或讀取失敗都退回環境偵測(chrome.i18n → navigator)。
+async function getLocale() {
+  if (!chrome.storage || !chrome.storage.sync || typeof chrome.storage.sync.get !== 'function') {
+    return TCLI18N.resolveLocale(null);
+  }
+  try {
+    const stored = await chrome.storage.sync.get({ langPref: null });
+    return TCLI18N.resolveLocale(stored ? stored.langPref : null);
+  } catch (err) {
+    console.error('[threads-clean-link] 讀取語言設定失敗，改用預設語言', err);
+    return TCLI18N.resolveLocale(null);
+  }
+}
+
+// 以字典 key 發通知:每次事件重新解析語言(SW 會休眠,不快取),組好字串
+// 再交給 safeNotify。整段盡力而為,語言解析失敗只記錄、不影響呼叫端。
+function notifyByKey(id, key, vars) {
+  getLocale()
+    .then((locale) => {
+      safeNotify(id, TCLI18N.fmt(locale, key, vars || {}), TCLI18N.t(locale, 'bgNotifTitle'));
+    })
+    .catch((err) => {
+      console.error('[threads-clean-link] 通知語言解析失敗', err);
+    });
+}
+
 // 統一顯示通知，自身出錯不影響呼叫端流程。create() 未帶 callback 時
 // 回傳 Promise，同步 try/catch 接不到非同步 rejection，因此另外對
 // 回傳值補一次 .catch，兩者都只記錄、不外拋。
-function safeNotify(id, message) {
+function safeNotify(id, message, title) {
   try {
     const creating = chrome.notifications.create(id, {
       type: 'basic',
       iconUrl: NOTIFICATION_ICON,
-      title: 'Threads 乾淨連結',
+      title: title || 'Threads Clean Link',
       message,
     });
     creating?.catch((err) => {

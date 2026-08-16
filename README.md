@@ -4,7 +4,7 @@
 [![CI](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml/badge.svg)](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/github/license/hunandy14/threads-clean-link)](./LICENSE)
 
-Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。雙語名稱:英文「Threads Clean Link」、中文「脆連結清潔工」，依瀏覽器語言自動顯示。
+Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。雙語名稱:英文「Threads Clean Link」、中文「脆連結清潔工」，依瀏覽器語言自動顯示;介面、通知與右鍵選單文字支援中英文，預設跟隨瀏覽器語言，可於「紀錄與設定」頁手動切換。
 
 ## 功能
 
@@ -18,12 +18,14 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 **自動淨化官方「複製連結」**:Threads 網頁版「複製連結」目前會寫入 `/share/XXXX` 短碼，或帶 `?xmt=` 追蹤參數的完整網址。本功能攔截該寫入動作，短碼自動解析、參數直接剪除，結果均為乾淨網址。解析逾時(2.5 秒)或失敗時，原內容原樣放行，不影響複製功能本身。
 
-**Popup 控制頁**:點擊工具列圖示開啟設定面板，提供兩顆滑動 switch，設定即時生效(寫入 `chrome.storage.sync`，跨裝置同步):
+**Popup 控制頁**:點擊工具列圖示開啟設定面板，提供兩顆滑動 switch 與「紀錄與設定」頁入口，設定即時生效(寫入 `chrome.storage.sync`，跨裝置同步):
 
 | 設定項 | 預設值 | 說明 |
 |---|---|---|
 | 自動淨化分享按鈕 | 開啟 | 關閉後停用「自動淨化官方複製連結」，右鍵還原功能不受影響 |
 | 成功時顯示通知 | 關閉 | 開啟後右鍵還原成功也會跳通知;失敗通知不受此設定影響，一律顯示 |
+
+**紀錄與設定頁(options page)**:由 popup 第三列或擴充功能管理頁進入。每次淨化成功的乾淨網址會留下一筆紀錄(標示來源:短碼解析／剪除參數／右鍵還原)，提供搜尋、來源篩選、每頁筆數切換、單筆複製與刪除、全部清除(確認對話框)、JSON 匯出與匯入(以網址去重合併);上方有累計統計磚與近 14 天活動圖，皆由本機紀錄即時聚合。紀錄存於 `chrome.storage.local`，**僅保存在本機、絕不外傳**，上限 1,000 筆自動汰舊，可用「保存淨化紀錄」開關(預設開啟)停用。頁面另提供介面語言(中文/EN)與深淺色主題切換。
 
 ## 安裝
 
@@ -48,7 +50,7 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 - 匿名 GET 不帶登入憑證，但會暴露來源 IP、瀏覽器特徵，及可辨識為本擴充功能的 Origin 標頭。
 - 功能②於已登入分頁按下複製鍵時自動觸發解析，時間與貼文對應明確，IP 層級關聯性高於①。
-- 不蒐集、不留存使用者資料，不含遠端程式碼。
+- 不蒐集、不上傳任何使用者資料，不含遠端程式碼。淨化紀錄僅寫入 `chrome.storage.local`，只存在這台裝置、不隨帳號同步、不經任何伺服器，且可一鍵清除或整個停用。
 - 與 ClearURLs 類工具的差異:短碼不是參數，整條網址不含目標，必須先兌換。
 
 ## 權限
@@ -58,7 +60,7 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 | `contextMenus` | 於 `/share/` 連結加入右鍵選單項目 |
 | `scripting` + `activeTab` | 於使用者點選右鍵選單的手勢下，臨時注入當前分頁執行 `navigator.clipboard.writeText` |
 | `notifications` | 顯示還原結果通知 |
-| `storage` | 僅儲存 popup 兩項開關設定(自動淨化分享按鈕、成功時顯示通知)於瀏覽器同步空間(`chrome.storage.sync`)，不蒐集、不外傳任何使用者資料 |
+| `storage` | 同步空間(`chrome.storage.sync`)存開關設定與語言/主題偏好;本機空間(`chrome.storage.local`)存淨化紀錄(上限 1,000 筆，僅本機、可停用可清除)。均不蒐集、不外傳任何使用者資料 |
 | `host_permissions`(`*.threads.com`、`*.threads.net`) | 發出短碼解析請求;於 Threads 頁面注入淨化邏輯 |
 
 未宣告 `<all_urls>` 與 `clipboardRead`。

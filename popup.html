@@ -111,6 +111,25 @@
   .switch:checked::before {
     transform: translateX(14px);
   }
+  /* 導航列:沿用 .setting-row 的版式，但它是按鈕不是開關——右側放 chevron
+     而非打勾控件(iOS 設定/Chrome 自家 popup 的慣例)，點了跳去 options 頁。
+     這裡先重設 button 的原生外觀，flex 版式由 .setting-row 提供。 */
+  .nav-row {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+  }
+  .nav-chev {
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
   footer {
     padding: 8px 14px 12px;
     border-top: 1px solid var(--border);
@@ -127,15 +146,20 @@
   </header>
   <div class="settings">
     <label class="setting-row" for="autoClean">
-      <span class="setting-row-label">自動淨化分享按鈕</span>
+      <span class="setting-row-label" data-i18n="ppAutoClean">自動淨化分享按鈕</span>
       <input type="checkbox" id="autoClean" class="switch" />
     </label>
     <label class="setting-row" for="notifySuccess">
-      <span class="setting-row-label">成功時顯示通知</span>
+      <span class="setting-row-label" data-i18n="ppNotify">成功時顯示通知</span>
       <input type="checkbox" id="notifySuccess" class="switch" />
     </label>
+    <button class="setting-row nav-row" id="openOptions" type="button">
+      <span class="setting-row-label" data-i18n="ppHistorySettings">紀錄與設定</span>
+      <span class="nav-chev" aria-hidden="true">›</span>
+    </button>
   </div>
-  <footer>盡力而為，處理失敗不影響原功能。</footer>
+  <footer data-i18n="ppFooter">盡力而為，處理失敗不影響原功能。</footer>
+  <script src="i18n.js"></script>
   <script src="popup.js"></script>
   <script src="popup-init.js"></script>
 </body>
