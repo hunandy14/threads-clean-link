@@ -14,6 +14,8 @@ Threads Clean Link
 
 備註:v1.1(0.2.0)起已改用 `_locales/zh_TW/messages.json` + `_locales/en/messages.json`，搭配 `manifest.json` 的 `"name": "__MSG_extName__"` 做 i18n(`default_locale` 為 `en`)，依瀏覽器語言自動顯示雙語名稱:中文「脆連結清潔工」、英文「Threads Clean Link」。
 
+備註:0.4.0 起，工具列與擴充功能圖示(`icons/icon16.png`／`icon48.png`／`icon128.png`)已更新為透明背景的橘色盾牌+黑色鏈節圖案，與行動版 App 圖示視覺一致，上架主控台的 Store icon(128×128)請改用最新版素材重新上傳。
+
 ---
 
 ## 2. 簡短描述(Short description，上限 132 字元)
@@ -41,12 +43,14 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 ### 繁體中文版(主要語言，直接複製貼上)
 
 ```
-一鍵把 Threads 的分享連結和「複製連結」結果，都變成不帶追蹤參數的乾淨貼文網址。
+一鍵把 Threads 的分享連結和「複製連結」結果，都變成不帶追蹤參數的乾淨貼文網址;貼文互動列也新增了一鍵複製按鈕。
 
-【兩大功能】
+【三大功能】
 • 右鍵還原分享短連結:在 /share/XXXX 這種 Threads 分享短連結上按右鍵，選擇「複製乾淨的 Threads 貼文連結」，一鍵解析並複製到剪貼簿。不限定要在 threads.com 分頁上使用，不管連結出現在哪個網站都能用。
 
 • 自動淨化網頁版「複製連結」:Threads 網頁版官方「複製連結」按鈕寫入剪貼簿的內容，不管是 /share/ 短碼還是帶 ?xmt= 追蹤參數的完整網址，都會被自動處理成乾淨貼文網址，無感完成，不需要額外操作。
+
+• 貼文互動列新增「複製原始連結」按鈕:在 Threads 每篇貼文的互動列(分享按鈕旁)多一顆鏈節圖示，點一下就把該貼文的乾淨網址複製到剪貼簿——不含追蹤參數、也不是短碼。外觀比照原生按鈕(顏色自動跟隨、hover 提示採原生 tooltip)，文字支援中英文並跟隨介面語言設定。
 
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
@@ -64,11 +68,12 @@ https://github.com/hunandy14/threads-clean-link
 ### 英文精簡版(附加語言)
 
 ```
-Threads Clean Link turns Threads share links and "Copy Link" results into clean, tracker-free post URLs.
+Threads Clean Link turns Threads share links and "Copy Link" results into clean, tracker-free post URLs — and now adds a one-click copy button right on each post.
 
-TWO FEATURES
+THREE FEATURES
 • Right-click resolve: Right-click a Threads share link (/share/XXXX) and choose "Copy clean Threads post link" to resolve it and copy the clean post URL — works on any site's tab, not just threads.com.
 • Auto-clean "Copy Link": Threads' official web "Copy Link" button now writes either a /share/ short code or a full URL with tracking parameters. This extension handles both automatically, so what you paste is always clean.
+• "Copy original link" button on every post: A link icon is added to each Threads post's action row (next to the share button). One click copies that post's clean URL — no tracking parameters, no short code — to your clipboard. It matches the native buttons in appearance (color follows the page, native hover tooltip), and its label follows your interface language.
 
 POPUP SETTINGS
 Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting).
