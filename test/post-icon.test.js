@@ -191,6 +191,41 @@ test('hasExistingIcon:scope 缺失或不帶 querySelector 時回傳 false，不�
   assert.equal(hasExistingIcon({}), false);
 });
 
+// ---- pickActionRowIndex(結構相同的多個互動列候選消歧：影片貼文會多一條
+// 播放器工具列，結構上也符合「>=4 個子元素、每個都有 svg[aria-label]」，
+// 需要靠 aria-label 白名單挑出真正的讚/回覆/轉發/分享列) ----
+
+test('pickActionRowIndex:單一候選直通，不需要消歧', () => {
+  const { pickActionRowIndex } = loadPostIcon();
+
+  assert.equal(pickActionRowIndex([['追蹤', '更多', '已靜音', '排序']]), 0);
+});
+
+test('pickActionRowIndex:多個候選時，優先選白名單交集 >= 3 的那個(不論它在陣列中的位置)', () => {
+  const { pickActionRowIndex } = loadPostIcon();
+  const videoToolbar = ['追蹤', '更多', '已靜音', '排序', '附加影音內容'];
+  const actionRow = ['讚', '回覆', '轉發', '分享'];
+
+  assert.equal(pickActionRowIndex([videoToolbar, actionRow]), 1, '互動列排在後面');
+  assert.equal(pickActionRowIndex([actionRow, videoToolbar]), 0, '互動列排在前面');
+});
+
+test('pickActionRowIndex:白名單全不中時(頁面語言不在 zh/en)，退回取文件序最後一個候選', () => {
+  const { pickActionRowIndex } = loadPostIcon();
+  const videoToolbarFr = ['Suivre', 'Plus', 'Muet', 'Trier'];
+  const actionRowFr = ['Aimer', "Répondre", 'Republier', 'Partager'];
+
+  assert.equal(pickActionRowIndex([videoToolbarFr, actionRowFr]), 1);
+});
+
+test('pickActionRowIndex:候選清單為空或非陣列輸入一律回傳 null，不丟例外', () => {
+  const { pickActionRowIndex } = loadPostIcon();
+
+  assert.equal(pickActionRowIndex([]), null);
+  assert.equal(pickActionRowIndex(null), null);
+  assert.equal(pickActionRowIndex(undefined), null);
+});
+
 // ============================================================
 // i18n.js 新增 key:iconTooltip(圖示滑鼠提示)、iconCopied(複製成功提示)。
 // zh/en 兩份字典都要有這兩個 key 且非空字串；既有的 zh/en key 集合對齊

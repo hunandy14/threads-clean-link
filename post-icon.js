@@ -2,16 +2,55 @@
 // 「複製連結」icon，點擊後把貼文的乾淨網址(去 query/hash)寫入剪貼簿。
 // ISOLATED world content script，比照 bridge.js 的 ES5 IIFE 風格。
 //
-// 純函式 pickPermalink / buildPostUrl / hasExistingIcon 供 Node 測試以
-// require() 直接載入使用；模組頂層任何碰 document / MutationObserver 的
-// DOM 注入邏輯一律用 `typeof document !== 'undefined'` 守衛包住，讓 Node
-// 環境(無 document 全域)require() 時不丟例外、不產生副作用。
+// 純函式 pickPermalink / buildPostUrl / hasExistingIcon / pickActionRowIndex
+// 供 Node 測試以 require() 直接載入使用；模組頂層任何碰 document /
+// MutationObserver 的 DOM 注入邏輯一律用 `typeof document !== 'undefined'`
+// 守衛包住，讓 Node 環境(無 document 全域)require() 時不丟例外、不產生
+// 副作用。
 (function (root) {
   'use strict';
 
   // ============================================================
   // 純函式區(守衛外，Node 測試與瀏覽器共用)
   // ============================================================
+
+  // 互動列消歧用的白名單：貼文容器內符合「直屬子元素 >=4 個、每個都有
+  // [role="button"] svg[aria-label]」這個結構條件的候選列，不一定只有
+  // 一個——例如影片貼文會多一條「追蹤/更多/已靜音/排序/附加影音內容」的
+  // 播放器工具列，結構上也符合，但那不是讚/回覆/轉發/分享的互動列。有
+  // 多個候選時，優先用這份白名單比對候選列內各按鈕的 aria-label，交集
+  // >= 3 視為命中真正的互動列(本擴充功能 UI 只支援 zh/en，頁面語言主力
+  // 也是這兩種，先覆蓋主場，語言無關性因此「降級為後備」而非放棄)；白
+  // 名單以外的語言全不中時，見 pickActionRowIndex 內的後備規則。
+  var ACTION_ROW_LABEL_WHITELIST = ['讚', '回覆', '轉發', '分享', 'Like', 'Reply', 'Repost', 'Share'];
+
+  // 從多個互動列候選(每個候選是一份「依子元素順序排列的 aria-label 陣列」
+  // 組成的清單)中挑出真正的互動列，回傳選中的 index；候選清單為空或非陣
+  // 列一律回傳 null，不丟例外。
+  //   - 只有 1 個候選：直接選它，不需要消歧。
+  //   - 多個候選：依文件序找第一個與 ACTION_ROW_LABEL_WHITELIST 交集
+  //     >= 3 的候選(讚/回覆/轉發/分享或 Like/Reply/Repost/Share 命中
+  //     3 個以上，才夠有把握判定是真的互動列，避免誤判)。
+  //   - 全不中(頁面語言不在白名單覆蓋範圍內)：退回語言無關的結構後備規
+  //     則——取文件序最後一個候選。實測影片工具列在互動列「之前」，互
+  //     動列本身貼在貼文內容最底部，所以文件序最後一個就會是真正的互動
+  //     列。
+  function pickActionRowIndex(candidateLabelsList) {
+    if (!Array.isArray(candidateLabelsList) || candidateLabelsList.length === 0) return null;
+    if (candidateLabelsList.length === 1) return 0;
+
+    for (var i = 0; i < candidateLabelsList.length; i++) {
+      var labels = candidateLabelsList[i];
+      if (!Array.isArray(labels)) continue;
+      var hitCount = 0;
+      for (var j = 0; j < labels.length; j++) {
+        if (ACTION_ROW_LABEL_WHITELIST.indexOf(labels[j]) !== -1) hitCount++;
+      }
+      if (hitCount >= 3) return i;
+    }
+
+    return candidateLabelsList.length - 1;
+  }
 
   // 從貼文容器內收集到的候選 href(a[href*="/post/"])中挑出「貼文本體」
   // 的連結：排除以 /media 結尾者(那是圖片/影片檢視器連結，不是貼文本身)，
@@ -236,14 +275,19 @@
         return el;
       }
 
-      // ---- 找互動列:容器內某個 div，直屬子元素 >=4 個，每個子元素內都有
-      // [role="button"] 包著 svg[aria-label]（讚/回覆/轉發/分享四顆按鈕的
-      // wrapper）。純結構判斷，不再額外查 getComputedStyle(display:flex)
-      // ——這個掃描是熱路徑(MutationObserver 每次 debounce 後對全頁貼文重
-      // 跑一輪)，getComputedStyle 會強制觸發同步版面計算，結構條件本身已
-      // 足夠鎖定唯一候選，犯不著多付這筆效能。----
-      function findActionRow(container) {
+      // ---- 找互動列候選:容器內每個 div，直屬子元素 >=4 個，每個子元素內
+      // 都有 [role="button"] 包著 svg[aria-label]（按鈕 wrapper）。純結構
+      // 判斷，不再額外查 getComputedStyle(display:flex)——這個掃描是熱路
+      // 徑(MutationObserver 每次 debounce 後對全頁貼文重跑一輪)，
+      // getComputedStyle 會強制觸發同步版面計算，犯不著多付這筆效能。
+      //
+      // 注意:結構條件不保證唯一——例如影片貼文會多一條「追蹤/更多/已靜
+      // 音/排序/附加影音內容」的播放器工具列，結構上也符合，但那不是讚/
+      // 回覆/轉發/分享的互動列。所以這裡收集「全部」候選，交給
+      // pickActionRowIndex 消歧，不在第一個符合結構的候選就短路回傳。----
+      function collectActionRowCandidates(container) {
         var candidates = container.querySelectorAll('div');
+        var rows = [];
         for (var i = 0; i < candidates.length; i++) {
           var row = candidates[i];
           var children = row.children;
@@ -266,9 +310,29 @@
           // 回覆貼文，不該被外層容器搶走。
           if (row.closest && row.closest('[data-pressable-container]') !== container) continue;
 
-          return row;
+          rows.push(row);
         }
-        return null;
+        return rows;
+      }
+
+      // ---- 從候選列中挑出真正的互動列:只有 1 個候選直接用；多個候選交
+      // 給 pickActionRowIndex(見純函式區)用 aria-label 白名單消歧，白名
+      // 單全不中則退回文件序最後一個候選。----
+      function findActionRow(container) {
+        var rows = collectActionRowCandidates(container);
+        if (rows.length === 0) return null;
+
+        var labelsList = rows.map(function (row) {
+          var labels = [];
+          for (var j = 0; j < row.children.length; j++) {
+            var svg = row.children[j].querySelector('[role="button"] svg[aria-label]');
+            labels.push(svg ? svg.getAttribute('aria-label') : null);
+          }
+          return labels;
+        });
+
+        var idx = pickActionRowIndex(labelsList);
+        return idx === null ? null : rows[idx];
       }
 
       // ---- 從同一列的原生按鈕取色，套到我們的 icon 上(currentColor 會自動
@@ -498,6 +562,7 @@
     pickPermalink: pickPermalink,
     buildPostUrl: buildPostUrl,
     hasExistingIcon: hasExistingIcon,
+    pickActionRowIndex: pickActionRowIndex,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
