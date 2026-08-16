@@ -78,14 +78,14 @@
       // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。
       var LINK_SVG =
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
-        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<path d="M9 17H7a5 5 0 0 1 0-10h2"/>' +
         '<path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
         '<line x1="8" y1="12" x2="16" y2="12"/>' +
         '</svg>';
       var CHECK_SVG =
         '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
-        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<path d="M20 6 9 17l-5-5"/>' +
         '</svg>';
 
@@ -258,6 +258,22 @@
         return null;
       }
 
+      // ---- 從同一列的原生按鈕取色，套到我們的 icon 上(currentColor 會自動
+      // 跟上)。原生按鈕的實際顏色由 Threads 自己的樣式表決定，不同主題、
+      // 不同版面都可能有些微差異，直接取樣比我們自己猜一組色票準確，也不
+      // 用另外寫 dark/light 色票。取樣失敗(找不到、值為空)就靜默放棄，
+      // 讓 icon 維持原本的 color:inherit，不丟例外。
+      function applyNativeColor(icon, row) {
+        try {
+          var nativeSvg = row.querySelector('svg[aria-label]');
+          if (!nativeSvg) return;
+          var color = root.getComputedStyle(nativeSvg).color;
+          if (color) icon.style.color = color;
+        } catch (e) {
+          // 取色失敗不影響注入，icon 仍會用 CSS 的 color:inherit 兜底。
+        }
+      }
+
       // ---- 對單一貼文容器做冪等注入 ----
       function injectIntoContainer(container) {
         if (hasExistingIcon(container)) return;
@@ -268,6 +284,7 @@
         if (!lastWrapper) return;
 
         var icon = createIconElement();
+        applyNativeColor(icon, row);
         row.insertBefore(icon, lastWrapper.nextSibling);
       }
 
