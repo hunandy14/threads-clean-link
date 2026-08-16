@@ -31,10 +31,15 @@
   // 以 href 為相對路徑、origin 為基底組出絕對 URL，並去除 query(?...)與
   // hash(#...)。href 非字串、origin 非合法絕對來源、或組不出合法 URL 等
   // 任何非法輸入一律回傳 null，不丟例外(URL 建構子的例外在這裡吞掉)。
+  // 組出的 URL 一律要求與 origin 同源：href 可能是 'javascript:...'(origin
+  // 為 'null')或 '//evil.com/x' 這類協定相對輸入(換掉 host)，用 origin
+  // 全等檢查一次擋掉，避免非常規 scheme 或換域結果被寫進剪貼簿；真正的
+  // 貼文 permalink 都是 '/@user/post/ID' 這類同源相對路徑，不受影響。
   function buildPostUrl(href, origin) {
     if (typeof href !== 'string') return null;
     try {
       var url = new URL(href, origin);
+      if (url.origin !== new URL(origin).origin) return null;
       url.search = '';
       url.hash = '';
       return url.toString();

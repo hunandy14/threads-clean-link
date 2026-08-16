@@ -145,6 +145,18 @@ test('buildPostUrl:origin 非合法絕對來源時回傳 null，不丟例外', (
   assert.equal(buildPostUrl('/@x/post/abc', undefined), null);
 });
 
+test('buildPostUrl:href 為 javascript: 這類非常規 scheme 時回傳 null，不丟例外', () => {
+  const { buildPostUrl } = loadPostIcon();
+
+  assert.equal(buildPostUrl('javascript:alert(1)', 'https://www.threads.com'), null);
+});
+
+test('buildPostUrl:href 為 //evil.com/x 這類協定相對輸入時回傳 null，不丟例外', () => {
+  const { buildPostUrl } = loadPostIcon();
+
+  assert.equal(buildPostUrl('//evil.com/x', 'https://www.threads.com'), null);
+});
+
 // ---- hasExistingIcon(可選：低成本 idempotency 判斷，沿用最小 duck-type 假物件) ----
 
 test('hasExistingIcon:scope.querySelector(".tcl-copy-icon") 有命中時回傳 true', () => {
