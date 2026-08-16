@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>脆連結清潔工 — 分享自動淨化</title>
+<style>
+  :root{
+    --bg-page: rgb(16,16,16);
+    --bg-card: rgb(24,24,24);
+    --bg-card2: rgb(31,31,31);
+    --fg: rgb(243,245,247);
+    --muted: rgb(119,119,119);
+    --icon: rgb(204,204,204);
+    --accent: #e2925e;
+    --accent-ink: #17181b;
+    --border: rgba(255,255,255,0.08);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;overflow:hidden;background:var(--bg-page);}
+  body{font-family:var(--font);}
+  .stage{
+    width:1280px;height:800px;position:relative;overflow:hidden;
+    background:
+      radial-gradient(closest-side, rgba(226,146,94,0.10), transparent 70%) top right / 900px 900px no-repeat,
+      var(--bg-page);
+  }
+  .glow{
+    position:absolute; right:-140px; top:120px; width:760px; height:560px;
+    background: radial-gradient(closest-side, rgba(226,146,94,0.20), rgba(226,146,94,0.06) 55%, transparent 75%);
+    filter: blur(8px);
+    pointer-events:none;
+  }
+  .inner{
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    padding:54px 68px 36px;
+  }
+
+  /* ---- header text block ---- */
+  .eyebrow{
+    display:inline-flex; align-items:center; gap:8px; align-self:flex-start;
+    background: rgba(226,146,94,0.14); color: var(--accent);
+    font-size:15px; font-weight:700; letter-spacing:0.02em;
+    padding:6px 14px; border-radius:999px; margin-bottom:18px;
+  }
+  .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);}
+  h1{
+    margin:0 0 14px; color:var(--fg); font-size:52px; font-weight:800;
+    letter-spacing:-0.01em; line-height:1.18; max-width:900px;
+  }
+  h1 b{ color:var(--accent); font-weight:800; }
+  .sub{
+    margin:0; color:var(--muted); font-size:24px; line-height:1.55; max-width:760px; font-weight:500;
+  }
+
+  /* ---- visual area ---- */
+  .visual{
+    flex:1; display:flex; align-items:center; justify-content:center; gap:46px; position:relative; margin-top:8px;
+  }
+
+  /* Threads-like post card */
+  .post-card{
+    width:588px; background:var(--bg-card); border:1px solid var(--border);
+    border-radius:20px; padding:26px 28px 24px; box-shadow: 0 30px 60px -30px rgba(0,0,0,0.7);
+    position:relative;
+  }
+  .prow{ display:flex; align-items:center; gap:12px; }
+  .ava{
+    width:46px; height:46px; border-radius:50%; flex:0 0 auto;
+    background: linear-gradient(135deg, #e8b84d, #c77b2e);
+  }
+  .pname{ color:var(--fg); font-weight:700; font-size:17px; }
+  .ptime{ color:var(--muted); font-size:14px; margin-left:8px; }
+  .ptext{
+    color:var(--fg); font-size:19px; line-height:1.62; margin:16px 0 20px;
+  }
+  .acts{ display:flex; align-items:center; gap:34px; color:var(--icon); }
+  .a{ display:flex; align-items:center; gap:8px; font-size:14px; color:var(--icon); }
+  .a svg{ width:22px; height:22px; display:block; }
+  .a.share{ position:relative; }
+  .share-ring{
+    position:absolute; left:50%; top:50%; width:56px; height:56px;
+    transform:translate(-50%,-50%); border-radius:50%;
+    background: rgba(226,146,94,0.16); border:1.5px solid rgba(226,146,94,0.55);
+  }
+  .a.share svg{ color:var(--accent); position:relative; z-index:1; }
+  .tap-dot{
+    position:absolute; right:-6px; top:-46px; width:30px; height:30px; border-radius:50%;
+    background:rgba(255,255,255,0.18); border:1.5px solid rgba(255,255,255,0.55);
+  }
+
+  .arrow-wrap{ display:flex; flex-direction:column; align-items:center; gap:6px; color:var(--accent); }
+  .arrow-wrap svg{ width:46px; height:46px; }
+  .arrow-wrap span{ font-size:14px; font-weight:700; color:var(--accent); white-space:nowrap; }
+
+  /* clipboard transform chip */
+  .chip{
+    width:452px; background:var(--bg-card2); border:1px solid var(--border);
+    border-radius:18px; padding:24px 26px; box-shadow: 0 30px 60px -30px rgba(0,0,0,0.7);
+  }
+  .chip-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+  .chip-title{ display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px; font-weight:700; letter-spacing:0.02em; }
+  .chip-title svg{ width:18px; height:18px; }
+  .badge{
+    background: rgba(226,146,94,0.16); color:var(--accent); font-size:12.5px; font-weight:700;
+    padding:5px 11px; border-radius:999px;
+  }
+  .url-line{
+    display:flex; align-items:flex-start; gap:9px; font-size:14.5px; line-height:1.5;
+    font-family: "Cascadia Code","Consolas",ui-monospace,monospace; word-break:break-all;
+  }
+  .url-line.dirty{ color:var(--muted); text-decoration:line-through; text-decoration-color:rgba(119,119,119,0.7); margin-bottom:14px;}
+  .url-line.clean{ color:var(--accent); font-weight:700; }
+  .url-line svg{ width:16px; height:16px; flex:0 0 auto; margin-top:2px; }
+  .down-arrow{ display:flex; justify-content:center; margin:-2px 0 12px; color:var(--accent); opacity:0.8; }
+  .down-arrow svg{ width:20px; height:20px; }
+
+  /* ---- footer brand lockup ---- */
+  .brand{
+    position:absolute; right:68px; bottom:34px; display:flex; align-items:center; gap:12px;
+  }
+  .brand .mark{ width:40px; height:40px; display:block; }
+  .brand .name{ color:var(--fg); font-size:19px; font-weight:800; letter-spacing:-0.01em; }
+  .brand .name small{ display:block; color:var(--muted); font-size:12.5px; font-weight:600; letter-spacing:0.02em; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="glow"></div>
+  <div class="inner">
+    <div class="eyebrow"><span class="dot"></span>分享自動淨化</div>
+    <h1>按下分享鍵，連結<b>自動洗乾淨</b></h1>
+    <p class="sub">用 Threads 原生分享鍵複製連結時，追蹤參數與短碼自動清除，貼上就是乾淨貼文網址。</p>
+
+    <div class="visual">
+      <div class="post-card">
+        <div class="prow">
+          <div class="ava"></div>
+          <div>
+            <span class="pname">windy.notes</span><span class="ptime">3小時</span>
+          </div>
+        </div>
+        <div class="ptext">巷口新開的咖啡店，手沖單品意外地順口，坐了一下午看窗外的雨慢慢停。</div>
+        <div class="acts">
+          <span class="a"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/></svg>1.2K</span>
+          <span class="a"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-9 8.4 8.5 8.5 0 0 1-3.4-.7L3 21l1.8-5.6a8.38 8.38 0 0 1-.7-3.4 8.5 8.5 0 0 1 8.4-8.5 8.38 8.38 0 0 1 8.5 8z"/></svg>86</span>
+          <span class="a"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2.1l4 4-4 4"/><path d="M3 12.6v-2a4 4 0 0 1 4-4h14"/><path d="M7 21.9l-4-4 4-4"/><path d="M21 11.4v2a4 4 0 0 1-4 4H3"/></svg>24</span>
+          <span class="a share">
+            <span class="share-ring"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+            <span class="tap-dot"></span>
+          </span>
+        </div>
+      </div>
+
+      <div class="arrow-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+        <span>自動處理</span>
+      </div>
+
+      <div class="chip">
+        <div class="chip-head">
+          <div class="chip-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            剪貼簿
+          </div>
+          <span class="badge">已淨化</span>
+        </div>
+        <div class="url-line dirty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M9 17H7A5 5 0 0 1 7 7"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/></svg>
+          https://www.threads.com/@windy.notes/post/C9zQabcDEF1?igshid=NTc4MTIwNjQ2YQ==
+        </div>
+        <div class="down-arrow">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>
+        </div>
+        <div class="url-line clean">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          https://www.threads.com/@windy.notes/post/C9zQabcDEF1
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="brand">
+    <svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" fill="#e2925e" transform="translate(16,16) scale(1.18) translate(-12,-12.1)"/>
+      <g transform="translate(16,15.1) scale(0.55) translate(-12,-12)" stroke="#17181b" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <path d="M9 17H7A5 5 0 0 1 7 7h2"/>
+        <path d="M15 7h2a5 5 0 1 1 0 10h-2"/>
+        <path d="M8 12h8"/>
+      </g>
+    </svg>
+    <div class="name">脆連結清潔工<small>Threads Clean Link</small></div>
+  </div>
+</div>
+</body>
+</html>
