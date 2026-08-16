@@ -58,8 +58,10 @@ jobs:
             echo "尚無 tag $TAG，準備打包發版。"
           fi
 
+      # upload_only 補傳也要過測試:打包白名單防漏檔(test/package.test.js)
+      # 正是要在「重打包上傳」的路徑上把關,不能只在新 tag 時跑。
       - name: 執行測試
-        if: steps.tagcheck.outputs.exists == 'false'
+        if: steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)
         run: node --test test/*.test.js
 
       # 下面兩個條件式都多 or 了 upload_only 分支:讓「tag 已存在、只想

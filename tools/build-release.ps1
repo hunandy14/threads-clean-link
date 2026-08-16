@@ -3,10 +3,12 @@
     打包 Threads Clean Link 成 Chrome Web Store 上架用的 zip。
 
 .DESCRIPTION
-    只封裝上架必要的檔案:manifest.json、background.js、clipboard-guard.js、
-    bridge.js、popup.html、popup.js、popup-init.js，以及 icons/ 資料夾底下的
+    只封裝上架必要的檔案:manifest.json、四支執行腳本(background/guard/
+    bridge/i18n)、popup 三件套、options 三件套，以及 icons/ 資料夾底下的
     圖示檔(*.png / *.svg / *.ico)，還有 _locales/ 資料夾底下每個語系的
     messages.json(雙語門面:en 為 fallback、zh_TW 為繁中)。
+    白名單與 manifest/HTML 實際引用的對齊由 test/package.test.js 靜態把關,
+    新增執行檔時漏改這裡會直接紅燈。
     README.md、LICENSE、tools/、tmp/、icons/gen-icons.ps1 等開發用檔案一律
     不打包，避免非必要內容混進上架用的壓縮檔。
 
@@ -44,9 +46,13 @@ $includeFiles = @(
     'background.js',
     'clipboard-guard.js',
     'bridge.js',
+    'i18n.js',
     'popup.html',
     'popup.js',
-    'popup-init.js'
+    'popup-init.js',
+    'options.html',
+    'options.js',
+    'options-init.js'
 )
 
 foreach ($file in $includeFiles) {
