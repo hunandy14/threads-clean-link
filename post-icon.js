@@ -42,11 +42,14 @@
     for (var i = 0; i < candidateLabelsList.length; i++) {
       var labels = candidateLabelsList[i];
       if (!Array.isArray(labels)) continue;
-      var hitCount = 0;
+      // 用 Set 去重後再數：命中的是「相異標籤數」而非「命中次數」，避免
+      // 同一顆按鈕的 aria-label 因某種原因重複出現在陣列中(例如
+      // ['分享','分享','分享','x'])，光靠次數就假性湊到門檻。
+      var hitLabels = new Set();
       for (var j = 0; j < labels.length; j++) {
-        if (ACTION_ROW_LABEL_WHITELIST.indexOf(labels[j]) !== -1) hitCount++;
+        if (ACTION_ROW_LABEL_WHITELIST.indexOf(labels[j]) !== -1) hitLabels.add(labels[j]);
       }
-      if (hitCount >= 3) return i;
+      if (hitLabels.size >= 3) return i;
     }
 
     return candidateLabelsList.length - 1;
@@ -78,6 +81,8 @@
     if (typeof href !== 'string') return null;
     try {
       var url = new URL(href, origin);
+      // Threads permalink 現皆同源相對路徑;若日後出現跨子網域/跨 TLD 絕
+      // 對連結,此檢查會靜默擋下,屆時需放寬為 host 白名單。
       if (url.origin !== new URL(origin).origin) return null;
       url.search = '';
       url.hash = '';
@@ -113,6 +118,10 @@
       var SVG_WRAP_CLASS = 'tcl-copy-icon-svg';
       var COPIED_RESET_MS = 1500;
       var SCAN_DEBOUNCE_MS = 60;
+      // 氣泡淡出動畫(見 TOOLTIP_CLASS 的 transition:opacity .12s)跑完後才
+      // 還原文字，避免文字在淡出過程中(仍看得見)跳變。留一點緩衝，比
+      // .12s 稍長。
+      var TOOLTIP_TEXT_RESET_DELAY_MS = 150;
 
       // 鏈結(link)圖示與勾勾(check)圖示：20px、stroke=currentColor、
       // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。內建一個空的
@@ -171,10 +180,10 @@
           '.' + ICON_CLASS + ':focus-visible{outline:2px solid currentColor;outline-offset:1px;}',
           // hover 圓底:實機量測原生互動列按鈕的 hover 背景，深色主題是
           // rgb(30,30,30)、瞬間出現(無 transition)，這裡照抄精確值與行
-          // 為。淺色主題目前沒有原生量測值，維持現行近似值
-          // rgba(0,0,0,0.05)，待淺色主題實測校正。
+          // 為。淺色主題同樣為實測值 rgb(245,245,245)(CDP 模擬
+          // prefers-color-scheme 實測)。
           '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:rgb(30,30,30);}}',
-          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:rgba(0,0,0,0.05);}}',
+          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:rgb(245, 245, 245);}}',
           '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + '{display:inline-flex;pointer-events:none;}',
           // 點擊後「已複製原始連結」的自繪回饋氣泡:hover 提示已改用 SVG
           // 內建的原生 <title>(見 LINK_SVG/CHECK_SVG 與 createIconElement
@@ -221,6 +230,18 @@
         el.appendChild(tooltip);
 
         var resetTimer = null;
+        var textResetTimer = null;
+
+        function clearFeedbackTimers() {
+          if (resetTimer) {
+            clearTimeout(resetTimer);
+            resetTimer = null;
+          }
+          if (textResetTimer) {
+            clearTimeout(textResetTimer);
+            textResetTimer = null;
+          }
+        }
 
         // 點擊複製成功後的回饋:swap 成勾勾圖示，並顯示自繪的「已複製原
         // 始連結」氣泡(TOOLTIP_VISIBLE_CLASS 觸發顯示)——hover 提示已改
@@ -231,13 +252,20 @@
           applyIconTitle();
           tooltip.textContent = t('iconCopied');
           tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
-          if (resetTimer) clearTimeout(resetTimer);
+          clearFeedbackTimers();
           resetTimer = setTimeout(function () {
             resetTimer = null;
             iconWrap.innerHTML = LINK_SVG;
             applyIconTitle();
-            tooltip.textContent = t('iconTooltip');
             tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
+            // 移除 TOOLTIP_VISIBLE_CLASS 只是觸發淡出(opacity transition
+            // .12s)，文字若同一 tick 就還原，淡出過程中仍看得見文字從
+            // 「已複製原始連結」跳成「複製原始連結」。延後到動畫跑完後
+            // 再還原，畫面上就只看得到淡出、看不到文字跳變。
+            textResetTimer = setTimeout(function () {
+              textResetTimer = null;
+              tooltip.textContent = t('iconTooltip');
+            }, TOOLTIP_TEXT_RESET_DELAY_MS);
           }, COPIED_RESET_MS);
         }
 
@@ -249,7 +277,7 @@
         el._tclApplyLocale = function () {
           el.setAttribute('aria-label', t('iconTooltip'));
           applyIconTitle();
-          if (!resetTimer) {
+          if (!resetTimer && !textResetTimer) {
             tooltip.textContent = t('iconTooltip');
           }
         };
@@ -346,7 +374,7 @@
           // 巢狀容器防護:候選 row 最近的貼文容器祖先必須就是目前掃描的
           // container 本身，否則代表這顆 row 其實屬於巢狀在裡面的引用/
           // 回覆貼文，不該被外層容器搶走。
-          if (row.closest && row.closest('[data-pressable-container]') !== container) continue;
+          if (row.closest && row.closest('div[data-pressable-container]') !== container) continue;
 
           rows.push(row);
         }
@@ -395,16 +423,24 @@
       // 化卸載)後會自然被回收，不會累積記憶體。
       //   - injectedContainers:已成功注入的容器，快速跳過(hasExistingIcon
       //     的 querySelector 冪等檢查仍保留當保險，兩者互為備援)。
-      //   - skippedContainers:連續 MAX_SCAN_FAILURES 次找不到互動列的容
-      //     器，判定為「這個容器結構上就不會有互動列」而永久跳過；沒有立
-      //     刻永久跳過是因為 React 可能晚渲染，貼文容器先掛載、互動列稍
-      //     後才補上，太早放棄會漏掉這類貼文。
+      //   - skippedContainers:連續 MAX_SCAN_FAILURES 次找不到互動列「且」
+      //     距該容器第一次失敗已過 MAX_SCAN_FAILURES_MIN_AGE_MS 的容器，判
+      //     定為「這個容器結構上就不會有互動列」而永久跳過；沒有立刻永久
+      //     跳過是因為 React 可能晚渲染，貼文容器先掛載、互動列稍後才補
+      //     上，太早放棄會漏掉這類貼文。純看次數不夠:debounce 掃描間隔只
+      //     有 SCAN_DEBOUNCE_MS，3 輪掃描可能在 ~180ms 內就跑完，早於
+      //     React 晚渲染完成的時間，必須額外加時間閘才不會判死太早。
       //   - scanFailCounts:每個容器目前連續失敗次數，成功注入後歸零。
+      //   - scanFailFirstAt:每個容器「第一次」失敗的時間戳(Date.now())，
+      //     成功注入後連同 scanFailCounts 一併歸零；只有在達到次數門檻
+      //     「且」超過時間門檻時才會被判定永久跳過。
       var hasWeakCollections = typeof WeakMap !== 'undefined' && typeof WeakSet !== 'undefined';
       var injectedContainers = hasWeakCollections ? new WeakSet() : null;
       var skippedContainers = hasWeakCollections ? new WeakSet() : null;
       var scanFailCounts = hasWeakCollections ? new WeakMap() : null;
+      var scanFailFirstAt = hasWeakCollections ? new WeakMap() : null;
       var MAX_SCAN_FAILURES = 3;
+      var MAX_SCAN_FAILURES_MIN_AGE_MS = 2000;
 
       // ---- 對單一貼文容器做冪等注入 ----
       function injectIntoContainer(container) {
@@ -421,7 +457,19 @@
           if (scanFailCounts) {
             var failCount = (scanFailCounts.get(container) || 0) + 1;
             scanFailCounts.set(container, failCount);
-            if (failCount >= MAX_SCAN_FAILURES && skippedContainers) {
+            if (scanFailFirstAt && !scanFailFirstAt.has(container)) {
+              scanFailFirstAt.set(container, Date.now());
+            }
+            // 次數與時間都要達標才永久跳過:只看次數的話，debounce 掃描
+            // 間隔短，3 輪很可能在 React 晚渲染完成前就跑完，會把還沒補
+            // 上互動列的貼文誤判死。
+            var firstFailAt = scanFailFirstAt ? scanFailFirstAt.get(container) : undefined;
+            if (
+              failCount >= MAX_SCAN_FAILURES &&
+              skippedContainers &&
+              typeof firstFailAt === 'number' &&
+              Date.now() - firstFailAt >= MAX_SCAN_FAILURES_MIN_AGE_MS
+            ) {
               skippedContainers.add(container);
             }
           }
@@ -439,6 +487,7 @@
         applyNativeColor(icon, row);
         row.insertBefore(icon, lastWrapper.nextSibling);
         if (scanFailCounts) scanFailCounts.delete(container);
+        if (scanFailFirstAt) scanFailFirstAt.delete(container);
         if (injectedContainers) injectedContainers.add(container);
       }
 
@@ -514,10 +563,13 @@
 
       function resolveLocaleSafe(pref) {
         try {
-          return root.TCLI18N.resolveLocale(pref);
+          if (root.TCLI18N && typeof root.TCLI18N.resolveLocale === 'function') {
+            return root.TCLI18N.resolveLocale(pref);
+          }
         } catch (e) {
-          return 'en';
+          // 掉到下面回傳預設語言。
         }
+        return 'en';
       }
 
       // ---- 動態 feed:Threads feed 是虛擬化的，貼文捲出畫面 DOM 即卸載，

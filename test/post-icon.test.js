@@ -218,6 +218,18 @@ test('pickActionRowIndex:白名單全不中時(頁面語言不在 zh/en)，退�
   assert.equal(pickActionRowIndex([videoToolbarFr, actionRowFr]), 1);
 });
 
+test('pickActionRowIndex:同一標籤重複出現不應虛增命中數(去重後才計數相異標籤)', () => {
+  const { pickActionRowIndex } = loadPostIcon();
+  // 退化列:'分享' 出現 3 次，若只數「命中次數」會誤判達到 >= 3 門檻；
+  // 但相異命中標籤其實只有 1 個('分享')，不該被選為互動列。
+  const degenerateRow = ['分享', '分享', '分享', 'x'];
+  const videoToolbar = ['追蹤', '更多', '已靜音', '排序'];
+
+  // 兩個候選都沒有相異命中 >= 3 個，退回文件序最後一個候選(videoToolbar)，
+  // 而不是誤選 degenerateRow。
+  assert.equal(pickActionRowIndex([degenerateRow, videoToolbar]), 1);
+});
+
 test('pickActionRowIndex:候選清單為空或非陣列輸入一律回傳 null，不丟例外', () => {
   const { pickActionRowIndex } = loadPostIcon();
 
