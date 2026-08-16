@@ -21,7 +21,7 @@
     if (!Array.isArray(hrefs)) return null;
     for (var i = 0; i < hrefs.length; i++) {
       var href = hrefs[i];
-      if (typeof href === 'string' && !/\/media$/.test(href)) {
+      if (typeof href === 'string' && !/\/media$/i.test(href)) {
         return href;
       }
     }

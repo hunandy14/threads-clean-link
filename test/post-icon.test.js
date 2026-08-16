@@ -81,6 +81,12 @@ test('pickPermalink:全部候選都以 /media 結尾時回傳 null', () => {
   assert.equal(pickPermalink(['/@x/post/abc/media']), null);
 });
 
+test('pickPermalink:排除 /media 結尾時大小寫不敏感(例如 /MEDIA)', () => {
+  const { pickPermalink } = loadPostIcon();
+
+  assert.equal(pickPermalink(['/@a/post/X/MEDIA']), null);
+});
+
 test('pickPermalink:空陣列回傳 null', () => {
   const { pickPermalink } = loadPostIcon();
 
