@@ -93,12 +93,23 @@
       // storage.onChanged 觸發時即時更新既有 icon 的文案。
       var currentLocale = 'en';
 
+      // i18n.js 理論上一定會在 post-icon.js 之前載入(manifest content_scripts
+      // 陣列順序保證)，但防禦性地假設 TCLI18N 可能不存在或呼叫時丟例外：
+      // 退回這份內建的英文字面值表，不要讓使用者看到原始 key 字串。
+      var FALLBACK_STRINGS = {
+        iconTooltip: 'Copy original link',
+        iconCopied: 'Original link copied',
+      };
+
       function t(key) {
         try {
-          return root.TCLI18N.t(currentLocale, key);
+          if (root.TCLI18N && typeof root.TCLI18N.t === 'function') {
+            return root.TCLI18N.t(currentLocale, key);
+          }
         } catch (e) {
-          return key;
+          // 掉到下面的內建 fallback。
         }
+        return FALLBACK_STRINGS[key] || key;
       }
 
       // ---- 樣式注入:hover 圓底高亮 + tooltip，標 id 防重複注入 ----
@@ -456,10 +467,18 @@
       }
 
       function init() {
+        // 不等 chrome.storage.sync 的回呼:先用 resolveLocaleSafe(null) 的
+        // 預設語言(環境偵測)立刻掃描注入、啟動 observer，避免 storage 遲
+        // 遲不回呼(甚至永遠不回呼，例如測試/沙箱環境的 mock 不完整)時
+        // icon 整個出不來。langPref 讀到之後再透過 setLocale 補刷已注入
+        // icon 的文案；storage 永不回呼時功能照常運作，只是文案停在預設
+        // 語言。
+        setLocale(resolveLocaleSafe(null));
+        scanAndInject();
+        startObserver();
+
         readLangPref(function (langPref) {
           setLocale(resolveLocaleSafe(langPref));
-          scanAndInject();
-          startObserver();
         });
         watchLangPrefChanges();
       }
