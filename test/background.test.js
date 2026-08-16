@@ -9,7 +9,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
 
-const SRC = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+// background.js 依賴共用 i18n 模組(真實環境靠 importScripts 載入);
+// 測試把 i18n.js 原始碼接在前面,兩支腳本共用同一個 sandbox 全域。
+const SRC =
+  fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
+  '\n' +
+  fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
 const SHARE_URL = 'https://www.threads.com/share/DHuf91XTf/';
 const CLEAN_POST_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
@@ -263,15 +268,22 @@ test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對�
 
 const SUCCESS_NOTIFICATION_ID = 'threads-clean-link-success';
 
-function settle(ms = 60) {
+// 淨化紀錄 + i18n 之後,cleanedNotice 的完整鏈路(讀設定→記錄→讀設定→
+// 讀語言→通知)串了約 5 個 setTimeout(0) tick;Windows 計時器顆粒 ~15ms,
+// 60ms 會偶發性等不完,放寬到 150ms。
+function settle(ms = 150) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // 載入 background.js，並以指定設定填入 chrome.storage.sync;同時側錄
 // contextMenus.onClicked 監聽器、notifications.create 與 scripting.executeScript。
 // opts.clipboardOk 可在測試中途翻轉，模擬「先失敗、後成功」的兩次點擊。
+// opts.localHistory 可預填 storage.local 的 history(測紀錄上限用)。
 function loadBackgroundWithSettings(initialSettings, opts = {}) {
-  const storage = createChromeStorage(initialSettings);
+  const storage = createChromeStorage(
+    initialSettings,
+    opts.localHistory ? { history: opts.localHistory } : {}
+  );
   const notifications = [];
   const executeScriptCalls = [];
   const onClickedListeners = [];
@@ -412,7 +424,8 @@ test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸
 // R1-2 通知涵蓋自動路徑(service worker 端):notifySuccess=true 時，
 // 右鍵成功「與」自動淨化成功都要通知;notifySuccess=false 時一切成功
 // 通知靜默。自動路徑的成功訊息由 bridge 經 chrome.runtime.sendMessage
-// 送來，形狀為 { type: 'cleanedNotice', cleanUrl }。
+// 送來，形狀為 { type: 'cleanedNotice', cleanUrl, kind }(kind 為淨化來源,
+// 白名單 'share' | 'strip',非法整則忽略——見檔末「淨化紀錄」區塊)。
 //
 // 【把關位置(規格未明定，本輪測試在此定案)】notifySuccess 的把關由
 // background 負責:它是唯一同時看得到設定與兩條成功路徑的地方，也是
@@ -426,7 +439,7 @@ const CLEANED_NOTICE_CLEAN_URL = 'https://www.threads.com/@dafucoding/post/Dbezf
 test('R1-2:notifySuccess=true 時，自動淨化成功的 cleanedNotice 會發出一則成功通知', async () => {
   const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
 
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
   assert.equal(bg.notifications.length, 1);
@@ -437,7 +450,7 @@ test('R1-2:notifySuccess=true 時，自動淨化成功的 cleanedNotice 會發�
 test('R1-2:notifySuccess=false 時，自動淨化成功的 cleanedNotice 不得發出任何通知', async () => {
   const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
 
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
   assert.deepEqual(bg.notifications, []);
@@ -446,7 +459,7 @@ test('R1-2:notifySuccess=false 時，自動淨化成功的 cleanedNotice 不得�
 test('R1-2:自動路徑的成功通知不影響右鍵路徑;notifySuccess=true 時兩條路徑各自通知一則', async () => {
   const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
 
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
   assert.equal(bg.notifications.length, 1);
 
@@ -472,14 +485,14 @@ test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 
     `${CLEANED_NOTICE_CLEAN_URL}?injected=payload`,
   ];
   for (const cleanUrl of forged) {
-    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl, kind: 'share' });
   }
   await settle();
 
   assert.deepEqual(bg.notifications, [], '尾隨文字必須被錨定驗證擋下，不得發出任何通知');
 
   // 對照組:整串完全吻合的乾淨網址仍須通知，排除「一律不通知」的假動作。
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
   assert.equal(bg.notifications.length, 1);
@@ -500,7 +513,7 @@ test('R2:「合法前綴 + 無空白中文文字」的 cleanedNotice 不得發�
     `${CLEANED_NOTICE_CLEAN_URL}【系統通知】請立即點擊下方連結`,
   ];
   for (const cleanUrl of forged) {
-    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl, kind: 'share' });
   }
   await settle();
 
@@ -511,7 +524,7 @@ test('R2:「合法前綴 + 無空白中文文字」的 cleanedNotice 不得發�
   );
 
   // 對照組:整串完全吻合的乾淨網址仍須通知。
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
   assert.equal(bg.notifications.length, 1);
@@ -525,7 +538,7 @@ test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通�
     `${CLEANED_NOTICE_CLEAN_URL}${'0'.repeat(200)}`,
   ];
   for (const cleanUrl of forged) {
-    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl, kind: 'share' });
   }
   await settle();
 
@@ -543,9 +556,99 @@ test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通�
     'https://threads.net/@dafucoding/post/DbezfB0gYvP',
   ];
   for (const cleanUrl of legit) {
-    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl });
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl, kind: 'share' });
   }
   await settle();
 
   assert.equal(bg.notifications.length, legit.length, '合法網址一律照常通知，不得誤殺');
+});
+
+// ============================================================
+// 淨化紀錄(storage.local):background 是唯一的記錄落點。
+//   - 自動路徑:cleanedNotice 通過錨定驗證後記錄,kind 白名單 share|strip,
+//     非法(含缺失、'menu'、任意字串)整則忽略——不記錄也不通知。
+//   - 右鍵路徑:剪貼簿實際寫入成功後記錄 kind:'menu';寫入失敗不留紀錄。
+//   - saveHistory=false 時不記錄;上限 1000 筆,新到舊,超過裁掉最舊。
+// ============================================================
+
+test('紀錄:合法 cleanedNotice 寫入一筆 { url, kind, at } 到 storage.local', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: false });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'strip' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL);
+  assert.equal(history[0].kind, 'strip');
+  assert.equal(typeof history[0].at, 'number');
+});
+
+test('紀錄:kind 缺失或非白名單的 cleanedNotice 整則忽略——不記錄、不通知', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'menu' });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'evil' });
+  await settle();
+
+  assert.equal(bg.storage.localSnapshot().history, undefined, '非法 kind 不得留下任何紀錄');
+  assert.deepEqual(bg.notifications, [], '非法 kind 不得發出任何通知');
+
+  // 對照組:合法 kind 照常記錄,排除「一律不記錄」的假動作。
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+  await settle();
+
+  assert.equal(bg.storage.localSnapshot().history.length, 1);
+});
+
+test('紀錄:saveHistory=false 時自動與右鍵兩條路徑都不記錄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: false, notifySuccess: false });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle();
+
+  assert.equal(bg.executeScriptCalls.length, 1, '右鍵複製功能本身不受 saveHistory 影響');
+  assert.equal(bg.storage.localSnapshot().history, undefined);
+});
+
+test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗不留紀錄', async () => {
+  const ok = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: false });
+  ok.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = ok.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].url, CLEAN_POST_URL);
+  assert.equal(history[0].kind, 'menu');
+
+  const failed = loadBackgroundWithSettings(
+    { saveHistory: true, notifySuccess: false },
+    { clipboardOk: false }
+  );
+  failed.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle();
+
+  assert.equal(failed.storage.localSnapshot().history, undefined, '沒寫進剪貼簿就不算淨化成功');
+});
+
+test('紀錄:超過 1000 筆上限時裁掉最舊,新紀錄在最前', async () => {
+  const seed = Array.from({ length: 1000 }, (_, i) => ({
+    url: `https://www.threads.com/@seeduser/post/P${i}`,
+    kind: 'share',
+    at: 1000 + i,
+  }));
+  const bg = loadBackgroundWithSettings(
+    { saveHistory: true, notifySuccess: false },
+    { localHistory: seed }
+  );
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1000, '上限 1000 筆');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '新紀錄插在最前');
+  assert.equal(history[999].url, seed[998].url, '最舊的一筆(seed 末筆)被裁掉');
 });

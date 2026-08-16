@@ -18,6 +18,10 @@
   // 的程序邊界。整串形狀的驗證由 background 以錨定樣式負責(信任邊界在該處)。
   var MAX_CLEAN_URL_LENGTH = 2048;
 
+  // kind 標示淨化來源(share/strip)，這裡只做型別與長度把關，白名單驗證
+  // 一樣交給 background。形狀不對整則丟棄，不轉發殘缺訊息。
+  var MAX_KIND_LENGTH = 16;
+
   window.addEventListener('message', function (event) {
     // 只信任「本頁面自己發給自己」的訊息：
     // - source 必須是同一個 window（排除子 iframe / 其他視窗轉發過來的訊息）
@@ -31,8 +35,13 @@
     if (data.type === NOTICE_TYPE) {
       if (typeof data.cleanUrl !== 'string' || !data.cleanUrl) return;
       if (data.cleanUrl.length > MAX_CLEAN_URL_LENGTH) return;
+      if (typeof data.kind !== 'string' || !data.kind || data.kind.length > MAX_KIND_LENGTH) return;
       try {
-        chrome.runtime.sendMessage({ type: 'cleanedNotice', cleanUrl: data.cleanUrl });
+        chrome.runtime.sendMessage({
+          type: 'cleanedNotice',
+          cleanUrl: data.cleanUrl,
+          kind: data.kind,
+        });
       } catch (e) {
         // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而為。
       }

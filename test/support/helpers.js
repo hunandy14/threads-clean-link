@@ -62,75 +62,88 @@ function runInSandbox(src, sandbox) {
 
 // ---- v1.1 設定規格(S1–S7)新增的共用 mock ----
 
-// chrome.storage 的離線假實作(sync 區 + onChanged)。
+// chrome.storage 的離線假實作(sync + local 兩區 + onChanged)。
 // 【時序紀律】get/set/onChanged 一律以 setTimeout(0) 延遲結算，絕不在同一個
 // tick 直接 resolve 或回呼——同 tick 假綠燈是本專案已知風險。
 // get/set 同時支援 Promise 與 callback 兩種呼叫慣例，不預設實作採用哪一種。
-function createChromeStorage(initial = {}) {
-  const data = Object.assign({}, initial);
-  const calls = { get: [], set: [] };
+// 既有介面(calls/sync/snapshot/emitChange 預設 sync 區)完全向下相容;
+// 淨化紀錄功能新增 local 區(local/localCalls/localSnapshot)。
+function createChromeStorage(initial = {}, localInitial = {}) {
   const onChangedListeners = [];
 
   function later(fn) {
     setTimeout(fn, 0);
   }
 
-  function has(key) {
-    return Object.prototype.hasOwnProperty.call(data, key);
-  }
+  function makeArea(seed) {
+    const data = Object.assign({}, seed);
+    const calls = { get: [], set: [] };
 
-  // 比照 chrome.storage 的 keys 語義:null/undefined 取全部;字串取單鍵;
-  // 陣列取多鍵;物件則以其值為「查無此鍵時的預設值」。
-  function read(keys) {
-    if (keys === null || keys === undefined) return Object.assign({}, data);
-    if (typeof keys === 'string') return has(keys) ? { [keys]: data[keys] } : {};
-    if (Array.isArray(keys)) {
-      const out = {};
-      keys.forEach((k) => {
+    function has(key) {
+      return Object.prototype.hasOwnProperty.call(data, key);
+    }
+
+    // 比照 chrome.storage 的 keys 語義:null/undefined 取全部;字串取單鍵;
+    // 陣列取多鍵;物件則以其值為「查無此鍵時的預設值」。
+    function read(keys) {
+      if (keys === null || keys === undefined) return Object.assign({}, data);
+      if (typeof keys === 'string') return has(keys) ? { [keys]: data[keys] } : {};
+      if (Array.isArray(keys)) {
+        const out = {};
+        keys.forEach((k) => {
+          if (has(k)) out[k] = data[k];
+        });
+        return out;
+      }
+      const out = Object.assign({}, keys);
+      Object.keys(keys).forEach((k) => {
         if (has(k)) out[k] = data[k];
       });
       return out;
     }
-    const out = Object.assign({}, keys);
-    Object.keys(keys).forEach((k) => {
-      if (has(k)) out[k] = data[k];
-    });
-    return out;
+
+    const api = {
+      get(keys, callback) {
+        calls.get.push(keys);
+        if (typeof callback === 'function') {
+          later(() => callback(read(keys)));
+          return undefined;
+        }
+        return new Promise((resolve) => later(() => resolve(read(keys))));
+      },
+      set(items, callback) {
+        calls.set.push(Object.assign({}, items));
+        if (typeof callback === 'function') {
+          later(() => {
+            Object.assign(data, items);
+            callback();
+          });
+          return undefined;
+        }
+        return new Promise((resolve) =>
+          later(() => {
+            Object.assign(data, items);
+            resolve();
+          })
+        );
+      },
+    };
+
+    return { data, calls, api, snapshot: () => Object.assign({}, data) };
   }
 
-  const sync = {
-    get(keys, callback) {
-      calls.get.push(keys);
-      if (typeof callback === 'function') {
-        later(() => callback(read(keys)));
-        return undefined;
-      }
-      return new Promise((resolve) => later(() => resolve(read(keys))));
-    },
-    set(items, callback) {
-      calls.set.push(Object.assign({}, items));
-      if (typeof callback === 'function') {
-        later(() => {
-          Object.assign(data, items);
-          callback();
-        });
-        return undefined;
-      }
-      return new Promise((resolve) =>
-        later(() => {
-          Object.assign(data, items);
-          resolve();
-        })
-      );
-    },
-  };
+  const syncArea = makeArea(initial);
+  const localArea = makeArea(localInitial);
 
   return {
-    calls,
-    sync,
+    calls: syncArea.calls,
+    localCalls: localArea.calls,
+    sync: syncArea.api,
+    local: localArea.api,
     // 直接掛到 sandbox 的 chrome.storage 上使用。
     api: {
-      sync,
+      sync: syncArea.api,
+      local: localArea.api,
       onChanged: {
         addListener(fn) {
           onChangedListeners.push(fn);
@@ -138,15 +151,19 @@ function createChromeStorage(initial = {}) {
       },
     },
     snapshot() {
-      return Object.assign({}, data);
+      return syncArea.snapshot();
+    },
+    localSnapshot() {
+      return localArea.snapshot();
     },
     onChangedListenerCount() {
       return onChangedListeners.length;
     },
     // 測試專用:模擬使用者在別處改了設定，延遲一個 tick 後觸發 onChanged。
     emitChange(changes, areaName = 'sync') {
+      const area = areaName === 'local' ? localArea : syncArea;
       Object.keys(changes).forEach((k) => {
-        data[k] = changes[k].newValue;
+        area.data[k] = changes[k].newValue;
       });
       later(() => {
         onChangedListeners.slice().forEach((fn) => fn(changes, areaName));
@@ -180,6 +197,10 @@ function createCheckboxDocument(ids) {
       fireChange(nextChecked) {
         this.checked = nextChecked;
         (listeners.change || []).slice().forEach((fn) => fn({ type: 'change', target: this }));
+      },
+      // 測試專用:派送任意型別的事件(如 click)給已註冊的監聽器。
+      fire(type, event) {
+        (listeners[type] || []).slice().forEach((fn) => fn(event || { type, target: this }));
       },
       listenerCount(type) {
         return (listeners[type] || []).length;

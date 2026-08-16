@@ -48,7 +48,9 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 • 自動淨化網頁版「複製連結」:Threads 網頁版官方「複製連結」按鈕寫入剪貼簿的內容，不管是 /share/ 短碼還是帶 ?xmt= 追蹤參數的完整網址，都會被自動處理成乾淨貼文網址，無感完成，不需要額外操作。
 
-【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。介面提供繁體中文與英文雙語顯示名稱，依瀏覽器語言自動切換。
+【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
+
+【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄僅保存在你的裝置上(chrome.storage.local)，絕不上傳，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
 
 【誠實隱私聲明(節錄，完整版請見下方 GitHub README)】
 兩個功能只要攔到的是 /share/ 短碼，都會向 threads.com / threads.net 發出一次不帶 cookie 的匿名 GET 請求，藉此把短碼換成乾淨網址——這是短碼問題「必須向伺服器問一次」的技術本質決定的，沒有繞過的辦法。這次請求不帶登入憑證，但仍會讓 Threads 看到你的來源 IP 與瀏覽器特徵，在意這點的話，請優先使用右鍵方式手動處理，或搭配 VPN。若攔到的內容已經是完整貼文網址、只帶追蹤參數，則是純文字處理，零網路請求。
@@ -69,7 +71,10 @@ TWO FEATURES
 • Auto-clean "Copy Link": Threads' official web "Copy Link" button now writes either a /share/ short code or a full URL with tracking parameters. This extension handles both automatically, so what you paste is always clean.
 
 POPUP SETTINGS
-Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting). The interface displays in Traditional Chinese or English automatically based on your browser language.
+Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting).
+
+HISTORY & SETTINGS PAGE
+Every successful cleaning can leave a local history entry (searchable, filterable by source, JSON export/import, one-click clear), with totals and a 14-day activity chart. History is stored only on your device (chrome.storage.local), never uploaded, capped at 1,000 entries, and can be disabled entirely with the "Keep cleaning history" switch. The UI, notifications and context menu support Traditional Chinese and English — following your browser language by default, switchable manually.
 
 HONEST PRIVACY NOTE
 Whenever either feature has to resolve a /share/ short code, it sends one anonymous GET request (no cookies) to threads.com/threads.net to look up the real destination — that's the only way to resolve a short code, and it's disclosed in full on the project README. This request carries no login credentials, but Threads will still see your source IP and browser fingerprint; if that matters to you, prefer the manual right-click flow or use a VPN. When the content is already a full post URL with only tracking parameters attached, cleaning is pure local string processing with zero network requests.
@@ -87,8 +92,8 @@ https://github.com/hunandy14/threads-clean-link
 | 欄位 | 建議值 | 備註 |
 |---|---|---|
 | Category(類別) | Workflow & Planning(或當下主控台裡最接近「工具類」的選項，例如 Developer Tools) | Chrome Web Store 類別清單會不定期調整，送出前請以主控台當下的下拉選單為準，找不到 Workflow & Planning 就選語意最接近「生產力工具」的項目 |
-| Language(項目語言) | 主要語言:zh-TW(繁體中文) | 目前只有繁中 UI 字串(右鍵選單文字、通知文字皆為繁中)，故主要語言填 zh-TW |
-| 補充語言 | en(可選) | 若之後補上 `_locales` i18n，再回來勾選英文為支援語言;目前 UI 沒有英文字串，不建議先勾 |
+| Language(項目語言) | 主要語言:zh-TW(繁體中文) | UI、通知、右鍵選單自 0.3.0 起完整雙語(自帶字典,依瀏覽器語言或使用者選擇切換) |
+| 補充語言 | en(建議勾選) | 0.3.0 起英文為完整支援語言(介面/通知/右鍵選單皆有英文字串),可安心勾選 |
 
 ---
 
@@ -150,12 +155,12 @@ Used to show a single basic notification after a right-click resolve action comp
 
 **English:**
 ```
-Used to persist exactly two boolean settings from the popup panel — whether auto-clean of the official "Copy Link" button is enabled, and whether a notification is shown after a successful right-click resolve — via chrome.storage.sync, so the choice follows the signed-in user across their Chrome devices. Nothing else is written to storage, and no page or clipboard content is ever stored.
+chrome.storage.sync persists the user's preference toggles (auto-clean on/off, success notification on/off, keep-history on/off, interface language and theme) so choices follow the signed-in user across their Chrome devices. chrome.storage.local optionally keeps a device-only history of the clean URLs this extension itself produced (capped at 1,000 entries, oldest pruned), shown on the options page with export/clear controls; it can be disabled with a switch and is never transmitted anywhere. No page content and no pre-existing clipboard content is ever stored.
 ```
 
 **繁中對照:**
 ```
-用於透過 chrome.storage.sync 保存 popup 面板的兩個布林設定——是否啟用自動淨化官方「複製連結」按鈕、右鍵還原成功時是否顯示通知——讓已登入使用者的選擇能跨 Chrome 裝置同步。除此之外不寫入任何其他內容，也絕不會儲存頁面或剪貼簿內容。
+chrome.storage.sync 保存使用者的偏好開關(自動淨化、成功通知、保存紀錄、介面語言與主題)，讓選擇跨 Chrome 裝置同步。chrome.storage.local 則(可選地)保存本擴充功能自己產出的乾淨網址紀錄——僅存於這台裝置，上限 1,000 筆自動汰舊，顯示於 options 頁並提供匯出與清除，可用開關整個停用，絕不傳輸到任何地方。不會儲存頁面內容，也不會儲存剪貼簿裡原本的內容。
 ```
 
 ### Host permissions:`https://*.threads.com/*`、`https://*.threads.net/*`
@@ -202,7 +207,7 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Authentication information | 不勾 | 匿名請求刻意 `credentials: 'omit'`，不讀取、不傳送任何登入憑證或 cookie |
 | Personal communications | 不勾 | 不讀取頁面內容、不讀取剪貼簿既有內容 |
 | Location | 不勾 | 不存取地理位置 |
-| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用 |
+| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。0.3.0 起的「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址、只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集 |
 | User activity | 不勾 | 不追蹤點擊、捲動等使用者行為 |
 | Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
 

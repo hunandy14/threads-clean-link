@@ -26,9 +26,14 @@
   // 把關位置在 background，見 background.js）。
   var CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
-  function notifyCleaned(cleanUrl) {
+  // kind 標示淨化來源('share' 短碼解析 / 'strip' 剪除追蹤參數),供
+  // background 寫入淨化紀錄時分類;白名單驗證在 background(信任邊界)。
+  function notifyCleaned(cleanUrl, kind) {
     try {
-      window.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: cleanUrl }, window.location.origin);
+      window.postMessage(
+        { type: CLEANED_NOTICE_TYPE, cleanUrl: cleanUrl, kind: kind },
+        window.location.origin
+      );
     } catch (e) {
       // 通知失敗不影響已經完成的寫入流程。
     }
@@ -178,7 +183,7 @@
                   // 會丟 TypeError 落到外層 catch，導致原生被「以未淨化的原文」
                   // 再呼叫一次。包裝後 rejection 語意不變，仍原樣往外傳。
                   return Promise.resolve(nativeWriteText(cleanUrl)).then(function (result) {
-                    notifyCleaned(cleanUrl);
+                    notifyCleaned(cleanUrl, 'share');
                     return result;
                   });
                 }
@@ -199,7 +204,7 @@
             // R1-2：?xmt 剪參分支同樣只在原生寫入成功後才發通知。
             // Promise.resolve 包一層的理由同上(防非 Promise 回傳時重複呼叫原生)。
             return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
-              notifyCleaned(toWrite);
+              notifyCleaned(toWrite, 'strip');
               return result;
             });
           }
@@ -241,8 +246,9 @@
 
           // R1-2：只有實際重建出新 ClipboardItem(代表真的做了淨化替換)
           // 才需要在原生寫入成功後發通知；記錄「這次若成功要通知的
-          // cleanUrl」，fail-open／未改寫的路徑保持 null，不發通知。
+          // cleanUrl 與其來源 kind」，fail-open／未改寫的路徑保持 null，不發通知。
           var cleanedUrlForNotice = null;
+          var cleanedKindForNotice = null;
 
           // decideWhatToWrite 只決定要寫入的內容(讀取 blob、判斷短碼／?xmt、
           // 橋接解析、重建 ClipboardItem)，任何步驟失敗都 fallback 回傳原始
@@ -259,6 +265,7 @@
                     // cleanUrl 需通過貼文網址格式驗證才信任。
                     if (typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)) {
                       cleanedUrlForNotice = cleanUrl;
+                      cleanedKindForNotice = 'share';
                       return [
                         new window.ClipboardItem({
                           'text/plain': new Blob([cleanUrl], { type: 'text/plain' }),
@@ -280,6 +287,7 @@
                 return items;
               }
               cleanedUrlForNotice = cleaned;
+              cleanedKindForNotice = 'strip';
               return [
                 new window.ClipboardItem({
                   'text/plain': new Blob([cleaned], { type: 'text/plain' }),
@@ -290,6 +298,7 @@
               // 讀取／判斷／重建過程任何例外：原封不動用原始 items，且視同
               // 沒有發生任何淨化替換，不得發通知。
               cleanedUrlForNotice = null;
+              cleanedKindForNotice = null;
               return items;
             });
 
@@ -300,8 +309,8 @@
           // 自然不會誤發通知，rejection 也原樣往外傳。
           return decideWhatToWrite.then(function (toWrite) {
             return nativeWrite(toWrite).then(function (result) {
-              if (cleanedUrlForNotice !== null) {
-                notifyCleaned(cleanedUrlForNotice);
+              if (cleanedUrlForNotice !== null && cleanedKindForNotice !== null) {
+                notifyCleaned(cleanedUrlForNotice, cleanedKindForNotice);
               }
               return result;
             });

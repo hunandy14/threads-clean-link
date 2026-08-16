@@ -214,8 +214,10 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
 // TCL_CLEANED_NOTICE 轉為 chrome.runtime.sendMessage 交給 service worker。
 //
 // 【協定約定】
-//   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl }
-//   bridge → background : { type: 'cleanedNotice', cleanUrl }
+//   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl, kind }
+//   bridge → background : { type: 'cleanedNotice', cleanUrl, kind }
+// kind 為淨化來源('share' | 'strip'),bridge 只做型別與長度把關(≤16 字元
+// 的非空字串),白名單驗證由 background 負責;形狀不對整則丟棄。
 //
 // 【來源驗證(規格明文，比照 S8 等級)】驗證不過的通知必須完全忽略、不得
 // 轉發，否則頁面腳本可以自行 postMessage 偽造「淨化成功」灌出假通知。
@@ -237,12 +239,13 @@ function loadBridgeForNotice() {
 test('R1-2:合法來源的 TCL_CLEANED_NOTICE 轉發為一次 cleanedNotice 訊息給 service worker', async () => {
   const { win, sentMessages } = loadBridgeForNotice();
 
-  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
   await settle();
 
   const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
   assert.equal(notices.length, 1);
   assert.equal(notices[0].cleanUrl, CLEAN_URL);
+  assert.equal(notices[0].kind, 'share', 'kind 應原樣轉發給 service worker');
 });
 
 test('R1-2:event.source 非本視窗的 TCL_CLEANED_NOTICE 完全忽略，不得轉發', async () => {
@@ -252,13 +255,13 @@ test('R1-2:event.source 非本視窗的 TCL_CLEANED_NOTICE 完全忽略，不得
   win.dispatchRawMessageEvent({
     source: fakeOtherWindow,
     origin: win.location.origin,
-    data: { type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL },
+    data: { type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' },
   });
   await settle();
   assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 0);
 
   // 對照組:同樣內容改由合法管道送出必須轉發，排除「一律不轉發」的假動作。
-  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
   await settle();
 
   assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 1);
@@ -270,7 +273,7 @@ test('R1-2:event.origin 與本頁不符的 TCL_CLEANED_NOTICE 完全忽略，不
   win.dispatchRawMessageEvent({
     source: win,
     origin: 'https://evil.example',
-    data: { type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL },
+    data: { type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' },
   });
   await settle();
 
@@ -296,7 +299,7 @@ test('R1-2:合法貼文網址開頭 + 尾隨超長垃圾的 TCL_CLEANED_NOTICE �
   const { win, sentMessages } = loadBridgeForNotice();
 
   const oversized = `${CLEAN_URL}\n${'A'.repeat(100 * 1024)}`;
-  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: oversized });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: oversized, kind: 'share' });
   await settle();
 
   assert.equal(
@@ -306,8 +309,32 @@ test('R1-2:合法貼文網址開頭 + 尾隨超長垃圾的 TCL_CLEANED_NOTICE �
   );
 
   // 對照組:長度正常的合法網址仍須轉發，排除「一律不轉發」的假動作。
-  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
   await settle();
 
   assert.equal(sentMessages.filter((m) => m && m.type === 'cleanedNotice').length, 1);
+});
+
+test('R1-2:kind 缺失、非字串或超長的 TCL_CLEANED_NOTICE 不得轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 42 });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: '' });
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'x'.repeat(17) });
+  await settle();
+
+  assert.equal(
+    sentMessages.filter((m) => m && m.type === 'cleanedNotice').length,
+    0,
+    'kind 形狀不對必須整則丟棄'
+  );
+
+  // 對照組:合法 kind 照常轉發且值原樣保留。
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'strip' });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].kind, 'strip');
 });

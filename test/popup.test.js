@@ -226,3 +226,37 @@ test('R1-3:footer 文案不變', () => {
     'footer 文案在改版中必須維持原樣'
   );
 });
+
+// ============================================================
+// 紀錄與設定導航列(options 頁入口):第三列是 button 不是開關(上面的
+// 「只有兩個 checkbox」測試同時把關了這一點),點擊呼叫注入的
+// openOptionsPage。openOptionsPage 與 i18n 都是選配 dep,未注入時
+// controller 照常運作(向下相容,本檔既有測試即為證明)。
+// ============================================================
+
+test('導航列:popup.html 有 button#openOptions,點擊呼叫 openOptionsPage', async () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
+  assert.ok(
+    /<button\b[^>]*\bid\s*=\s*["']openOptions["']/i.test(html),
+    'popup.html 應有 id=openOptions 的 button(不得是 checkbox)'
+  );
+
+  const popup = loadPopup();
+  const storage = createChromeStorage({});
+  const doc = createCheckboxDocument([...IDS, 'openOptions']);
+  let opened = 0;
+  const controller = popup.createPopupController({
+    document: doc,
+    storage: storage.sync,
+    openOptionsPage: () => {
+      opened++;
+    },
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.elements.openOptions.fire('click');
+  assert.equal(opened, 1, '點擊導航列應呼叫 openOptionsPage 一次');
+});
