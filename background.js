@@ -32,13 +32,18 @@ const NOTICE_CLEAN_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
 
-// v1.1 設定規格 S2:成功類通知由 notifySuccess 把關，失敗／錯誤類通知
-// 永遠觸發、不受設定影響。R1-1 併開關後剩兩鍵;淨化紀錄功能再加一鍵
-// saveHistory(只有 background 記錄時把關會讀,guard/bridge 不下放)。
-// autoClean/notifySuccess 的預設值仍與 popup.js／bridge.js 一致。
+// 使用者變更設定規格:
+//   - notifySuccess(成功類通知)整組移除——方案甲(歷史即收藏)之後，淨化
+//     紀錄是唯一資料集，cleanedNotice 收到就無條件記錄，不再有「要不要
+//     顯示成功通知」這道關卡。失敗／錯誤類通知不受影響，永遠觸發(右鍵
+//     選單路徑維持系統通知；share/strip 自動路徑改頁內 toast，見
+//     bridge.js／post-icon.js)。
+//   - autoClean 預設值改為 false(關閉)。
+// saveHistory(淨化紀錄功能鍵，只有 background 記錄時把關會讀，guard/
+// bridge 不下放)維持 true。autoClean 的預設值需與 popup.js／bridge.js／
+// clipboard-guard.js 同步改動。
 const DEFAULT_SETTINGS = {
-  autoClean: true,
-  notifySuccess: false,
+  autoClean: false,
   saveHistory: true,
 };
 
@@ -47,34 +52,16 @@ const DEFAULT_SETTINGS = {
 const HISTORY_KEY = 'history';
 const HISTORY_LIMIT = 1000;
 
-// R1-2:自動路徑(clipboard-guard.js 經 bridge.js)成功淨化後的通知，用
-// 獨立的通知 id，避免跟右鍵路徑的 threads-clean-link-success 撞 id 被
-// Chrome 同 id 互相取代(PM 裁決)。
-const AUTOCLEAN_SUCCESS_NOTIFICATION_ID = 'threads-clean-link-autoclean-success';
-
-// 0.5.0 貼文收藏庫:存 chrome.storage.local(理由同淨化紀錄——sync 的
-// 100KB 總額與寫入配額撐不起收藏量)，新到舊排列。欄位名刻意與使用者
-// 手機版 app 的 ShareHistoryItem 對齊(id/url/author/handle/excerpt)，為
-// 未來跨端同步鋪路。上限之外「拒收」而非汰舊(見 handleFavoriteToggle
-// 的說明):收藏是使用者主動典藏，靜默淘汰不可接受，與淨化紀錄的
-// 「上限外自動汰舊」語意刻意不同。
-const FAVORITES_KEY = 'favorites';
-const FAVORITES_LIMIT = 500;
-// 與手機版 post-meta 的 EXCERPT_MAX_CHARS 對齊(PM 核對手機 repo 後裁決)。
-const FAVORITES_EXCERPT_MAX = 2000;
+// 方案甲(歷史即收藏):淨化紀錄條目上，author/handle/excerpt 為選填欄
+// 位，由複製 icon(post-icon.js)或 bridge.js(share/strip 路徑，經
+// findContainerByCleanUrl 就地擷取)順手從貼文容器 DOM 附上。長度上限沿
+// 用 0.5.0 貼文收藏庫基座原本替 favorites 訂的門檻(PM 核對手機 repo 後
+// 裁決，與手機版 post-meta 的 EXCERPT_MAX_CHARS 對齊)，欄位改落在淨化
+// 紀錄條目上，常數改名反映新用途。
+const HISTORY_EXCERPT_MAX = 2000;
 // author/handle 共用同一個長度上限;兩者性質相近(顯示名稱/帳號代稱)，
 // 沒有各自訂上限的必要。
-const FAVORITES_AUTHOR_MAX = 100;
-
-// 收藏專用的網址驗證/正規化樣式。與 NOTICE_CLEAN_URL_PATTERN 同等級的
-// 錨定與白名單字元類(handle:英數/底線/句點;post id:英數/連字號/底線，
-// 皆有長度上限)，但額外容忍「尾隨斜線」與「查詢字串／hash」——書籤 icon
-// 從頁面 DOM 取得的 href 常帶這些(如 ?xmt=... 追蹤參數)，不應因此整筆
-// 拒收。group 1 擷取正規化後的乾淨網址(不含尾隨斜線/query/hash，domain
-// 原樣保留，比照 extractCleanPostUrl 的既有慣例);group 2 擷取貼文的
-// 正規路徑(如 @user/post/ABC123)，作為手機版同步用的 id。
-const FAVORITE_URL_PATTERN =
-  /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}))\/?(?:[?#].*)?$/i;
+const HISTORY_AUTHOR_MAX = 100;
 
 // 事件監聽器一律註冊在檔案最外層：service worker 閒置會被終止，
 // 監聽器需在每次喚醒時同步掛回去，不能包在非同步流程裡面。
@@ -155,9 +142,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // R1-2 通知涵蓋自動路徑:clipboard-guard.js 實際把淨化後內容寫入剪貼簿後，
-// 經 bridge.js 送來這則通知。background 是唯一同時看得到設定與「右鍵」
-// 「自動」兩條成功路徑的地方，notifySuccess 的把關統一放在這裡；guard／
-// bridge 端不重複判斷 notifySuccess，只單純轉發「已淨化成功」這件事。
+// 經 bridge.js 送來這則通知。方案甲(歷史即收藏)之後，這是淨化紀錄(唯
+// 一資料集)的其中一條入筆路徑，收到合法通知就無條件記錄，不再有
+// notifySuccess 這種「要不要顯示通知」的把關(已依使用者變更設定規格
+// 整組移除)。
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'cleanedNotice') {
     return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
@@ -168,25 +156,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   });
 
   return false; // 不需要回應，同步處理完就結束，不佔用非同步通道。
-});
-
-// 0.5.0 貼文收藏庫:互動列書籤 icon 點擊後送來的收藏切換請求。信任模型
-// 比照 cleanedNotice——訊息來自內容腳本即視為不可信輸入，驗證全在
-// background(見 handleFavoriteToggle)。此訊息需要非同步回應，回傳 true
-// 保持通道開啟，寫法比照 resolveShare。
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'favoriteToggle') {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  }
-
-  handleFavoriteToggle(message)
-    .then(sendResponse)
-    .catch((err) => {
-      console.error('[threads-clean-link] favoriteToggle 處理失敗', err);
-      sendResponse({ ok: false, reason: 'storage' });
-    });
-
-  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
 // 核心流程
@@ -227,14 +196,11 @@ async function handleShareLinkClick(info, tab) {
     return;
   }
 
-  // 只有實際寫入剪貼簿成功才留紀錄,與自動路徑的「寫入成功才通知/記錄」
-  // 語意一致;saveHistory 的把關在 recordHistory 內。
+  // 只有實際寫入剪貼簿成功才留紀錄,與自動路徑的「寫入成功才記錄」語意
+  // 一致;saveHistory 的把關在 recordHistory 內。使用者變更設定規格:
+  // 成功類通知(notifySuccess)整組移除，右鍵路徑不再於此發送成功通知，
+  // 失敗類通知(上面幾個 notifyByKey 呼叫)不受影響、維持系統通知。
   await recordHistory(cleanUrl, 'menu');
-
-  const settings = await getSettings();
-  if (settings.notifySuccess) {
-    notifyByKey('threads-clean-link-success', 'bgSuccess', { url: cleanUrl });
-  }
 }
 
 // 讀取使用者設定。刻意放在點擊流程「內」呼叫，不在模組頂層同步觸碰
@@ -255,13 +221,18 @@ async function getSettings() {
 }
 
 // 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
-// NOTICE_CLEAN_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不發任何
-// 通知;通知訊息只用驗證通過的字串，不夾帶原文的任何其餘部分。
+// NOTICE_CLEAN_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
+// 任何紀錄;紀錄只用驗證通過的字串，不夾帶原文的任何其餘部分。
 // kind 同屬頁面可控輸入,白名單驗證(自動路徑只可能是 share/strip/icon),
 // 非法即整則忽略——guard 與 background 同版本出貨,沒有相容性負擔,
 // 形狀不對就是偽造或損毀,fail-safe 丟棄。'menu' 刻意不在此白名單內:
 // 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
 // 不透過本訊息通道,避免頁面腳本偽造 kind:'menu' 混充右鍵來源。
+//
+// 方案甲(歷史即收藏)：淨化紀錄是唯一資料集，成功類通知(notifySuccess)
+// 已依使用者變更設定規格整組移除，這裡不再有「要不要顯示通知」的分支
+// ——收到合法 notice 就無條件記錄一筆，author/handle/excerpt(複製
+// icon／bridge.js 從貼文容器 DOM 順手擷取)為選填欄位，一併寫入。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
   if (typeof cleanUrl !== 'string' || !NOTICE_CLEAN_URL_PATTERN.test(cleanUrl)) {
@@ -275,20 +246,31 @@ async function handleCleanedNotice(message) {
     return;
   }
 
-  // 記錄與通知彼此獨立:不 await 記錄鏈(它自帶序列化與錯誤處理),
-  // 多則 notice 併發時通知不必排在彼此的紀錄寫入後面。
-  recordHistory(cleanUrl, kind);
+  recordHistory(cleanUrl, kind, extractHistoryExtraFields(message));
+}
 
-  const settings = await getSettings();
-  if (settings.notifySuccess) {
-    // kind:'icon'(貼文互動列複製按鈕)只是原樣複製貼文連結，沒有解析短碼
-    // 或剪除追蹤參數這類「淨化」動作，用 bgAutoSuccess 的「已自動淨化」
-    // 文案會謊稱做了淨化；改用專屬的 bgIconSuccess 如實描述。share/strip
-    // 兩條既有自動路徑維持 bgAutoSuccess 不變。通知 id 三者共用同一個
-    // AUTOCLEAN_SUCCESS_NOTIFICATION_ID，只有文案 key 依 kind 分流。
-    const messageKey = kind === 'icon' ? 'bgIconSuccess' : 'bgAutoSuccess';
-    notifyByKey(AUTOCLEAN_SUCCESS_NOTIFICATION_ID, messageKey, { url: cleanUrl });
-  }
+// author/handle/excerpt 為選填字串，同屬頁面可控輸入，不信任:型別不是
+// string 的一律整欄丟棄(不寫進回傳物件，而非寫入 undefined/空字串)，
+// 字串則截斷至各自長度上限。回傳值直接可以 Object.assign 進 history 條
+// 目(見 recordHistory)。
+function extractHistoryExtraFields(message) {
+  const extra = {};
+  const author = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
+  if (author !== undefined) extra.author = author;
+  const handle = sanitizeHistoryField(message && message.handle, HISTORY_AUTHOR_MAX);
+  if (handle !== undefined) extra.handle = handle;
+  const excerpt = sanitizeHistoryField(message && message.excerpt, HISTORY_EXCERPT_MAX);
+  if (excerpt !== undefined) extra.excerpt = excerpt;
+  return extra;
+}
+
+// 非字串一律回傳 undefined(呼叫端據此整欄丟棄);空字串比照非字串同樣
+// 丟棄(不落 author:'' 這種空欄位)；其餘字串截斷至 maxLen。原名
+// sanitizeFavoriteField(0.5.0 貼文收藏庫基座)，方案甲重組後改給
+// handleCleanedNotice 用，改名反映新用途，邏輯不變。
+function sanitizeHistoryField(value, maxLen) {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  return value.slice(0, maxLen);
 }
 
 // ---- 淨化紀錄 ----
@@ -307,7 +289,11 @@ function hasStorageLocal() {
 // 發生在「清除的同時恰好完成一次淨化」,極罕見且後果僅是多留一筆,接受。
 let historyWriteChain = Promise.resolve();
 
-function recordHistory(url, kind) {
+// extra(選填):方案甲新增的 author/handle/excerpt 欄位物件，只有實際
+// 擷取到的鍵才會出現(見 extractHistoryExtraFields)，Object.assign 進條
+// 目時不會覆蓋 url/kind/at；右鍵選單路徑(handleShareLinkClick)不傳這個
+// 參數，行為與新增前完全一致。
+function recordHistory(url, kind, extra) {
   historyWriteChain = historyWriteChain
     .then(async () => {
       if (!hasStorageLocal()) return;
@@ -316,110 +302,14 @@ function recordHistory(url, kind) {
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷),組新陣列後裁上限。
-      const next = [{ url, kind, at: Date.now() }].concat(list).slice(0, HISTORY_LIMIT);
+      const entry = Object.assign({ url, kind, at: Date.now() }, extra);
+      const next = [entry].concat(list).slice(0, HISTORY_LIMIT);
       await chrome.storage.local.set({ [HISTORY_KEY]: next });
     })
     .catch((err) => {
       console.error('[threads-clean-link] 寫入淨化紀錄失敗', err);
     });
   return historyWriteChain;
-}
-
-// ---- 貼文收藏庫(0.5.0) ----
-
-// url 驗證與正規化沿用 FAVORITE_URL_PATTERN(見上方常數註解，與
-// NOTICE_CLEAN_URL_PATTERN 同等級的錨定白名單正則):訊息來自內容腳本
-// 即視為不可信輸入，理由與 cleanedNotice 相同——防止偽造的雜訊網址混入
-// 收藏庫。id 從驗證通過的 url 導出(正規路徑如 @user/post/ABC123，去
-// 域名去尾斜線／query／hash);無法導出視同驗證失敗，一律回 invalid-url，
-// 不會出現「url 合法但 id 導不出」的中間狀態。
-//
-// toggle 語意:id 已存在收藏 → 移除該筆(saved:false);不存在 → 檢查
-// 上限，滿了拒收(reason:'full'，不擠掉舊收藏——收藏是使用者主動典藏，
-// 靜默淘汰不可接受)，未滿則新增於陣列頭(saved:true)。去重依據是 id
-// (正規路徑)而非原始 url 字串，同一貼文不同 query/hash 變形視為同一筆。
-//
-// author/handle/excerpt 為選填字串:型別不是 string 的一律整欄丟棄(不寫
-// 進條目物件，而非寫入 undefined/空字串)，字串則截斷至各自長度上限。
-//
-// 【並發序列化】get→判斷→set 這整段是「讀-改-寫」，兩個 toggle 幾乎同時
-// 送到時，若各自獨立呼叫 storage.local.get/set，會各自基於同一份舊快照
-// 做決策，後寫入的一方直接覆蓋掉前一方的結果(審查重現:兩篇不同貼文
-// 並發收藏只留下 1 筆;同一貼文並發 toggle 兩次，回應與最終狀態不一致)。
-// 寫法比照上方 historyWriteChain:用 favoritesWriteChain 這條模組層級的
-// promise chain 序列化整段讀-改-寫，確保同一個 SW 內的收藏寫入依 toggle
-// 呼叫順序逐一執行，後到的一定讀到前一次寫入後的最新清單。與
-// historyWriteChain 的差異:toggle 需要把「這一次寫入的結果」回傳給
-// sendResponse，因此 enqueueFavoriteWrite 回傳的是「這次呼叫專屬」的
-// promise，而不是像 recordHistory 那樣直接回傳共用的鏈尾。
-let favoritesWriteChain = Promise.resolve();
-
-// task 為 async 函式，做完整段「讀-改-寫」並回傳這次呼叫的結果。
-// favoritesWriteChain 本身設計成一定會 resolve(用 .then(ok, ok) 吞掉
-// 上一棒的例外)，避免某一次 task 意外拋錯就讓後面所有排隊中的 toggle
-// 永遠卡住、拿不到回應。
-function enqueueFavoriteWrite(task) {
-  const run = favoritesWriteChain.then(task);
-  favoritesWriteChain = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
-}
-
-async function handleFavoriteToggle(message) {
-  const rawUrl = message && message.url;
-  const match = typeof rawUrl === 'string' ? FAVORITE_URL_PATTERN.exec(rawUrl) : null;
-  if (!match) {
-    return { ok: false, reason: 'invalid-url' };
-  }
-  const cleanUrl = match[1];
-  const id = match[2];
-
-  if (!hasStorageLocal()) {
-    return { ok: false, reason: 'storage' };
-  }
-
-  return enqueueFavoriteWrite(async () => {
-    try {
-      const stored = await chrome.storage.local.get({ [FAVORITES_KEY]: [] });
-      const list = Array.isArray(stored && stored[FAVORITES_KEY]) ? stored[FAVORITES_KEY] : [];
-
-      const existingIndex = list.findIndex((item) => item && item.id === id);
-      if (existingIndex !== -1) {
-        // 不就地改動讀出的陣列，組新陣列後寫回。
-        const next = list.slice(0, existingIndex).concat(list.slice(existingIndex + 1));
-        await chrome.storage.local.set({ [FAVORITES_KEY]: next });
-        return { ok: true, saved: false };
-      }
-
-      if (list.length >= FAVORITES_LIMIT) {
-        return { ok: false, reason: 'full' };
-      }
-
-      const entry = { id, url: cleanUrl, at: Date.now() };
-      const author = sanitizeFavoriteField(message.author, FAVORITES_AUTHOR_MAX);
-      if (author !== undefined) entry.author = author;
-      const handle = sanitizeFavoriteField(message.handle, FAVORITES_AUTHOR_MAX);
-      if (handle !== undefined) entry.handle = handle;
-      const excerpt = sanitizeFavoriteField(message.excerpt, FAVORITES_EXCERPT_MAX);
-      if (excerpt !== undefined) entry.excerpt = excerpt;
-
-      const next = [entry].concat(list);
-      await chrome.storage.local.set({ [FAVORITES_KEY]: next });
-      return { ok: true, saved: true };
-    } catch (err) {
-      console.error('[threads-clean-link] favoriteToggle storage 失敗', err);
-      return { ok: false, reason: 'storage' };
-    }
-  });
-}
-
-// 非字串一律回傳 undefined(呼叫端據此整欄丟棄);空字串比照非字串同樣
-// 丟棄(不落 author:'' 這種空欄位)；其餘字串截斷至 maxLen。
-function sanitizeFavoriteField(value, maxLen) {
-  if (typeof value !== 'string' || value.length === 0) return undefined;
-  return value.slice(0, maxLen);
 }
 
 // 不信任呼叫端傳入的 url，一律用 SHARE_URL_PATTERN 重新驗證，

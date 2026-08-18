@@ -8,7 +8,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
-const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
 // background.js 依賴共用 i18n 模組(真實環境靠 importScripts 載入);
 // 測試把 i18n.js 原始碼接在前面,兩支腳本共用同一個 sandbox 全域。
@@ -252,22 +251,24 @@ test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對�
 });
 
 // ============================================================
-// v1.1 設定規格 S1、S2:右鍵選單路徑與通知的設定行為。
-//   S1 右鍵選單複製功能不受 autoClean 影響，永遠可用。
-//   S2 notifySuccess=false 時一切成功類通知不得觸發;失敗／錯誤類通知
-//      不受任何設定影響，永遠觸發(含右鍵路徑)。
+// v1.1 設定規格 S1:右鍵選單路徑不受 autoClean 影響，永遠可用。
+//
+// 使用者變更設定規格:S2(notifySuccess 把關成功類通知)已隨 notifySuccess
+// 整組移除——成功類通知(右鍵路徑的 bgSuccess、自動路徑的
+// bgAutoSuccess/bgIconSuccess)全數拆除，不再有「要不要顯示」這道關卡；
+// 失敗／錯誤類通知不受任何設定影響，永遠觸發(右鍵路徑維持系統通知；
+// share/strip 自動路徑的失敗改走頁內 toast，見 bridge.test.js／
+// post-icon.test.js，不在本檔覆蓋範圍)。
 //
 // 【時序紀律】chrome.storage.sync 的 get/set 一律延遲一個 tick 才結算
 // (見 support/helpers.js)，不允許同 tick 直接 resolve 的假綠燈;
 // 右鍵點擊流程本身是非同步的，測試以 settle() 等它跑完。
 //
-// 【防假綠燈】「失敗通知永遠觸發」「notifySuccess=true 時成功通知照發」這類
-// 條目，在現況(完全沒有設定機制)下本來就會通過。因此這些測試一律搭配一個
-// 可鑑別的斷言:同一個 service worker 內成功流程不得發通知，或斷言 SW 確實
-// 讀過 chrome.storage.sync，避免「設定根本沒接上卻碰巧通過」。
+// 【防假綠燈】「失敗通知永遠觸發」這類條目，在現況(完全沒有設定機制)下
+// 本來就會通過。因此這些測試一律搭配一個可鑑別的斷言:同一個 service
+// worker 內成功流程不得發通知，或斷言 SW 確實讀過 chrome.storage.sync，
+// 避免「設定根本沒接上卻碰巧通過」。
 // ============================================================
-
-const SUCCESS_NOTIFICATION_ID = 'threads-clean-link-success';
 
 // 淨化紀錄 + i18n 之後,cleanedNotice 的完整鏈路(讀設定→記錄→讀設定→
 // 讀語言→通知)串了約 5 個 setTimeout(0) tick;Windows 計時器顆粒 ~15ms,
@@ -336,25 +337,47 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   };
 }
 
+// ---- 使用者變更設定規格:autoClean 預設值改為 false ----
+//
+// background.js 本身不依 settings.autoClean 分支任何邏輯(這顆設定驅動
+// 的行為在 bridge.js／clipboard-guard.js，兩者測試已各自覆蓋預設值)，
+// 但 DEFAULT_SETTINGS 是 getSettings() 的權威預設值來源，
+// chrome.storage.sync.get(DEFAULT_SETTINGS) 呼叫時會把這個物件原樣當
+// 「查無此鍵時的預設值」傳進去——mock 的 calls.get 側錄了每次呼叫的原始
+// 引數，可以從中驗證 background.js 內建的 autoClean 預設值確實是 false。
+test('DEFAULT_SETTINGS:autoClean 預設值為 false', async () => {
+  const bg = loadBackgroundWithSettings({});
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+  await settle();
+
+  const getCallWithAutoClean = bg.storage.calls.get.find(
+    (keys) => keys && typeof keys === 'object' && 'autoClean' in keys
+  );
+  assert.ok(getCallWithAutoClean, 'getSettings() 應以包含 autoClean 鍵的物件呼叫 chrome.storage.sync.get');
+  assert.equal(getCallWithAutoClean.autoClean, false);
+});
+
 // ---- S1:右鍵選單複製功能不受 autoClean 影響 ----
 
 test('S1:autoClean=false 時，右鍵選單仍照常解析短連結並寫入剪貼簿', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: false, notifySuccess: true });
+  const bg = loadBackgroundWithSettings({ autoClean: false });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
 
   assert.equal(bg.executeScriptCalls.length, 1);
   assert.equal(bg.executeScriptCalls[0].args[0], CLEAN_POST_URL);
-  // 防假綠燈:右鍵成功路徑必然要讀 notifySuccess，所以此處必定讀過設定;
-  // 若 SW 根本沒接上 chrome.storage.sync，本測試不算通過。
+  // 防假綠燈:成功複製後 recordHistory 必然要讀 saveHistory 設定，所以
+  // 此處必定讀過 chrome.storage.sync;若 SW 根本沒接上，本測試不算通過。
   assert.ok(bg.storage.calls.get.length >= 1, 'service worker 應讀取 chrome.storage.sync 設定');
 });
 
-// ---- S2:成功類通知受 notifySuccess 控制 ----
+// ---- 使用者變更設定規格:成功類通知整組移除，右鍵成功複製不得觸發任何
+// 成功通知(不再有 notifySuccess 這種可開關的把關，行為恆定)----
 
-test('S2:notifySuccess=false 時，右鍵成功複製不得觸發任何成功通知', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
+test('右鍵成功複製不得觸發任何成功通知(成功類通知已整組移除)', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -363,25 +386,13 @@ test('S2:notifySuccess=false 時，右鍵成功複製不得觸發任何成功通
   assert.deepEqual(bg.notifications, []);
 });
 
-test('S2:notifySuccess=true 時，右鍵成功複製照常觸發成功通知', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
-
-  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
-  await settle();
-
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, SUCCESS_NOTIFICATION_ID);
-  // 防假綠燈:同上，成功通知必須是「讀了設定後決定發出」。
-  assert.ok(bg.storage.calls.get.length >= 1, 'service worker 應讀取 chrome.storage.sync 設定');
-});
-
-// ---- S2:失敗／錯誤類通知不受設定影響，永遠觸發 ----
+// ---- 失敗／錯誤類通知不受設定影響，永遠觸發 ----
 
 // 【精簡】三種錯誤來源(無效短連結／網路失敗／轉址結果非貼文)驗的是同一個
-// 不變量:錯誤通知不受 notifySuccess 影響，且其後的成功流程仍靜音。三條併為
-// 一條多案例測試，通知 id 逐案例斷言,覆蓋面不減。剪貼簿寫入失敗因為需要
-// 中途翻轉 clipboardOk,harness 形狀不同,仍單獨一條(見下)。
-test('S2:notifySuccess=false 時，各類錯誤通知照常觸發，其後成功流程仍靜音', async () => {
+// 不變量:錯誤通知永遠觸發，且其後的成功流程不發通知(成功類通知已整組
+// 移除)。三條併為一條多案例測試，通知 id 逐案例斷言,覆蓋面不減。剪貼簿
+// 寫入失敗因為需要中途翻轉 clipboardOk,harness 形狀不同,仍單獨一條(見下)。
+test('各類錯誤通知照常觸發，其後成功流程不發通知', async () => {
   const cases = [
     { linkUrl: 'https://evil.com/whatever', id: 'threads-clean-link-invalid' },
     { linkUrl: 'https://www.threads.com/share/NETWORKFAIL', id: 'threads-clean-link-network-error' },
@@ -389,7 +400,7 @@ test('S2:notifySuccess=false 時，各類錯誤通知照常觸發，其後成功
   ];
 
   for (const { linkUrl, id } of cases) {
-    const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
+    const bg = loadBackgroundWithSettings({ autoClean: true });
 
     bg.click({ linkUrl }, { id: 7 });
     await settle();
@@ -399,15 +410,12 @@ test('S2:notifySuccess=false 時，各類錯誤通知照常觸發，其後成功
     bg.click({ linkUrl: SHARE_URL }, { id: 7 });
     await settle();
 
-    assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+    assert.equal(bg.notifications.length, 1, '成功流程不得發出通知(成功類通知已整組移除)');
   }
 });
 
-test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸發，其後成功流程仍靜音', async () => {
-  const bg = loadBackgroundWithSettings(
-    { autoClean: true, notifySuccess: false },
-    { clipboardOk: false }
-  );
+test('剪貼簿寫入失敗的錯誤通知照常觸發，其後成功流程不發通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true }, { clipboardOk: false });
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
@@ -418,67 +426,55 @@ test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
 
-  assert.equal(bg.notifications.length, 1, '成功通知在 notifySuccess=false 時不得發出');
+  assert.equal(bg.notifications.length, 1, '成功流程不得發出通知(成功類通知已整組移除)');
 });
 
 // ============================================================
-// R1-2 通知涵蓋自動路徑(service worker 端):notifySuccess=true 時，
-// 右鍵成功「與」自動淨化成功都要通知;notifySuccess=false 時一切成功
-// 通知靜默。自動路徑的成功訊息由 bridge 經 chrome.runtime.sendMessage
-// 送來，形狀為 { type: 'cleanedNotice', cleanUrl, kind }(kind 為淨化來源,
-// 白名單 'share' | 'strip' | 'icon',非法整則忽略——見檔末「淨化紀錄」區塊)。
-//
-// 【把關位置(規格未明定，本輪測試在此定案)】notifySuccess 的把關由
-// background 負責:它是唯一同時看得到設定與兩條成功路徑的地方，也是
-// 內容腳本訊息的信任邊界。guard 端要不要順手先擋一層由實作自行決定，
-// 本檔只強制「background 收到 cleanedNotice 後必須依 notifySuccess 決定
-// 發不發」。
+// 方案甲(歷史即收藏):自動路徑(share/strip/icon)的 cleanedNotice 是淨化
+// 紀錄(唯一資料集)的入筆管道，形狀為
+// { type: 'cleanedNotice', cleanUrl, kind, author?, handle?, excerpt? }
+// (kind 白名單 'share' | 'strip' | 'icon',非法整則忽略——見檔末「淨化
+// 紀錄」區塊)。使用者變更設定規格:notifySuccess 整組移除，cleanedNotice
+// 收到就無條件記錄，不再發任何通知——本節驗證這一點，並保留 R1/R2 審查
+// 留下的阻斷級安全回歸測試(原本驗「不得發出通知」，現改驗「不得寫入紀
+// 錄」，驗證核心不變:cleanUrl 必須整串錨定吻合才採信)。
 // ============================================================
 
 const CLEANED_NOTICE_CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
 
-test('R1-2:notifySuccess=true 時，自動淨化成功的 cleanedNotice 會發出一則成功通知', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
-
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
-  await settle();
-
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-autoclean-success');
-  assert.ok(bg.storage.calls.get.length >= 1, 'service worker 應讀取 chrome.storage.sync 設定');
-});
-
-test('R1-2:notifySuccess=false 時，自動淨化成功的 cleanedNotice 不得發出任何通知', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: false });
+test('cleanedNotice 從不觸發任何通知(成功類通知已整組移除)，但仍正常寫入紀錄', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true });
 
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
   assert.deepEqual(bg.notifications, []);
+  assert.equal(bg.storage.localSnapshot().history.length, 1);
 });
 
-test('R1-2:自動路徑的成功通知不影響右鍵路徑;notifySuccess=true 時兩條路徑各自通知一則', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+test('自動路徑的 cleanedNotice 不影響右鍵路徑的錯誤/失敗通知邏輯，且兩條路徑都不觸發成功通知', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true });
 
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
-  assert.equal(bg.notifications.length, 1);
+  assert.deepEqual(bg.notifications, []);
 
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
 
-  assert.equal(bg.notifications.length, 2);
-  assert.equal(bg.notifications[1].id, SUCCESS_NOTIFICATION_ID);
+  assert.deepEqual(bg.notifications, [], '右鍵成功複製同樣不得觸發通知');
+  assert.equal(bg.storage.localSnapshot().history.length, 2, '兩條路徑都應各自留一筆紀錄');
 });
 
-// R1 審查回饋(阻斷級):cleanedNotice 的 cleanUrl 來自頁面腳本可自由
-// postMessage 的管道，background 是這條路徑上唯一的信任邊界。驗證樣式
-// 若不錨定收尾，「合法貼文網址開頭 + 尾隨任意文字」就會通過驗證，尾隨
-// 內容(含換行、假的系統提示、大量垃圾)原樣進入使用者看到的通知訊息，
-// 等同讓頁面完全操控通知內容。以下三種尾隨形態都必須被擋下。
+// R1 審查回饋(阻斷級，方案甲重組後改驗紀錄而非通知):cleanedNotice 的
+// cleanUrl 來自頁面腳本可自由 postMessage 的管道，background 是這條路徑
+// 上唯一的信任邊界。驗證樣式若不錨定收尾，「合法貼文網址開頭 + 尾隨任意
+// 文字」就會通過驗證，尾隨內容(含換行、假的系統提示、大量垃圾)原樣寫
+// 進淨化紀錄(之後會呈現在 options 頁)，等同讓頁面完全操控紀錄內容。
+// 以下三種尾隨形態都必須被擋下、不得留下任何紀錄。
 
-test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 不得發出通知', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 不得寫入紀錄', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true });
 
   const forged = [
     `${CLEANED_NOTICE_CLEAN_URL}\n【系統】您的帳號異常，請至 evil.example 重新登入`,
@@ -490,23 +486,23 @@ test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 
   }
   await settle();
 
-  assert.deepEqual(bg.notifications, [], '尾隨文字必須被錨定驗證擋下，不得發出任何通知');
+  assert.equal(bg.storage.localSnapshot().history, undefined, '尾隨文字必須被錨定驗證擋下，不得寫入任何紀錄');
 
-  // 對照組:整串完全吻合的乾淨網址仍須通知，排除「一律不通知」的假動作。
+  // 對照組:整串完全吻合的乾淨網址仍須記錄，排除「一律不記錄」的假動作。
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
-  assert.equal(bg.notifications.length, 1);
+  assert.equal(bg.storage.localSnapshot().history.length, 1);
 });
 
-// R2 審查回饋(阻斷級):只錨定收尾、字元類用排除法(如 [^/?#\s]+)仍有缺口
-// ——尾隨文字只要「不含空白」就整串吻合而過關。中文釣魚句不需要空白，
-// 純英數長串同理;頁面甚至不必偽造 notice，直接 writeText 一個帶中文句的
-// 假貼文網址走完整條自動淨化鏈也會通知。驗證樣式必須收緊到 Threads 實際
-// 使用的 ASCII 字母表並加長度上限。
+// R2 審查回饋(阻斷級，同上改驗紀錄):只錨定收尾、字元類用排除法(如
+// [^/?#\s]+)仍有缺口——尾隨文字只要「不含空白」就整串吻合而過關。中文
+// 釣魚句不需要空白，純英數長串同理;頁面甚至不必偽造 notice，直接
+// writeText 一個帶中文句的假貼文網址走完整條自動淨化鏈也會被記錄。驗證
+// 樣式必須收緊到 Threads 實際使用的 ASCII 字母表並加長度上限。
 
-test('R2:「合法前綴 + 無空白中文文字」的 cleanedNotice 不得發出通知', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+test('R2:「合法前綴 + 無空白中文文字」的 cleanedNotice 不得寫入紀錄', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true });
 
   const forged = [
     `${CLEANED_NOTICE_CLEAN_URL}帳號異常，請至evil.example重新登入驗證`,
@@ -518,21 +514,21 @@ test('R2:「合法前綴 + 無空白中文文字」的 cleanedNotice 不得發�
   }
   await settle();
 
-  assert.deepEqual(
-    bg.notifications,
-    [],
-    '不含空白的中文尾隨文字必須被擋下，不得發出任何通知'
+  assert.equal(
+    bg.storage.localSnapshot().history,
+    undefined,
+    '不含空白的中文尾隨文字必須被擋下，不得寫入任何紀錄'
   );
 
-  // 對照組:整串完全吻合的乾淨網址仍須通知。
+  // 對照組:整串完全吻合的乾淨網址仍須記錄。
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
-  assert.equal(bg.notifications.length, 1);
+  assert.equal(bg.storage.localSnapshot().history.length, 1);
 });
 
-test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通知', async () => {
-  const bg = loadBackgroundWithSettings({ autoClean: true, notifySuccess: true });
+test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得寫入紀錄', async () => {
+  const bg = loadBackgroundWithSettings({ autoClean: true });
 
   const forged = [
     `${CLEANED_NOTICE_CLEAN_URL}${'A'.repeat(1000)}`,
@@ -543,13 +539,13 @@ test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通�
   }
   await settle();
 
-  assert.deepEqual(
-    bg.notifications,
-    [],
-    '純英數長串尾隨必須被長度上限擋下，不得發出任何通知'
+  assert.equal(
+    bg.storage.localSnapshot().history,
+    undefined,
+    '純英數長串尾隨必須被長度上限擋下，不得寫入任何紀錄'
   );
 
-  // 對照組:四種合法寫法(www／無 www、.com／.net)都必須正常通知。
+  // 對照組:四種合法寫法(www／無 www、.com／.net)都必須正常記錄。
   const legit = [
     'https://www.threads.com/@dafucoding/post/DbezfB0gYvP',
     'https://threads.com/@dafucoding/post/DbezfB0gYvP',
@@ -559,9 +555,14 @@ test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通�
   for (const cleanUrl of legit) {
     bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl, kind: 'share' });
   }
-  await settle();
+  // 4 則併發 cleanedNotice 經 historyWriteChain 序列化，每筆都要走
+  // getSettings→storage.local.get→storage.local.set 三個 tick，比對通知
+  // 路徑的鏈路深得多；預設 settle(150) 的緩衝量是抓單筆通知鏈路估的，
+  // 這裡改記錄且是 4 筆併發，需要更寬裕的緩衝，避免 Windows 計時器顆粒
+  // 造成偶發性等不完。
+  await settle(600);
 
-  assert.equal(bg.notifications.length, legit.length, '合法網址一律照常通知，不得誤殺');
+  assert.equal(bg.storage.localSnapshot().history.length, legit.length, '合法網址一律照常記錄，不得誤殺');
 });
 
 // ============================================================
@@ -574,7 +575,7 @@ test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通�
 // ============================================================
 
 test('紀錄:合法 cleanedNotice 寫入一筆 { url, kind, at } 到 storage.local', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: false });
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
 
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'strip' });
   await settle();
@@ -587,7 +588,7 @@ test('紀錄:合法 cleanedNotice 寫入一筆 { url, kind, at } 到 storage.loc
 });
 
 test('紀錄:kind 缺失或非白名單的 cleanedNotice 整則忽略——不記錄、不通知', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
 
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'menu' });
@@ -608,7 +609,7 @@ test('紀錄:kind 缺失或非白名單的 cleanedNotice 整則忽略——不�
 // cleanedNotice 送 kind:'icon'——白名單需收下這個新來源，記錄與通知都
 // 比照 share/strip 既有自動路徑一視同仁，不做特殊抑制。
 test('紀錄:cleanedNotice 的 kind 為 icon(貼文互動列複製按鈕)時照常記錄一筆', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: false });
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
 
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
   await settle();
@@ -620,46 +621,93 @@ test('紀錄:cleanedNotice 的 kind 為 icon(貼文互動列複製按鈕)時照�
   assert.equal(typeof history[0].at, 'number');
 });
 
-test('紀錄:notifySuccess=true 時，kind 為 icon 的 cleanedNotice 比照 share/strip 發出成功通知', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+// ---- 方案甲(歷史即收藏):cleanedNotice 選填的 author/handle/excerpt ----
+//
+// 這三個欄位由複製 icon(post-icon.js)或 bridge.js(share/strip 路徑)從
+// 貼文容器 DOM 順手擷取，同屬頁面可控輸入，不信任:型別不是 string 的
+// 一律整欄丟棄，字串則截斷至各自長度上限(author/handle 100、excerpt
+// 2000)，寫法沿用 0.5.0 貼文收藏庫基座原本的 sanitizeFavoriteField(已
+// 改名 sanitizeHistoryField)。三者都是選填，缺席不影響其餘欄位或整筆
+// 紀錄的寫入。
 
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+test('紀錄:cleanedNotice 帶合法的 author/handle/excerpt 時，三個欄位原樣寫入紀錄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'icon',
+    author: 'Dafu Coding',
+    handle: '@dafucoding',
+    excerpt: '今天天氣真好',
+  });
   await settle();
 
-  assert.equal(bg.notifications.length, 1);
-  assert.equal(bg.notifications[0].id, 'threads-clean-link-autoclean-success');
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author, 'Dafu Coding');
+  assert.equal(history[0].handle, '@dafucoding');
+  assert.equal(history[0].excerpt, '今天天氣真好');
 });
 
-// 修正:kind 為 icon 時，通知文案不得沿用 bgAutoSuccess 的「已自動淨化」
-// 說法——貼文互動列複製 icon(post-icon.js)只是原樣複製貼文連結，沒有解析
-// 短碼或剪除追蹤參數這類「淨化」動作，繼續用 bgAutoSuccess 等同謊稱做了
-// 淨化。通知 id 三者仍共用同一個 AUTOCLEAN_SUCCESS_NOTIFICATION_ID(上一條
-// 測試已鎖住)，這裡另外斷言訊息「內容」:icon 用新增的 bgIconSuccess key，
-// share 維持 bgAutoSuccess 不變，兩者不得相同。
-test('通知文案:kind 為 icon 時使用 bgIconSuccess(不謊稱自動淨化)，share 維持 bgAutoSuccess 不變', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+test('紀錄:cleanedNotice 缺席 author/handle/excerpt 時，紀錄照常寫入、且不含這三個欄位', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
 
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
-  await settle();
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   await settle();
 
-  assert.equal(bg.notifications.length, 2);
-  assert.equal(
-    bg.notifications[0].options.message,
-    i18n.fmt('en', 'bgIconSuccess', { url: CLEANED_NOTICE_CLEAN_URL }),
-    'icon 應使用 bgIconSuccess 文案'
-  );
-  assert.equal(
-    bg.notifications[1].options.message,
-    i18n.fmt('en', 'bgAutoSuccess', { url: CLEANED_NOTICE_CLEAN_URL }),
-    'share 仍應維持 bgAutoSuccess 文案不動'
-  );
-  assert.notEqual(bg.notifications[0].options.message, bg.notifications[1].options.message);
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL);
+  assert.equal(history[0].kind, 'share');
+  assert.equal('author' in history[0], false, '缺席欄位不得寫成 undefined 佔位');
+  assert.equal('handle' in history[0], false);
+  assert.equal('excerpt' in history[0], false);
+});
+
+test('紀錄:author/handle/excerpt 型別不是字串時整欄丟棄，不影響其餘欄位與紀錄本身', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'icon',
+    author: 12345,
+    handle: null,
+    excerpt: { not: 'a string' },
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '型別不符只丟該欄位，不影響整筆紀錄寫入');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL);
+  assert.equal('author' in history[0], false);
+  assert.equal('handle' in history[0], false);
+  assert.equal('excerpt' in history[0], false);
+});
+
+test('紀錄:author/handle 截斷至 100 字、excerpt 截斷至 2000 字；空字串比照非字串整欄丟棄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'icon',
+    author: 'A'.repeat(150),
+    handle: '',
+    excerpt: 'E'.repeat(2500),
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author.length, 100, 'author 應截斷至 100 字');
+  assert.equal('handle' in history[0], false, '空字串比照非字串整欄丟棄');
+  assert.equal(history[0].excerpt.length, 2000, 'excerpt 應截斷至 2000 字');
 });
 
 test('紀錄:kind 為 icon 以外的未知字串仍被白名單拒絕，不記錄、不通知', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
 
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icons' });
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'bogus' });
@@ -670,7 +718,7 @@ test('紀錄:kind 為 icon 以外的未知字串仍被白名單拒絕，不記�
 });
 
 test('紀錄:saveHistory=false 時自動與右鍵兩條路徑都不記錄', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: false, notifySuccess: false });
+  const bg = loadBackgroundWithSettings({ saveHistory: false });
 
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
   bg.click({ linkUrl: SHARE_URL }, { id: 7 });
@@ -681,7 +729,7 @@ test('紀錄:saveHistory=false 時自動與右鍵兩條路徑都不記錄', asyn
 });
 
 test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗不留紀錄', async () => {
-  const ok = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: false });
+  const ok = loadBackgroundWithSettings({ saveHistory: true });
   ok.click({ linkUrl: SHARE_URL }, { id: 7 });
   await settle();
 
@@ -691,7 +739,7 @@ test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗�
   assert.equal(history[0].kind, 'menu');
 
   const failed = loadBackgroundWithSettings(
-    { saveHistory: true, notifySuccess: false },
+    { saveHistory: true },
     { clipboardOk: false }
   );
   failed.click({ linkUrl: SHARE_URL }, { id: 7 });
@@ -707,7 +755,7 @@ test('紀錄:超過 1000 筆上限時裁掉最舊,新紀錄在最前', async () 
     at: 1000 + i,
   }));
   const bg = loadBackgroundWithSettings(
-    { saveHistory: true, notifySuccess: false },
+    { saveHistory: true },
     { localHistory: seed }
   );
 
