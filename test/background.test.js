@@ -60,7 +60,11 @@ function makeFetch(calls) {
 function loadBackground() {
   const chrome = makeChrome();
   const calls = [];
-  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console });
+  // F 案(紀錄資料層補齊 original/removedParams):diffRemovedParams(右鍵
+  // 路徑用)需要 URL/URLSearchParams，vm sandbox 預設不含這兩個全域(見
+  // Node vm 文件)，這裡明確注入，讓 background.js 的行為與真實瀏覽器/
+  // Service Worker 環境一致(兩者原生都有 URL/URLSearchParams)。
+  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -318,7 +322,10 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     storage: storage.api,
   };
   const fetchCalls = [];
-  runInSandbox(SRC, { chrome, fetch: makeFetch(fetchCalls), console });
+  // F 案:同上方 loadBackground 的理由，右鍵路徑(handleShareLinkClick →
+  // buildMenuHistoryExtra → diffRemovedParams)這條路徑經這個 loader 進
+  // 入，同樣需要注入 URL/URLSearchParams。
+  runInSandbox(SRC, { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams });
 
   return {
     storage,
@@ -716,6 +723,198 @@ test('紀錄:author/handle 截斷至 100 字、excerpt 截斷至 2000 字；空�
   assert.equal(history[0].excerpt.length, 2000, 'excerpt 應截斷至 2000 字');
 });
 
+// ---- F 案(紀錄資料層補齊 original/removedParams，對齊手機
+// ShareHistoryItem):cleanedNotice 選填的 original/removedParams ----
+//
+// guard 端(clipboard-guard.js)經 bridge.js 透傳，share 分支只夾帶
+// original(短碼原文，無 removedParams——伺服器端重新導向前的網址帶了
+// 哪些參數，guard 這層無從得知);strip 分支兩者都夾帶(剝參前原網址與
+// 被剝除的查詢參數清單)。sanitize 規則:original 非字串/空字串/與
+// cleaned url 相同一律整欄丟棄，否則截斷至 2048 字;removedParams 非陣
+// 列整欄丟棄，陣列逐筆 sanitize(key 非空字串 ≤64、value 字串 ≤512，
+// 任一不符整筆丟棄)並裁到 20 筆上限。
+
+test('紀錄:cleanedNotice 帶合法的 original(share 分支,無 removedParams)時，original 原樣寫入、removedParams 不出現', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  const original = 'https://www.threads.com/share/BASzGWiaOw/';
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    original,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].original, original);
+  assert.equal('removedParams' in history[0], false, 'share 分支沒有 removedParams,不得憑空生出');
+});
+
+test('紀錄:cleanedNotice 帶合法的 original 與 removedParams(strip 分支)時，兩欄原樣寫入', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  const original = `${CLEANED_NOTICE_CLEAN_URL}?xmt=AQGabc`;
+  const removedParams = [{ key: 'xmt', value: 'AQGabc' }];
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    original,
+    removedParams,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].original, original);
+  // 不用 assert.deepEqual 比對整個陣列:background.js 經 vm sandbox(另一
+  // 個 realm)載入，sanitize 後新建的物件與本檔案(host realm)字面量物件
+  // 結構相同但非同一個 realm，deepStrictEqual 會誤判失敗(此檔案其餘涉及
+  // storage 內容的斷言，一律逐欄比對，不比對整個物件/陣列，同一個理由)。
+  assert.equal(history[0].removedParams.length, 1);
+  assert.equal(history[0].removedParams[0].key, 'xmt');
+  assert.equal(history[0].removedParams[0].value, 'AQGabc');
+});
+
+test('紀錄:cleanedNotice 缺席 original/removedParams 時，紀錄照常寫入、且不含這兩個欄位', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal('original' in history[0], false, '缺席欄位不得寫成 undefined 佔位');
+  assert.equal('removedParams' in history[0], false);
+});
+
+test('紀錄:original 與 cleanUrl 完全相同時整欄丟棄(手機語意:取與 cleaned 不同者)', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    original: CLEANED_NOTICE_CLEAN_URL,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal('original' in history[0], false, '與 cleaned url 相同的 original 不存');
+});
+
+test('紀錄:original 型別不是字串或為空字串時整欄丟棄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'strip', original: 12345 });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'strip', original: '' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  history.forEach((entry, i) => {
+    assert.equal('original' in entry, false, `第 ${i} 筆:非字串/空字串的 original 不得留下`);
+  });
+});
+
+test('紀錄:original 超過 2048 字時截斷', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  const longOriginal = `${CLEANED_NOTICE_CLEAN_URL}?${'a'.repeat(2100)}`;
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    original: longOriginal,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].original.length, 2048, 'original 應截斷至 2048 字');
+});
+
+test('紀錄:removedParams 型別不是陣列時整欄丟棄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    removedParams: 'not-an-array',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal('removedParams' in history[0], false);
+});
+
+test('紀錄:removedParams 陣列內畸形項目(key 缺席/超長、value 超長、型別不符)逐筆丟棄，不整組作廢', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    removedParams: [
+      { key: 'xmt', value: 'AQGabc' }, // 合法
+      { key: '', value: 'x' }, // key 空字串 → 丟棄
+      { key: 'k'.repeat(70), value: 'x' }, // key 超過 64 字 → 丟棄
+      { key: 'v', value: 'v'.repeat(600) }, // value 超過 512 字 → 丟棄
+      { key: 123, value: 'x' }, // key 非字串 → 丟棄
+      { key: 'novalue', value: null }, // value 非字串 → 丟棄
+      'not-an-object', // 非物件 → 丟棄
+      { key: 'utm_source', value: '' }, // value 允許空字串，合法
+    ],
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  const removedParams = history[0].removedParams;
+  assert.equal(removedParams.length, 2, '只有兩筆通過 sanitize(xmt 與 utm_source)');
+  assert.equal(removedParams[0].key, 'xmt');
+  assert.equal(removedParams[0].value, 'AQGabc');
+  assert.equal(removedParams[1].key, 'utm_source');
+  assert.equal(removedParams[1].value, '', 'value 允許空字串');
+});
+
+test('紀錄:removedParams 全部畸形、sanitize 後一筆不剩時，整欄不寫入', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    removedParams: [{ key: '', value: 'x' }, 'junk', { key: 123 }],
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal('removedParams' in history[0], false);
+});
+
+test('紀錄:removedParams 超過 20 筆時裁到上限 20 筆', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  const removedParams = Array.from({ length: 30 }, (_, i) => ({ key: `p${i}`, value: `v${i}` }));
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    removedParams,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  const kept = history[0].removedParams;
+  assert.equal(kept.length, 20, '應裁到上限 20 筆');
+  assert.equal(kept[0].key, 'p0', '保留前 20 筆(裁切點在陣列尾端)');
+  assert.equal(kept[0].value, 'v0');
+  assert.equal(kept[19].key, 'p19');
+  assert.equal(kept[19].value, 'v19');
+});
+
 test('紀錄:kind 為 icon 以外的未知字串仍被白名單拒絕，不記錄、不通知', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
 
@@ -756,6 +955,24 @@ test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗�
   await settle();
 
   assert.equal(failed.storage.localSnapshot().history, undefined, '沒寫進剪貼簿就不算淨化成功');
+});
+
+// F 案:右鍵路徑(menu)不經 guard/bridge，original(使用者右鍵點擊的短碼
+// 連結)與 removedParams(finalUrl 與 cleanUrl 的差集)background 自身就
+// 有(見 buildMenuHistoryExtra/diffRemovedParams)。fetch mock 對 SHARE_URL
+// 固定回傳 `${CLEAN_POST_URL}?xmt=AQGabc`，diff 出來剛好就是一筆
+// { key: 'xmt', value: 'AQGabc' }。
+test('紀錄:右鍵路徑(menu)自身算出 original(短碼連結)與 removedParams(finalUrl 與 cleanUrl 的差集)', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].original, SHARE_URL, 'original 應為使用者右鍵點擊的短碼連結');
+  assert.equal(history[0].removedParams.length, 1);
+  assert.equal(history[0].removedParams[0].key, 'xmt');
+  assert.equal(history[0].removedParams[0].value, 'AQGabc');
 });
 
 // ============================================================
@@ -808,6 +1025,37 @@ test('紀錄去重合併:視窗內命中時合併為一筆——浮到最前、a
   assert.equal(history[0].seen[0].kind, 'share', 'seen[] 舊在前');
   assert.equal(history[0].seen[1].kind, 'icon', 'seen[] 新在後');
   assert.equal(history[1].url, other.url, '未命中的其他條目不受影響');
+});
+
+// F 案:original/removedParams 合併語意與 author/handle/excerpt 完全一
+// 致(新值優先、本次缺席沿用舊值)，獨立驗證這兩個新欄位，避免只靠上面
+// 那條併很多斷言的測試間接覆蓋。
+test('紀錄去重合併:視窗內命中時 original/removedParams 新值優先、本次缺席沿用舊值', async () => {
+  const now = Date.now();
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    at: now - 60 * 1000,
+    original: `${CLEANED_NOTICE_CLEAN_URL}?utm_source=old`,
+    removedParams: [{ key: 'utm_source', value: 'old' }],
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  // 本次只帶 original，不帶 removedParams:removedParams 應沿用舊值。
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    original: `${CLEANED_NOTICE_CLEAN_URL}?utm_source=new`,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].original, `${CLEANED_NOTICE_CLEAN_URL}?utm_source=new`, '本次有值的 original 應以新值優先');
+  assert.equal(history[0].removedParams.length, 1, '本次缺席的 removedParams 應沿用舊值');
+  assert.equal(history[0].removedParams[0].key, 'utm_source');
+  assert.equal(history[0].removedParams[0].value, 'old', '沿用的是舊的 removedParams 內容，不是本次的');
 });
 
 test('紀錄去重合併:同一 url 但超出去重視窗(> 5 分鐘)時新增一筆，不合併', async () => {

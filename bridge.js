@@ -65,6 +65,15 @@
           cleanUrl: data.cleanUrl,
           kind: data.kind,
         };
+        // F 案(紀錄資料層補齊 original/removedParams，對齊手機
+        // ShareHistoryItem):純透傳，不在這層做型別/長度驗證——與下面
+        // author/handle/excerpt 的既有透傳規則一致，真正的 sanitize 交給
+        // background.js(信任邊界)。guard 端(clipboard-guard.js)已經在自
+        // 己那層決定要不要夾帶這兩個欄位(original 與 cleanUrl 相同就不
+        // 夾、removedParams 空陣列就不夾)，這裡原樣照轉，缺席就是缺席，
+        // 不硬造。
+        if (data.original !== undefined) payload.original = data.original;
+        if (data.removedParams !== undefined) payload.removedParams = data.removedParams;
         // 方案甲(歷史即收藏):share/strip 這兩條自動路徑(clipboard-guard.js
         // 經這裡轉發)原本沒有貼文容器可用(clipboard-guard.js 在 MAIN
         // world，不碰 chrome.* API，也不做 DOM 擷取)。轉發前，若

@@ -66,6 +66,20 @@ const HISTORY_EXCERPT_MAX = 2000;
 // 沒有各自訂上限的必要。
 const HISTORY_AUTHOR_MAX = 100;
 
+// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+// original 是使用者實際複製到/觸發時的原始連結(share 短碼原文，或 strip
+// 剝參前的原網址)，上限沿用 bridge.js 既有的 MAX_CLEAN_URL_LENGTH 門檻
+// (同一種「頁面可控字串」，用同一把尺)。removedParams 是被剝除的追蹤查
+// 詢參數清單，型別對齊手機版 hunandy14/meta-link-clearer 的 RemovedParam
+// ——實測 gh api 讀 src/lib/link-cleaner.ts:171 確認為 { key, value }(派工
+// 文字裡寫的 name 是筆誤，手機版實際欄位是 key，這裡照抄手機的真實形
+// 狀，不照抄文字敘述)。上限與單筆長度沿用一般追蹤參數(如 xmt/utm_*)的
+// 合理範圍，防惡意超長 payload。
+const HISTORY_ORIGINAL_MAX = 2048;
+const REMOVED_PARAMS_MAX = 20;
+const REMOVED_PARAM_KEY_MAX = 64;
+const REMOVED_PARAM_VALUE_MAX = 512;
+
 // 事件監聽器一律註冊在檔案最外層：service worker 閒置會被終止，
 // 監聽器需在每次喚醒時同步掛回去，不能包在非同步流程裡面。
 
@@ -203,7 +217,23 @@ async function handleShareLinkClick(info, tab) {
   // 一致;saveHistory 的把關在 recordHistory 內。使用者變更設定規格:
   // 成功類通知(notifySuccess)整組移除，右鍵路徑不再於此發送成功通知，
   // 失敗類通知(上面幾個 notifyByKey 呼叫)不受影響、維持系統通知。
-  await recordHistory(cleanUrl, 'menu');
+  // F 案:右鍵路徑不經 guard/bridge，original(shareUrl)與 removedParams
+  // (finalUrl 與 cleanUrl 的差集)background 自己手上就有，見
+  // buildMenuHistoryExtra。
+  await recordHistory(cleanUrl, 'menu', buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl));
+}
+
+// 右鍵路徑(menu)專用的 extra 建構:不經 guard/bridge，original(使用者
+// 右鍵點擊的短碼連結)與 removedParams(finalUrl 淨化前後的查詢參數差
+// 集)background 自身就有，sanitize 規則與 extractHistoryExtraFields
+// (自動路徑)共用同一組函式(sanitizeOriginalField/sanitizeRemovedParams)。
+function buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl) {
+  const extra = {};
+  const original = sanitizeOriginalField(shareUrl, HISTORY_ORIGINAL_MAX, cleanUrl);
+  if (original !== undefined) extra.original = original;
+  const removedParams = sanitizeRemovedParams(diffRemovedParams(finalUrl, cleanUrl));
+  if (removedParams !== undefined) extra.removedParams = removedParams;
+  return extra;
 }
 
 // 讀取使用者設定。刻意放在點擊流程「內」呼叫，不在模組頂層同步觸碰
@@ -249,14 +279,17 @@ async function handleCleanedNotice(message) {
     return;
   }
 
-  recordHistory(cleanUrl, kind, extractHistoryExtraFields(message));
+  recordHistory(cleanUrl, kind, extractHistoryExtraFields(message, cleanUrl));
 }
 
-// author/handle/excerpt 為選填字串，同屬頁面可控輸入，不信任:型別不是
-// string 的一律整欄丟棄(不寫進回傳物件，而非寫入 undefined/空字串)，
-// 字串則截斷至各自長度上限。回傳值直接可以 Object.assign 進 history 條
-// 目(見 recordHistory)。
-function extractHistoryExtraFields(message) {
+// author/handle/excerpt/original/removedParams 皆為選填欄位，同屬頁面
+// 可控輸入(除了右鍵路徑，其餘一律經 guard/bridge 這條 postMessage 管道
+// 進來)，不信任:型別不是 string(或 removedParams 不是陣列)的一律整欄
+// 丟棄(不寫進回傳物件，而非寫入 undefined/空字串)，字串則截斷至各自長
+// 度上限。回傳值直接可以 Object.assign 進 history 條目(見 recordHistory)。
+// url 參數(F 案新增)是本次寫入的乾淨網址，供 sanitizeOriginalField 判斷
+// original 是否與 cleaned 相同(相同就不存)。
+function extractHistoryExtraFields(message, url) {
   const extra = {};
   const author = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
   if (author !== undefined) extra.author = author;
@@ -264,6 +297,10 @@ function extractHistoryExtraFields(message) {
   if (handle !== undefined) extra.handle = handle;
   const excerpt = sanitizeHistoryField(message && message.excerpt, HISTORY_EXCERPT_MAX);
   if (excerpt !== undefined) extra.excerpt = excerpt;
+  const original = sanitizeOriginalField(message && message.original, HISTORY_ORIGINAL_MAX, url);
+  if (original !== undefined) extra.original = original;
+  const removedParams = sanitizeRemovedParams(message && message.removedParams);
+  if (removedParams !== undefined) extra.removedParams = removedParams;
   return extra;
 }
 
@@ -274,6 +311,58 @@ function extractHistoryExtraFields(message) {
 function sanitizeHistoryField(value, maxLen) {
   if (typeof value !== 'string' || value.length === 0) return undefined;
   return value.slice(0, maxLen);
+}
+
+// F 案:original 選填欄位，規則同 sanitizeHistoryField(非字串／空字串整
+// 欄丟棄，字串截斷至長度上限)，額外多一條——截斷「前」若與本次寫入的
+// cleaned url 完全相同就整欄丟棄:手機版語意是「取與 cleaned 不同者」，
+// 相同代表沒有額外資訊，不值得多存一份(guard 端 notifyCleaned 已經先擋
+// 過一次，這裡是信任邊界上的權威判斷，不能只靠上游自律)。
+function sanitizeOriginalField(value, maxLen, url) {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  if (value === url) return undefined;
+  return value.slice(0, maxLen);
+}
+
+// F 案:removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value },
+// 見上方 REMOVED_PARAMS_MAX 常數註解)。上限 REMOVED_PARAMS_MAX 筆，每筆
+// key 需為非空字串且 ≤ REMOVED_PARAM_KEY_MAX、value 需為字串(可為空字
+// 串，查詢參數本來就允許沒有值)且 ≤ REMOVED_PARAM_VALUE_MAX，任一不符就
+// 整筆丟棄(容忍陣列裡部分項目壞掉，不因此讓整個陣列作廢，寫法對齊
+// sanitizeSeenList)。輸入非陣列，或 sanitize 後一筆不剩，回傳
+// undefined(呼叫端據此整欄不寫入，缺席不落空陣列佔位)。
+function sanitizeRemovedParams(value) {
+  if (!Array.isArray(value)) return undefined;
+  const out = [];
+  for (const item of value) {
+    if (out.length >= REMOVED_PARAMS_MAX) break;
+    if (!item || typeof item !== 'object') continue;
+    if (typeof item.key !== 'string' || item.key.length === 0 || item.key.length > REMOVED_PARAM_KEY_MAX) continue;
+    if (typeof item.value !== 'string' || item.value.length > REMOVED_PARAM_VALUE_MAX) continue;
+    out.push({ key: item.key, value: item.value });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+// F 案:右鍵路徑(menu)專用——對齊手機版 hunandy14/meta-link-clearer 的
+// src/lib/link-cleaner.ts:diffRemovedParams，比對淨化前後兩個網址，列出
+// 被移除的 query 參數。cleanUrl(extractCleanPostUrl 的結果)一律不含
+// query，afterParams 實際上恆為空集合，等同回報 finalUrl 的全部 query
+// 參數;仍照抄手機版「比較後者鍵集合」的寫法，不自行簡化，未來若
+// cleanUrl 的定義改變也不必回頭改這支函式。任一邊網址不合法(URL 建構
+// 例外)一律回傳空陣列，不影響呼叫端(fail-safe，缺席不硬造)。
+function diffRemovedParams(before, after) {
+  try {
+    const beforeParams = new URL(before).searchParams;
+    const afterKeys = new Set(Array.from(new URL(after).searchParams.keys()).map((k) => k.toLowerCase()));
+    const removed = [];
+    beforeParams.forEach((value, key) => {
+      if (!afterKeys.has(key.toLowerCase())) removed.push({ key, value });
+    });
+    return removed;
+  } catch (err) {
+    return [];
+  }
 }
 
 // ---- 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
@@ -340,9 +429,10 @@ function sanitizeSeenList(seen) {
 // 位，其餘未知欄位自然被丟棄，等同順手做了一次縱深防禦)。
 //   - at 更新為 now(浮到最新，呼叫端負責把回傳的條目移到陣列最前)。
 //   - kind 更新為本次來源(卡片徽章顯示最近一次解析路徑)。
-//   - author/handle/excerpt:本次 extra 有值就用本次的，本次缺席才沿用
-//     existing 的舊值(新值優先，但不能讓「這次沒抓到」蓋掉「上次抓到
-//     的」)。
+//   - author/handle/excerpt/original/removedParams(F 案新增):本次 extra
+//     有值就用本次的，本次缺席才沿用 existing 的舊值(新值優先，但不能
+//     讓「這次沒抓到」蓋掉「上次抓到的」)——五個欄位規則完全一致，一起
+//     套同一套 fallback 寫法。
 //   - seen[]:existing.seen 若已存在(即使是陣列型別、內容需要 sanitize)
 //     就照樣過 sanitizeSeenList;existing.seen 缺席(schema 升級前寫入
 //     的舊資料)時，照手機版語意補種一筆起始紀錄 [{ at: existing.at }]
@@ -356,6 +446,9 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   const author = extra && extra.author !== undefined ? extra.author : existing.author;
   const handle = extra && extra.handle !== undefined ? extra.handle : existing.handle;
   const excerpt = extra && extra.excerpt !== undefined ? extra.excerpt : existing.excerpt;
+  const original = extra && extra.original !== undefined ? extra.original : existing.original;
+  const removedParams =
+    extra && extra.removedParams !== undefined ? extra.removedParams : existing.removedParams;
   const priorSeen = Array.isArray(existing.seen)
     ? sanitizeSeenList(existing.seen)
     : [{ at: existing.at }];
@@ -365,6 +458,8 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   if (author !== undefined) merged.author = author;
   if (handle !== undefined) merged.handle = handle;
   if (excerpt !== undefined) merged.excerpt = excerpt;
+  if (original !== undefined) merged.original = original;
+  if (removedParams !== undefined) merged.removedParams = removedParams;
   return merged;
 }
 
@@ -384,10 +479,10 @@ function hasStorageLocal() {
 // 發生在「清除的同時恰好完成一次淨化」,極罕見且後果僅是多留一筆,接受。
 let historyWriteChain = Promise.resolve();
 
-// extra(選填):方案甲新增的 author/handle/excerpt 欄位物件，只有實際
-// 擷取到的鍵才會出現(見 extractHistoryExtraFields)，Object.assign 進條
-// 目時不會覆蓋 url/kind/at；右鍵選單路徑(handleShareLinkClick)不傳這個
-// 參數，行為與新增前完全一致。
+// extra(選填):方案甲新增的 author/handle/excerpt，加上 F 案新增的
+// original/removedParams，只有實際擷取到的鍵才會出現(自動路徑見
+// extractHistoryExtraFields，右鍵路徑見 buildMenuHistoryExtra)，
+// Object.assign 進條目時不會覆蓋 url/kind/at/seen。
 function recordHistory(url, kind, extra) {
   historyWriteChain = historyWriteChain
     .then(async () => {
