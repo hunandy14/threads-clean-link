@@ -140,4 +140,4 @@ curl -X POST https://oauth2.googleapis.com/token \
 - **審查中無法上傳新草稿**:如果前一個版本正在 Google 審查中，此時再上傳新版本草稿可能會被 API 拒絕(常見錯誤訊息類似「目前無法更新這個項目，因為它正在審查中」)。這種情況等審查結果出來(不論通過或退回)再重新觸發一次即可，`release.yml` 會把這類錯誤挑選過的說明欄位印出來，不會吞掉。
 - **重複送審(ITEM_PENDING_REVIEW)**:如果草稿上傳成功，但送審當下前一版本仍在審查隊列中，`publish` 回應的 status 會含 `ITEM_PENDING_REVIEW`。`release.yml` 把這種情況視為可重試、不算失敗——印出 `::warning::` 但不會讓整個 workflow 變紅，因為草稿本身已經上傳成功，等前一版審查有結果後重新觸發一次即可。
 - **refresh token 過期**:見步驟 3 的已知限制，測試中狀態的應用程式核發的 refresh token 是 7 天效期，過期後需要重新走一次步驟 5。
-- **安全性**:四把憑證只存在 GitHub Secrets 裡，`release.yml` 的 log 全程不會 `echo` 或印出 access token、client secret、refresh token 本身;失敗時只印挑選過的錯誤說明欄位，方便除錯又不外洩憑證。
+- **安全性**:四把憑證只存在 GitHub Secrets 裡，`release.yml` 的 log 全程不會 `echo` 或印出 access token、client secret、refresh token 本身;失敗時只印挑選過的錯誤說明欄位，方便除錯又不外洩憑證。access token 由 refresh token 於 job 內即時換得，經 `::add-mask::` 遮罩後以 step output 在同一個 job 內供上傳、送審兩個步驟復用，生命週期僅止於該次 run，不會存成 secret 或跨 run 保留。

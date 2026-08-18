@@ -10,7 +10,8 @@ on:
       upload_only:
         description: >-
           僅重新打包並上傳 Chrome Web Store 草稿，略過建立 GitHub
-          Release(用於審核通過後、tag 已存在時補上傳新草稿)
+          Release(用於審核通過後、tag 已存在時補上傳新草稿);除非同時
+          勾選 skip_publish，否則上傳成功後仍會自動送審
         type: boolean
         default: false
       # 紀律提醒:新增權限的版本不要走自動發布——先勾選這個選項只上傳草稿，
@@ -139,7 +140,12 @@ jobs:
           fi
 
           # ---- 1) 用 refresh token 換一次性 access token ----
-          # 安全紅線:$TOKEN_RESPONSE / access token 本身絕不 echo，只在失敗
+          # 安全性據實說明(不是「絕對不落地」):client_secret／refresh_token
+          # 經環境變數展開後，仍會成為這行 curl 呼叫的命令列參數，執行期間
+          # 理論上可被同一台機器上的 ps 看到；GitHub 託管 runner 是單租戶
+          # 的臨時機，跑完即整台回收，這個暴露面可以接受，因此不改成
+          # --header @file 之類的寫法。真正要顧的是別讓它落進我們自己印出
+          # 的 log:$TOKEN_RESPONSE／access token 本身絕不 echo，只在失敗
           # 時取 Google 回傳的錯誤說明欄位印出，不印整包回應。
           #
           # GitHub Actions 預設以 bash -eo pipefail 執行 run 區塊:若回應不是
@@ -218,9 +224,12 @@ jobs:
             exit 0
           fi
 
-          # 安全紅線:token 只透過環境變數帶進 curl 的 header，絕不出現在
-          # 指令列參數或印出的內容裡。回應本身不會回傳 token，可以整包印出
-          # 方便除錯。
+          # 安全性據實說明(不是「絕對不落地」):access token 經環境變數展開
+          # 後，一樣會成為這行 curl 呼叫(-H 參數)的命令列參數，執行期間理論
+          # 上可被同一台機器上的 ps 看到；GitHub 託管 runner 是單租戶的臨時
+          # 機，跑完即整台回收，這個暴露面可以接受，不因此改寫 curl 呼叫
+          # 方式。真正要顧的是別讓它落進我們自己印出的 log:回應本身不會
+          # 回傳 token，可以整包印出方便除錯。
           PUBLISH_RESPONSE=$(curl -sS -w '\n%{http_code}' -X POST \
             -H "Authorization: Bearer $CWS_ACCESS_TOKEN" \
             -H 'x-goog-api-version: 2' \
@@ -233,11 +242,14 @@ jobs:
           echo "送審回應(HTTP $HTTP_CODE):"
           echo "$BODY"
 
-          STATUS_LIST=$(printf '%s' "$BODY" | jq -r '(.status // []) | join(",")' 2>/dev/null || true)
+          # 用 jq -c 保留原始 JSON 引號(如 ["OK"])再拿去 grep，比對「帶引號的
+          # 整詞」而非裸字串:避免日後 Google 新增類似 NOT_OK 之類的狀態碼時，
+          # 'OK' 這種寬鬆子字串比對誤判成功。
+          STATUS_LIST=$(printf '%s' "$BODY" | jq -c '.status // []' 2>/dev/null || true)
 
-          if [ "$HTTP_CODE" = '200' ] && printf '%s' "$STATUS_LIST" | grep -q 'OK'; then
+          if [ "$HTTP_CODE" = '200' ] && printf '%s' "$STATUS_LIST" | grep -q '"OK"'; then
             echo "已成功送出審查，請至開發者主控台確認狀態。"
-          elif printf '%s' "$STATUS_LIST" | grep -q 'ITEM_PENDING_REVIEW'; then
+          elif printf '%s' "$STATUS_LIST" | grep -q '"ITEM_PENDING_REVIEW"'; then
             echo "::warning::此版本已在審查佇列中(ITEM_PENDING_REVIEW)，視為可重試情境，草稿已上傳成功，不視為本次執行失敗。"
           else
             echo "送審失敗(HTTP ${HTTP_CODE:-無}，status=${STATUS_LIST:-無})"
