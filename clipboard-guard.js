@@ -106,7 +106,13 @@
   // 經由 bridge.js（ISOLATED world）橋接請 background 解析短碼。
   // 一律回傳 Promise<string|null>：成功給乾淨網址字串，任何失敗／逾時給 null，
   // 呼叫端收到 null 就等同「沒解析出來」，走 fail-open 用原始參數放行。
-  function requestResolveShareUrl(shareUrl) {
+  //
+  // recordOnly(記錄與淨化脫鉤，修正規格):autoClean 關閉時仍要照跑解析管
+  // 線以便記錄，但剪貼簿不能被改寫，且解析失敗不該用頁內 toast 嚇使用者
+  // (使用者的複製動作本身沒壞)。這個布林值原樣夾帶進 TCL_RESOLVE_REQ，
+  // 讓 bridge.js 知道這次失敗該走 console.warn 還是既有的頁內 toast，見
+  // bridge.js 的 recordOnly 分流。
+  function requestResolveShareUrl(shareUrl, recordOnly) {
     return new Promise(function (resolve) {
       var requestId = makeRequestId();
       var settled = false;
@@ -148,7 +154,7 @@
           finish(null);
         }, RESOLVE_TIMEOUT_MS);
         window.postMessage(
-          { type: REQ_TYPE, requestId: requestId, url: shareUrl },
+          { type: REQ_TYPE, requestId: requestId, url: shareUrl, recordOnly: !!recordOnly },
           window.location.origin
         );
       } catch (e) {
@@ -164,36 +170,53 @@
     clipboard.writeText = function (data) {
       try {
         if (typeof data === 'string') {
-          // S3：autoClean 關閉時，一切淨化與短碼解析全部略過，原樣放行。
-          if (!currentSettings.autoClean) {
-            return nativeWriteText(data);
-          }
+          // 修正規格(記錄與淨化脫鉤):autoClean 只管「剪貼簿要不要被改
+          // 寫」，偵測／解析管線一律照跑，不再因 autoClean 關閉就整段早
+          // 退——「複製就記錄」的語意(歷史即收藏)不該受 autoClean 影響。
+          // recordOnly=true(autoClean 關閉)時:剪貼簿一律寫回使用者原本
+          // 複製的內容，但解析成功仍會 notifyCleaned 供記錄；解析失敗則
+          // 交給 bridge.js 的 recordOnly 分流靜默處理(不跳頁內 toast)。
+          // autoClean 開啟(recordOnly=false)時行為與修正前完全一致。
+          var recordOnly = !currentSettings.autoClean;
 
           if (isShareUrl(data)) {
             // 雙參數 .then(onOk, onErr):onErr 只綁定 requestResolveShareUrl
             // 的 rejection，不會連 nativeWriteText 的 rejection 也接住，確保
             // 原生呼叫只被呼叫一次，其 rejection 原樣傳回呼叫端。
-            return requestResolveShareUrl(data.trim()).then(
+            return requestResolveShareUrl(data.trim(), recordOnly).then(
               function (cleanUrl) {
                 // cleanUrl 需通過貼文網址格式驗證才信任，否則視同解析失敗。
                 var resolved = typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl);
                 if (resolved) {
-                  // R1-2：只有「實際把淨化後內容寫入剪貼簿」才發通知——原生
-                  // 寫入先跑，成功之後(.then 的 onFulfilled)才 notifyCleaned，
-                  // 若原生寫入被拒(rejection)則不會進到這裡，也就不會誤發通知。
+                  // R1-2：只有「實際寫入剪貼簿」才發通知——原生寫入先跑，
+                  // 成功之後(.then 的 onFulfilled)才 notifyCleaned，若原生
+                  // 寫入被拒(rejection)則不會進到這裡，也就不會誤發通知。
+                  // recordOnly 時寫回原始 data(不改寫剪貼簿)，否則寫入
+                  // 解析後的乾淨網址；無論哪種，記錄用的 cleanUrl 都是解
+                  // 析後的版本，讓「歷史即收藏」拿到正確的乾淨網址。
                   // Promise.resolve 包一層:原生若回傳非 Promise，直接 .then
                   // 會丟 TypeError 落到外層 catch，導致原生被「以未淨化的原文」
                   // 再呼叫一次。包裝後 rejection 語意不變，仍原樣往外傳。
-                  return Promise.resolve(nativeWriteText(cleanUrl)).then(function (result) {
+                  var toWrite = recordOnly ? data : cleanUrl;
+                  return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
                     notifyCleaned(cleanUrl, 'share');
                     return result;
                   });
                 }
-                // fail-open:cleanUrl 缺失或格式不符，一律用原始參數放行，不發通知。
+                // 解析失敗或格式不符:剪貼簿一律用原始參數放行，不發通知。
+                // recordOnly 情境的使用者可見提示(靜默 vs 頁內 toast)已交
+                // 給 bridge.js 依請求帶的 recordOnly 分流，這裡只留一句
+                // console.warn 方便除錯，不影響剪貼簿內容。
+                if (recordOnly) {
+                  console.warn('[threads-clean-link] recordOnly 解析失敗，不影響剪貼簿');
+                }
                 return nativeWriteText(data);
               },
               function () {
                 // fail-open:橋接／解析任何失敗，一律用原始參數放行，不發通知。
+                if (recordOnly) {
+                  console.warn('[threads-clean-link] recordOnly 橋接失敗，不影響剪貼簿');
+                }
                 return nativeWriteText(data);
               }
             );
@@ -202,11 +225,14 @@
           var toWrite = data;
           var cleaned = sanitizeIfTrackedPostUrl(data);
           if (cleaned !== null) {
-            toWrite = cleaned;
+            // ?xmt 剪參是同步、決定性的判斷(不經網路解析)，沒有「失敗」
+            // 這個中間狀態:能剪就是能剪。recordOnly 時剪貼簿仍寫回原始
+            // data，只是照樣 notifyCleaned 供記錄。
+            toWrite = recordOnly ? data : cleaned;
             // R1-2：?xmt 剪參分支同樣只在原生寫入成功後才發通知。
             // Promise.resolve 包一層的理由同上(防非 Promise 回傳時重複呼叫原生)。
             return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
-              notifyCleaned(toWrite, 'strip');
+              notifyCleaned(cleaned, 'strip');
               return result;
             });
           }
@@ -238,17 +264,18 @@
           items[0].types[0] === 'text/plain' &&
           typeof window.ClipboardItem === 'function'
         ) {
-          // S3：autoClean 關閉時，一切淨化與短碼解析全部略過，以原始 items
-          // 參照原樣呼叫原生 write()，不讀取 blob、不重建陣列。
-          if (!currentSettings.autoClean) {
-            return nativeWrite(items);
-          }
+          // 修正規格(記錄與淨化脫鉤):autoClean 只管「剪貼簿要不要被改
+          // 寫」，偵測／解析管線一律照跑，不再因 autoClean 關閉就整段早
+          // 退，理由與 writeText 分支相同(見上方註解)。
+          var recordOnly = !currentSettings.autoClean;
 
           var item = items[0];
 
-          // R1-2：只有實際重建出新 ClipboardItem(代表真的做了淨化替換)
-          // 才需要在原生寫入成功後發通知；記錄「這次若成功要通知的
-          // cleanUrl 與其來源 kind」，fail-open／未改寫的路徑保持 null，不發通知。
+          // R1-2：只有實際解析／剪參成功(代表真的判定出可記錄的乾淨網
+          // 址)才需要在原生寫入成功後發通知；記錄「這次若成功要通知的
+          // cleanUrl 與其來源 kind」，fail-open／未改寫的路徑保持 null，
+          // 不發通知。recordOnly 時即使成功也不重建 ClipboardItem(剪貼簿
+          // 維持原始 items)，但一樣要記下 cleanedUrlForNotice 供記錄。
           var cleanedUrlForNotice = null;
           var cleanedKindForNotice = null;
 
@@ -262,12 +289,13 @@
             })
             .then(function (text) {
               if (isShareUrl(text)) {
-                return requestResolveShareUrl(text.trim()).then(
+                return requestResolveShareUrl(text.trim(), recordOnly).then(
                   function (cleanUrl) {
                     // cleanUrl 需通過貼文網址格式驗證才信任。
                     if (typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)) {
                       cleanedUrlForNotice = cleanUrl;
                       cleanedKindForNotice = 'share';
+                      if (recordOnly) return items;
                       return [
                         new window.ClipboardItem({
                           'text/plain': new Blob([cleanUrl], { type: 'text/plain' }),
@@ -275,10 +303,16 @@
                       ];
                     }
                     // fail-open:cleanUrl 缺失或格式不符，一律用原始 items。
+                    if (recordOnly) {
+                      console.warn('[threads-clean-link] recordOnly 解析失敗，不影響剪貼簿');
+                    }
                     return items;
                   },
                   function () {
                     // fail-open:橋接／解析任何失敗，一律用原始 items。
+                    if (recordOnly) {
+                      console.warn('[threads-clean-link] recordOnly 橋接失敗，不影響剪貼簿');
+                    }
                     return items;
                   }
                 );
@@ -290,6 +324,7 @@
               }
               cleanedUrlForNotice = cleaned;
               cleanedKindForNotice = 'strip';
+              if (recordOnly) return items;
               return [
                 new window.ClipboardItem({
                   'text/plain': new Blob([cleaned], { type: 'text/plain' }),

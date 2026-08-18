@@ -152,6 +152,33 @@ test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async 
   assert.equal(recorder[0], shareUrl);
 });
 
+// 修正規格(記錄與淨化脫鉤):autoClean=false(recordOnly)時解析失敗，
+// clipboard-guard.js 自己這端(不只是 bridge.js)也該留一句 console.warn
+// 供除錯，且完全不影響剪貼簿內容(原樣放行使用者複製的內容)。
+test('recordOnly(autoClean=false)情境解析失敗時，console.warn 留痕跡且剪貼簿不受影響', async () => {
+  const recorder = [];
+  const win = createWindow();
+  installBridgeSim(win, 'failure');
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: false }));
+  const shareUrl = 'https://www.threads.com/share/DHuf91XTf/';
+
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    await sandbox.navigator.clipboard.writeText(shareUrl);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(recorder[0], shareUrl, '剪貼簿不受影響，原樣放行');
+  assert.ok(
+    warnCalls.some((args) => typeof args[0] === 'string' && args[0].includes('[threads-clean-link]')),
+    'recordOnly 情境解析失敗應留一句帶前綴的 console.warn'
+  );
+});
+
 test('短碼橋接逾時(2500ms)後，原樣寫入原始短碼(fail-open)', async () => {
   const recorder = [];
   const win = createWindow();
@@ -591,41 +618,99 @@ function settings(overrides) {
   return Object.assign({ autoClean: true }, overrides);
 }
 
-// ---- S3:autoClean=false 一律直接放行原始內容 ----
+// ---- S3(規格翻轉:記錄與淨化脫鉤):autoClean=false 時剪貼簿一律不被
+// 改寫，但偵測／解析管線照跑、記錄照發 ----
+//
+// PM 修正規格:autoClean 只管「剪貼簿要不要被改寫」，不再管「要不要記
+// 錄」——歷史即收藏的語意下，複製就該記錄，不因 autoClean 關閉而整段
+// 早退。新的不變量:
+//   - 剪貼簿一律寫回使用者原本複製的內容(不被改寫成乾淨網址)。
+//   - ?xmt 分支(同步、不需橋接)照樣送出 TCL_CLEANED_NOTICE。
+//   - /share/ 分支照樣送出 TCL_RESOLVE_REQ(帶 recordOnly:true，供
+//     bridge.js 判斷失敗時要不要跳頁內 toast，見 bridge.test.js)，解析
+//     成功後一樣送出 TCL_CLEANED_NOTICE。
 
-// 【精簡】原本 ?xmt 與 /share/ 兩種輸入各自一測(writeText 與 write() 各兩條)，
-// 驗的是同一個不變量:autoClean=false 時一律原樣放行且完全不發解析請求。
-// 兩條路徑(writeText／write())是不同分支各留一條，路徑內的兩種輸入併成多案例。
-test('S3:autoClean=false 時，writeText 對 ?xmt 與 /share/ 皆原樣放行，且完全不發 TCL_RESOLVE_REQ', async () => {
-  for (const input of [XMT_URL, SHARE_URL]) {
+test('S3:autoClean=false 時，writeText 對 ?xmt 與 /share/ 皆原樣放行剪貼簿，但仍照樣送出 TCL_CLEANED_NOTICE 供記錄', async () => {
+  // ?xmt 分支:同步判斷，不需要橋接，直接發 notice。
+  {
     const recorder = [];
     const win = createWindow();
-    const requests = trackResolveRequests(win, { respond: true });
+    const notices = trackCleanedNotices(win);
     const sandbox = loadGuard(recordingWriteText(recorder), win);
     await pushSettings(win, settings({ autoClean: false }));
 
-    await sandbox.navigator.clipboard.writeText(input);
+    await sandbox.navigator.clipboard.writeText(XMT_URL);
+    await settle();
 
-    assert.equal(recorder[0], input, `${input} 應原樣放行`);
-    assert.equal(requests.length, 0, `${input} 不得送出解析請求`);
+    assert.equal(recorder[0], XMT_URL, '剪貼簿應原樣放行，不被改寫');
+    assert.equal(notices.length, 1, '?xmt 分支不需要橋接，仍應照樣記錄');
+    assert.equal(notices[0].cleanUrl, XMT_URL_CLEANED);
+    assert.equal(notices[0].kind, 'strip');
   }
-});
 
-test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等原樣放行，且不發解析請求', async () => {
-  for (const input of [XMT_URL, SHARE_URL]) {
+  // /share/ 分支:需要橋接解析，請求應帶 recordOnly:true；解析成功後才發 notice。
+  {
     const recorder = [];
     const win = createWindow();
     const requests = trackResolveRequests(win, { respond: true });
+    const notices = trackCleanedNotices(win);
+    const sandbox = loadGuard(recordingWriteText(recorder), win);
+    await pushSettings(win, settings({ autoClean: false }));
+
+    await sandbox.navigator.clipboard.writeText(SHARE_URL);
+    await settle();
+
+    assert.equal(recorder[0], SHARE_URL, '剪貼簿應原樣放行，不被改寫');
+    assert.equal(requests.length, 1, 'autoClean=false 仍應照樣送出解析請求以便記錄');
+    assert.equal(requests[0].recordOnly, true, '請求應帶 recordOnly:true，供 bridge.js 分流失敗提示');
+    assert.equal(notices.length, 1, '解析成功後仍應照樣記錄');
+    assert.equal(notices[0].cleanUrl, CLEAN_POST_URL);
+    assert.equal(notices[0].kind, 'share');
+  }
+});
+
+test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等原樣放行剪貼簿，但仍照樣送出 TCL_CLEANED_NOTICE 供記錄', async () => {
+  // ?xmt 分支。
+  {
+    const recorder = [];
+    const win = createWindow();
+    const notices = trackCleanedNotices(win);
     const sandbox = loadGuard(recordingWriteRaw(recorder), win);
     await pushSettings(win, settings({ autoClean: false }));
     const originalItems = [
-      new FakeClipboardItem({ 'text/plain': new Blob([input], { type: 'text/plain' }) }),
+      new FakeClipboardItem({ 'text/plain': new Blob([XMT_URL], { type: 'text/plain' }) }),
     ];
 
     await sandbox.navigator.clipboard.write(originalItems);
+    await settle();
 
-    assert.equal(recorder[0], originalItems, `${input} 應以參照相等原樣放行`);
-    assert.equal(requests.length, 0, `${input} 不得送出解析請求`);
+    assert.equal(recorder[0], originalItems, '剪貼簿應以參照相等原樣放行');
+    assert.equal(notices.length, 1, '?xmt 分支不需要橋接，仍應照樣記錄');
+    assert.equal(notices[0].cleanUrl, XMT_URL_CLEANED);
+    assert.equal(notices[0].kind, 'strip');
+  }
+
+  // /share/ 分支。
+  {
+    const recorder = [];
+    const win = createWindow();
+    const requests = trackResolveRequests(win, { respond: true });
+    const notices = trackCleanedNotices(win);
+    const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+    await pushSettings(win, settings({ autoClean: false }));
+    const originalItems = [
+      new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+    ];
+
+    await sandbox.navigator.clipboard.write(originalItems);
+    await settle();
+
+    assert.equal(recorder[0], originalItems, '剪貼簿應以參照相等原樣放行');
+    assert.equal(requests.length, 1, 'autoClean=false 仍應照樣送出解析請求以便記錄');
+    assert.equal(requests[0].recordOnly, true, '請求應帶 recordOnly:true');
+    assert.equal(notices.length, 1, '解析成功後仍應照樣記錄');
+    assert.equal(notices[0].cleanUrl, CLEAN_POST_URL);
+    assert.equal(notices[0].kind, 'share');
   }
 });
 
@@ -647,25 +732,29 @@ test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等�
 
 // 使用者變更設定規格:autoClean 預設值改為 false。原斷言方向「預設開
 // 啟，推播關閉後改變行為」整個倒過來:預設關閉，推播開啟後才改變行為。
+// PM 修正規格(記錄與淨化脫鉤):autoClean=false 不再讓 /share/ 整段早
+// 退——剪貼簿不被改寫，但解析請求(recordOnly:true)仍照樣送出供記錄。
 test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(autoClean=false)運作', async () => {
   const recorder = [];
   const win = createWindow();
   const requests = trackResolveRequests(win, { respond: true });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  // 尚未推播任何設定:預設 autoClean=false，一律原樣放行、不發解析請求。
+  // 尚未推播任何設定:預設 autoClean=false，剪貼簿原樣放行(不被改
+  // 寫)；/share/ 仍照樣送出解析請求(recordOnly:true)供記錄。
   await sandbox.navigator.clipboard.writeText(XMT_URL);
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], XMT_URL);
-  assert.equal(recorder[1], SHARE_URL);
-  assert.equal(requests.length, 0);
+  assert.equal(recorder[1], SHARE_URL, 'autoClean=false 時剪貼簿不被改寫');
+  assert.equal(requests.length, 1, '/share/ 應照樣送出解析請求，即使剪貼簿不會被改寫');
+  assert.equal(requests[0].recordOnly, true, '預設值(autoClean=false)下請求應帶 recordOnly:true');
 
   // 推播開啟後必須即時改變行為，證明上面走的是「預設值」而不是「沒接設定」。
   await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(XMT_URL);
 
   assert.equal(recorder[2], XMT_URL_CLEANED);
-  assert.equal(requests.length, 0);
+  assert.equal(requests.length, 1, 'xmt 分支不需要橋接請求，數量不受影響');
 });
 
 test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設定', async () => {
@@ -678,16 +767,19 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], CLEAN_POST_URL);
   assert.equal(requests.length, 1);
+  assert.equal(requests[0].recordOnly, false, 'autoClean=true 時 recordOnly 應為 false');
 
   await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
-  assert.equal(recorder[1], SHARE_URL);
-  assert.equal(requests.length, 1);
+  assert.equal(recorder[1], SHARE_URL, 'autoClean=false 時剪貼簿不被改寫');
+  assert.equal(requests.length, 2, 'autoClean=false 仍照樣送出解析請求供記錄，不再整段早退');
+  assert.equal(requests[1].recordOnly, true);
 
   await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[2], CLEAN_POST_URL);
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2].recordOnly, false);
 });
 
 // ---- S8:TCL_SETTINGS_PUSH 的來源驗證(PM 裁決採納，與 TCL_RESOLVE_RES 同等級) ----
@@ -726,6 +818,8 @@ test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設
   assert.equal(requests.length, 0);
 });
 
+// PM 修正規格(記錄與淨化脫鉤):autoClean=false 時 /share/ 剪貼簿不被改
+// 寫，但仍照樣送出解析請求供記錄，requests.length 不再是 0。
 test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   const recorder = [];
   const win = createWindow();
@@ -737,7 +831,7 @@ test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], SHARE_URL);
-  assert.equal(requests.length, 0);
+  assert.equal(requests.length, 1, 'autoClean=false 仍照樣送出解析請求供記錄');
 
   // 偽造來源想把 autoClean 開回來:必須被忽略，設定維持關閉。
   win.dispatchRawMessageEvent({
@@ -748,8 +842,8 @@ test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   await settle();
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
 
-  assert.equal(recorder[1], SHARE_URL, '偽造來源不得覆蓋既有合法設定');
-  assert.equal(requests.length, 0);
+  assert.equal(recorder[1], SHARE_URL, '偽造來源不得覆蓋既有合法設定，剪貼簿仍不被改寫');
+  assert.equal(requests.length, 2, '設定仍維持 autoClean=false，第二次複製一樣照樣送出解析請求');
 });
 
 // 修正:TCL_SETTINGS_PUSH 的監聽器先前只驗 event.source，未驗 event.origin，
@@ -780,6 +874,8 @@ test('S8:origin 與本頁不符的 TCL_SETTINGS_PUSH 必須完全忽略，設定
   assert.equal(requests.length, 0);
 });
 
+// PM 修正規格(記錄與淨化脫鉤):autoClean=false 時 /share/ 剪貼簿不被改
+// 寫，但仍照樣送出解析請求供記錄，requests.length 不再是 0。
 test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', async () => {
   const recorder = [];
   const win = createWindow();
@@ -790,7 +886,7 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
   await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], SHARE_URL);
-  assert.equal(requests.length, 0);
+  assert.equal(requests.length, 1, 'autoClean=false 仍照樣送出解析請求供記錄');
 
   // 偽造 origin 想把 autoClean 開回來:必須被忽略，設定維持關閉。
   win.dispatchRawMessageEvent({
@@ -801,8 +897,8 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
   await settle();
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
 
-  assert.equal(recorder[1], SHARE_URL, '偽造 origin 不得覆蓋既有合法設定');
-  assert.equal(requests.length, 0);
+  assert.equal(recorder[1], SHARE_URL, '偽造 origin 不得覆蓋既有合法設定，剪貼簿仍不被改寫');
+  assert.equal(requests.length, 2, '設定仍維持 autoClean=false，第二次複製一樣照樣送出解析請求');
 });
 
 // ============================================================
@@ -924,7 +1020,10 @@ test('R1-2:橋接解析失敗而 fail-open 寫入原文時，不得送出通知'
   assert.equal(notices.length, 0);
 });
 
-test('R1-2:autoClean=false 原樣放行時，不得送出通知', async () => {
+// PM 修正規格(記錄與淨化脫鉤):autoClean=false 不再讓記錄整段早退——
+// 剪貼簿原樣放行(不被改寫)，但解析／剪參成功仍照樣送出 TCL_CLEANED_NOTICE
+// 供記錄(歷史即收藏的語意下，複製就該記錄，不受 autoClean 影響)。
+test('R1-2:autoClean=false 時剪貼簿原樣放行，但仍照樣送出 TCL_CLEANED_NOTICE 供記錄', async () => {
   const recorder = [];
   const win = createWindow();
   trackResolveRequests(win, { respond: true });
@@ -935,8 +1034,10 @@ test('R1-2:autoClean=false 原樣放行時，不得送出通知', async () => {
   await sandbox.navigator.clipboard.writeText(XMT_URL);
   await settle();
 
-  assert.equal(recorder[0], XMT_URL);
-  assert.equal(notices.length, 0);
+  assert.equal(recorder[0], XMT_URL, '剪貼簿應原樣放行，不被改寫');
+  assert.equal(notices.length, 1, 'autoClean=false 不再讓記錄整段早退，仍應照樣送出 notice');
+  assert.equal(notices[0].cleanUrl, XMT_URL_CLEANED);
+  assert.equal(notices[0].kind, 'strip');
 });
 
 test('R1-2:內容本來就乾淨、未做任何改寫時，不得送出通知', async () => {

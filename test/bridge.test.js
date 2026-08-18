@@ -165,6 +165,80 @@ test('chrome.runtime.lastError 情境也觸發 showResolveFailureToast', async (
   assert.equal(typeof calls[0], 'string');
 });
 
+// 修正規格(記錄與淨化脫鉤):autoClean=false 時 clipboard-guard.js 仍會送
+// 出解析請求以便記錄，但這次失敗不該用頁內 toast 嚇使用者(複製動作本身
+// 沒壞)，改成 console.warn 就好。recordOnly 這個旗標由請求本身帶著。
+
+test('recordOnly:true 時，resolveShare 失敗(ok:false)改用 console.warn，不呼叫 showResolveFailureToast', async () => {
+  const toastCalls = [];
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    const { dispatch } = loadBridge({
+      sendMessage: (message, callback) => callback({ ok: false, reason: 'network-error' }),
+      tclPostIcon: { showResolveFailureToast: (reason) => toastCalls.push(reason) },
+    });
+
+    await dispatch({
+      type: 'TCL_RESOLVE_REQ',
+      requestId: 'req-record-only-1',
+      url: 'https://www.threads.com/share/BAD',
+      recordOnly: true,
+    });
+
+    assert.deepEqual(toastCalls, [], 'recordOnly 情境不得跳頁內 toast');
+    assert.ok(warnCalls.length >= 1, 'recordOnly 情境應留 console.warn 供除錯');
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('recordOnly:true 時，chrome.runtime.lastError 情境同樣改用 console.warn，不呼叫 showResolveFailureToast', async () => {
+  const toastCalls = [];
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    const { dispatch } = loadBridge({
+      sendMessage: (message, callback, runtime) => {
+        runtime.lastError = { message: 'context invalidated' };
+        callback(undefined);
+      },
+      tclPostIcon: { showResolveFailureToast: (reason) => toastCalls.push(reason) },
+    });
+
+    await dispatch({
+      type: 'TCL_RESOLVE_REQ',
+      requestId: 'req-record-only-2',
+      url: 'https://www.threads.com/share/X',
+      recordOnly: true,
+    });
+
+    assert.deepEqual(toastCalls, []);
+    assert.ok(warnCalls.length >= 1);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('recordOnly:false(或缺席)時，失敗仍照常呼叫 showResolveFailureToast，行為與修正前一致', async () => {
+  const toastCalls = [];
+  const { dispatch } = loadBridge({
+    sendMessage: (message, callback) => callback({ ok: false, reason: 'format-error' }),
+    tclPostIcon: { showResolveFailureToast: (reason) => toastCalls.push(reason) },
+  });
+
+  await dispatch({
+    type: 'TCL_RESOLVE_REQ',
+    requestId: 'req-record-only-3',
+    url: 'https://www.threads.com/share/BAD',
+    recordOnly: false,
+  });
+
+  assert.deepEqual(toastCalls, ['format-error']);
+});
+
 test('resolveShare 失敗但 TCLPostIcon 不存在(舊版擴充功能／尚未載入)時，不丟例外，仍正常回應 MAIN world', async () => {
   const { dispatch } = loadBridge({
     sendMessage: (message, callback) => callback({ ok: false, reason: 'network-error' }),
