@@ -52,6 +52,30 @@ const HISTORY_LIMIT = 1000;
 // Chrome 同 id 互相取代(PM 裁決)。
 const AUTOCLEAN_SUCCESS_NOTIFICATION_ID = 'threads-clean-link-autoclean-success';
 
+// 0.5.0 貼文收藏庫:存 chrome.storage.local(理由同淨化紀錄——sync 的
+// 100KB 總額與寫入配額撐不起收藏量)，新到舊排列。欄位名刻意與使用者
+// 手機版 app 的 ShareHistoryItem 對齊(id/url/author/handle/excerpt)，為
+// 未來跨端同步鋪路。上限之外「拒收」而非汰舊(見 handleFavoriteToggle
+// 的說明):收藏是使用者主動典藏，靜默淘汰不可接受，與淨化紀錄的
+// 「上限外自動汰舊」語意刻意不同。
+const FAVORITES_KEY = 'favorites';
+const FAVORITES_LIMIT = 500;
+// 與手機版 post-meta 的 EXCERPT_MAX_CHARS 對齊(PM 核對手機 repo 後裁決)。
+const FAVORITES_EXCERPT_MAX = 2000;
+// author/handle 共用同一個長度上限;兩者性質相近(顯示名稱/帳號代稱)，
+// 沒有各自訂上限的必要。
+const FAVORITES_AUTHOR_MAX = 100;
+
+// 收藏專用的網址驗證/正規化樣式。與 NOTICE_CLEAN_URL_PATTERN 同等級的
+// 錨定與白名單字元類(handle:英數/底線/句點;post id:英數/連字號/底線，
+// 皆有長度上限)，但額外容忍「尾隨斜線」與「查詢字串／hash」——書籤 icon
+// 從頁面 DOM 取得的 href 常帶這些(如 ?xmt=... 追蹤參數)，不應因此整筆
+// 拒收。group 1 擷取正規化後的乾淨網址(不含尾隨斜線/query/hash，domain
+// 原樣保留，比照 extractCleanPostUrl 的既有慣例);group 2 擷取貼文的
+// 正規路徑(如 @user/post/ABC123)，作為手機版同步用的 id。
+const FAVORITE_URL_PATTERN =
+  /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}))\/?(?:[?#].*)?$/i;
+
 // 事件監聽器一律註冊在檔案最外層：service worker 閒置會被終止，
 // 監聽器需在每次喚醒時同步掛回去，不能包在非同步流程裡面。
 
@@ -144,6 +168,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   });
 
   return false; // 不需要回應，同步處理完就結束，不佔用非同步通道。
+});
+
+// 0.5.0 貼文收藏庫:互動列書籤 icon 點擊後送來的收藏切換請求。信任模型
+// 比照 cleanedNotice——訊息來自內容腳本即視為不可信輸入，驗證全在
+// background(見 handleFavoriteToggle)。此訊息需要非同步回應，回傳 true
+// 保持通道開啟，寫法比照 resolveShare。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'favoriteToggle') {
+    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+  }
+
+  handleFavoriteToggle(message)
+    .then(sendResponse)
+    .catch((err) => {
+      console.error('[threads-clean-link] favoriteToggle 處理失敗', err);
+      sendResponse({ ok: false, reason: 'storage' });
+    });
+
+  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
 // 核心流程
@@ -280,6 +323,74 @@ function recordHistory(url, kind) {
       console.error('[threads-clean-link] 寫入淨化紀錄失敗', err);
     });
   return historyWriteChain;
+}
+
+// ---- 貼文收藏庫(0.5.0) ----
+
+// url 驗證與正規化沿用 FAVORITE_URL_PATTERN(見上方常數註解，與
+// NOTICE_CLEAN_URL_PATTERN 同等級的錨定白名單正則):訊息來自內容腳本
+// 即視為不可信輸入，理由與 cleanedNotice 相同——防止偽造的雜訊網址混入
+// 收藏庫。id 從驗證通過的 url 導出(正規路徑如 @user/post/ABC123，去
+// 域名去尾斜線／query／hash);無法導出視同驗證失敗，一律回 invalid-url，
+// 不會出現「url 合法但 id 導不出」的中間狀態。
+//
+// toggle 語意:id 已存在收藏 → 移除該筆(saved:false);不存在 → 檢查
+// 上限，滿了拒收(reason:'full'，不擠掉舊收藏——收藏是使用者主動典藏，
+// 靜默淘汰不可接受)，未滿則新增於陣列頭(saved:true)。去重依據是 id
+// (正規路徑)而非原始 url 字串，同一貼文不同 query/hash 變形視為同一筆。
+//
+// author/handle/excerpt 為選填字串:型別不是 string 的一律整欄丟棄(不寫
+// 進條目物件，而非寫入 undefined/空字串)，字串則截斷至各自長度上限。
+async function handleFavoriteToggle(message) {
+  const rawUrl = message && message.url;
+  const match = typeof rawUrl === 'string' ? FAVORITE_URL_PATTERN.exec(rawUrl) : null;
+  if (!match) {
+    return { ok: false, reason: 'invalid-url' };
+  }
+  const cleanUrl = match[1];
+  const id = match[2];
+
+  try {
+    if (!hasStorageLocal()) {
+      return { ok: false, reason: 'storage' };
+    }
+
+    const stored = await chrome.storage.local.get({ [FAVORITES_KEY]: [] });
+    const list = Array.isArray(stored && stored[FAVORITES_KEY]) ? stored[FAVORITES_KEY] : [];
+
+    const existingIndex = list.findIndex((item) => item && item.id === id);
+    if (existingIndex !== -1) {
+      // 不就地改動讀出的陣列，組新陣列後寫回。
+      const next = list.slice(0, existingIndex).concat(list.slice(existingIndex + 1));
+      await chrome.storage.local.set({ [FAVORITES_KEY]: next });
+      return { ok: true, saved: false };
+    }
+
+    if (list.length >= FAVORITES_LIMIT) {
+      return { ok: false, reason: 'full' };
+    }
+
+    const entry = { id, url: cleanUrl, at: Date.now() };
+    const author = sanitizeFavoriteField(message.author, FAVORITES_AUTHOR_MAX);
+    if (author !== undefined) entry.author = author;
+    const handle = sanitizeFavoriteField(message.handle, FAVORITES_AUTHOR_MAX);
+    if (handle !== undefined) entry.handle = handle;
+    const excerpt = sanitizeFavoriteField(message.excerpt, FAVORITES_EXCERPT_MAX);
+    if (excerpt !== undefined) entry.excerpt = excerpt;
+
+    const next = [entry].concat(list);
+    await chrome.storage.local.set({ [FAVORITES_KEY]: next });
+    return { ok: true, saved: true };
+  } catch (err) {
+    console.error('[threads-clean-link] favoriteToggle storage 失敗', err);
+    return { ok: false, reason: 'storage' };
+  }
+}
+
+// 非字串一律回傳 undefined(呼叫端據此整欄丟棄);字串則截斷至 maxLen。
+function sanitizeFavoriteField(value, maxLen) {
+  if (typeof value !== 'string') return undefined;
+  return value.slice(0, maxLen);
 }
 
 // 不信任呼叫端傳入的 url，一律用 SHARE_URL_PATTERN 重新驗證，

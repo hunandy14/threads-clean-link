@@ -113,6 +113,16 @@
       // ---- post-icon:貼文互動列注入的複製連結 icon ----
       iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
+
+      // ---- 0.5.0 貼文收藏庫:互動列書籤 icon 與 options 收藏分頁共用 ----
+      favIconTooltip: '收藏貼文',
+      favSaved: '已加入收藏',
+      favRemoved: '已取消收藏',
+      favFull: '收藏已滿(500 筆上限)',
+      favTabLabel: '收藏',
+      favEmpty: '還沒有收藏，到貼文按書籤試試',
+      favExport: '匯出收藏',
+      favImport: '匯入收藏',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -203,6 +213,15 @@
 
       iconTooltip: 'Copy original link',
       iconCopied: 'Original link copied',
+
+      favIconTooltip: 'Save post',
+      favSaved: 'Saved',
+      favRemoved: 'Removed from favorites',
+      favFull: 'Favorites full (500 limit)',
+      favTabLabel: 'Favorites',
+      favEmpty: 'No favorites yet — tap the bookmark on a post',
+      favExport: 'Export favorites',
+      favImport: 'Import favorites',
     },
   };
 

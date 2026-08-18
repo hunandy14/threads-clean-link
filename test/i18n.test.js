@@ -56,3 +56,26 @@ test('opKindIcon:zh 與 en 兩份字典皆有此 key，且皆非空字串', () =
   assert.equal(typeof i18n.STRINGS.en.opKindIcon, 'string');
   assert.ok(i18n.STRINGS.en.opKindIcon.length > 0);
 });
+
+// 0.5.0 新增:貼文收藏庫的共用 i18n key——互動列書籤 icon(另一車道)與
+// options 收藏分頁(另一車道)都依賴這批 key 已存在且非空,本車道只鋪基座
+// 不做 UI,故只鎖存在性與非空,不驗證 UI 渲染。
+const FAVORITES_KEYS = [
+  'favIconTooltip',
+  'favSaved',
+  'favRemoved',
+  'favFull',
+  'favTabLabel',
+  'favEmpty',
+  'favExport',
+  'favImport',
+];
+
+test('貼文收藏庫 i18n key:zh 與 en 兩份字典皆有全部 8 個新 key，且皆非空字串', () => {
+  for (const key of FAVORITES_KEYS) {
+    assert.equal(typeof i18n.STRINGS.zh[key], 'string', `zh.${key} 應為字串`);
+    assert.ok(i18n.STRINGS.zh[key].length > 0, `zh.${key} 不得為空字串`);
+    assert.equal(typeof i18n.STRINGS.en[key], 'string', `en.${key} 應為字串`);
+    assert.ok(i18n.STRINGS.en[key].length > 0, `en.${key} 不得為空字串`);
+  }
+});
