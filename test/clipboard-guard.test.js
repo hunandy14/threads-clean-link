@@ -113,6 +113,10 @@ function recordingWriteRaw(recorder) {
 // 【精簡】原本「帶尾斜線」「threads.net 無 www」「前後帶空白且附 query」
 // 三條各自一測，驗的是同一個不變量:形態合法的短碼一律經橋接解析後寫入
 // 乾淨貼文網址。併為一條多案例測試，三種形態逐一跑過。
+// 使用者變更設定規格:autoClean 預設值改為 false，這裡測的是短碼解析本
+// 身的行為(與預設值問題無關)，載入後先明確推播 autoClean:true 開啟，
+// 讓測試繼續驗證同一件事——不因預設值翻轉而失去這批測試的鑑別力。預設
+// 值本身的測試移到下方 S6 專區。
 test('短碼經橋接成功解析後寫入乾淨貼文網址(尾斜線／無 www 的 threads.net／前後空白加 query)', async () => {
   const cases = [
     ['https://www.threads.com/share/DHuf91XTf/', '帶尾斜線'],
@@ -125,6 +129,8 @@ test('短碼經橋接成功解析後寫入乾淨貼文網址(尾斜線／無 www
     const win = createWindow();
     installBridgeSim(win, 'success');
     const sandbox = loadGuard(recordingWriteText(recorder), win);
+    win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
     await sandbox.navigator.clipboard.writeText(input);
 
@@ -137,6 +143,8 @@ test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async 
   const win = createWindow();
   installBridgeSim(win, 'failure');
   const sandbox = loadGuard(recordingWriteText(recorder), win);
+  win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
   const shareUrl = 'https://www.threads.com/share/DHuf91XTf/';
 
   await sandbox.navigator.clipboard.writeText(shareUrl);
@@ -149,6 +157,8 @@ test('短碼橋接逾時(2500ms)後，原樣寫入原始短碼(fail-open)', asyn
   const win = createWindow();
   installBridgeSim(win, 'timeout');
   const sandbox = loadGuard(recordingWriteText(recorder), win);
+  win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
   const shareUrl = 'https://www.threads.com/share/ABCDEF';
 
   const startedAt = Date.now();
@@ -166,6 +176,8 @@ test('write() 寫入單一 text/plain 短碼，經橋接成功解析後寫入乾
   const win = createWindow();
   installBridgeSim(win, 'success');
   const sandbox = loadGuard(recordingWrite(recorder), win);
+  win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
   const item = new FakeClipboardItem({
     'text/plain': new Blob(['https://www.threads.com/share/DHuf91XTf/'], { type: 'text/plain' }),
   });
@@ -196,6 +208,8 @@ test('帶 ?xmt 追蹤參數的貼文網址，同步去除 query 後放行', asyn
   const recorder = [];
   const win = createWindow();
   const sandbox = loadGuard(recordingWriteText(recorder), win);
+  win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
 
   await sandbox.navigator.clipboard.writeText(
     'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7?xmt=AQG0abc'
@@ -372,6 +386,8 @@ test('guard 端:requestId 不符的回應會被忽略，落入逾時 fail-open',
     }, 5);
   });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
+  win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
   const shareUrl = 'https://www.threads.com/share/MISMATCH1';
 
   const startedAt = Date.now();
@@ -404,6 +420,8 @@ test('guard 端:event.source 非本視窗的回應不被採信，落入逾時 fa
     }, 5);
   });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
+  win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
   const shareUrl = 'https://www.threads.com/share/SOURCEBAD1';
 
   const startedAt = Date.now();
@@ -438,6 +456,8 @@ test('guard 端:event.origin 與本頁不符的回應不被採信，落入逾時
     }, 5);
   });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
+  win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
   const shareUrl = 'https://www.threads.com/share/ORIGINBAD1';
 
   const startedAt = Date.now();
@@ -509,13 +529,16 @@ test('write():不符單一 text/plain 條件的 items 以參照相等原樣放�
 // v1.1 設定規格:S3(autoClean 關閉)、S5(autoClean 開啟時行為不變)、
 // S6(設定經 TCL_SETTINGS_PUSH 下放與即時生效)
 //
-// 【R1-1 開關合併】設定鍵砍為兩顆:autoClean、notifySuccess。resolveShortcode
-// 徹底移除——Threads 的複製連結只會吐 share 短連結，「攔截但不解析」是幾乎
-// 無作用的組合。原 S4(resolveShortcode 關閉)整段隨之刪除;短碼解析與 ?xmt
-// 剪參一律收在 autoClean 這一顆之下。
+// 【R1-1 開關合併】resolveShortcode 徹底移除——Threads 的複製連結只會吐
+// share 短連結，「攔截但不解析」是幾乎無作用的組合。原 S4
+// (resolveShortcode 關閉)整段隨之刪除;短碼解析與 ?xmt 剪參一律收在
+// autoClean 這一顆之下。
+//
+// 【使用者變更設定規格】notifySuccess 整組移除，settings 只剩 autoClean
+// 一顆鍵；autoClean 預設值改為 false。
 //
 // 【協定約定】bridge(ISOLATED world)以 postMessage 下放設定，訊息形狀為
-//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, notifySuccess } }
+//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean } }
 //
 // 【時序紀律】設定推播與橋接回應一律經 setTimeout 延遲送達(createWindow 的
 // postMessage 本身即為 setTimeout(0) 排程)，不在同一個 tick 直接結算。
@@ -562,9 +585,10 @@ async function pushSettings(win, settings) {
   await settle();
 }
 
-// R1-1:settings 只剩兩顆鍵。
+// 使用者變更設定規格:notifySuccess 整組移除，settings 只剩 autoClean 一
+// 顆鍵下放給 MAIN world。
 function settings(overrides) {
-  return Object.assign({ autoClean: true, notifySuccess: false }, overrides);
+  return Object.assign({ autoClean: true }, overrides);
 }
 
 // ---- S3:autoClean=false 一律直接放行原始內容 ----
@@ -621,25 +645,27 @@ test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等�
 
 // ---- S6(MAIN world 端):首次推播前用預設值，收到推播後即時採用新值 ----
 
-test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(autoClean=true)運作', async () => {
+// 使用者變更設定規格:autoClean 預設值改為 false。原斷言方向「預設開
+// 啟，推播關閉後改變行為」整個倒過來:預設關閉，推播開啟後才改變行為。
+test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(autoClean=false)運作', async () => {
   const recorder = [];
   const win = createWindow();
   const requests = trackResolveRequests(win, { respond: true });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  // 尚未推播任何設定:預設 autoClean=true。
+  // 尚未推播任何設定:預設 autoClean=false，一律原樣放行、不發解析請求。
   await sandbox.navigator.clipboard.writeText(XMT_URL);
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
-  assert.equal(recorder[0], XMT_URL_CLEANED);
-  assert.equal(recorder[1], CLEAN_POST_URL);
-  assert.equal(requests.length, 1);
+  assert.equal(recorder[0], XMT_URL);
+  assert.equal(recorder[1], SHARE_URL);
+  assert.equal(requests.length, 0);
 
-  // 推播關閉後必須即時改變行為，證明上面走的是「預設值」而不是「沒接設定」。
-  await pushSettings(win, settings({ autoClean: false }));
+  // 推播開啟後必須即時改變行為，證明上面走的是「預設值」而不是「沒接設定」。
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(XMT_URL);
 
-  assert.equal(recorder[2], XMT_URL);
-  assert.equal(requests.length, 1);
+  assert.equal(recorder[2], XMT_URL_CLEANED);
+  assert.equal(requests.length, 0);
 });
 
 test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設定', async () => {
@@ -672,6 +698,9 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
 // 每支測試都附上「同樣內容改由合法管道下放必須生效」的對照組，避免實作用
 // 「一律忽略所有推播」的假動作通過。
 
+// 使用者變更設定規格:autoClean 預設值改為 false，偽造推播若想製造「可
+// 觀察到的差異」必須改成嘗試把它打開(true)，否則跟 ambient 預設值本來
+// 就相同、驗不出偽造是否真的被忽略。
 test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設定不得生效', async () => {
   const recorder = [];
   const win = createWindow();
@@ -679,21 +708,21 @@ test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   const fakeOtherWindow = {};
 
-  // 偽造來源、想關掉 autoClean 的推播:必須被忽略，guard 仍以預設值(autoClean=true)淨化。
+  // 偽造來源、想打開 autoClean 的推播:必須被忽略，guard 仍以預設值(autoClean=false)原樣放行。
   win.dispatchRawMessageEvent({
     source: fakeOtherWindow,
     origin: win.location.origin,
-    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: false }) },
+    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: true }) },
   });
   await settle();
   await sandbox.navigator.clipboard.writeText(XMT_URL);
-  assert.equal(recorder[0], XMT_URL_CLEANED, '偽造來源的推播不得生效');
+  assert.equal(recorder[0], XMT_URL, '偽造來源的推播不得生效');
 
   // 對照組:同樣的內容改由合法管道(window.postMessage，source === window)下放，必須生效。
-  await pushSettings(win, settings({ autoClean: false }));
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(XMT_URL);
 
-  assert.equal(recorder[1], XMT_URL, '合法來源的推播必須生效');
+  assert.equal(recorder[1], XMT_URL_CLEANED, '合法來源的推播必須生效');
   assert.equal(requests.length, 0);
 });
 
@@ -733,21 +762,21 @@ test('S8:origin 與本頁不符的 TCL_SETTINGS_PUSH 必須完全忽略，設定
   const requests = trackResolveRequests(win, { respond: true });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
 
-  // 偽造 origin、想關掉 autoClean 的推播:必須被忽略，guard 仍以預設值(autoClean=true)淨化。
+  // 偽造 origin、想打開 autoClean 的推播:必須被忽略，guard 仍以預設值(autoClean=false)原樣放行。
   win.dispatchRawMessageEvent({
     source: win,
     origin: 'https://evil.example',
-    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: false }) },
+    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: true }) },
   });
   await settle();
   await sandbox.navigator.clipboard.writeText(XMT_URL);
-  assert.equal(recorder[0], XMT_URL_CLEANED, '偽造 origin 的推播不得生效');
+  assert.equal(recorder[0], XMT_URL, '偽造 origin 的推播不得生效');
 
   // 對照組:同樣的內容改由合法管道(origin 相符)下放，必須生效。
-  await pushSettings(win, settings({ autoClean: false }));
+  await pushSettings(win, settings({ autoClean: true }));
   await sandbox.navigator.clipboard.writeText(XMT_URL);
 
-  assert.equal(recorder[1], XMT_URL, '合法 origin 的推播必須生效');
+  assert.equal(recorder[1], XMT_URL_CLEANED, '合法 origin 的推播必須生效');
   assert.equal(requests.length, 0);
 });
 
@@ -778,7 +807,8 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
 
 // ============================================================
 // R1-2 通知涵蓋自動路徑(MAIN world 端):自動淨化成功時，guard 要往
-// bridge 送出一則成功通知，由 background 決定要不要顯示。
+// bridge 送出一則通知，轉發給 background 寫入淨化紀錄(方案甲:歷史即
+// 收藏，唯一資料集)。
 //
 // 【協定約定】guard → bridge 的訊息形狀:
 //   { type: 'TCL_CLEANED_NOTICE', cleanUrl: <實際寫入剪貼簿的淨化後字串> }
@@ -788,11 +818,9 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
 //   - fail-open 放行原文(解析失敗／autoClean 關閉／內容本來就乾淨)不算成功
 //   - 原生寫入被拒(rejection)代表根本沒寫進去，也不算成功
 //
-// 【notifySuccess 的把關位置】規格只要求「notifySuccess=false 時一切成功
-// 通知靜默」，未指定把關要放在 guard 還是 background。本檔一律在
-// notifySuccess=true 的設定下測「該不該送出 notice」，不對 notifySuccess=false
-// 時 guard 送不送做任何斷言，把把關位置留給實作;實際的靜默把關由
-// background 端測試強制(見 test/background.test.js 的 R1-2 區塊)。
+// 使用者變更設定規格:notifySuccess(成功類通知的顯示與否)已整組移除，
+// 這裡的 notice 不再有「要不要顯示」的把關，background 收到就無條件記
+// 錄一筆——本節純測 guard 該不該送出 notice 這個判定基準本身。
 // ============================================================
 
 const CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
@@ -851,7 +879,7 @@ test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，clean
     if (resolve) trackResolveRequests(win, { respond: true });
     const notices = trackCleanedNotices(win);
     const sandbox = loadGuard(makeClipboard(recorder), win);
-    await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+    await pushSettings(win, settings({ autoClean: true }));
 
     await run(sandbox);
     await settle();
@@ -869,7 +897,7 @@ test('R1-2:解析逾時後才送達的遲到結果，不得觸發通知(防 time
   installBridgeSim(win, 'late'); // 2600ms 才回應，已超過 guard 的 2500ms 逾時
   const notices = trackCleanedNotices(win);
   const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+  await pushSettings(win, settings({ autoClean: true }));
   const shareUrl = 'https://www.threads.com/share/LATE0002';
 
   await sandbox.navigator.clipboard.writeText(shareUrl);
@@ -887,7 +915,7 @@ test('R1-2:橋接解析失敗而 fail-open 寫入原文時，不得送出通知'
   installBridgeSim(win, 'failure');
   const notices = trackCleanedNotices(win);
   const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+  await pushSettings(win, settings({ autoClean: true }));
 
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   await settle();
@@ -902,7 +930,7 @@ test('R1-2:autoClean=false 原樣放行時，不得送出通知', async () => {
   trackResolveRequests(win, { respond: true });
   const notices = trackCleanedNotices(win);
   const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: false, notifySuccess: true }));
+  await pushSettings(win, settings({ autoClean: false }));
 
   await sandbox.navigator.clipboard.writeText(XMT_URL);
   await settle();
@@ -916,7 +944,7 @@ test('R1-2:內容本來就乾淨、未做任何改寫時，不得送出通知', 
   const win = createWindow();
   const notices = trackCleanedNotices(win);
   const sandbox = loadGuard(recordingWriteText(recorder), win);
-  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+  await pushSettings(win, settings({ autoClean: true }));
 
   await sandbox.navigator.clipboard.writeText(CLEAN_POST_URL);
   await sandbox.navigator.clipboard.writeText('hello world, not a url');
@@ -932,7 +960,7 @@ test('R1-2:原生寫入被拒(沒真的寫進剪貼簿)時，不得送出通知'
   trackResolveRequests(win, { respond: true });
   const notices = trackCleanedNotices(win);
   const sandbox = loadGuard(rejectingWriteText(rejectError, callCounter), win);
-  await pushSettings(win, settings({ autoClean: true, notifySuccess: true }));
+  await pushSettings(win, settings({ autoClean: true }));
 
   await assert.rejects(
     () => sandbox.navigator.clipboard.writeText(SHARE_URL),

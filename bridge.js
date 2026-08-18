@@ -9,8 +9,10 @@
 
   // R1-2 通知涵蓋自動路徑：MAIN world(clipboard-guard.js)實際把淨化後
   // 內容寫入剪貼簿後，會送一則 TCL_CLEANED_NOTICE 過來，這裡原樣轉發成
-  // chrome.runtime.sendMessage(cleanedNotice) 給 service worker，由它依
-  // notifySuccess 決定要不要顯示通知。
+  // chrome.runtime.sendMessage(cleanedNotice) 給 service worker。方案甲
+  // (歷史即收藏)之後，淨化紀錄是唯一資料集，background 收到就無條件記
+  // 錄一筆(不再有 notifySuccess 這種「要不要顯示通知」的把關——成功類
+  // 通知已依使用者變更設定規格整組移除，見 background.js)。
   var NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
   // cleanUrl 長度上限:這條管道的內容由頁面腳本自由指定，先在 bridge 擋掉
@@ -21,6 +23,27 @@
   // kind 標示淨化來源(share/strip)，這裡只做型別與長度把關，白名單驗證
   // 一樣交給 background。形狀不對整則丟棄，不轉發殘缺訊息。
   var MAX_KIND_LENGTH = 16;
+
+  // 使用者變更設定規格:share/strip 的短碼解析在 Threads 頁面內失敗時，
+  // 改用頁內 toast 提示(取代原本完全靜默的 fail-open)。真正的 toast 渲
+  // 染邏輯(含文案 i18n 對應、樣式、自動消失)在 post-icon.js(同
+  // ISOLATED world，document_idle 稍晚載入)，這裡只是執行期守衛後轉呼
+  // 叫——TCLPostIcon 可能還沒初始化完成、或使用者的擴充功能是舊版沒有這
+  // 個 API，兩種情況都靜默略過，不影響既有的 reply() 轉發流程。孤兒情境
+  // (擴充功能已重載，Extension context invalidated)下，本函式呼叫點本
+  // 身位於 chrome.runtime.sendMessage 失敗後的分支，理論上 window.TCLPostIcon
+  // 這個純 DOM／JS 物件參照仍然存在且可呼叫(orphan 只斷了 chrome.runtime
+  // 這條線，不影響同一頁面內已掛好的 window 屬性)，但這不是本車道測試
+  // 得到保證的行為，如實記錄為已知限制，不承諾一定能顯示。
+  function notifyResolveFailureToast(reason) {
+    try {
+      if (window.TCLPostIcon && typeof window.TCLPostIcon.showResolveFailureToast === 'function') {
+        window.TCLPostIcon.showResolveFailureToast(reason);
+      }
+    } catch (e) {
+      // 顯示失敗不影響其餘橋接流程。
+    }
+  }
 
   window.addEventListener('message', function (event) {
     // 只信任「本頁面自己發給自己」的訊息：
@@ -37,16 +60,42 @@
       if (data.cleanUrl.length > MAX_CLEAN_URL_LENGTH) return;
       if (typeof data.kind !== 'string' || !data.kind || data.kind.length > MAX_KIND_LENGTH) return;
       try {
+        var payload = {
+          type: 'cleanedNotice',
+          cleanUrl: data.cleanUrl,
+          kind: data.kind,
+        };
+        // 方案甲(歷史即收藏):share/strip 這兩條自動路徑(clipboard-guard.js
+        // 經這裡轉發)原本沒有貼文容器可用(clipboard-guard.js 在 MAIN
+        // world，不碰 chrome.* API，也不做 DOM 擷取)。轉發前，若
+        // post-icon.js(同 ISOLATED world，document_idle 稍晚載入)已經把
+        // TCLPostIcon 掛上 window，就地用 findContainerByCleanUrl 找出這
+        // 個乾淨網址對應的貼文容器，再用 extractPostInfo 補
+        // author/handle/excerpt 進 payload——執行期守衛:TCLPostIcon 理
+        // 論上一定會在 bridge.js 之後才完成初始化(manifest content_scripts
+        // 陣列順序保證載入順序，但 document_idle 的執行時機不保證），防禦
+        // 性地整段包在存在性檢查與 try/catch 裡；找不到容器、擷取不到欄
+        // 位、或任何一步丟例外，一律靜默省略，絕不影響既有的轉發流程。
+        try {
+          if (window.TCLPostIcon && typeof window.TCLPostIcon.findContainerByCleanUrl === 'function') {
+            var container = window.TCLPostIcon.findContainerByCleanUrl(data.cleanUrl);
+            if (container && typeof window.TCLPostIcon.extractPostInfo === 'function') {
+              var info = window.TCLPostIcon.extractPostInfo(container) || {};
+              if (info.author !== undefined) payload.author = info.author;
+              if (info.handle !== undefined) payload.handle = info.handle;
+              if (info.excerpt !== undefined) payload.excerpt = info.excerpt;
+            }
+          }
+        } catch (e) {
+          // 擷取失敗不影響轉發，payload 保持只有 cleanUrl/kind 的最小形狀。
+        }
+
         // MV3 下不帶 callback 呼叫 sendMessage 會回傳 Promise：background
         // 的 cleanedNotice 監聽器 return false(同步處理完即關通道)，該
         // Promise 會以「message port closed」reject，不接 .catch 就會在
         // 頁面 console 留下 unhandled promise rejection。回傳值先防禦性
         // 檢查是不是真的 Promise 再接空 .catch 吞掉。
-        var maybePromise = chrome.runtime.sendMessage({
-          type: 'cleanedNotice',
-          cleanUrl: data.cleanUrl,
-          kind: data.kind,
-        });
+        var maybePromise = chrome.runtime.sendMessage(payload);
         if (maybePromise && typeof maybePromise.catch === 'function') {
           maybePromise.catch(function () {});
         }
@@ -85,18 +134,23 @@
         // 關閉，這不是致命錯誤，單純視為這次解析失敗，交給 MAIN world fail-open。
         var lastErr = chrome.runtime.lastError;
         if (lastErr) {
-          reply({ ok: false, reason: String((lastErr && lastErr.message) || lastErr) });
+          var lastErrReason = String((lastErr && lastErr.message) || lastErr);
+          reply({ ok: false, reason: lastErrReason });
+          notifyResolveFailureToast(lastErrReason);
           return;
         }
         if (response && response.ok && typeof response.cleanUrl === 'string') {
           reply({ ok: true, cleanUrl: response.cleanUrl });
         } else {
-          reply({ ok: false, reason: (response && response.reason) || 'no-response' });
+          var reason = (response && response.reason) || 'no-response';
+          reply({ ok: false, reason: reason });
+          notifyResolveFailureToast(reason);
         }
       });
     } catch (e) {
       // sendMessage 同步丟例外（例如擴充功能情境已失效）：直接回報失敗。
       reply({ ok: false, reason: 'bridge-exception' });
+      notifyResolveFailureToast('bridge-exception');
     }
   });
 
@@ -107,12 +161,17 @@
   // 觸發時（例如使用者在 popup 切換開關）再次推播最新值。
   // ------------------------------------------------------------
 
-  // R1-1 併開關：resolveShortcode 徹底移除，設定只剩兩顆鍵。
+  // R1-1 併開關：resolveShortcode 徹底移除。使用者變更設定規格:
+  // notifySuccess(成功類通知)整組移除，clipboard-guard.js 從未真正依它
+  // 分支任何邏輯(只是存著)，這裡不再推播這顆鍵；設定只剩 autoClean 一
+  // 顆需要下放給 MAIN world(postCopyEnabled 只影響 ISOLATED world 的
+  // post-icon.js 是否注入 icon，不需要下放給沒有 chrome.* API 的
+  // clipboard-guard.js)。autoClean 預設值改為 false(使用者變更設定規
+  // 格)，clipboard-guard.js 的內建預設值需同步改動，見該檔。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
-  var SETTINGS_KEYS = ['autoClean', 'notifySuccess'];
+  var SETTINGS_KEYS = ['autoClean'];
   var SETTINGS_DEFAULTS = {
-    autoClean: true,
-    notifySuccess: false,
+    autoClean: false,
   };
 
   // 上一次成功推播的設定快取，供 onChanged 增量更新使用（見下方說明）。
@@ -181,7 +240,6 @@
 
       var next = {
         autoClean: lastKnownSettings.autoClean,
-        notifySuccess: lastKnownSettings.notifySuccess,
       };
       var mutated = false;
       SETTINGS_KEYS.forEach(function (key) {
