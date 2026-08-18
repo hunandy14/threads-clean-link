@@ -57,25 +57,15 @@ test('opKindIcon:zh 與 en 兩份字典皆有此 key，且皆非空字串', () =
   assert.ok(i18n.STRINGS.en.opKindIcon.length > 0);
 });
 
-// 0.5.0 新增:貼文收藏庫的共用 i18n key——互動列書籤 icon(另一車道)與
-// options 收藏分頁(另一車道)都依賴這批 key 已存在且非空，本車道只鋪基座
-// 不做 UI，故只鎖存在性與非空，不驗證 UI 渲染。
-const FAVORITES_KEYS = [
-  'favIconTooltip',
-  'favSaved',
-  'favRemoved',
-  'favFull',
-  'favTabLabel',
-  'favEmpty',
-  'favExport',
-  'favImport',
-];
-
-test('貼文收藏庫 i18n key:zh 與 en 兩份字典皆有全部 8 個新 key，且皆非空字串', () => {
-  for (const key of FAVORITES_KEYS) {
-    assert.equal(typeof i18n.STRINGS.zh[key], 'string', `zh.${key} 應為字串`);
-    assert.ok(i18n.STRINGS.zh[key].length > 0, `zh.${key} 不得為空字串`);
-    assert.equal(typeof i18n.STRINGS.en[key], 'string', `en.${key} 應為字串`);
-    assert.ok(i18n.STRINGS.en[key].length > 0, `en.${key} 不得為空字串`);
-  }
+// 0.5.0 方案甲(歷史即收藏，撤獨立收藏分頁):options 收藏分頁專用的 8 個
+// 基座 key(favTabLabel/favEmpty/favExport/favImport 等)已隨分頁移除，原本
+// 鎖這批 key 存在性的測試跟著撤除。互動列書籤 icon(post-icon.js，另一
+// 車道)仍在用 favIconTooltip/favSaved/favRemoved/favFull，這裡刻意不動
+// post-icon.js，故該 4 個 key 仍保留在字典裡(見 i18n.js 對應註解)；
+// favContextLost 為孤兒提示，移交複製路徑使用，一併鎖存在性。
+test('favContextLost:zh 與 en 兩份字典皆有此 key，且皆非空字串(孤兒提示，移交複製路徑使用)', () => {
+  assert.equal(typeof i18n.STRINGS.zh.favContextLost, 'string');
+  assert.ok(i18n.STRINGS.zh.favContextLost.length > 0);
+  assert.equal(typeof i18n.STRINGS.en.favContextLost, 'string');
+  assert.ok(i18n.STRINGS.en.favContextLost.length > 0);
 });

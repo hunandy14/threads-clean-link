@@ -412,59 +412,6 @@
     color: var(--accent);
     font-weight: 600;
   }
-  .rows { list-style: none; margin: 0; padding: 0 6px; }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 10px;
-    border-top: 1px solid var(--grid);
-    border-radius: 10px;
-  }
-  .row:hover { background: var(--plane); }
-  .kind {
-    width: 30px;
-    height: 30px;
-    border-radius: 9px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    display: grid;
-    place-items: center;
-    flex-shrink: 0;
-  }
-  .row .main { flex: 1; min-width: 0; }
-  .row .url {
-    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-    font-size: 12.5px;
-    color: var(--ink-1);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .row .url b { color: var(--accent); font-weight: 600; }
-  .row .meta {
-    font-size: 11.5px;
-    color: var(--ink-3);
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
-  .row .meta .dot::before { content: "·"; }
-  .row-actions { display: flex; gap: 4px; }
-  .icon-btn {
-    appearance: none;
-    border: none;
-    background: transparent;
-    color: var(--ink-3);
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    display: grid;
-    place-items: center;
-    cursor: pointer;
-  }
-  .icon-btn:hover { background: var(--accent-soft); color: var(--accent); }
-  .icon-btn.del:hover { background: var(--danger-soft); color: var(--danger); }
   .list-foot {
     padding: 10px 16px 14px;
     border-top: 1px solid var(--grid);
@@ -483,106 +430,145 @@
   }
   .empty .icon { width: 26px; height: 26px; margin-bottom: 6px; }
 
-  /* ---- 分頁 tab(淨化紀錄 / 收藏，0.5.0)---- */
-  .view-tabs {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 12px;
-  }
-  .view-tab {
+  /* ---- 紀錄卡片牆(0.5.0 方案甲:歷史即收藏，清單升級成卡片)----
+     版面/字級數值與使用者手機版 history-card.tsx + constants/theme.ts
+     逐項核對(PM 審查後定案):card gap = Spacing.one(4)、padding =
+     Spacing.three(16)、borderRadius = PanelRadius(12)。邊框顏色沿用本頁
+     既有 --border token(與其餘卡片一致)，不搬手機版调色盤——兩邊配色
+     系統本來就不同(手機 accent 是暖橘 #c96f3e，本頁是藍 #2a78d6)。 */
+  .icon-btn {
     appearance: none;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--ink-2);
-    font: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: 10px;
-    padding: 8px 14px;
+    border: none;
+    background: transparent;
+    color: var(--ink-3);
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
     cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
   }
-  .view-tab .icon { width: 14px; height: 14px; }
-  .view-tab:hover { color: var(--ink-1); border-color: var(--baseline); }
-  .view-tab.on {
-    background: var(--accent-soft);
-    color: var(--accent);
-    border-color: transparent;
-  }
+  .icon-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  .icon-btn.del:hover { background: var(--danger-soft); color: var(--danger); }
 
-  /* ---- 收藏卡片牆(0.5.0)---- */
-  .fav-grid {
+  .entry-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 12px;
     padding: 12px 16px 16px;
   }
-  .fav-card {
+  .entry-card {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: 4px;
     min-height: 124px;
-    padding: 14px;
+    padding: 16px;
     border: 1px solid var(--border);
-    border-radius: 13px;
+    border-radius: 12px;
     background: var(--surface);
     min-width: 0;
   }
-  .fav-author-row {
+  .entry-card:hover { border-color: var(--baseline); }
+  .entry-header {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .entry-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     min-width: 0;
   }
-  .fav-author-name {
+  /* 卡頭徽章:比照手機版平台徽章的尺寸與樣式(pill 觀感，但實際圓角值取
+     PanelRadius=12，不是全圓角 999——以手機版代碼數值為準)。淨化紀錄
+     沒有「未知來源」情境，KINDS 一定有標籤，徽章恆常顯示，不像手機版
+     platform badge 會有 null 隱藏的狀況。 */
+  .entry-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 500;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .entry-time {
     font-size: 14px;
-    font-weight: 650;
+    line-height: 20px;
+    font-weight: 500;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .entry-author-row {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+  }
+  .entry-author-name {
+    font-size: 14px;
+    font-weight: 600;
     color: var(--ink-1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    max-width: 100%;
   }
-  .fav-handle {
-    font-size: 12.5px;
+  .entry-handle {
+    font-size: 14px;
+    font-weight: 500;
     color: var(--ink-3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
   }
-  .fav-excerpt {
+  .entry-excerpt {
     font-size: 13.5px;
-    line-height: 1.55;
-    color: var(--ink-2);
+    line-height: 1.48;
+    font-weight: 500;
+    color: var(--ink-1);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .fav-url {
-    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-    font-size: 12.5px;
+  .entry-url {
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.6;
     color: var(--ink-1);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .fav-url b { color: var(--accent); font-weight: 600; }
-  .fav-foot {
-    margin-top: auto;
+  .entry-url b { color: var(--accent); font-weight: 600; }
+  /* 動作(複製/開啟/刪除)常駐 DOM、預設隱藏，hover 或鍵盤 focus 時浮出
+     卡片右上——比照手機版「選中時右上快捷」,web 沒有選取態，改用 hover
+     (加 focus-within 讓鍵盤使用者也能叫出來，手機版沒有這個對應但屬合理
+     的無障礙加值，不算走鐘)。 */
+  .entry-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 4px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
   }
-  .fav-time {
-    font-size: 12px;
-    color: var(--ink-3);
-    white-space: nowrap;
+  .entry-card:hover .entry-actions,
+  .entry-card:focus-within .entry-actions {
+    opacity: 1;
+    pointer-events: auto;
   }
-  .fav-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .entry-actions .icon-btn { width: 28px; height: 28px; }
 
   footer.about {
     color: var(--ink-3);
@@ -688,7 +674,6 @@
   }
   @media (max-width: 460px) {
     .page { padding: 16px 12px 40px; }
-    .row .meta .src-label { display: none; }
   }
 </style>
 </head>
@@ -714,8 +699,7 @@
     <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></symbol>
     <symbol id="i-github" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></symbol>
-    <!-- 0.5.0 貼文收藏庫:分頁 tab / 空狀態用 i-bookmark，卡片「開啟貼文」動作用 i-external-link。 -->
-    <symbol id="i-bookmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></symbol>
+    <!-- 0.5.0 方案甲:紀錄卡片「開啟貼文」動作用 i-external-link。 -->
     <symbol id="i-external-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
   </defs>
 </svg>
@@ -791,6 +775,15 @@
           </span>
           <input type="checkbox" id="autoClean" class="switch" />
         </label>
+        <!-- 0.5.0 方案甲:與 popup 的 postCopyEnabled 鏡像，設定頁保留完整
+             開關說明(popup 只留精簡標籤)。 -->
+        <label class="setting-row" for="postCopyEnabled">
+          <span class="txt">
+            <span class="name" data-i18n="opPostCopyName">貼文複製按鈕</span>
+            <div class="desc" data-i18n="opPostCopyDesc">在貼文互動列顯示複製連結按鈕</div>
+          </span>
+          <input type="checkbox" id="postCopyEnabled" class="switch" />
+        </label>
         <label class="setting-row" for="notifySuccess">
           <span class="txt">
             <span class="name" data-i18n="opNotifyName">成功時顯示通知</span>
@@ -809,16 +802,9 @@
     </div>
   </section>
 
-  <!-- 分頁 tab:淨化紀錄 / 收藏(0.5.0)，與 history/favorites 兩份 view 對應。 -->
-  <section class="view-tabs" aria-label="view switch" role="tablist">
-    <button class="view-tab on" id="tabHistory" data-i18n="opHistoryTitle" role="tab" aria-selected="true" aria-controls="historyView">淨化紀錄</button>
-    <button class="view-tab" id="tabFavorites" role="tab" aria-selected="false" aria-controls="favoritesView">
-      <svg class="icon"><use href="#i-bookmark"/></svg><span data-i18n="favTabLabel">收藏</span>
-    </button>
-  </section>
-
-  <!-- 淨化紀錄 -->
-  <section class="card history" id="historyView" role="tabpanel">
+  <!-- 淨化紀錄:0.5.0 方案甲(歷史即收藏)後，清單升級成卡片牆，獨立收藏
+       分頁已撤除，不再需要分頁 tab——單一 view 直接顯示。 -->
+  <section class="card history">
     <div class="card-head">
       <h2 data-i18n="opHistoryTitle">淨化紀錄</h2>
       <div class="menu-wrap">
@@ -864,7 +850,7 @@
         </div>
       </div>
     </div>
-    <ul class="rows" id="rows"></ul>
+    <div class="entry-grid" id="rows"></div>
     <div class="empty" id="empty" hidden>
       <svg class="icon"><use href="#i-history"/></svg>
       <div data-i18n="opEmpty">沒有符合條件的紀錄</div>
@@ -872,32 +858,6 @@
     <div class="list-foot">
       <span id="countHint"></span>
       <span data-i18n="opDeviceNote">紀錄僅保存於這台裝置</span>
-    </div>
-  </section>
-
-  <!-- 收藏卡片牆(0.5.0):與淨化紀錄並列的分頁，同一套 tab 機制切換顯示。 -->
-  <section class="card favorites" id="favoritesView" role="tabpanel" hidden>
-    <div class="card-head">
-      <h2 data-i18n="favTabLabel">收藏</h2>
-      <div class="menu-wrap">
-        <span class="page-size" id="favCountHint"></span>
-        <button class="ghost-btn" id="favMoreBtn" data-i18n-title="opMoreTitle" title="更多動作" aria-haspopup="menu" aria-expanded="false">
-          <svg class="icon"><use href="#i-more"/></svg>
-        </button>
-        <div class="menu" id="favMoreMenu" hidden role="menu">
-          <button class="menu-item" id="favExportBtn" role="menuitem">
-            <svg class="icon"><use href="#i-download"/></svg><span data-i18n="favExport">匯出收藏</span>
-          </button>
-          <button class="menu-item" id="favImportBtn" role="menuitem">
-            <svg class="icon"><use href="#i-upload"/></svg><span data-i18n="favImport">匯入收藏</span>
-          </button>
-        </div>
-      </div>
-    </div>
-    <div class="fav-grid" id="favGrid"></div>
-    <div class="empty" id="favEmptyState" hidden>
-      <svg class="icon"><use href="#i-bookmark"/></svg>
-      <div data-i18n="favEmpty">還沒有收藏，到貼文按書籤試試</div>
     </div>
   </section>
 
@@ -926,23 +886,6 @@
       <button class="btn btn-primary" id="modalPrimary" data-i18n="opDoImport">匯入</button>
     </div>
     <input type="file" id="fileInput" accept=".json,application/json" hidden />
-  </div>
-</div>
-
-<!-- 收藏匯入對話框(0.5.0，與淨化紀錄匯入各自獨立，不共用 DOM id) -->
-<div class="overlay" id="favOverlay" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="favModalTitle">
-    <h3 id="favModalTitle"><svg class="icon"><use href="#i-upload"/></svg><span data-i18n="favImport">匯入收藏</span></h3>
-    <div class="desc" data-i18n="favImportDesc">選擇先前匯出的收藏 .json 檔，或直接貼上內容;與現有收藏以 id 去重合併，上限 500 筆，超出剩餘容量的部分會略過(不擠掉既有收藏)。</div>
-    <textarea id="favModalText" spellcheck="false" placeholder='{ "app": "threads-clean-link", "version": 1, "entries": [ … ] }'></textarea>
-    <div class="modal-actions">
-      <button class="btn" id="favModalClose" data-i18n="opClose">關閉</button>
-      <button class="btn" id="favModalFile">
-        <svg class="icon"><use href="#i-upload"/></svg><span data-i18n="opChooseFile">選擇檔案</span>
-      </button>
-      <button class="btn btn-primary" id="favModalPrimary" data-i18n="opDoImport">匯入</button>
-    </div>
-    <input type="file" id="favFileInput" accept=".json,application/json" hidden />
   </div>
 </div>
 
