@@ -60,8 +60,10 @@
       opSettingsTitle: '設定',
       opAutoCleanName: '自動淨化分享按鈕',
       opAutoCleanDesc: '攔截官方「複製連結」，解析短碼、剪除追蹤參數',
-      opNotifyName: '成功時顯示通知',
-      opNotifyDesc: '失敗通知不受影響，一律顯示',
+      // 【PM 審查後移除】opNotifyName/opNotifyDesc(成功時顯示通知):R1
+      // 同輪已把成功通知整組拆光，這顆開關合併後零讀取端，留著是誤導
+      // 使用者的死 UI，不是「另一車道尚未拆通知」——上一輪的保留理由是
+      // 過期情報。
       opSaveName: '保存淨化紀錄',
       opSaveDesc: '僅存於本機，上限 1,000 筆，自動汰舊',
       // 0.5.0 方案甲:與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關
@@ -175,8 +177,6 @@
       opSettingsTitle: 'Settings',
       opAutoCleanName: 'Auto-clean the share button',
       opAutoCleanDesc: 'Intercepts the official “Copy link”, resolves short codes and strips tracking params',
-      opNotifyName: 'Notify on success',
-      opNotifyDesc: 'Failure notifications always show regardless',
       opSaveName: 'Keep cleaning history',
       opSaveDesc: 'Local only, capped at 1,000 entries (oldest pruned)',
       opPostCopyName: 'Post copy button',

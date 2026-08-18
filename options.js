@@ -7,18 +7,21 @@
 (function (root) {
   'use strict';
 
-  // 四顆開關的預設值。autoClean 與 popup.js、background.js、bridge.js 一致
+  // 三顆開關的預設值。autoClean 與 popup.js、background.js、bridge.js 一致
   // (0.5.0 方案甲:預設改 false，配合另一車道調整 background.js 的預設值);
-  // notifySuccess 沿用既有預設;saveHistory 與 background.js 一致(guard/
-  // bridge 不下放);postCopyEnabled 與 popup.js 鏡像(貼文互動列複製按鈕，
-  // 見 post-icon.js，另一車道)。
+  // saveHistory 與 background.js 一致(guard/bridge 不下放);postCopyEnabled
+  // 與 popup.js 鏡像(貼文互動列複製按鈕，見 post-icon.js，另一車道)。
+  //
+  // 【PM 審查後移除】notifySuccess(成功時顯示通知)整組:R1 同輪已把成功
+  // 通知整套拆光，這顆開關合併後零讀取端，留著只會變成誤導使用者的死
+  // UI——不是「另一車道尚未拆通知」，是已經拆完了，上一輪的保留理由是
+  // 過期情報。
   var OPTIONS_DEFAULT_SETTINGS = {
     autoClean: false,
-    notifySuccess: false,
     saveHistory: true,
     postCopyEnabled: true,
   };
-  var SETTING_IDS = ['autoClean', 'notifySuccess', 'saveHistory', 'postCopyEnabled'];
+  var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   var HISTORY_KEY = 'history';
   var HISTORY_LIMIT = 1000;
@@ -60,11 +63,15 @@
     return typeof value === 'string' ? value.slice(0, max) : undefined;
   }
 
-  // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位(url/kind/
-  // at)形狀不對的項目。選填欄位(author/handle/excerpt,0.5.0 方案甲新增)
-  // 型別不是字串就整欄丟棄、字串則截斷至長度上限——縱深防禦，不依賴寫入端
-  // (background.js)永遠沒漏，呼應 buildEntryCard 的 openLink.href = e.url
-  // 等 sink 只該接收形狀乾淨的資料。
+  // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
+  // 項目——url 除了型別是字串，還要通過 POST_URL_PATTERN 的形狀驗證才收
+  // (縱深防禦，PM 審查後補:上一輪收藏庫基座的 sanitizeFavorites 就有這道
+  // url 形狀檢查，方案甲把收藏搬進 sanitizeEntries 時漏掉了，這裡補回來)。
+  // 渲染層 buildEntryCard 的 openLink.href = e.url、剪貼簿複製都是 url
+  // sink，不該仰賴「寫入端(background.js/匯入合併)永遠沒漏」這個假設，
+  // 讀取階段就該把形狀不對的 url 整筆擋掉。選填欄位(author/handle/
+  // excerpt,0.5.0 方案甲新增)型別不是字串就整欄丟棄、字串則截斷至長度
+  // 上限，entry 本身仍保留(與核心欄位的「整筆丟棄」規則不同，見下方 map)。
   function sanitizeEntries(list) {
     if (!Array.isArray(list)) return [];
     return list
@@ -72,6 +79,7 @@
         return (
           e &&
           typeof e.url === 'string' &&
+          POST_URL_PATTERN.test(e.url) &&
           typeof e.at === 'number' &&
           isFinite(e.at) &&
           Object.prototype.hasOwnProperty.call(KINDS, e.kind)
