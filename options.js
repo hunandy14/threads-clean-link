@@ -24,7 +24,6 @@
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   var HISTORY_KEY = 'history';
-  var HISTORY_LIMIT = 1000;
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
 
@@ -142,7 +141,11 @@
   // 匯入合併:url 過 POST_URL_PATTERN 白名單並正規化(容忍尾隨斜線/query/
   // hash)、以正規化後的 url 與現有去重;kind 非白名單→'share',at 非有限
   // 數字→now;author/handle/excerpt 逐條 sanitize(型別+截斷，規則同
-  // sanitizeEntries)。合併後新到舊排序、裁到上限。
+  // sanitizeEntries)。合併後新到舊排序。
+  //
+  // 【使用者拍板，紀錄不設上限】合併結果不再裁切——舊版在此 slice(0,
+  // HISTORY_LIMIT) 到 1000 筆，現在移除，匯入多少留多少;HISTORY_LIMIT
+  // 常數本身也一併移除(此檔內唯一用途就是這道截斷)。
   function mergeImportedEntries(existing, imported, now) {
     var seen = {};
     existing.forEach(function (e) {
@@ -177,7 +180,7 @@
     merged.sort(function (a, b) {
       return b.at - a.at;
     });
-    return { merged: merged.slice(0, HISTORY_LIMIT), added: added, skipped: skipped };
+    return { merged: merged, added: added, skipped: skipped };
   }
 
   // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊
@@ -187,6 +190,43 @@
     return (
       (typeof entry.author === 'string' && entry.author !== '') ||
       (typeof entry.excerpt === 'string' && entry.excerpt !== '')
+    );
+  }
+
+  // 0.5.0:卡片詳細視窗長文判定，與手機版 history-detail-dialog.tsx 的
+  // isLongExcerpt 對齊(EXCERPT_DIALOG_LINES=15):行數或字元量任一超標就
+  // 顯示「展開全文」。字元量門檻沿用手機版估算(每行約 22 字，15*22=330)。
+  var EXCERPT_DIALOG_LINES = 15;
+  function isLongExcerpt(excerpt) {
+    if (typeof excerpt !== 'string' || excerpt === '') return false;
+    var lines = excerpt.split('\n').length;
+    return lines > EXCERPT_DIALOG_LINES || Array.from(excerpt).length > EXCERPT_DIALOG_LINES * 22;
+  }
+
+  // 0.5.0:卡片 ⋮ 選單與詳細視窗底部動作列共用的動作組成——手機版
+  // history-card.tsx 的快捷列是複製/分享，history-detail-dialog.tsx 的
+  // 動作列是開啟/分享/刪除;web 沒有原生分享，PM 裁決映射為
+  // 複製連結/開啟貼文/刪除。獨立成純函式方便直接測動作組成與 href 計算，
+  // 不用整條搭 DOM。
+  function buildEntryActions(entry) {
+    return [
+      { type: 'copy', titleKey: 'opCopyTitle' },
+      { type: 'open', titleKey: 'opOpenTitle', href: entry.url },
+      { type: 'delete', titleKey: 'opDeleteTitle' },
+    ];
+  }
+
+  // 詳細視窗的「記錄時間」用絕對時間(YYYY-MM-DD HH:mm)，與卡頭的相對時間
+  // (relTime)分開顯示，對齊手機版 formatResolvedTime。手機版的 seen[]
+  // 解析時間軸在擴充功能沒有對應資料，不偽造，整段省略。
+  function formatAbsoluteTime(ts) {
+    var d = new Date(ts);
+    var pad = function (n) {
+      return n < 10 ? '0' + n : String(n);
+    };
+    return (
+      d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
     );
   }
 
@@ -243,6 +283,11 @@
     var activeKind = 'all';
     var query = '';
     var pageSize = PAGE_SIZE_DEFAULT;
+    // 目前開著的卡片 ⋮ 選單的關閉函式(同一時間只開一個;外部點擊/開新的
+    // 選單時呼叫它關掉上一個)。
+    var closeActiveEntryMenu = null;
+    // 目前詳細視窗顯示中的條目(複製/刪除按鈕靠它找到要操作的 entry)。
+    var detailEntry = null;
 
     // 注意:此模組內不得宣告名為 t 的區域變數,以免遮蔽翻譯函式
     // (demo 階段真踩過:var t = createElement(...) 讓整頁渲染炸掉)。
@@ -571,12 +616,50 @@
       return urlEl;
     }
 
+    var ACTION_ICON = { copy: '#i-copy', open: '#i-external-link', delete: '#i-trash' };
+
+    // 複製/刪除是卡片 ⋮ 選單與詳細視窗共用的動作，獨立成函式避免兩處各自
+    // 維護一份;「開啟」是原生 <a target=_blank>，不需要 JS 邏輯。
+    function copyEntryUrl(e) {
+      var p;
+      try {
+        p = navigator.clipboard.writeText(e.url);
+      } catch (err) {
+        p = Promise.reject(err);
+      }
+      Promise.resolve(p).then(
+        function () {
+          toast(tt('opToastCopied'));
+        },
+        function () {
+          toast(tt('opToastCopyFailed'));
+        }
+      );
+    }
+
+    // 刪除沿用既有慣例等級:直接改 storage + toast，不另開確認框(「清除
+    // 全部」這種一次清光的破壞性動作才走確認框;刪單筆歷來就是即時動作，
+    // 卡片 ⋮ 選單與詳細視窗的刪除都沿用同一等級，不因為多了個入口就加重)。
+    function deleteEntry(e) {
+      var next = entries.filter(function (x) {
+        return !(x.url === e.url && x.at === e.at);
+      });
+      persistHistory(next);
+      if (detailEntry && detailEntry.url === e.url && detailEntry.at === e.at) closeEntryDetail();
+      renderAll();
+      toast(tt('opToastDeleted'));
+    }
+
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
     // 相對時間)→ hasCardPreview 為真時顯示作者列(author 粗體 + @handle
     // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址
-    // (比照舊版紀錄列樣式)。無縮圖(刻意，og:image 會過期)。動作(複製/
-    // 開啟/刪除)常駐於 DOM，但 CSS 預設 opacity:0,hover/focus-within 才
-    // 浮現(手機版是「選中時右上浮出」,web 沒有選取態，改用 hover 對應)。
+    // (比照舊版紀錄列樣式)。無縮圖(刻意，og:image 會過期)。
+    //
+    // 互動模型對齊手機版:點卡片本身(排除 ⋮ 選單區)開詳細視窗
+    // (history-card.tsx 的 onPress);卡片右上是常駐的 ⋮ 選單(取代舊版
+    // hover 浮動三鈕——手機版卡片的快捷動作只在「選中態」才浮現且僅有
+    // 複製/分享兩顆，web 沒有選取態概念，改成常駐選單更直覺，選單項比照
+    // buildEntryActions 映射複製/開啟/刪除三項)。
     function buildEntryCard(e) {
       var card = document.createElement('div');
       card.className = 'entry-card';
@@ -623,52 +706,179 @@
         card.appendChild(buildUrlNode(e.url, 'entry-url'));
       }
 
-      var actions = document.createElement('div');
-      actions.className = 'entry-actions';
+      var kebabWrap = document.createElement('div');
+      kebabWrap.className = 'entry-kebab-wrap';
 
-      actions.appendChild(
-        iconBtn('#i-copy', tt('opCopyTitle'), '', function () {
-          var p;
-          try {
-            p = navigator.clipboard.writeText(e.url);
-          } catch (err) {
-            p = Promise.reject(err);
-          }
-          Promise.resolve(p).then(
-            function () {
-              toast(tt('opToastCopied'));
-            },
-            function () {
-              toast(tt('opToastCopyFailed'));
-            }
-          );
-        })
-      );
+      var kebabBtn = document.createElement('button');
+      kebabBtn.className = 'icon-btn entry-kebab';
+      kebabBtn.title = tt('opMoreTitle');
+      kebabBtn.setAttribute('aria-haspopup', 'menu');
+      kebabBtn.setAttribute('aria-expanded', 'false');
+      kebabBtn.appendChild(svgUse('#i-more'));
 
-      // 開啟貼文用 <a target="_blank" rel="noopener">，不是 button——真的
-      // 交給瀏覽器處理開新分頁(可 ctrl/cmd+click 開背景分頁等原生行為)。
-      var openLink = document.createElement('a');
-      openLink.className = 'icon-btn';
-      openLink.title = tt('opOpenTitle');
-      openLink.href = e.url;
-      openLink.target = '_blank';
-      openLink.rel = 'noopener';
-      openLink.appendChild(svgUse('#i-external-link'));
-      actions.appendChild(openLink);
+      var kebabMenu = document.createElement('div');
+      kebabMenu.className = 'menu entry-menu';
+      kebabMenu.hidden = true;
+      kebabMenu.setAttribute('role', 'menu');
 
-      actions.appendChild(
-        iconBtn('#i-trash', tt('opDeleteTitle'), 'del', function () {
-          var next = entries.filter(function (x) {
-            return !(x.url === e.url && x.at === e.at);
-          });
-          persistHistory(next);
-          renderAll();
-          toast(tt('opToastDeleted'));
-        })
-      );
+      function closeKebab() {
+        kebabMenu.hidden = true;
+        kebabBtn.setAttribute('aria-expanded', 'false');
+        if (closeActiveEntryMenu === closeKebab) closeActiveEntryMenu = null;
+      }
 
-      card.appendChild(actions);
+      kebabBtn.addEventListener('click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        var opening = kebabMenu.hidden;
+        if (closeActiveEntryMenu) closeActiveEntryMenu();
+        if (opening) {
+          kebabMenu.hidden = false;
+          kebabBtn.setAttribute('aria-expanded', 'true');
+          closeActiveEntryMenu = closeKebab;
+        }
+      });
+
+      buildEntryActions(e).forEach(function (action) {
+        var item = action.type === 'open' ? document.createElement('a') : document.createElement('button');
+        item.className = 'menu-item' + (action.type === 'delete' ? ' danger' : '');
+        item.setAttribute('role', 'menuitem');
+        if (action.type === 'open') {
+          item.href = action.href;
+          item.target = '_blank';
+          item.rel = 'noopener';
+        }
+        item.appendChild(svgUse(ACTION_ICON[action.type]));
+        var label = document.createElement('span');
+        label.textContent = tt(action.titleKey);
+        item.appendChild(label);
+        item.addEventListener('click', function (ev) {
+          if (ev && ev.stopPropagation) ev.stopPropagation();
+          closeKebab();
+          if (action.type === 'copy') copyEntryUrl(e);
+          else if (action.type === 'delete') deleteEntry(e);
+          // 'open' 交給瀏覽器原生 <a> 行為，這裡不用額外處理。
+        });
+        kebabMenu.appendChild(item);
+      });
+
+      kebabWrap.appendChild(kebabBtn);
+      kebabWrap.appendChild(kebabMenu);
+      card.appendChild(kebabWrap);
+
+      // 點卡片本身(排除 ⋮ 選單區)開詳細視窗，對齊手機版 onPress。
+      card.addEventListener('click', function (ev) {
+        var target = ev && ev.target;
+        if (target && target.closest && target.closest('.entry-kebab-wrap')) return;
+        openEntryDetail(e);
+      });
+
       return card;
+    }
+
+    // ---- 詳細視窗(0.5.0，對齊手機版 history-detail-dialog.tsx)----
+    //
+    // 版面:卡頭(徽章+相對時間)→ 作者列 → excerpt(15 行截斷，對齊手機版
+    // EXCERPT_DIALOG_LINES)+ 超長時「展開全文」→ 記錄時間(絕對時間)→
+    // 底部動作(複製/開啟/刪除)。
+    //
+    // 手機版「展開全文」是巢狀開第二層 Modal，理由是「RN 在 iOS 不支援
+    // 兄弟層 Modal 並開」——這是 iOS 平台限制，web 沒有這個問題，故改用
+    // 原地展開(移除 line-clamp)取代巢狀第二個 overlay，行為等價但實作
+    // 更簡單，PM 已知會此裁量。
+    //
+    // 手機版另有「解析時間軸」(seen[]，多次解析的時間序列):擴充功能的
+    // 條目沒有 seen 資料，此區塊整段省略，不偽造假資料。
+    function openEntryDetail(e) {
+      detailEntry = e;
+      var overlay = byId('detailOverlay');
+      if (!overlay) return;
+
+      var badge = byId('detailBadge');
+      if (badge) badge.textContent = tt(KINDS[e.kind].key);
+      var timeEl = byId('detailTime');
+      if (timeEl) timeEl.textContent = relTime(e.at);
+
+      var authorRow = byId('detailAuthorRow');
+      var authorName = byId('detailAuthorName');
+      var handleEl = byId('detailHandle');
+      var excerptEl = byId('detailExcerpt');
+      var expandBtn = byId('detailExpandBtn');
+      var urlFallback = byId('detailUrlFallback');
+
+      var hasAuthor = typeof e.author === 'string' && e.author !== '';
+      var hasHandle = typeof e.handle === 'string' && e.handle !== '';
+      var hasExcerpt = typeof e.excerpt === 'string' && e.excerpt !== '';
+
+      if (hasCardPreview(e)) {
+        if (authorRow) authorRow.hidden = !hasAuthor;
+        if (authorName) authorName.textContent = hasAuthor ? e.author : '';
+        if (handleEl) {
+          handleEl.hidden = !hasHandle;
+          handleEl.textContent = hasHandle ? e.handle : '';
+        }
+        if (excerptEl) {
+          excerptEl.hidden = !hasExcerpt;
+          excerptEl.textContent = hasExcerpt ? e.excerpt : '';
+          excerptEl.classList.remove('expanded');
+        }
+        if (expandBtn) expandBtn.hidden = !(hasExcerpt && isLongExcerpt(e.excerpt));
+        if (urlFallback) {
+          urlFallback.hidden = true;
+          urlFallback.textContent = '';
+        }
+      } else {
+        if (authorRow) authorRow.hidden = true;
+        if (excerptEl) excerptEl.hidden = true;
+        if (expandBtn) expandBtn.hidden = true;
+        if (urlFallback) {
+          urlFallback.hidden = false;
+          urlFallback.textContent = '';
+          urlFallback.appendChild(buildUrlNode(e.url, 'entry-url'));
+        }
+      }
+
+      var recordedTimeEl = byId('detailRecordedTime');
+      if (recordedTimeEl) recordedTimeEl.textContent = formatAbsoluteTime(e.at);
+
+      var openLink = byId('detailOpenLink');
+      if (openLink) openLink.href = e.url;
+
+      overlay.hidden = false;
+    }
+
+    function closeEntryDetail() {
+      var overlay = byId('detailOverlay');
+      if (overlay) overlay.hidden = true;
+      detailEntry = null;
+    }
+
+    function bindDetailDialog() {
+      on('detailClose', 'click', closeEntryDetail);
+      on('detailOverlay', 'click', function (ev) {
+        var overlay = byId('detailOverlay');
+        if (overlay && ev.target === overlay) closeEntryDetail();
+      });
+      on('detailExpandBtn', 'click', function () {
+        var excerptEl = byId('detailExcerpt');
+        var expandBtn = byId('detailExpandBtn');
+        if (excerptEl) excerptEl.classList.add('expanded');
+        if (expandBtn) expandBtn.hidden = true;
+      });
+      on('detailCopyBtn', 'click', function () {
+        if (detailEntry) copyEntryUrl(detailEntry);
+      });
+      on('detailDeleteBtn', 'click', function () {
+        if (detailEntry) deleteEntry(detailEntry);
+      });
+      // Esc 關閉:PM 要求的既有 overlay 慣例(既有 overlay/confirmOverlay
+      // 只有點遮罩關閉，沒有 Esc)之外的新增行為，只加在這個新 overlay。
+      if (typeof document.addEventListener === 'function') {
+        document.addEventListener('keydown', function (ev) {
+          if (!ev || ev.key !== 'Escape') return;
+          var overlay = byId('detailOverlay');
+          if (overlay && !overlay.hidden) closeEntryDetail();
+        });
+      }
     }
 
     function renderList() {
@@ -774,6 +984,11 @@
           var wrap = ev.target && ev.target.closest ? ev.target.closest('.menu-wrap') : null;
           if (moreMenu && !moreMenu.hidden && (!wrap || !wrap.contains(moreMenu))) closeMenu();
           if (chipsRow && !chipsRow.hidden && (!wrap || !wrap.contains(chipsRow))) closeFilter();
+          // 卡片 ⋮ 選單:每張卡片各自的選單是動態建立的區域變數，靠
+          // closeActiveEntryMenu 這個 controller 層的指標統一關閉，不是
+          // 固定 id，判斷邏輯與 moreMenu/chipsRow 略有不同。
+          var kebabWrap = ev.target && ev.target.closest ? ev.target.closest('.entry-kebab-wrap') : null;
+          if (closeActiveEntryMenu && !kebabWrap) closeActiveEntryMenu();
         });
       }
 
@@ -906,6 +1121,7 @@
         bindSettings();
         bindTopbar();
         bindToolbar();
+        bindDetailDialog();
         bindChartTooltip();
         renderAll();
       });
@@ -918,12 +1134,48 @@
       renderAll();
     }
 
-    return { init: init, setHistory: setHistory };
+    // storage.onChanged(sync 區)時由接線層呼叫:popup 或另一個開著的
+    // options 分頁改了設定(開關/語言/主題)，讓常開的本頁同步反映，不顯示
+    // 過期狀態。直接設定 checkbox.checked(不觸發 change 事件)，不會迴圈
+    // 寫回 storage;同一次變更是自己這頁寫的也會走到這裡，重複設同一個值
+    // 是無害的 no-op。
+    function setSyncSettings(changes) {
+      if (!changes) return;
+      SETTING_IDS.forEach(function (id) {
+        if (!Object.prototype.hasOwnProperty.call(changes, id)) return;
+        var el = byId(id);
+        if (!el) return;
+        var newValue = changes[id] && changes[id].newValue;
+        el.checked = typeof newValue === 'boolean' ? newValue : OPTIONS_DEFAULT_SETTINGS[id];
+      });
+      var needsRender = false;
+      if (Object.prototype.hasOwnProperty.call(changes, 'langPref')) {
+        var newLangPref = changes.langPref && changes.langPref.newValue;
+        langPref = newLangPref === 'zh' || newLangPref === 'en' ? newLangPref : null;
+        locale = i18n.resolveLocale(langPref);
+        needsRender = true;
+      }
+      if (Object.prototype.hasOwnProperty.call(changes, 'themePref')) {
+        var newThemePref = changes.themePref && changes.themePref.newValue;
+        themePref = THEME_ORDER.indexOf(newThemePref) !== -1 ? newThemePref : 'auto';
+        applyTheme();
+      }
+      if (needsRender) renderAll();
+    }
+
+    // 常開分頁的相對時間標籤刷新(回到分頁時，見 visibilitychange 接線)。
+    // 直接重用 renderAll:entries 沒變，只是卡片重畫一次讓 relTime() 用
+    // 當下時間重算;開銷小，visibilitychange 觸發頻率也低，不需要另外
+    // 寫一條只更新時間文字的精簡路徑。
+    function refresh() {
+      renderAll();
+    }
+
+    return { init: init, setHistory: setHistory, setSyncSettings: setSyncSettings, refresh: refresh };
   }
 
   var api = {
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
-    HISTORY_LIMIT: HISTORY_LIMIT,
     POST_URL_PATTERN: POST_URL_PATTERN,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,
@@ -932,6 +1184,8 @@
     mergeImportedEntries: mergeImportedEntries,
     aggregateStats: aggregateStats,
     hasCardPreview: hasCardPreview,
+    isLongExcerpt: isLongExcerpt,
+    buildEntryActions: buildEntryActions,
     createOptionsController: createOptionsController,
   };
 
