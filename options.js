@@ -41,25 +41,45 @@
   // 前身是 0.5.0 收藏庫基座的 FAVORITE_URL_PATTERN;方案甲撤了獨立收藏，
   // 這裡改名為通用的貼文 url 驗證，供 mergeImportedEntries 使用(取代原本
   // 較嚴格、不容忍尾綴的舊版 POST_URL_PATTERN)。
+  //
+  // 【審查修正，url 樣式統一】長度上限 60→80(handle/post id 各自)——這裡
+  // 是全 repo 對「合法貼文網址長什麼樣」的單一權威定義，字元類本身不放寬
+  // (仍是嚴格白名單，只調長度上限)。right-click(menu)寫入路徑走的是
+  // background.js 自己的驗證，過去兩邊上限沒對齊，本頁讀取/整形寫回時
+  // 就可能把 background 端認可、但超出這裡舊上限(60)的合法 menu 紀錄
+  // 當「形狀不對」整筆濾掉，使用者會發現右鍵還原的紀錄「消失了」。runtime
+  // 車道會讓 menu 寫入端跟進同一組上限(80)，兩邊數字一致之後這類誤刪
+  // 才會真正根治;persistHistory 沿用既有「整形後寫回」慣例不變(entries
+  // 進來時已經過 sanitizeEntries/mergeImportedEntries 的正規化，寫回
+  // storage 的內容本來就是整形後的)。
   var POST_URL_PATTERN =
-    /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}))\/?(?:[?#].*)?$/i;
+    /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}))\/?(?:[?#].*)?$/i;
 
+  // 【審查修正】刪除每個 kind 項目的死欄位 icon(如 '#i-link')——badge 渲染
+  // (buildEntryCard/openEntryDetail/buildTimelineRow)一律只用 .key 查
+  // i18n 文案，純文字 pill 徽章，從沒有任何地方讀過 .icon 這個屬性畫過
+  // SVG，是舊版圖示式徽章設計淘汰後留下的殘骸。
   var KINDS = {
-    share: { key: 'opKindShare', icon: '#i-link' },
-    strip: { key: 'opKindStrip', icon: '#i-scissors' },
-    menu: { key: 'opKindMenu', icon: '#i-mouse' },
-    // 貼文互動列複製 icon(post-icon.js)寫入剪貼簿成功後的路徑，沿用既有
-    // #i-copy 符號(options.html 已定義，opCopyTitle 那顆複製鈕也用它)，
-    // 不必為此另刻一顆 SVG。
-    icon: { key: 'opKindIcon', icon: '#i-copy' },
+    share: { key: 'opKindShare' },
+    strip: { key: 'opKindStrip' },
+    menu: { key: 'opKindMenu' },
+    // 貼文互動列複製 icon(post-icon.js)寫入剪貼簿成功後的路徑。
+    icon: { key: 'opKindIcon' },
   };
 
   // ---- 純函式 ----
 
   // 選填欄位截斷:非字串一律回傳 undefined(呼叫端據此決定整欄不寫入),
   // 字串則截斷至長度上限。author/handle/excerpt 共用同一份規則。
+  //
+  // 【審查修正】補空字串丟棄，與 background.js 的 sanitizeHistoryField
+  // 對齊(該函式明文:「空字串比照非字串同樣丟棄，不落 author:'' 這種空
+  // 欄位」)。原本這裡漏了這條，等於兩層對「合法值」的認定不一致——
+  // background 端已經先擋掉空字串，options 端理論上收不到，但讀取/匯入
+  // 階段是獨立信任邊界(縱深防禦，不假設寫入端永遠沒漏)，仍應該自己也擋。
   function sanitizeTextField(value, max) {
-    return typeof value === 'string' ? value.slice(0, max) : undefined;
+    if (typeof value !== 'string' || value.length === 0) return undefined;
+    return value.slice(0, max);
   }
 
   // 紀錄去重合併(見 background.js 的 mergeHistoryEntry/sanitizeSeenList
@@ -192,6 +212,13 @@
 
   // 0.5.0 方案甲:entries 只留三個核心欄位的年代已過去，author/handle/
   // excerpt 為字串時一併輸出(選填，沿用「非字串/缺席就整欄不寫」的慣例)。
+  //
+  // 【審查修正】補上 seen/original/removedParams 三欄，同一套「缺席不寫」
+  // 慣例——先前只匯出 author/handle/excerpt，這三個較晚加入 schema 的
+  // 欄位被漏掉，使用者匯出備份、換裝置/瀏覽器匯入回來時，時間軸與
+  // 原始連結/追蹤參數資料會無聲消失(entries 本身還在，只是這幾欄丟了)。
+  // 匯出值直接沿用 entry 已經 sanitize 過的形狀(entries 參數本身就是
+  // sanitizeEntries 的輸出)，不必在這裡重新驗證。
   function buildExportPayload(entries, exportedAt) {
     return {
       app: 'threads-clean-link',
@@ -202,6 +229,9 @@
         if (typeof e.author === 'string') out.author = e.author;
         if (typeof e.handle === 'string') out.handle = e.handle;
         if (typeof e.excerpt === 'string') out.excerpt = e.excerpt;
+        if (Array.isArray(e.seen) && e.seen.length > 0) out.seen = e.seen;
+        if (typeof e.original === 'string') out.original = e.original;
+        if (Array.isArray(e.removedParams) && e.removedParams.length > 0) out.removedParams = e.removedParams;
         return out;
       }),
     };
@@ -392,6 +422,13 @@
 
   // 統計聚合:總數、各來源數、本週/上週(滾動 7 天)、近 14 天逐「日曆日」
   // 次數(索引 13 = 今天)、最舊一筆時間戳。
+  //
+  // 【審查後補註】counts 算了 share/strip/menu/icon 四個 kind 的筆數，但
+  // 統計磚版面(options.html 的 .stats)只給短碼解析/剪除參數/貼文按鈕
+  // 三個 kind 各開一格(加上累計/本週共 5 格)，menu(右鍵還原)沒有對應
+  // 磚——這是刻意的版面取捨，不是漏畫:右鍵還原是低頻的手動備援路徑，
+  // 不特別佔一格版面。counts.menu 仍照算，一來維持四個 kind 算法一致不用
+  // 特殊處理，二來日後若要幫它加磚，這裡不必再回頭補。
   function aggregateStats(entries, nowTs) {
     var todayStart = new Date(nowTs);
     todayStart.setHours(0, 0, 0, 0);
@@ -794,12 +831,26 @@
     // 後兩邊收斂一致)。沿用既有慣例等級:直接改 storage + toast，不另開
     // 確認框(「清除全部」這種一次清光的破壞性動作才走確認框;刪單筆歷來
     // 就是即時動作)。
+    //
+    // 【審查修正】改以 url 比對(不再疊 at)——紀錄以 url 去重合併之後，
+    // 同一個 url 本來就只會有一筆，疊 at 反而是多餘的精準比對，一旦
+    // detailEntry 手上拿的是切換條目前的舊物件(at 因別處寫入而更新過)
+    // 就會比對失敗，刪不掉正在看的那筆。同時補上「有沒有真的命中」的判斷:
+    // 沒命中(例如已經被別的分頁/storage 同步事件先刪掉)就不寫入、不動
+    // 視窗、也不發「已刪除」的成功 toast——避免對使用者謊報一個沒發生的
+    // 動作。
     function deleteEntry(e) {
+      var hit = false;
       var next = entries.filter(function (x) {
-        return !(x.url === e.url && x.at === e.at);
+        if (x.url === e.url) {
+          hit = true;
+          return false;
+        }
+        return true;
       });
+      if (!hit) return;
       persistHistory(next);
-      if (detailEntry && detailEntry.url === e.url && detailEntry.at === e.at) closeEntryDetail();
+      if (detailEntry && detailEntry.url === e.url) closeEntryDetail();
       renderAll();
       toast(tt('opToastDeleted'));
     }
@@ -984,8 +1035,22 @@
           urlFallback.textContent = '';
         }
       } else {
+        // 【審查修正】比照上面有預覽分支，四欄都要清空(不是只設 hidden)——
+        // authorName/excerpt 的 textContent、handleEl 的 hidden 與
+        // textContent 少清一步，上一筆的殘留文字就會在 hidden 失效(見上方
+        // 全域 [hidden] 修正)或未來改版時露出，或被螢幕閱讀器讀到隱藏
+        // 文字，兩個問題疊加正是「上一筆作者殘留到下一筆」的根治對象。
         if (authorRow) authorRow.hidden = true;
-        if (excerptEl) excerptEl.hidden = true;
+        if (authorName) authorName.textContent = '';
+        if (handleEl) {
+          handleEl.hidden = true;
+          handleEl.textContent = '';
+        }
+        if (excerptEl) {
+          excerptEl.hidden = true;
+          excerptEl.textContent = '';
+          excerptEl.classList.remove('expanded');
+        }
         if (expandBtn) expandBtn.hidden = true;
         if (urlFallback) {
           urlFallback.hidden = false;
@@ -1418,8 +1483,26 @@
 
     // storage.onChanged(local 區)時由接線層呼叫,讓 background 新寫入的
     // 紀錄即時出現在開著的頁面上。
+    //
+    // 【審查修正】詳細視窗開著時，storage 被別處(background 新寫入、另一
+    // 分頁刪除/清除/匯入)更新的整合:以 url 在新清單裡重新定位
+    // detailEntry——找得到就用新資料刷新視窗內容(openEntryDetail 會重繪
+    // 全部欄位，也會順手收合時間軸子層視窗，不留舊資料的展開態)；找不到
+    // (這筆已經被刪除/清除)就關閉詳細視窗，不留著顯示一筆已經不存在的
+    // 紀錄。detailEntry 為 null(視窗本來就沒開)時什麼都不做。
     function setHistory(list) {
       entries = sanitizeEntries(list);
+      if (detailEntry) {
+        var match = null;
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].url === detailEntry.url) {
+            match = entries[i];
+            break;
+          }
+        }
+        if (match) openEntryDetail(match);
+        else closeEntryDetail();
+      }
       renderAll();
     }
 
