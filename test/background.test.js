@@ -1044,6 +1044,10 @@ test('紀錄:右鍵路徑解析出的網址不符嚴格白名單樣式(POST_URL_
 });
 
 // 對照組:handle/post id 長度恰為 80 時仍應通過(邊界不誤殺)，81 則被拒。
+// 這裡自建 sandbox(不經 loadBackgroundWithSettings)，settle() 用長一
+// 點的等待:右鍵路徑的紀錄鏈路(getSettings→storage.local.get→
+// storage.local.set)本來就比一般測試多幾個 tick，兩個案例各跑一輪，
+// Windows 計時器顆粒下用預設 150ms 偶發等不完，放寬到 400ms。
 test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 時通過，81 時拒絕(不記錄)', async () => {
   const cases = [
     { len: 80, label: '恰為 80，應通過', shouldRecord: true },
@@ -1074,7 +1078,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
     runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams });
 
     onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
-    await settle();
+    await settle(400);
 
     assert.equal(executeScriptCalls.length, 1, `${label}:剪貼簿應照常寫入`);
     const history = storage.localSnapshot().history;
