@@ -58,8 +58,8 @@ test('opKindIcon:zh 與 en 兩份字典皆有此 key，且皆非空字串', () =
 });
 
 // 0.5.0 新增:貼文收藏庫的共用 i18n key——互動列書籤 icon(另一車道)與
-// options 收藏分頁(另一車道)都依賴這批 key 已存在且非空,本車道只鋪基座
-// 不做 UI,故只鎖存在性與非空,不驗證 UI 渲染。
+// options 收藏分頁(另一車道)都依賴這批 key 已存在且非空，本車道只鋪基座
+// 不做 UI，故只鎖存在性與非空，不驗證 UI 渲染。
 const FAVORITES_KEYS = [
   'favIconTooltip',
   'favSaved',
