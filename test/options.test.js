@@ -153,6 +153,41 @@ test('buildExportPayload:author/handle/excerpt 為字串時一併輸出，非字
   assert.deepEqual(payload.entries[1], { url: URL_B, kind: 'strip', at: 2 }, '非字串的 author 不輸出該欄');
 });
 
+// 【審查修正】buildExportPayload 先前漏了 seen/original/removedParams
+// 三欄，使用者匯出備份、換裝置/瀏覽器匯入回來時這三欄資料會無聲消失。
+// 補上後沿用同一套「缺席不寫」慣例:seen 是空陣列或非陣列都不輸出、
+// original 非字串不輸出、removedParams 是空陣列或非陣列都不輸出。
+test('buildExportPayload:seen/original/removedParams 有資料時一併輸出，缺席/空陣列則不輸出該欄', () => {
+  const payload = options.buildExportPayload(
+    [
+      {
+        url: URL_A,
+        kind: 'share',
+        at: 1,
+        seen: [{ at: 1, kind: 'share' }, { at: 2, kind: 'strip' }],
+        original: 'https://l.threads.net/share/abc',
+        removedParams: [{ key: 'igsh', value: 'aBc' }],
+      },
+      { url: URL_B, kind: 'strip', at: 2, seen: [], original: 123, removedParams: [] },
+    ],
+    '2026-08-19T00:00:00.000Z'
+  );
+
+  assert.deepEqual(payload.entries[0], {
+    url: URL_A,
+    kind: 'share',
+    at: 1,
+    seen: [{ at: 1, kind: 'share' }, { at: 2, kind: 'strip' }],
+    original: 'https://l.threads.net/share/abc',
+    removedParams: [{ key: 'igsh', value: 'aBc' }],
+  });
+  assert.deepEqual(
+    payload.entries[1],
+    { url: URL_B, kind: 'strip', at: 2 },
+    '空陣列的 seen/removedParams 與非字串的 original 都不輸出該欄'
+  );
+});
+
 // 0.5.0 方案甲:匯入的 url 額外容忍尾隨斜線/query/hash 並正規化(前身是
 // 收藏庫基座的 FAVORITE_URL_PATTERN，方案甲改名為通用的貼文 url 驗證);
 // 這裡直接驗證這個新增的容忍度，不影響既有「嚴格格式才收」的斷言。
@@ -417,6 +452,10 @@ test('sanitizeEntries:url 形狀不對(非 threads 網域、缺 /post/ 區段、
   );
 });
 
+// 【審查修正，url 樣式統一】長度上限 60→80(handle/post id 各自)，字元類
+// 不變——釘住新邊界值的表格驅動測試見下方「跨層釘住(表格驅動)[url 形狀]」
+// (work item 8 把這個獨立案例併進同一組表格驅動寫法，不重複維護兩份)。
+
 // 0.5.0 方案甲(歷史即收藏):entries 擴充選填 author/handle/excerpt。核心
 // 欄位(url/kind/at)合法時，選填欄位為字串則截斷至長度上限，非字串則整欄
 // 丟棄(不影響核心欄位本身，entry 仍保留)——與 mergeImportedEntries 的
@@ -432,6 +471,13 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
   assert.equal(cleaned[0].excerpt.length, 2000);
 
   assert.deepEqual(Object.keys(cleaned[1]).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入，但 entry 本身仍保留');
+});
+
+// 【審查修正】sanitizeTextField 補空字串丟棄，與 background.js 的
+// sanitizeHistoryField 對齊(該函式明文「空字串比照非字串同樣丟棄」)。
+test('sanitizeEntries:author/handle/excerpt 為空字串時比照非字串整欄丟棄，不落空字串佔位', () => {
+  const cleaned = options.sanitizeEntries([{ url: URL_A, kind: 'share', at: 1, author: '', handle: '', excerpt: '' }]);
+  assert.deepEqual(Object.keys(cleaned[0]).sort(), ['at', 'kind', 'url'], '空字串的選填欄位應整欄不寫入');
 });
 
 // 紀錄去重合併新增:seen[] 是「先前已經落盤的資料」，讀取階段(sanitizeEntries)
@@ -650,29 +696,35 @@ test('buildDetailExtraRows:removedParams 缺席或非陣列時不產生任何追
   assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', removedParams: 'nope' }).length, 0);
 });
 
-// ---- 跨層釘住:background.js 的 sanitizeRemovedParams 產出與 options.js
-// 讀取端鍵名必須一致(審查修正的直接動因)----
+// ---- 【審查修正】跨層釘住，改造成表格驅動(work item 8) ----
 //
 // 【背景】UI 全面對齊手機任務把 buildDetailExtraRows 的 removedParams
 // fixture 寫成 { name, value }，但兩個權威來源(手機版 link-cleaner.ts:171
 // 與 detail-dialog 的 p.key，以及 F 案 background.js 的 sanitizeRemovedParams
 // 實際落盤形狀)都是 { key, value }——單分支測試因為連 fixture 都一起寫
-// 錯而全綠，合併後才會被另一車道的真實資料打穿，兩列變死功能。
+// 錯而全綠，合併後才會被另一車道的真實資料打穿，兩列變死功能。原本只有
+// removedParams 一欄有這條跨層釘住，這次擴大成表格驅動，涵蓋
+// author/handle/excerpt/original/removedParams 五個選填欄位 + url 形狀
+// 案例，同一類欄位名/長度上限漂移，任一欄未來再犯都能在這裡攔下來，不
+// 用每個欄位各自重新發明一次跨層測試。
 //
-// 這裡不只比對「兩份原始碼字面上都寫 key」這種容易再度一起漂移的弱驗
-// 證，而是真的載入 background.js(vm sandbox，比照 background.test.js
-// 的載入方式)跑一次它的 sanitizeRemovedParams，把「background 端真實
-// 產出」原封不動餵給「options 端真實讀取路徑」(sanitizeEntries →
-// buildDetailExtraRows)，斷言資料完整活著走完全程、沒有中途被無聲濾掉
-// ——這才是兩層真的用同一把鑰匙的證據，比對靜態常數更難被同類回歸繞過。
-test('跨層釘住:background.js sanitizeRemovedParams 的輸出鍵名(key/value)與 options.js 讀取端一致，資料不會在兩層之間被無聲濾掉', () => {
+// 每筆 case 把 message 餵給 background.js 真實的 extractHistoryExtraFields
+// (vm sandbox 載入真實原始碼，不是重新複製一份邏輯抄在測試裡)，取得
+// 「background 端真的會落盤的形狀」，原封不動餵給 options.sanitizeEntries
+// (options 端真實讀取路徑)，斷言兩層對同一筆輸入的認定完全一致——這比
+// 「比對兩邊原始碼字面上寫的欄位名/數字」這種容易同步漂移的弱驗證更難被
+// 同類回歸繞過。
+//
+// 原本 buildDetailExtraRows 那條單獨的 removedParams 跨層釘住測試由這裡
+// 取代(移除)，不重複維護兩份。
+function loadBackgroundSandboxForCrossLayer() {
   const bgSrc =
     fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
     '\n' +
     fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
   // 最小 chrome mock:只滿足 background.js 檔案最外層註冊監聽器所需的
   // 呼叫面(見 background.test.js 的 makeChrome 同一組道理)，不需要完整
-  // 還原每個 API，這裡只是借殼跑 sanitizeRemovedParams 這顆頂層函式。
+  // 還原每個 API，這裡只是借殼跑幾顆頂層 sanitize 函式。
   const chrome = {
     runtime: {
       onInstalled: { addListener: () => {} },
@@ -680,32 +732,116 @@ test('跨層釘住:background.js sanitizeRemovedParams 的輸出鍵名(key/value
     },
     contextMenus: { onClicked: { addListener: () => {} } },
   };
-  const sandbox = runInSandbox(bgSrc, { chrome, console });
-  assert.equal(typeof sandbox.sanitizeRemovedParams, 'function', 'background.js 應在頂層(非閉包內)宣告 sanitizeRemovedParams，測試才拿得到');
+  return runInSandbox(bgSrc, { chrome, console });
+}
 
-  // background 端的真實 sanitizer，餵一筆合法輸入，取得「background 端
-  // 真的會落盤的形狀」。sandbox 內建立的陣列/物件跑在 vm context 內，
-  // 直接對它跟這裡的字面陣列 deepEqual 比對，即使內容相同也會因為
-  // 「跨 realm」的 Array/Object.prototype 不同而判不相等(assert/strict
-  // 的 deepEqual 等於 deepStrictEqual，會查 prototype)；JSON 序列化一輪
-  // 換成本地 realm 的一般物件，繞開這個純屬 vm 隔離機制的假陽性，不影響
-  // 資料內容本身的比對。
-  const bgOutput = JSON.parse(JSON.stringify(sandbox.sanitizeRemovedParams([{ key: 'igsh', value: 'aBc123' }])));
-  assert.deepEqual(bgOutput, [{ key: 'igsh', value: 'aBc123' }], 'background 端輸出的形狀是本次跨層比對的基準');
+const CROSS_LAYER_BASE_URL = URL_A;
 
-  // 原封不動餵給 options 端的完整讀取路徑:先過 sanitizeEntries(讀取階段
-  // 的防禦性整形)，再過 buildDetailExtraRows(渲染前的資料準備)。任一端
-  // 鍵名對不上，removedParams 就會在中途被整欄濾掉，這一列會憑空消失。
-  const entry = { url: URL_A, kind: 'share', at: 1, removedParams: bgOutput };
-  const cleaned = options.sanitizeEntries([entry])[0];
-  assert.deepEqual(cleaned.removedParams, bgOutput, 'options.sanitizeEntries 應原樣保留 background 端產出的形狀，不因鍵名不符而整欄丟棄');
+// 五個選填欄位的跨層案例。expect 是「兩層走完全程後，應該存活的欄位」;
+// 不列的欄位代表該欄應該被兩層一起丟棄(整欄不寫入)。
+const CROSS_LAYER_FIELD_CASES = [
+  { field: 'author', label: '合法字串應原樣保留', message: { author: 'Dafu' }, expect: { author: 'Dafu' } },
+  { field: 'author', label: '空字串兩層都應整欄丟棄', message: { author: '' }, expect: {} },
+  {
+    field: 'author',
+    label: '超長字串應截斷到同一個上限(100)，兩層數字要對得上',
+    message: { author: 'A'.repeat(150) },
+    expect: { author: 'A'.repeat(100) },
+  },
+  { field: 'handle', label: '合法字串應原樣保留', message: { handle: '@dafucoding' }, expect: { handle: '@dafucoding' } },
+  { field: 'handle', label: '空字串兩層都應整欄丟棄', message: { handle: '' }, expect: {} },
+  { field: 'excerpt', label: '合法字串應原樣保留', message: { excerpt: 'hello world' }, expect: { excerpt: 'hello world' } },
+  { field: 'excerpt', label: '空字串兩層都應整欄丟棄', message: { excerpt: '' }, expect: {} },
+  {
+    field: 'excerpt',
+    label: '超長字串應截斷到同一個上限(2000)，兩層數字要對得上',
+    message: { excerpt: 'E'.repeat(2500) },
+    expect: { excerpt: 'E'.repeat(2000) },
+  },
+  {
+    field: 'original',
+    label: '與 cleaned url 不同時應保留',
+    message: { original: 'https://l.threads.net/share/abc' },
+    expect: { original: 'https://l.threads.net/share/abc' },
+  },
+  {
+    field: 'original',
+    label: '與 cleaned url 相同時兩層都整欄丟棄',
+    message: { original: CROSS_LAYER_BASE_URL },
+    expect: {},
+  },
+  {
+    field: 'removedParams',
+    label: '合法 {key,value} 應原樣保留(審查 FAIL 的原始案例)',
+    message: { removedParams: [{ key: 'igsh', value: 'aBc123' }] },
+    expect: { removedParams: [{ key: 'igsh', value: 'aBc123' }] },
+  },
+  {
+    field: 'removedParams',
+    label: '缺 key 的項目應被兩層一起濾掉，陣列變空、整欄不寫入',
+    message: { removedParams: [{ value: 'no-key' }] },
+    expect: {},
+  },
+];
 
-  const rows = options.buildDetailExtraRows(cleaned);
-  assert.deepEqual(
-    rows.map((r) => ({ name: r.name, display: r.display })),
-    [{ name: 'igsh', display: 'aBc123' }],
-    'buildDetailExtraRows 應能讀出 background 端產出的 key，不會因欄位名不符而整列消失(即本輪審查抓到的死功能)'
-  );
+CROSS_LAYER_FIELD_CASES.forEach(({ field, label, message, expect: expected }) => {
+  test('跨層釘住(表格驅動)[' + field + ']:' + label, () => {
+    const sandbox = loadBackgroundSandboxForCrossLayer();
+    assert.equal(
+      typeof sandbox.extractHistoryExtraFields,
+      'function',
+      'background.js 應在頂層(非閉包內)宣告 extractHistoryExtraFields，測試才拿得到'
+    );
+
+    // background 端真實的欄位抽取+sanitize，取得「background 端真的會
+    // 落盤的形狀」。sandbox 內建立的物件跑在 vm context 內，直接跟這裡
+    // 的字面物件 deepEqual 比對會因「跨 realm」的 Object.prototype 不同
+    // 判不相等，JSON 序列化一輪換成本地 realm 的一般物件，繞開這個純屬
+    // vm 隔離機制的假陽性。
+    const bgExtra = JSON.parse(JSON.stringify(sandbox.extractHistoryExtraFields(message, CROSS_LAYER_BASE_URL)));
+
+    // 原封不動餵給 options 端的讀取路徑(sanitizeEntries)。
+    const entry = Object.assign({ url: CROSS_LAYER_BASE_URL, kind: 'share', at: 1 }, bgExtra);
+    const cleaned = options.sanitizeEntries([entry])[0];
+    const cleanedExtra = {};
+    if (Object.prototype.hasOwnProperty.call(cleaned, field)) cleanedExtra[field] = cleaned[field];
+
+    assert.deepEqual(
+      cleanedExtra,
+      expected,
+      'options.sanitizeEntries 讀到的 ' + field + ' 應與 background 端產出的形狀一致(存活的值相同、該丟的一起丟)'
+    );
+  });
+});
+
+// url 形狀案例(表格驅動風格一致，但不經 background sandbox——
+// background.js 自己的 url 驗證上限尚未跟進本輪的 60→80，那是 runtime
+// 車道的後續工作;現在拿兩層互比只會得到「預期中的不一致」，不是這裡要
+// 攔的 bug，故獨立成 options 端自己的邊界值案例，仍是同一組表格驅動寫
+// 法)。
+const CROSS_LAYER_URL_CASES = [
+  {
+    label: 'handle/post id 剛好 80 字元應保留',
+    url: 'https://www.threads.com/@' + 'h'.repeat(80) + '/post/' + 'i'.repeat(80),
+    expectSurvive: true,
+  },
+  {
+    label: 'handle 81 字元應整筆丟棄(不是舊版的 60 上限)',
+    url: 'https://www.threads.com/@' + 'h'.repeat(81) + '/post/' + 'i'.repeat(80),
+    expectSurvive: false,
+  },
+  {
+    label: 'post id 81 字元應整筆丟棄',
+    url: 'https://www.threads.com/@' + 'h'.repeat(80) + '/post/' + 'i'.repeat(81),
+    expectSurvive: false,
+  },
+];
+
+CROSS_LAYER_URL_CASES.forEach(({ label, url, expectSurvive }) => {
+  test('跨層釘住(表格驅動)[url 形狀]:' + label, () => {
+    const cleaned = options.sanitizeEntries([{ url: url, kind: 'share', at: 1 }]);
+    assert.equal(cleaned.length, expectSurvive ? 1 : 0);
+  });
 });
 
 // ---- 設定頁不再出現 notifySuccess 控件(PM 審查後補) ----
@@ -724,6 +860,25 @@ test('notifySuccess:options.html 原文不再有 id="notifySuccess" 的控件', 
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   assert.equal(/\bid\s*=\s*["']notifySuccess["']/i.test(html), false, 'options.html 不應再有 notifySuccess 控件');
   assert.equal(/\bopNotify(Name|Desc)\b/.test(html), false, 'options.html 不應再引用 opNotifyName/opNotifyDesc');
+});
+
+// ---- 【審查修正】全域 [hidden] 規則(PM 審查後補) ----
+//
+// options.html 只有 .overlay[hidden]{display:none} 這一條窄規則，蓋不到
+// 頁面內任何「自己有寫 display」的其他元素(detailAuthorRow/detailExcerpt/
+// detailExpandBtn 都是——同 specificity 下 author 樣式表一律贏過瀏覽器
+// UA 樣式表的 [hidden]{display:none}，JS 端設 el.hidden=true 完全沒有
+// 視覺效果)。這裡是純 CSS 修正，controller smoke 的最小 DOM stub 不解析
+// 真實 CSS 規則，測不出視覺效果，只能做靜態原文檢查(照上面 notifySuccess
+// 的既有慣例)，鎖住這條全域規則存在且用了 !important。
+test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important} 規則', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(
+    html,
+    /\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*;?\s*\}/,
+    'options.html 應有全域 [hidden] 規則且帶 !important，才蓋得過同頁面其他元素自己的 display 宣告'
+  );
 });
 
 // ---- controller smoke(最小 DOM stub) ----
@@ -1088,6 +1243,42 @@ test('controller smoke:降級網址條目的詳細視窗顯示網址列，不顯
   );
 });
 
+// 【審查修正】openEntryDetail 的無預覽分支先前只設 hidden，沒清
+// textContent(handleEl 連 hidden 都沒設)——先開一筆有 author/handle/
+// excerpt 的條目，再切到一筆降級條目，若無預覽分支沒清乾淨，這幾個欄位
+// 的舊文字會原地殘留(且 hidden 修正前，[hidden] 對這幾個元素完全沒視覺
+// 效果，殘留文字會直接露出來)。
+test('controller smoke:切換到降級網址條目時，上一筆的 authorName/handle/excerpt 應清空，不殘留到這一筆', async () => {
+  const history = [
+    { url: CARD_URL_A, kind: 'share', author: 'Dafu', handle: '@dafucoding', excerpt: 'hello world', at: 3000 },
+    { url: CARD_URL_NET, kind: 'share', at: 1000 },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  assert.equal(doc.ids.detailAuthorName.textContent, 'Dafu');
+  assert.equal(doc.ids.detailHandle.textContent, '@dafucoding');
+  assert.equal(doc.ids.detailExcerpt.textContent, 'hello world');
+
+  doc.ids.rows.children[1].fire('click');
+  assert.equal(doc.ids.detailAuthorRow.hidden, true);
+  assert.equal(doc.ids.detailAuthorName.textContent, '', '上一筆的作者名稱不應殘留');
+  assert.equal(doc.ids.detailHandle.hidden, true, 'handle 應一併設 hidden(先前漏設)');
+  assert.equal(doc.ids.detailHandle.textContent, '', '上一筆的 handle 不應殘留');
+  assert.equal(doc.ids.detailExcerpt.textContent, '', '上一筆的 excerpt 不應殘留');
+});
+
 // 長內文(超過 15 行或字元量門檻)開詳細視窗時顯示「展開全文」，點擊後
 // 原地移除截斷(見 openEntryDetail 註解:web 版不像手機版開巢狀第二層
 // Modal，那是 iOS 平台限制，web 沒有這個問題)。
@@ -1141,6 +1332,133 @@ test('controller smoke:詳細視窗的刪除按鈕刪除目前顯示的條目並
 
   assert.equal(doc.ids.rows.children.length, 0, '刪除後卡片牆應重新渲染為空');
   assert.equal(doc.ids.detailOverlay.hidden, true, '刪除目前顯示中的條目應順手關閉詳細視窗');
+});
+
+// 【審查修正】deleteEntry 改以 url 比對(不再疊 at)——這裡刻意讓 entries
+// 裡出現兩筆相同 url、不同 at 的資料(正常流程去重合併後不該發生，但要
+// 證明比對邏輯真的只看 url，不是巧合地兩者都符合)，刪除其中一筆應該把
+// 同 url 的另一筆也一併清掉。
+test('controller smoke:刪除以 url 比對，同 url 不同 at 的條目會一併清掉(不再疊 at 精準比對)', async () => {
+  const history = [
+    { url: CARD_URL_A, kind: 'share', at: 3000 },
+    { url: CARD_URL_A, kind: 'strip', at: 1000 },
+    { url: CARD_URL_B, kind: 'share', at: 2000 },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.rows.children.length, 3);
+  doc.ids.rows.children[0].fire('click'); // 開第一筆(CARD_URL_A, at:3000)的詳細視窗
+  doc.ids.detailDeleteBtn.fire('click');
+  await settle(); // storage mock 的 set() 用 setTimeout(0) 延遲落地，要等一輪才能查快照。
+
+  assert.equal(doc.ids.rows.children.length, 1, '兩筆同 url 的條目應一併被刪除，只剩 CARD_URL_B');
+  assert.equal(storage.localSnapshot().history.length, 1);
+  assert.equal(storage.localSnapshot().history[0].url, CARD_URL_B);
+});
+
+// 【審查修正】deleteEntry 沒命中時不寫入、不動視窗、不發「已刪除」成功
+// toast——模擬使用者開著詳細視窗時，storage 被「清除全部」這類不經
+// setHistory 重新定位的路徑改掉(persistHistory 直接改 entries，detailEntry
+// 仍是舊物件的參照)，此時點刪除鈕應該安靜地什麼都不做，不能誤發成功
+// 訊息讓使用者以為又刪掉了一筆。
+test('controller smoke:詳細視窗開著時若條目已被別處(如清除全部)先行移除，刪除鈕不再誤發成功 toast', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  assert.equal(doc.ids.detailOverlay.hidden, false);
+
+  // 「清除全部」走 confirmOk → persistHistory([]) + renderAll，不經
+  // setHistory 的 detailEntry 重新定位邏輯，detailEntry 變成指向已經不在
+  // entries 裡的舊物件。
+  doc.ids.confirmOk.fire('click');
+  await settle();
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCleared'));
+  const setCallsBefore = storage.localCalls.set.length;
+
+  doc.ids.detailDeleteBtn.fire('click');
+
+  assert.equal(storage.localCalls.set.length, setCallsBefore, '沒命中不該再寫一次 storage');
+  assert.equal(
+    doc.ids.toast.textContent,
+    i18n.t('zh', 'opToastCleared'),
+    '沒命中的刪除不該覆寫成「已刪除」toast，文字應該還停在「已清除全部紀錄」'
+  );
+});
+
+// 【審查修正】詳細視窗開著時 storage 更新的整合(setHistory 由接線層在
+// storage.onChanged(local 區)時呼叫，對齊 background 新寫入/另一分頁改動
+// 的即時性)：以 url 重新定位 detailEntry，找得到就用新資料刷新視窗內容。
+test('controller smoke:詳細視窗開著時 setHistory 帶來同 url 的新資料，應原地刷新視窗內容(不需要使用者手動關再開)', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', author: 'Dafu', excerpt: 'old excerpt', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  assert.equal(doc.ids.detailExcerpt.textContent, 'old excerpt');
+
+  controller.setHistory([{ url: CARD_URL_A, kind: 'share', author: 'Dafu', excerpt: 'new excerpt after live update', at: 1000 }]);
+
+  assert.equal(doc.ids.detailOverlay.hidden, false, '同 url 找得到，視窗應該保持開啟');
+  assert.equal(doc.ids.detailExcerpt.textContent, 'new excerpt after live update', '視窗內容應刷新成新資料，不是停在舊快照');
+});
+
+// 【審查修正】setHistory 帶來的新清單裡已經沒有 detailEntry 對應的
+// url(例如另一分頁把這筆刪了)，應該關閉詳細視窗，不留著顯示一筆已經
+// 不存在的紀錄。
+test('controller smoke:詳細視窗開著時 setHistory 帶來的新清單已無對應 url，應關閉詳細視窗', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  assert.equal(doc.ids.detailOverlay.hidden, false);
+
+  controller.setHistory([]);
+
+  assert.equal(doc.ids.detailOverlay.hidden, true, '找不到對應 url 時應關閉詳細視窗');
 });
 
 // 詳細視窗照手機版:淨化後連結列——不論有沒有 author/excerpt 預覽都固定

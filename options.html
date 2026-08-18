@@ -91,6 +91,16 @@
   }
 
   * { box-sizing: border-box; }
+  /* 【審查修正】全域 [hidden] 規則，!important 蓋過同頁面任何元素自己的
+     display 宣告。少這一條，只要某元素自己的 CSS 規則有寫 display(例如
+     .detail-author-row{display:flex}、.detail-excerpt{display:-webkit-box}、
+     .link-btn{display:inline-flex})，同specificity 的作者層規則會贏過
+     瀏覽器 UA 樣式表的 [hidden]{display:none}(cascade 以 origin 排序，
+     author 一律贏 UA，不管先後順序)，導致 JS 端設 .hidden=true 完全沒有
+     視覺效果——detailAuthorRow/detailExcerpt/detailExpandBtn 三處正是這樣
+     失效的。原本只有 .overlay[hidden] 這條窄規則(蓋 .overlay 自己的
+     display:grid)，現在收斂進這條全域規則裡，不必再逐一補。 */
+  [hidden] { display: none !important; }
   html, body { margin: 0; }
   body {
     background: var(--plane);
@@ -809,7 +819,8 @@
     padding: 20px;
     z-index: 10;
   }
-  .overlay[hidden] { display: none; }
+  /* .overlay[hidden] 這條窄規則已被上面全域的 [hidden]{display:none
+     !important} 收斂取代，不再需要逐一補。 */
   /* 時間軸子層視窗疊在詳細視窗之上(照手機版巢狀 Modal 的做法)，z-index
      取高一階，DOM 順序本身其實已經夠(接在 detailOverlay 後面)，這裡明寫
      出來避免日後調順序時踩到。 */
