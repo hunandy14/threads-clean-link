@@ -255,6 +255,61 @@ test('id 導出:尾隨斜線／查詢參數／hash 等變形,一律導出相同�
 });
 
 // ============================================================
+// 並發序列化(PM 審查修正):get→判斷→set 這段讀-改-寫必須序列化，否則
+// 兩個幾乎同時送到的 toggle 各自基於同一份舊快照做決策，後寫入的一方
+// 會直接覆蓋掉前一方的結果——審查已用這兩個案例重現丟資料。
+//
+// 兩則 dispatch() 呼叫刻意「不 await 中間結果」，同步連續呼叫兩次:
+// handleFavoriteToggle 在 enqueueFavoriteWrite 之前全是同步程式碼，兩次
+// 呼叫會依呼叫順序同步把各自的 task 掛上 favoritesWriteChain,因此執行
+// 順序(先 p1 後 p2)是決定性的，不是碰運氣;讓斷言可以鎖住「先到先服務」
+// 這個具體語意，而不只是「兩者都不遺失」這種較弱的不變量。
+// ============================================================
+
+test('並發:兩個不同貼文同時 toggle，最終各自成功新增，不互相覆蓋掉對方', async () => {
+  const otherUrl = 'https://www.threads.com/@otheruser/post/OtherPost1';
+  const otherId = '@otheruser/post/OtherPost1';
+  const { storage, onMessageListeners } = loadFavorites();
+
+  const p1 = dispatch(onMessageListeners, { type: 'favoriteToggle', url: CLEAN_URL }).response;
+  const p2 = dispatch(onMessageListeners, { type: 'favoriteToggle', url: otherUrl }).response;
+
+  const [res1, res2] = await Promise.all([p1, p2]);
+
+  assert.equal(res1.ok, true, '第一篇並發新增應成功');
+  assert.equal(res1.saved, true, '第一篇並發新增應成功');
+  assert.equal(res2.ok, true, '第二篇並發新增應成功，不得因序列化而被誤判為已存在');
+  assert.equal(res2.saved, true, '第二篇並發新增應成功，不得因序列化而被誤判為已存在');
+
+  const list = storage.localSnapshot().favorites;
+  assert.equal(list.length, 2, '並發新增兩篇不同貼文，最終必須都保留，不得只剩 1 筆(審查重現的丟資料)');
+  // Array.from 用主執行環境的 %Array% 建構 —— list 本身可能是 vm sandbox
+  // 內建立的陣列(background.js 跑在 vm context 內)，若直接對它呼叫
+  // .map() 會沿用 vm 的 Array.prototype，結果陣列也會是「跨 realm」物件，
+  // 與這裡的字面陣列 deepEqual 比對時，即使內容相同也會因 prototype
+  // 不同而判定不相等(assert/strict 的 deepStrictEqual 連 prototype 都比)。
+  const ids = Array.from(list, (item) => item.id).sort();
+  assert.deepEqual(ids, [FAV_ID, otherId].sort());
+});
+
+test('並發:同一貼文並發 toggle 兩次，依呼叫順序序列化執行，最終狀態與兩個回應語意一致(一存一刪)', async () => {
+  const { storage, onMessageListeners } = loadFavorites();
+
+  const p1 = dispatch(onMessageListeners, { type: 'favoriteToggle', url: CLEAN_URL }).response;
+  const p2 = dispatch(onMessageListeners, { type: 'favoriteToggle', url: CLEAN_URL }).response;
+
+  const [res1, res2] = await Promise.all([p1, p2]);
+
+  assert.equal(res1.ok, true);
+  assert.equal(res1.saved, true, '先發起的 toggle 執行時清單仍是空的，語意應是「新增」');
+  assert.equal(res2.ok, true);
+  assert.equal(res2.saved, false, '後發起的 toggle 執行時，前一次寫入已序列化完成，應讀到「已存在」而「移除」');
+
+  const list = storage.localSnapshot().favorites;
+  assert.equal(list.length, 0, '一存一刪，最終應回到沒有這筆收藏的狀態，與兩個回應語意一致');
+});
+
+// ============================================================
 // 上限拒收(不擠掉舊收藏)
 // ============================================================
 
@@ -390,6 +445,21 @@ test('非字串欄位丟棄:null 值同樣視為非字串,整欄不寫入條目'
     author: null,
     handle: null,
     excerpt: null,
+  }).response;
+
+  const entry = storage.localSnapshot().favorites[0];
+  assert.deepEqual(Object.keys(entry).sort(), ['at', 'id', 'url']);
+});
+
+// PM 審查修正:空字串比照非字串整欄丟棄，不落 author:'' 這種空欄位。
+test('非字串欄位丟棄:空字串比照非字串，整欄不寫入條目', async () => {
+  const { storage, onMessageListeners } = loadFavorites();
+  await dispatch(onMessageListeners, {
+    type: 'favoriteToggle',
+    url: CLEAN_URL,
+    author: '',
+    handle: '',
+    excerpt: '',
   }).response;
 
   const entry = storage.localSnapshot().favorites[0];

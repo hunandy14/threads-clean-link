@@ -341,6 +341,32 @@ function recordHistory(url, kind) {
 //
 // author/handle/excerpt 為選填字串:型別不是 string 的一律整欄丟棄(不寫
 // 進條目物件，而非寫入 undefined/空字串)，字串則截斷至各自長度上限。
+//
+// 【並發序列化】get→判斷→set 這整段是「讀-改-寫」，兩個 toggle 幾乎同時
+// 送到時，若各自獨立呼叫 storage.local.get/set，會各自基於同一份舊快照
+// 做決策，後寫入的一方直接覆蓋掉前一方的結果(審查重現:兩篇不同貼文
+// 並發收藏只留下 1 筆;同一貼文並發 toggle 兩次，回應與最終狀態不一致)。
+// 寫法比照上方 historyWriteChain:用 favoritesWriteChain 這條模組層級的
+// promise chain 序列化整段讀-改-寫，確保同一個 SW 內的收藏寫入依 toggle
+// 呼叫順序逐一執行，後到的一定讀到前一次寫入後的最新清單。與
+// historyWriteChain 的差異:toggle 需要把「這一次寫入的結果」回傳給
+// sendResponse，因此 enqueueFavoriteWrite 回傳的是「這次呼叫專屬」的
+// promise，而不是像 recordHistory 那樣直接回傳共用的鏈尾。
+let favoritesWriteChain = Promise.resolve();
+
+// task 為 async 函式，做完整段「讀-改-寫」並回傳這次呼叫的結果。
+// favoritesWriteChain 本身設計成一定會 resolve(用 .then(ok, ok) 吞掉
+// 上一棒的例外)，避免某一次 task 意外拋錯就讓後面所有排隊中的 toggle
+// 永遠卡住、拿不到回應。
+function enqueueFavoriteWrite(task) {
+  const run = favoritesWriteChain.then(task);
+  favoritesWriteChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
 async function handleFavoriteToggle(message) {
   const rawUrl = message && message.url;
   const match = typeof rawUrl === 'string' ? FAVORITE_URL_PATTERN.exec(rawUrl) : null;
@@ -350,46 +376,49 @@ async function handleFavoriteToggle(message) {
   const cleanUrl = match[1];
   const id = match[2];
 
-  try {
-    if (!hasStorageLocal()) {
-      return { ok: false, reason: 'storage' };
-    }
-
-    const stored = await chrome.storage.local.get({ [FAVORITES_KEY]: [] });
-    const list = Array.isArray(stored && stored[FAVORITES_KEY]) ? stored[FAVORITES_KEY] : [];
-
-    const existingIndex = list.findIndex((item) => item && item.id === id);
-    if (existingIndex !== -1) {
-      // 不就地改動讀出的陣列，組新陣列後寫回。
-      const next = list.slice(0, existingIndex).concat(list.slice(existingIndex + 1));
-      await chrome.storage.local.set({ [FAVORITES_KEY]: next });
-      return { ok: true, saved: false };
-    }
-
-    if (list.length >= FAVORITES_LIMIT) {
-      return { ok: false, reason: 'full' };
-    }
-
-    const entry = { id, url: cleanUrl, at: Date.now() };
-    const author = sanitizeFavoriteField(message.author, FAVORITES_AUTHOR_MAX);
-    if (author !== undefined) entry.author = author;
-    const handle = sanitizeFavoriteField(message.handle, FAVORITES_AUTHOR_MAX);
-    if (handle !== undefined) entry.handle = handle;
-    const excerpt = sanitizeFavoriteField(message.excerpt, FAVORITES_EXCERPT_MAX);
-    if (excerpt !== undefined) entry.excerpt = excerpt;
-
-    const next = [entry].concat(list);
-    await chrome.storage.local.set({ [FAVORITES_KEY]: next });
-    return { ok: true, saved: true };
-  } catch (err) {
-    console.error('[threads-clean-link] favoriteToggle storage 失敗', err);
+  if (!hasStorageLocal()) {
     return { ok: false, reason: 'storage' };
   }
+
+  return enqueueFavoriteWrite(async () => {
+    try {
+      const stored = await chrome.storage.local.get({ [FAVORITES_KEY]: [] });
+      const list = Array.isArray(stored && stored[FAVORITES_KEY]) ? stored[FAVORITES_KEY] : [];
+
+      const existingIndex = list.findIndex((item) => item && item.id === id);
+      if (existingIndex !== -1) {
+        // 不就地改動讀出的陣列，組新陣列後寫回。
+        const next = list.slice(0, existingIndex).concat(list.slice(existingIndex + 1));
+        await chrome.storage.local.set({ [FAVORITES_KEY]: next });
+        return { ok: true, saved: false };
+      }
+
+      if (list.length >= FAVORITES_LIMIT) {
+        return { ok: false, reason: 'full' };
+      }
+
+      const entry = { id, url: cleanUrl, at: Date.now() };
+      const author = sanitizeFavoriteField(message.author, FAVORITES_AUTHOR_MAX);
+      if (author !== undefined) entry.author = author;
+      const handle = sanitizeFavoriteField(message.handle, FAVORITES_AUTHOR_MAX);
+      if (handle !== undefined) entry.handle = handle;
+      const excerpt = sanitizeFavoriteField(message.excerpt, FAVORITES_EXCERPT_MAX);
+      if (excerpt !== undefined) entry.excerpt = excerpt;
+
+      const next = [entry].concat(list);
+      await chrome.storage.local.set({ [FAVORITES_KEY]: next });
+      return { ok: true, saved: true };
+    } catch (err) {
+      console.error('[threads-clean-link] favoriteToggle storage 失敗', err);
+      return { ok: false, reason: 'storage' };
+    }
+  });
 }
 
-// 非字串一律回傳 undefined(呼叫端據此整欄丟棄);字串則截斷至 maxLen。
+// 非字串一律回傳 undefined(呼叫端據此整欄丟棄);空字串比照非字串同樣
+// 丟棄(不落 author:'' 這種空欄位)；其餘字串截斷至 maxLen。
 function sanitizeFavoriteField(value, maxLen) {
-  if (typeof value !== 'string') return undefined;
+  if (typeof value !== 'string' || value.length === 0) return undefined;
   return value.slice(0, maxLen);
 }
 
