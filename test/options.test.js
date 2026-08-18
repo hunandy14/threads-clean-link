@@ -42,6 +42,23 @@ test('filterEntries:kind 過濾與關鍵字過濾(不分大小寫)可併用', ()
   assert.equal(options.filterEntries(entries, 'share', 'user_c').length, 0);
 });
 
+// 0.4.0 新增:貼文互動列複製 icon(post-icon.js)的紀錄 kind:'icon'——
+// 篩選 chip(options.html 的 #chips)與 filterEntries 共用同一份純函式,
+// 這裡直接驗證 kind 過濾對新 kind 一樣生效,不用另外搭 DOM 才能測。
+test('filterEntries:kind 為 icon 時可單獨篩出貼文按鈕來源的紀錄', () => {
+  const entries = [
+    { url: URL_A, kind: 'share', at: 3 },
+    { url: URL_B, kind: 'icon', at: 2 },
+    { url: URL_C, kind: 'menu', at: 1 },
+  ];
+
+  assert.deepEqual(
+    options.filterEntries(entries, 'icon', '').map((e) => e.url),
+    [URL_B]
+  );
+  assert.equal(options.filterEntries(entries, 'all', '').length, 3);
+});
+
 test('parseImportText:非 JSON 與缺 entries 陣列各回報對應錯誤,合法時回傳 entries', () => {
   assert.deepEqual(options.parseImportText('not json'), { ok: false, error: 'badJson' });
   assert.deepEqual(options.parseImportText('{"app":"x"}'), { ok: false, error: 'noEntries' });
@@ -141,6 +158,20 @@ test('sanitizeEntries:非陣列→空;形狀不對的項目逐筆丟棄', () => 
     { url: URL_B, kind: 'nope', at: 1 },
     { url: URL_C, kind: 'menu', at: 'NaN' },
     null,
+  ]);
+  assert.deepEqual(
+    cleaned.map((e) => e.url),
+    [URL_A]
+  );
+});
+
+// 0.4.0 新增:KINDS 表補上 icon 後,sanitizeEntries 的白名單(靠
+// Object.prototype.hasOwnProperty.call(KINDS, e.kind))應收下 kind:'icon',
+// 不再像先前那樣被當成未知 kind 丟棄。
+test('sanitizeEntries:kind 為 icon(貼文按鈕)的項目應保留,不再被白名單丟棄', () => {
+  const cleaned = options.sanitizeEntries([
+    { url: URL_A, kind: 'icon', at: 1 },
+    { url: URL_B, kind: 'nope', at: 1 },
   ]);
   assert.deepEqual(
     cleaned.map((e) => e.url),
