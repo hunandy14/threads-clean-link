@@ -127,7 +127,7 @@
 
     var days = [];
     for (var i = 0; i < 14; i++) days.push(0);
-    var counts = { share: 0, strip: 0, menu: 0 };
+    var counts = { share: 0, strip: 0, menu: 0, icon: 0 };
     var week = 0;
     var weekPrev = 0;
     var oldestAt = null;
@@ -300,6 +300,8 @@
       setText('statShareMeta', stats.total > 0 ? tf('opShareOfTotal', { p: pct(stats.counts.share) }) : '');
       setText('statStrip', String(stats.counts.strip));
       setText('statStripMeta', stats.total > 0 ? tf('opShareOfTotal', { p: pct(stats.counts.strip) }) : '');
+      setText('statIcon', String(stats.counts.icon));
+      setText('statIconMeta', stats.total > 0 ? tf('opShareOfTotal', { p: pct(stats.counts.icon) }) : '');
 
       return stats;
     }
@@ -501,13 +503,16 @@
         main.className = 'main';
         var urlEl = document.createElement('div');
         urlEl.className = 'url';
-        var handleMatch = /^https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[^/]+)\/(.*)$/.exec(e.url);
+        // TLD(com/net)一併捕獲並如實顯示:紀錄本來就可能來自 threads.net
+        // (POST_URL_PATTERN／KINDS 兩邊都同時允許 com 與 net)，先前這裡
+        // 硬寫死 'threads.com/'，.net 的紀錄會被顯示成錯誤的網域。
+        var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(e.url);
         if (handleMatch) {
-          urlEl.appendChild(document.createTextNode('threads.com/'));
+          urlEl.appendChild(document.createTextNode('threads.' + handleMatch[1] + '/'));
           var handleEl = document.createElement('b');
-          handleEl.textContent = handleMatch[1];
+          handleEl.textContent = handleMatch[2];
           urlEl.appendChild(handleEl);
-          urlEl.appendChild(document.createTextNode('/' + handleMatch[2]));
+          urlEl.appendChild(document.createTextNode('/' + handleMatch[3]));
         } else {
           urlEl.textContent = e.url;
         }
