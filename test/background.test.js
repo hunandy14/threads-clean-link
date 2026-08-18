@@ -39,6 +39,13 @@ function makeChrome() {
   return chrome;
 }
 
+// code review #5(url 樣式統一):固定回傳一個 CLEAN_POST_URL_PATTERN(排
+// 除法字元類、無長度上限)可以匹配、但嚴格的 POST_URL_PATTERN(白名單字
+// 元類、長度上限 80)不能匹配的 finalUrl——handle 帶 CLEAN_POST_URL_PATTERN
+// 字元類允許、但不在 POST_URL_PATTERN 白名單內的 '~' 字元。
+const SHARE_URL_WEIRD_HANDLE = 'https://www.threads.com/share/WEIRDHANDLE';
+const WEIRD_HANDLE_FINAL_URL = 'https://www.threads.com/@weird~handle/post/AbC123';
+
 // 依 url 回傳固定的 fetch 結果，模擬短連結解析伺服器的轉址行為。
 function makeFetch(calls) {
   return async (url) => {
@@ -51,6 +58,9 @@ function makeFetch(calls) {
     }
     if (url === 'https://www.threads.com/share/NOTAPOST') {
       return { url: 'https://www.threads.com/login', body: { cancel: async () => {} } };
+    }
+    if (url === SHARE_URL_WEIRD_HANDLE) {
+      return { url: WEIRD_HANDLE_FINAL_URL, body: { cancel: async () => {} } };
     }
     throw new Error('unexpected fetch: ' + url);
   };
@@ -915,6 +925,35 @@ test('紀錄:removedParams 超過 20 筆時裁到上限 20 筆', async () => {
   assert.equal(kept[19].value, 'v19');
 });
 
+// code review #1(輸入端筆數上限):sanitizeRemovedParams 的走訪次數本身
+// 要封頂，不能只靠「收滿 20 筆合法項目才停」——用 1000 筆畸形項目(key 為
+// 空字串，必然不合法)開頭、合法項目要到第 21 筆(超過掃描上限)才出現，
+// 驗證這筆遲來的合法項目不會被找到(掃描只看前 20 筆原始項目，不論其中
+// 有幾筆合法)。這與 bridge.js 已經先擋掉超過 20 筆的陣列是兩層獨立防
+// 禦:這裡驗的是 background.js 本身的縱深防禦，不假設呼叫端一定有先過
+// 濾(見 buildMenuHistoryExtra 那條非經 bridge 的呼叫路徑)。
+test('紀錄:removedParams 走訪次數本身封頂(不只收滿筆數封頂)——1000 筆畸形項目後才出現的合法項目不會被找到', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  const garbage = Array.from({ length: 1000 }, () => ({ key: '', value: 'x' })); // 逐筆皆不合法
+  const lateValid = { key: 'late', value: 'shouldNotBeFound' };
+  const removedParams = garbage.concat([lateValid]);
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'strip',
+    removedParams,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(
+    'removedParams' in history[0],
+    false,
+    '掃描只看前 20 筆原始項目，遠在陣列尾端的合法項目不該被找到，整欄應不寫入'
+  );
+});
+
 test('紀錄:kind 為 icon 以外的未知字串仍被白名單拒絕，不記錄、不通知', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
 
@@ -973,6 +1012,78 @@ test('紀錄:右鍵路徑(menu)自身算出 original(短碼連結)與 removedPar
   assert.equal(history[0].removedParams.length, 1);
   assert.equal(history[0].removedParams[0].key, 'xmt');
   assert.equal(history[0].removedParams[0].value, 'AQGabc');
+});
+
+// code review #5(url 樣式統一):extractCleanPostUrl 用的
+// CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字元類、無長度上限)，只用來從
+// 轉址結果「截」出前段乾淨網址;寫入 history 前要再過一次全 repo 單一
+// 權威的 POST_URL_PATTERN(白名單字元類、長度上限 80)。這裡讓 fetch mock
+// 回傳一個帶 '~' 字元(不在白名單內，但也不是 /、?、# 因此不會擋在
+// extractCleanPostUrl 那一關)的 finalUrl，驗證:剪貼簿仍照常寫入(複製
+// 功能本身不受影響)，但不寫入紀錄，且留一句 console.warn。
+test('紀錄:右鍵路徑解析出的網址不符嚴格白名單樣式(POST_URL_PATTERN)時，略過記錄但不影響已複製到剪貼簿的內容', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    bg.click({ linkUrl: SHARE_URL_WEIRD_HANDLE }, { id: 7 });
+    await settle();
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(bg.executeScriptCalls.length, 1, '剪貼簿複製本身不受這個邊界情況影響，應照常寫入');
+  assert.equal(bg.executeScriptCalls[0].args[0], 'https://www.threads.com/@weird~handle/post/AbC123');
+  assert.equal(bg.storage.localSnapshot().history, undefined, '不符嚴格白名單樣式的網址不得寫入紀錄');
+  assert.ok(
+    warnCalls.some((args) => typeof args[0] === 'string' && args[0].includes('[threads-clean-link]')),
+    '應留一句帶前綴的 console.warn'
+  );
+});
+
+// 對照組:handle/post id 長度恰為 80 時仍應通過(邊界不誤殺)，81 則被拒。
+test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 時通過，81 時拒絕(不記錄)', async () => {
+  const cases = [
+    { len: 80, label: '恰為 80，應通過', shouldRecord: true },
+    { len: 81, label: '81，應拒絕', shouldRecord: false },
+  ];
+
+  for (const { len, label, shouldRecord } of cases) {
+    const handle = 'h'.repeat(len);
+    const shareUrl = `https://www.threads.com/share/LEN${len}`;
+    const finalUrl = `https://www.threads.com/@${handle}/post/AbC123`;
+    const chrome = makeChrome();
+    const storage = createChromeStorage({ saveHistory: true });
+    const executeScriptCalls = [];
+    const onClickedListeners = [];
+    chrome.contextMenus.onClicked.addListener = (fn) => onClickedListeners.push(fn);
+    chrome.scripting = {
+      executeScript: async (arg) => {
+        executeScriptCalls.push(arg);
+        return [{ result: { ok: true } }];
+      },
+    };
+    chrome.tabs = { TAB_ID_NONE: -1 };
+    chrome.storage = storage.api;
+    const fetchImpl = async (url) => {
+      if (url === shareUrl) return { url: finalUrl, body: { cancel: async () => {} } };
+      throw new Error('unexpected fetch: ' + url);
+    };
+    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams });
+
+    onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
+    await settle();
+
+    assert.equal(executeScriptCalls.length, 1, `${label}:剪貼簿應照常寫入`);
+    const history = storage.localSnapshot().history;
+    if (shouldRecord) {
+      assert.equal(history && history.length, 1, `${label}:應寫入紀錄`);
+    } else {
+      assert.equal(history, undefined, `${label}:不應寫入紀錄`);
+    }
+  }
 });
 
 // ============================================================

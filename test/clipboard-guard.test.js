@@ -159,6 +159,12 @@ test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async 
 // 修正規格(記錄與淨化脫鉤):autoClean=false(recordOnly)時解析失敗，
 // clipboard-guard.js 自己這端(不只是 bridge.js)也該留一句 console.warn
 // 供除錯，且完全不影響剪貼簿內容(原樣放行使用者複製的內容)。
+//
+// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求改成原生
+// 寫入完成後才發的 fire-and-forget，不再被 writeText() 的回傳值等待
+// ——console.warn 現在發生在 await 之外，這裡補一輪等待讓請求/回應
+// (bridge 模擬器 5ms 延遲)確實跑完。多節點的非同步鏈路在 Windows 計時
+// 器顆粒(~15ms)下 30ms 預設值偶發等不完，放寬到 150ms。
 test('recordOnly(autoClean=false)情境解析失敗時，console.warn 留痕跡且剪貼簿不受影響', async () => {
   const recorder = [];
   const win = createWindow();
@@ -172,6 +178,7 @@ test('recordOnly(autoClean=false)情境解析失敗時，console.warn 留痕跡�
   console.warn = (...args) => warnCalls.push(args);
   try {
     await sandbox.navigator.clipboard.writeText(shareUrl);
+    await settle(150);
   } finally {
     console.warn = originalWarn;
   }
@@ -383,6 +390,13 @@ test('write() 橋接回傳非貼文格式的 cleanUrl 時，視同解析失敗�
 
 // ---- 競態:逾時後才送達的回應，不得觸發第二次原生寫入 ----
 
+// 規格演進(code review #2，UX 修正):此測試預設未推播任何設定，走
+// recordOnly(autoClean=false)路徑——原生寫入現在立刻執行，不再等橋接逾
+// 時，writeText() 本身幾乎立即 resolve;解析請求改成寫入完成後才發的
+// fire-and-forget，2500ms 逾時與 2600ms 遲到回應都發生在這次 await 之
+// 外。測試改成等到遲到回應確實送達之後再檢查，不再靠「writeText 本身
+// 要等滿 2500ms」這個已經不成立的舊時序假設，但要驗的不變量不變:遲到
+// 回應不得觸發第二次原生寫入。
 test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫一次(fail-open 原值)，遲到回應不再觸發第二次寫入', async () => {
   const recorder = [];
   const win = createWindow();
@@ -394,8 +408,9 @@ test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫�
   assert.equal(recorder.length, 1);
   assert.equal(recorder[0], shareUrl);
 
-  // 遲到回應(2600ms 後送達)此時應該已經抵達;確認沒有觸發第二次原生寫入。
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  // 等過 2500ms 逾時 + 2600ms 遲到回應送達(留充裕餘裕)，確認沒有觸發第
+  // 二次原生寫入。
+  await new Promise((resolve) => setTimeout(resolve, 2900));
   assert.equal(recorder.length, 1);
 });
 
@@ -506,6 +521,12 @@ test('guard 端:event.origin 與本頁不符的回應不被採信，落入逾時
 // 常駐一支 message 監聽器接收 TCL_SETTINGS_PUSH，因此基準值改為「基準 +1」:
 // 常駐的設定監聽器是 S6 的設計，每次解析請求自己那支則仍須用完即移除。
 // 防洩漏的原始意圖以「多輪解析後數量不再增長」保留。
+//
+// 規格演進(code review #2，UX 修正):此測試未推播任何設定，走 recordOnly
+// (autoClean=false)路徑，解析請求改成寫入完成後才發的 fire-and-forget，
+// 不再被 writeText() 的回傳值等待——每次呼叫後補一輪等待，讓對應的請
+// 求/回應跑完、監聽器確實移除，不然會在「回應還沒送達」的瞬間量到多一
+// 支暫時性監聽器。
 
 test('guard 端:短碼解析成功後，只剩常駐的設定監聽器(基準+1)，多輪解析不再增長', async () => {
   const recorder = [];
@@ -518,11 +539,13 @@ test('guard 端:短碼解析成功後，只剩常駐的設定監聽器(基準+1)
   assert.equal(win.getMessageListenerCount(), baselineListenerCount + 1);
 
   await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK1');
+  await settle(150);
   assert.equal(win.getMessageListenerCount(), baselineListenerCount + 1);
 
   // 多輪解析後仍是同一支常駐監聽器，不累積洩漏。
   await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK2');
   await sandbox.navigator.clipboard.writeText('https://www.threads.com/share/LEAKCHECK3');
+  await settle(150);
 
   assert.equal(win.getMessageListenerCount(), baselineListenerCount + 1);
 });
@@ -652,7 +675,11 @@ test('S3:autoClean=false 時，writeText 對 ?xmt 與 /share/ 皆原樣放行剪
     assert.equal(notices[0].kind, 'strip');
   }
 
-  // /share/ 分支:需要橋接解析，請求應帶 recordOnly:true；解析成功後才發 notice。
+  // /share/ 分支:需要橋接解析，請求應帶 recordOnly:true；解析成功後才發
+  // notice。規格演進(code review #2，UX 修正):解析請求改成原生寫入完成
+  // 後才發的 fire-and-forget，不再被 writeText() 的回傳值等待，這裡的
+  // settle() 得涵蓋「送出請求→bridge 模擬器回應→notifyCleaned 送出」
+  // 這條多節點鏈路，在 Windows 計時器顆粒(~15ms)下放寬到 150ms。
   {
     const recorder = [];
     const win = createWindow();
@@ -662,7 +689,7 @@ test('S3:autoClean=false 時，writeText 對 ?xmt 與 /share/ 皆原樣放行剪
     await pushSettings(win, settings({ autoClean: false }));
 
     await sandbox.navigator.clipboard.writeText(SHARE_URL);
-    await settle();
+    await settle(150);
 
     assert.equal(recorder[0], SHARE_URL, '剪貼簿應原樣放行，不被改寫');
     assert.equal(requests.length, 1, 'autoClean=false 仍應照樣送出解析請求以便記錄');
@@ -694,7 +721,8 @@ test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等�
     assert.equal(notices[0].kind, 'strip');
   }
 
-  // /share/ 分支。
+  // /share/ 分支。規格演進(code review #2，UX 修正):理由同上方 writeText
+  // 的 /share/ 分支，settle() 放寬到 150ms。
   {
     const recorder = [];
     const win = createWindow();
@@ -707,7 +735,7 @@ test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等�
     ];
 
     await sandbox.navigator.clipboard.write(originalItems);
-    await settle();
+    await settle(150);
 
     assert.equal(recorder[0], originalItems, '剪貼簿應以參照相等原樣放行');
     assert.equal(requests.length, 1, 'autoClean=false 仍應照樣送出解析請求以便記錄');
@@ -738,6 +766,12 @@ test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等�
 // 啟，推播關閉後改變行為」整個倒過來:預設關閉，推播開啟後才改變行為。
 // PM 修正規格(記錄與淨化脫鉤):autoClean=false 不再讓 /share/ 整段早
 // 退——剪貼簿不被改寫，但解析請求(recordOnly:true)仍照樣送出供記錄。
+//
+// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求改成原生
+// 寫入完成後才發的 fire-and-forget，不再被 writeText() 的回傳值等待
+// ——recorder(剪貼簿實際寫入內容)仍可在 await 後立即讀到(原生寫入本
+// 身沒有被延後)，但 requests(fire-and-forget 送出的解析請求)需要多等
+// 一輪才會確實送達 trackResolveRequests 的監聽器，這裡補上 settle()。
 test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(autoClean=false)運作', async () => {
   const recorder = [];
   const win = createWindow();
@@ -750,6 +784,7 @@ test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(autoClean
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[0], XMT_URL);
   assert.equal(recorder[1], SHARE_URL, 'autoClean=false 時剪貼簿不被改寫');
+  await settle(150);
   assert.equal(requests.length, 1, '/share/ 應照樣送出解析請求，即使剪貼簿不會被改寫');
   assert.equal(requests[0].recordOnly, true, '預設值(autoClean=false)下請求應帶 recordOnly:true');
 
@@ -776,6 +811,10 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
   await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[1], SHARE_URL, 'autoClean=false 時剪貼簿不被改寫');
+  // 規格演進(code review #2，UX 修正):recordOnly 情境的解析請求是
+  // fire-and-forget，這裡多等一輪讓請求確實送達，也順便讓這輪的請求/
+  // 回應在進入下一個 autoClean:true 區塊前跑完，避免跨區塊時序汙染。
+  await settle(150);
   assert.equal(requests.length, 2, 'autoClean=false 仍照樣送出解析請求供記錄，不再整段早退');
   assert.equal(requests[1].recordOnly, true);
 
@@ -824,6 +863,9 @@ test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設
 
 // PM 修正規格(記錄與淨化脫鉤):autoClean=false 時 /share/ 剪貼簿不被改
 // 寫，但仍照樣送出解析請求供記錄，requests.length 不再是 0。
+//
+// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求是
+// fire-and-forget，settle(150) 讓每次的請求確實送達再檢查數量。
 test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   const recorder = [];
   const win = createWindow();
@@ -834,6 +876,7 @@ test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   // 先以合法管道關閉 autoClean。
   await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle(150);
   assert.equal(recorder[0], SHARE_URL);
   assert.equal(requests.length, 1, 'autoClean=false 仍照樣送出解析請求供記錄');
 
@@ -845,6 +888,7 @@ test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   });
   await settle();
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle(150);
 
   assert.equal(recorder[1], SHARE_URL, '偽造來源不得覆蓋既有合法設定，剪貼簿仍不被改寫');
   assert.equal(requests.length, 2, '設定仍維持 autoClean=false，第二次複製一樣照樣送出解析請求');
@@ -880,6 +924,9 @@ test('S8:origin 與本頁不符的 TCL_SETTINGS_PUSH 必須完全忽略，設定
 
 // PM 修正規格(記錄與淨化脫鉤):autoClean=false 時 /share/ 剪貼簿不被改
 // 寫，但仍照樣送出解析請求供記錄，requests.length 不再是 0。
+//
+// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求是
+// fire-and-forget，settle(150) 讓每次的請求確實送達再檢查數量。
 test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', async () => {
   const recorder = [];
   const win = createWindow();
@@ -889,6 +936,7 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
   // 先以合法管道關閉 autoClean。
   await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle(150);
   assert.equal(recorder[0], SHARE_URL);
   assert.equal(requests.length, 1, 'autoClean=false 仍照樣送出解析請求供記錄');
 
@@ -900,9 +948,124 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
   });
   await settle();
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle(150);
 
   assert.equal(recorder[1], SHARE_URL, '偽造 origin 不得覆蓋既有合法設定，剪貼簿仍不被改寫');
   assert.equal(requests.length, 2, '設定仍維持 autoClean=false，第二次複製一樣照樣送出解析請求');
+});
+
+// ============================================================
+// code review #2(UX 修正):autoClean 關閉(新預設)時剪貼簿寫入不得被解
+// 析壓後。S3/S6/S8 已經覆蓋「recordOnly 情境解析成功/失敗後仍照樣記
+// 錄」的最終結果，這裡專門補「時序特性本身」與 saveHistory 交叉的兩個
+// 象限:
+//   1. 原生寫入是否真的立即完成，不受橋接逾時拖累(直接量測耗時)。
+//   2. autoClean=false 且 saveHistory=false 時，整個解析請求是否真的
+//      被省略(不浪費網路)——這個象限 S3/S6/S8 都沒有覆蓋到，因為它們
+//      的 settings() 預設 saveHistory 缺席(沿用 true)。
+//   3. 原生寫入被拒時，不該再浪費一次解析請求(寫入都失敗了，沒有記錄
+//      的意義)。
+// autoClean=true 那一側行為完全不變，已有既有測試覆蓋，不重複驗證。
+// ============================================================
+
+test('code review #2:autoClean 關閉時，writeText 的原生寫入不被橋接逾時拖累，幾乎立即完成', async () => {
+  const recorder = [];
+  const win = createWindow();
+  installBridgeSim(win, 'timeout'); // 逾時 2500ms 才會 fail-open(若寫入還在等它的話)
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: false }));
+  const shareUrl = 'https://www.threads.com/share/NODELAY01';
+
+  const startedAt = Date.now();
+  await sandbox.navigator.clipboard.writeText(shareUrl);
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(recorder[0], shareUrl);
+  assert.ok(elapsed < 500, `原生寫入不得被 2.5 秒橋接逾時拖累，實際耗時 ${elapsed}ms`);
+});
+
+test('code review #2:write() 在 autoClean 關閉時同樣不被橋接逾時拖累', async () => {
+  const recorder = [];
+  const win = createWindow();
+  installBridgeSim(win, 'timeout');
+  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+  await pushSettings(win, settings({ autoClean: false }));
+  const originalItems = [
+    new FakeClipboardItem({ 'text/plain': new Blob(['https://www.threads.com/share/NODELAY02'], { type: 'text/plain' }) }),
+  ];
+
+  const startedAt = Date.now();
+  await sandbox.navigator.clipboard.write(originalItems);
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(recorder[0], originalItems);
+  assert.ok(elapsed < 500, `原生寫入不得被 2.5 秒橋接逾時拖累，實際耗時 ${elapsed}ms`);
+});
+
+test('code review #2:autoClean 與 saveHistory 皆關閉時，writeText 完全不送出解析請求(省網路)', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: false, saveHistory: false }));
+
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle(150);
+
+  assert.equal(recorder[0], SHARE_URL, '剪貼簿仍應原樣放行');
+  assert.equal(requests.length, 0, 'saveHistory 也關閉時，解析結果反正不會被記錄，應直接省略請求');
+});
+
+test('code review #2:write() 在 autoClean 與 saveHistory 皆關閉時同樣不送出解析請求', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteRaw(recorder), win);
+  await pushSettings(win, settings({ autoClean: false, saveHistory: false }));
+  const originalItems = [
+    new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+  ];
+
+  await sandbox.navigator.clipboard.write(originalItems);
+  await settle(150);
+
+  assert.equal(recorder[0], originalItems);
+  assert.equal(requests.length, 0);
+});
+
+test('code review #2:autoClean 關閉、saveHistory 開啟(預設)時，解析請求照樣送出且成功後仍記錄——對照組驗證 saveHistory 開關確實生效', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: false, saveHistory: true }));
+
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  await settle(150);
+
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(requests.length, 1, 'saveHistory 開啟時解析請求應照樣送出');
+  assert.equal(notices.length, 1, '解析成功後應照樣記錄');
+  assert.equal(notices[0].cleanUrl, CLEAN_POST_URL);
+});
+
+test('code review #2:recordOnly 情境下原生寫入被拒時，不再浪費一次解析請求', async () => {
+  const rejectError = new Error('NotAllowedError: native writeText rejected');
+  const callCounter = { count: 0 };
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(rejectingWriteText(rejectError, callCounter), win);
+  await pushSettings(win, settings({ autoClean: false }));
+
+  await assert.rejects(
+    () => sandbox.navigator.clipboard.writeText(SHARE_URL),
+    (err) => err === rejectError
+  );
+  await settle(150);
+
+  assert.equal(callCounter.count, 1, '原生寫入只呼叫一次');
+  assert.equal(requests.length, 0, '寫入本身就失敗了，不該再浪費一次解析請求');
 });
 
 // ============================================================
@@ -1091,6 +1254,46 @@ test('F 案:多個查詢參數時，removedParams 逐一列出(不只抓第一�
   assert.equal(notices[0].removedParams[0].value, 'AQG0abc');
   assert.equal(notices[0].removedParams[1].key, 'utm_source');
   assert.equal(notices[0].removedParams[1].value, 'ig');
+});
+
+// code review #3(fragment 誤判修正):hash 片段內容本身合法含有 '?' 字元
+// 時(例如前端路由常見的 '#x?y=1')，不得被誤判為查詢字串——修正前
+// parseRemovedParams 對整段 tail 直接 indexOf('?')，會把 hash 裡的
+// '?y=1' 誤判出一筆根本不存在的假參數 {key:'y', value:'1'}。
+test('code review #3:hash 片段內容含 "?" 時(如 "#x?y=1")不得誤判出假查詢參數', async () => {
+  const urlWithTrickyHash = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7#x?y=1';
+  const recorder = [];
+  const win = createWindow();
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true }));
+
+  await sandbox.navigator.clipboard.writeText(urlWithTrickyHash);
+  await settle();
+
+  assert.equal(recorder[0], 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7', 'hash 應被剝除，網址本體不受影響');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].removedParams, undefined, '只有 hash、沒有真正的查詢參數，removedParams 不得出現假資料');
+});
+
+// 對照組:query 在前、hash 在後(標準順序)的正常情境不受修正影響，仍應
+// 正確剝出查詢參數，不因為改成「先切 hash 再找 query」而誤傷。
+test('code review #3:對照組——query 在前、hash 在後的正常輸入仍正確剝出查詢參數', async () => {
+  const urlWithQueryAndHash = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7?xmt=AQG0abc#section';
+  const recorder = [];
+  const win = createWindow();
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true }));
+
+  await sandbox.navigator.clipboard.writeText(urlWithQueryAndHash);
+  await settle();
+
+  assert.equal(recorder[0], 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].removedParams.length, 1);
+  assert.equal(notices[0].removedParams[0].key, 'xmt');
+  assert.equal(notices[0].removedParams[0].value, 'AQG0abc');
 });
 
 test('R1-2:解析逾時後才送達的遲到結果，不得觸發通知(防 timeout race 假通知)', async () => {
