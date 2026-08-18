@@ -324,7 +324,7 @@
             if (typeof event.preventDefault === 'function') event.preventDefault();
           }
 
-          var container = el.closest ? el.closest('[data-pressable-container]') : null;
+          var container = el.closest ? el.closest('div[data-pressable-container]') : null;
           if (!container) {
             console.warn('[threads-clean-link] 找不到貼文容器，略過複製');
             return;
