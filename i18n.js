@@ -31,7 +31,9 @@
 
       // ---- popup ----
       ppAutoClean: '自動淨化分享按鈕',
-      ppNotify: '成功時顯示通知',
+      // 0.5.0 方案甲:popup 新增「貼文複製按鈕」開關(postCopyEnabled)，
+      // 排在自動淨化之後、導航列之前。
+      popPostCopyLabel: '貼文複製按鈕',
       ppHistorySettings: '紀錄與設定',
       ppFooter: '盡力而為，處理失敗不影響原功能。',
 
@@ -62,6 +64,10 @@
       opNotifyDesc: '失敗通知不受影響，一律顯示',
       opSaveName: '保存淨化紀錄',
       opSaveDesc: '僅存於本機，上限 1,000 筆，自動汰舊',
+      // 0.5.0 方案甲:與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關
+      // 說明(popup 只留精簡標籤)。
+      opPostCopyName: '貼文複製按鈕',
+      opPostCopyDesc: '在貼文互動列顯示複製連結按鈕',
 
       // ---- options:紀錄清單 ----
       opHistoryTitle: '淨化紀錄',
@@ -86,6 +92,9 @@
       opDeviceNote: '紀錄僅保存於這台裝置',
       opCopyTitle: '複製乾淨網址',
       opDeleteTitle: '刪除這筆',
+      // 0.5.0 方案甲:紀錄卡片化後新增「開啟貼文」動作(<a target=_blank
+      // rel=noopener>)，複製/刪除沿用既有 opCopyTitle/opDeleteTitle。
+      opOpenTitle: '開啟貼文',
 
       // ---- options:匯入對話框與 toast ----
       opImportTitle: '匯入紀錄',
@@ -114,25 +123,16 @@
       iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
 
-      // ---- 0.5.0 貼文收藏庫:互動列書籤 icon 與 options 收藏分頁共用 ----
+      // ---- 0.5.0 方案甲(歷史即收藏，撤獨立收藏分頁):互動列書籤 icon
+      // (post-icon.js，另一車道)仍在用 favIconTooltip/favSaved/favRemoved/
+      // favFull，此檔刻意不動 post-icon.js，故保留這 4 個 key；favTabLabel/
+      // favEmpty/favExport/favImport/favCount/favImportDesc/favToast*/
+      // favCopy/favOpenPost/favRemove(options 收藏分頁專用)已隨分頁移除，
+      // 一併刪除;favContextLost 為孤兒提示，移交複製路徑使用，保留。
       favIconTooltip: '收藏貼文',
       favSaved: '已加入收藏',
       favRemoved: '已取消收藏',
       favFull: '收藏已滿(500 筆上限)',
-      favTabLabel: '收藏',
-      favEmpty: '還沒有收藏，到貼文按書籤試試',
-      favExport: '匯出收藏',
-      favImport: '匯入收藏',
-
-      // ---- options:收藏分頁卡片牆(0.5.0)----
-      favCopy: '複製連結',
-      favOpenPost: '開啟貼文',
-      favRemove: '移除收藏',
-      favCount: '收藏 {n}/{max}',
-      favImportDesc: '選擇先前匯出的收藏 .json 檔，或直接貼上內容;與現有收藏以 id 去重合併，上限 500 筆，超出剩餘容量的部分會略過(不擠掉既有收藏)。',
-      favToastExported: '已下載收藏備份檔',
-      favToastImported: '已匯入 {n} 筆收藏',
-      favToastImportedSkip: '已匯入 {n} 筆收藏，略過 {m} 筆(重複、格式不符或已達上限)',
       // 擴充功能更新時，service worker 的舊連線會失效(context invalidated);
       // 頁面端呼叫 chrome.* API 失敗時顯示此提示，請使用者重新整理頁面。
       favContextLost: '擴充功能已更新，請重新整理頁面',
@@ -151,7 +151,7 @@
       bgUnexpected: 'Unexpected error. Please try again later.',
 
       ppAutoClean: 'Auto-clean the share button',
-      ppNotify: 'Notify on success',
+      popPostCopyLabel: 'Post copy button',
       ppHistorySettings: 'History & settings',
       ppFooter: 'Best-effort — failures never break the original copy feature.',
 
@@ -179,6 +179,8 @@
       opNotifyDesc: 'Failure notifications always show regardless',
       opSaveName: 'Keep cleaning history',
       opSaveDesc: 'Local only, capped at 1,000 entries (oldest pruned)',
+      opPostCopyName: 'Post copy button',
+      opPostCopyDesc: 'Show a copy-link button on posts’ action row',
 
       opHistoryTitle: 'Cleaning history',
       opMoreTitle: 'More actions',
@@ -202,6 +204,7 @@
       opDeviceNote: 'History never leaves this device',
       opCopyTitle: 'Copy clean URL',
       opDeleteTitle: 'Delete entry',
+      opOpenTitle: 'Open post',
 
       opImportTitle: 'Import history',
       opImportDesc: 'Pick a previously exported .json file or paste its content; merged with existing entries, deduped by URL.',
@@ -231,19 +234,6 @@
       favSaved: 'Saved',
       favRemoved: 'Removed from favorites',
       favFull: 'Favorites full (500 limit)',
-      favTabLabel: 'Favorites',
-      favEmpty: 'No favorites yet — tap the bookmark on a post',
-      favExport: 'Export favorites',
-      favImport: 'Import favorites',
-
-      favCopy: 'Copy link',
-      favOpenPost: 'Open post',
-      favRemove: 'Remove favorite',
-      favCount: 'Favorites {n}/{max}',
-      favImportDesc: 'Pick a previously exported favorites .json file or paste its content; merged with existing favorites and deduped by id, capped at 500 — entries beyond the remaining capacity are skipped (existing favorites are never evicted).',
-      favToastExported: 'Favorites backup downloaded',
-      favToastImported: 'Imported {n} favorites',
-      favToastImportedSkip: 'Imported {n}, skipped {m} (duplicate, invalid, or at capacity)',
       favContextLost: 'Extension updated — please refresh the page',
     },
   };
