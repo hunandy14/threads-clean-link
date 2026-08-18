@@ -129,15 +129,14 @@ curl -X POST https://oauth2.googleapis.com/token \
 
 - **CI(`release.yml`)自動做的事**:用 refresh token 換一次性的 access token，把該版本的 zip 用 `PUT` 上傳到 Chrome Web Store 成為**新版本草稿**;上傳成功後，緊接著呼叫 `publish` API 自動送審，過審後 Chrome Web Store 會自動正式上架。
 - **為什麼改成自動送審**:發布把關的時機已經前移到 PR 合併進 main 那一刻——PR 審過、合併了就代表這個版本已經決定要發，主控台上再多一道「手動點提交審查」不再帶來額外的品質把關價值。
-- **兩個例外，仍要走手動**:
-  1. **新增權限的版本**:改用 `workflow_dispatch` 的 `skip_publish` 開關(只打包/上傳草稿，略過自動送審)，或乾脆先不合併進 main，改到開發者主控台手動送審並親自填寫新權限的使用理由文案——這段文案自動化沒辦法幫你編。
-  2. **想自己控制上架時機**時同理:用 `skip_publish` 讓 CI 這一輪只更新草稿，改天想送審時再到主控台手動按提交審查。
-- 所以現在看到 CI 印出「已成功送出審查」，代表這個版本已經進了 Google 的審查隊列，不需要你再做任何事;只有前述兩種例外情境才需要你上主控台手動操作。
+- **新增權限的版本會被自動攔下，不需要你自己記得勾選**:`skip_publish` 這個手動開關終究是「提醒」，push 觸發時根本沒有畫面可以勾——真正把關的是送審步驟前的「檢查是否新增權限」這一步:它抓上一個版本 tag 的 `manifest.json`，跟這次的 `manifest.json` 比對四個欄位——`permissions`、`host_permissions`、`optional_permissions`、`optional_host_permissions`——以及 `content_scripts[*].matches` 的聯集(比對邏輯見 `tools/check-new-permissions.py`)。只比對前兩個欄位曾經被滲透測試繞過:改 `optional_permissions`，或完全不動任何 permission 欄位、只在 `content_scripts` 裡新增 match pattern 擴大生效網域，都不會被舊版邏輯抓到，因此擴大成這五個比對面向。只要偵測到新增項目，就印出 `::warning::` 並自動跳過送審步驟(草稿仍會照常上傳，只是不會呼叫 `publish`)。這種情況下請至開發者主控台手動送審，並親自填寫新權限的使用理由文案——這段文案自動化沒辦法幫你編。第一次發版(沒有上一個 tag 可比對)時這一關會直接放行，不會誤擋。這一關刻意寫成 fail-closed:只有明確判定「無新增」時才放行送審，比對步驟若因故沒跑(output 是空值)一律視同有新權限、擋下送審，不會因為防線本身出狀況而誤放行。
+- **`skip_publish` 仍然保留，用於你想自己控制上架時機**:用 `workflow_dispatch` 的 `skip_publish` 讓 CI 這一輪只更新草稿、略過自動送審，改天想送審時再到主控台手動按提交審查，跟是否新增權限無關。
+- 所以現在看到 CI 印出「已成功送出審查」，代表這個版本已經進了 Google 的審查隊列，不需要你再做任何事;只有偵測到新權限、或你自己開了 `skip_publish` 這兩種情境才需要你上主控台手動操作。
 
 ## 重要限制與常見錯誤
 
 - **v0.1.0 審查完成前，API 會拒收**:如本文件開頭所述，第一版必須手動上架。在那之前跑這個 CI 步驟(就算四把憑證都設好了)，上傳呼叫會失敗，錯誤訊息通常會指出項目不存在或沒有權限。
 - **審查中無法上傳新草稿**:如果前一個版本正在 Google 審查中，此時再上傳新版本草稿可能會被 API 拒絕(常見錯誤訊息類似「目前無法更新這個項目，因為它正在審查中」)。這種情況等審查結果出來(不論通過或退回)再重新觸發一次即可，`release.yml` 會把這類錯誤挑選過的說明欄位印出來，不會吞掉。
-- **重複送審(ITEM_PENDING_REVIEW)**:如果草稿上傳成功，但送審當下前一版本仍在審查隊列中，`publish` 回應的 status 會含 `ITEM_PENDING_REVIEW`。`release.yml` 把這種情況視為可重試、不算失敗——印出 `::warning::` 但不會讓整個 workflow 變紅，因為草稿本身已經上傳成功，等前一版審查有結果後重新觸發一次即可。
+- **重複送審(ITEM_PENDING_REVIEW)**:如果草稿上傳成功，但送審當下前一版本仍在審查隊列中，`publish` 回應的 status 會含 `ITEM_PENDING_REVIEW`。`release.yml` 把這種情況視為可重試、不算失敗——印出 `::warning::` 但不會讓整個 workflow 變紅，因為草稿本身已經上傳成功。補送方式:**前版審查通過後，手動執行 `workflow_dispatch` 的 `upload_only` 模式即可補送本版**(`skip_publish` 保持不勾，讓這次執行連同送審一起重跑)。
 - **refresh token 過期**:見步驟 3 的已知限制，測試中狀態的應用程式核發的 refresh token 是 7 天效期，過期後需要重新走一次步驟 5。
 - **安全性**:四把憑證只存在 GitHub Secrets 裡，`release.yml` 的 log 全程不會 `echo` 或印出 access token、client secret、refresh token 本身;失敗時只印挑選過的錯誤說明欄位，方便除錯又不外洩憑證。access token 由 refresh token 於 job 內即時換得，經 `::add-mask::` 遮罩後以 step output 在同一個 job 內供上傳、送審兩個步驟復用，生命週期僅止於該次 run，不會存成 secret 或跨 run 保留。

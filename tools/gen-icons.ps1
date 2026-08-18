@@ -1,4 +1,4 @@
-<#
+﻿<#
   依品牌來源 SVG(assets/store/icon/app-icon.svg)重新產生擴充功能圖示
   (icons/icon16.png、icon48.png、icon128.png)。
 
@@ -19,12 +19,16 @@
 
 $ErrorActionPreference = 'Stop'
 
-$iconsDir = Join-Path $PSScriptRoot '..' 'icons'
+# Join-Path 一次只接受兩個位置參數(-Path/-ChildPath);多引數的
+# -AdditionalChildPath 是 PS6+ 才有的語法，PS 5.1(Windows 內建版本)會直接
+# 丟例外。改用 [IO.Path]::Combine——純 .NET 方法呼叫，不受 PowerShell 版本
+# 的 cmdlet 參數集限制，多節路徑一次組完，PS 5.1 與 PS6+/pwsh 都能跑。
+$iconsDir = [IO.Path]::Combine($PSScriptRoot, '..', 'icons')
 if (-not (Test-Path $iconsDir)) {
     New-Item -ItemType Directory -Path $iconsDir -Force | Out-Null
 }
 
-$svgPath = Join-Path $PSScriptRoot '..' 'assets' 'store' 'icon' 'app-icon.svg'
+$svgPath = [IO.Path]::Combine($PSScriptRoot, '..', 'assets', 'store', 'icon', 'app-icon.svg')
 if (-not (Test-Path $svgPath)) {
     throw "找不到品牌來源 SVG:$svgPath"
 }
@@ -107,9 +111,25 @@ function New-IconPngFromSvg {
             Remove-Item -Path $OutPath -Force
         }
         $fileUri = 'file:///' + ($tmpHtml -replace '\\', '/')
-        & $Browser --headless=new --disable-gpu --hide-scrollbars `
-            --screenshot="$OutPath" --window-size="$Size,$Size" `
-            --default-background-color=00000000 $fileUri 2>$null | Out-Null
+
+        # 局部把 $ErrorActionPreference 降級成 Continue 再呼叫瀏覽器:chrome
+        # /msedge headless 常態性地把診斷訊息寫到 stderr(不代表失敗)。PS
+        # 5.1(Windows PowerShell)在 $ErrorActionPreference = 'Stop' 下，即
+        # 使這裡已經 2>&1 | Out-Null 把 stderr 併進標準輸出丟棄，仍會把每一
+        # 行 stderr 轉成 NativeCommandError 直接中止腳本(pwsh/PS7 沒有這個
+        # 行為)。用 try/finally 把降級範圍限制在這一次呼叫，執行完立刻還原
+        # 成 Stop，不影響腳本其餘部分的錯誤處理;真正的成功與否交給下面
+        # `Test-Path $OutPath` 判斷產物是否真的寫出來，不會因為放寬
+        # ErrorActionPreference 而漏判實際失敗。
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $Browser --headless=new --disable-gpu --hide-scrollbars `
+                --screenshot="$OutPath" --window-size="$Size,$Size" `
+                --default-background-color=00000000 $fileUri 2>&1 | Out-Null
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
     } finally {
         Remove-Item -Path $tmpHtml -Force -ErrorAction SilentlyContinue
     }
