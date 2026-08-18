@@ -748,7 +748,10 @@ test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗�
   assert.equal(failed.storage.localSnapshot().history, undefined, '沒寫進剪貼簿就不算淨化成功');
 });
 
-test('紀錄:超過 1000 筆上限時裁掉最舊,新紀錄在最前', async () => {
+// 使用者拍板(規格翻轉):紀錄不設上限，原本「超過 1000 筆裁掉最舊」的斷
+// 言改為驗證相反的不變量——已有 1000 筆時再寫一筆，變成 1001 筆，原本
+// 最舊的一筆(seed 末筆)必須完整保留、不得被裁掉。
+test('紀錄:不設上限，已有 1000 筆時再寫一筆變成 1001 筆，最舊的一筆仍完整保留', async () => {
   const seed = Array.from({ length: 1000 }, (_, i) => ({
     url: `https://www.threads.com/@seeduser/post/P${i}`,
     kind: 'share',
@@ -763,7 +766,50 @@ test('紀錄:超過 1000 筆上限時裁掉最舊,新紀錄在最前', async () 
   await settle();
 
   const history = bg.storage.localSnapshot().history;
-  assert.equal(history.length, 1000, '上限 1000 筆');
+  assert.equal(history.length, 1001, '不設上限，1000 筆基礎上再寫一筆應變成 1001 筆');
   assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '新紀錄插在最前');
-  assert.equal(history[999].url, seed[998].url, '最舊的一筆(seed 末筆)被裁掉');
+  assert.equal(history[1000].url, seed[999].url, '最舊的一筆(seed 末筆)完整保留，不得被裁掉');
+});
+
+// 使用者拍板:紀錄不設上限之後，長期使用可能真的把 chrome.storage.local
+// 的容量配額(未申請 unlimitedStorage 權限時仍有總量上限)寫爆。配額失敗
+// 要優雅降級:console.warn(帶 [threads-clean-link] 前綴)、不重試、不丟例
+// 外，且不影響複製/淨化等主功能持續運作。
+test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級——console.warn、不重試、不影響主功能', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  const originalSet = bg.storage.local.set;
+  let setCallCount = 0;
+  bg.storage.local.set = () => {
+    setCallCount += 1;
+    return Promise.reject(new Error('QUOTA_BYTES quota exceeded'));
+  };
+
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => {
+    warnCalls.push(args);
+  };
+  try {
+    bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+    await settle();
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(setCallCount, 1, '配額失敗不得重試');
+  assert.ok(
+    warnCalls.some(
+      (args) => typeof args[0] === 'string' && args[0].includes('[threads-clean-link]') && args[0].includes('配額')
+    ),
+    '應以 [threads-clean-link] 前綴 console.warn 配額訊息'
+  );
+  assert.equal(bg.storage.localSnapshot().history, undefined, '寫入失敗這筆紀錄本來就沒有落地，snapshot 維持原狀');
+
+  // 對照組:配額問題排除後(換回正常的 set)，複製/淨化等主功能繼續正常運作，
+  // 不因剛才那次配額失敗而卡住或損壞。
+  bg.storage.local.set = originalSet;
+  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle();
+  assert.equal(bg.executeScriptCalls.length, 1, '配額失敗不影響右鍵複製等主功能持續運作');
+  assert.equal(bg.storage.localSnapshot().history.length, 1, '排除配額問題後，新的紀錄應能正常寫入');
 });

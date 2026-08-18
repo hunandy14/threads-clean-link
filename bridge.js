@@ -110,6 +110,13 @@
     if (typeof data.url !== 'string' || !data.url) return;
 
     var requestId = data.requestId;
+    // 記錄與淨化脫鉤(修正規格):recordOnly 由 clipboard-guard.js 依
+    // autoClean 是否關閉決定並隨請求帶上——true 代表這次解析純粹是為了
+    // 記錄(剪貼簿不會被改寫，使用者的複製動作本身沒有壞掉)，解析失敗時
+    // 不該用頁內 toast 嚇使用者，改成 console.warn 就好；autoClean 開啟
+    // (recordOnly=false)時失敗 toast 維持現狀不變。非布林值一律視為
+    // false(保守方向:預設仍是原本的「失敗要有頁內提示」)。
+    var recordOnly = data.recordOnly === true;
 
     function reply(result) {
       try {
@@ -128,6 +135,16 @@
       }
     }
 
+    // 失敗時的信號分流:recordOnly 情境靜默(只留 console.warn 供除錯，不
+    // 打斷使用者)，非 recordOnly(autoClean 開啟)維持既有的頁內失敗 toast。
+    function handleFailure(reason) {
+      if (recordOnly) {
+        console.warn('[threads-clean-link] recordOnly 解析失敗(剪貼簿未受影響，僅略過記錄)', reason);
+      } else {
+        notifyResolveFailureToast(reason);
+      }
+    }
+
     try {
       chrome.runtime.sendMessage({ type: 'resolveShare', url: data.url }, function (response) {
         // chrome.runtime.lastError：SW 可能剛好休眠中被喚醒失敗、或訊息通道已
@@ -136,7 +153,7 @@
         if (lastErr) {
           var lastErrReason = String((lastErr && lastErr.message) || lastErr);
           reply({ ok: false, reason: lastErrReason });
-          notifyResolveFailureToast(lastErrReason);
+          handleFailure(lastErrReason);
           return;
         }
         if (response && response.ok && typeof response.cleanUrl === 'string') {
@@ -144,13 +161,13 @@
         } else {
           var reason = (response && response.reason) || 'no-response';
           reply({ ok: false, reason: reason });
-          notifyResolveFailureToast(reason);
+          handleFailure(reason);
         }
       });
     } catch (e) {
       // sendMessage 同步丟例外（例如擴充功能情境已失效）：直接回報失敗。
       reply({ ok: false, reason: 'bridge-exception' });
-      notifyResolveFailureToast('bridge-exception');
+      handleFailure('bridge-exception');
     }
   });
 
