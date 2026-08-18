@@ -372,3 +372,278 @@ test('renderList:threads.net 的紀錄如實顯示 .net,不誤植為 .com', asyn
   const textParts = urlEl.children.map((c) => c.textContent);
   assert.deepEqual(textParts, ['threads.net/', '@user_net', '/post/AbC123']);
 });
+
+// ============================================================
+// 0.5.0 貼文收藏庫:options 頁「收藏」分頁卡片牆
+// ============================================================
+
+const FAV_URL_A = 'https://www.threads.com/@usera/post/AbC123_-xyz';
+const FAV_URL_B = 'https://www.threads.com/@user.b/post/DeF456';
+const FAV_URL_NET = 'https://www.threads.net/@user_net/post/AbC123';
+
+// ---- 純函式:sanitizeFavorites ----
+
+test('sanitizeFavorites:非陣列→空;形狀不對的項目(id/url 非字串、at 非有限數字、選填欄位型別不符)逐筆丟棄', () => {
+  assert.deepEqual(options.sanitizeFavorites(null), []);
+  assert.deepEqual(options.sanitizeFavorites('junk'), []);
+
+  const cleaned = options.sanitizeFavorites([
+    { id: '@usera/post/AbC123_-xyz', url: FAV_URL_A, at: 1 }, // 合法
+    { id: 42, url: FAV_URL_B, at: 1 }, // id 非字串
+    { id: '@x/post/y', url: FAV_URL_B, at: 'NaN' }, // at 非有限數字
+    { id: '@x/post/y', url: FAV_URL_B, at: 1, author: 123 }, // author 非字串
+    { id: '@x/post/y', url: FAV_URL_B, at: 1, excerpt: null }, // excerpt 非字串
+    null,
+  ]);
+  assert.deepEqual(
+    cleaned.map((e) => e.id),
+    ['@usera/post/AbC123_-xyz']
+  );
+});
+
+// 縱深防禦(PM 審查後補):url 額外過 FAVORITE_URL_PATTERN 形狀驗證——
+// buildFavoriteCard 的 openLink.href = e.url 是唯一的 URL sink，讀取階段
+// 就該擋掉形狀不對的 url，不依賴「寫入端永遠沒漏」的假設。
+test('sanitizeFavorites:url 形狀不對(非 threads 網域、缺 /post/ 區段、夾帶非法字元等)的條目整筆丟棄', () => {
+  const cleaned = options.sanitizeFavorites([
+    { id: '@usera/post/AbC123_-xyz', url: FAV_URL_A, at: 1 }, // 合法
+    { id: '@evil/post/x', url: 'https://www.evil.com/@evil/post/x', at: 1 }, // 非 threads 網域
+    { id: '@user/post', url: 'https://www.threads.com/@user/post', at: 1 }, // 缺貼文 id
+    { id: '@user/post/x', url: 'not-a-url', at: 1 }, // 完全不是網址
+    { id: '@user/post/x', url: 'https://www.threads.com/@user/post/x<y>', at: 1 }, // 夾帶非法字元
+  ]);
+  assert.deepEqual(
+    cleaned.map((e) => e.id),
+    ['@usera/post/AbC123_-xyz']
+  );
+});
+
+// ---- 純函式:buildFavoritesExportPayload ----
+
+test('buildFavoritesExportPayload:輸出 app/version/exportedAt/entries 形狀，選填欄位只在為字串時才輸出', () => {
+  const payload = options.buildFavoritesExportPayload(
+    [
+      { id: '@a/post/1', url: FAV_URL_A, at: 1, author: 'A', handle: '@a', excerpt: 'hi', extra: 'junk' },
+      { id: '@b/post/2', url: FAV_URL_B, at: 2 },
+    ],
+    '2026-08-18T00:00:00.000Z'
+  );
+
+  assert.equal(payload.app, 'threads-clean-link');
+  assert.equal(payload.version, 1);
+  assert.equal(payload.exportedAt, '2026-08-18T00:00:00.000Z');
+  assert.deepEqual(payload.entries[0], {
+    id: '@a/post/1',
+    url: FAV_URL_A,
+    at: 1,
+    author: 'A',
+    handle: '@a',
+    excerpt: 'hi',
+  });
+  assert.deepEqual(payload.entries[1], { id: '@b/post/2', url: FAV_URL_B, at: 2 });
+});
+
+// ---- 純函式:mergeImportedFavorites ----
+
+test('mergeImportedFavorites:url 錨定驗證與正規化、id 一律從 url 重新導出(不信任匯入檔自帶的 id)', () => {
+  const result = options.mergeImportedFavorites(
+    [],
+    [{ id: 'spoofed-id', url: `${FAV_URL_A}/?xmt=AQGabc`, at: 500 }],
+    1000
+  );
+  assert.equal(result.added, 1);
+  assert.equal(result.skipped, 0);
+  assert.equal(result.merged[0].id, '@usera/post/AbC123_-xyz', 'id 應從 url 重新導出，不採信匯入檔的 id 欄位');
+  assert.equal(result.merged[0].url, FAV_URL_A, 'url 應正規化(去除尾隨斜線/query)');
+});
+
+test('mergeImportedFavorites:依 id 去重、at 缺失或非法時補 now、無效 url 一律略過', () => {
+  const existing = [{ id: '@usera/post/AbC123_-xyz', url: FAV_URL_A, at: 100 }];
+  const imported = [
+    { url: FAV_URL_A, at: 999 }, // id 與現有重複 → 略過
+    { url: FAV_URL_B }, // at 缺失 → now
+    { url: `${FAV_URL_B}/extra` }, // 尾隨額外路徑段 → 網址不合法，略過
+    { notUrl: true }, // 形狀不對 → 略過
+  ];
+
+  const result = options.mergeImportedFavorites(existing, imported, 12345);
+  assert.equal(result.added, 1);
+  assert.equal(result.skipped, 3);
+  assert.deepEqual(
+    result.merged.map((e) => e.id),
+    ['@user.b/post/DeF456', '@usera/post/AbC123_-xyz'],
+    '新到舊排序;at 缺失補的 now(12345)大於既有的 100，故排最前'
+  );
+  assert.equal(result.merged[0].at, 12345);
+});
+
+test('mergeImportedFavorites:author/handle 截斷至 100 字元、excerpt 截斷至 2000 字元，非字串欄位整欄丟棄', () => {
+  const result = options.mergeImportedFavorites(
+    [],
+    [
+      {
+        url: FAV_URL_A,
+        at: 1,
+        author: 'A'.repeat(150),
+        handle: 'H'.repeat(150),
+        excerpt: 'E'.repeat(2500),
+      },
+      {
+        url: FAV_URL_B,
+        at: 1,
+        author: 12345,
+        handle: ['@x'],
+        excerpt: { text: 'hi' },
+      },
+    ],
+    1000
+  );
+
+  assert.equal(result.added, 2);
+  const truncated = result.merged.find((e) => e.id === '@usera/post/AbC123_-xyz');
+  assert.equal(truncated.author.length, 100);
+  assert.equal(truncated.handle.length, 100);
+  assert.equal(truncated.excerpt.length, 2000);
+
+  const dropped = result.merged.find((e) => e.id === '@user.b/post/DeF456');
+  assert.deepEqual(Object.keys(dropped).sort(), ['at', 'id', 'url'], '非字串型別的選填欄位應整欄不寫入');
+});
+
+// 上限策略(自行裁量，PM 覆核):匯入不得擠掉既有收藏，超出剩餘容量的匯入
+// 項目一律計入 skipped——刻意不同於淨化紀錄 mergeImportedEntries 的「裁到
+// 上限、汰舊留新」。
+test('mergeImportedFavorites:已存在 499 筆時，匯入 3 筆只收 1 筆(剩餘容量)，其餘計入 skipped，既有收藏一筆都不擠掉', () => {
+  const existing = Array.from({ length: 499 }, (_, i) => ({
+    id: `@seed/post/P${i}`,
+    url: `https://www.threads.com/@seed/post/P${i}`,
+    at: 1000 + i,
+  }));
+  const imported = [
+    { url: FAV_URL_A, at: 5000 },
+    { url: FAV_URL_B, at: 6000 },
+    { url: 'https://www.threads.com/@user_c/post/GhI789', at: 7000 },
+  ];
+
+  const result = options.mergeImportedFavorites(existing, imported, 99999);
+  assert.equal(result.added, 1, '只有剩餘的 1 個容量會被用掉');
+  assert.equal(result.skipped, 2, '超出剩餘容量的匯入項目計入 skipped，不做截斷式汰舊');
+  assert.equal(result.merged.length, options.FAVORITES_LIMIT);
+  existing.forEach((e) => {
+    assert.ok(
+      result.merged.some((m) => m.id === e.id),
+      `既有收藏 ${e.id} 不應被匯入內容擠掉`
+    );
+  });
+});
+
+// ---- controller smoke:收藏分頁渲染 ----
+
+test('controller smoke:收藏分頁渲染卡片牆——有 author/excerpt、僅 handle、降級顯示網址三種形狀，計數格式正確', async () => {
+  const favorites = [
+    {
+      id: '@usera/post/AbC123_-xyz',
+      url: FAV_URL_A,
+      author: 'Dafu',
+      handle: '@dafucoding',
+      excerpt: 'hello world',
+      at: 3000,
+    },
+    { id: '@user.b/post/DeF456', url: FAV_URL_B, handle: '@onlyhandle', at: 2000 },
+    { id: '@user_net/post/AbC123', url: FAV_URL_NET, at: 1000 },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { favorites });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.favGrid.children.length, 3);
+  assert.equal(doc.ids.favCountHint.textContent, '收藏 3/500');
+  assert.equal(doc.ids.favEmptyState.hidden, true);
+
+  // 卡片一:author + handle + excerpt。
+  const card0 = doc.ids.favGrid.children[0];
+  const authorRow0 = card0.children[0];
+  assert.equal(authorRow0.children[0].textContent, 'Dafu');
+  assert.equal(authorRow0.children[1].textContent, '@dafucoding');
+  const excerptEl0 = card0.children[1];
+  assert.equal(excerptEl0.textContent, 'hello world');
+  assert.equal(excerptEl0.className, 'fav-excerpt');
+
+  // 卡片二:只有 handle，無 excerpt → 不渲染 fav-excerpt 節點。
+  const card1 = doc.ids.favGrid.children[1];
+  const authorRow1 = card1.children[0];
+  assert.equal(authorRow1.children.length, 1, '無 author 時作者列只有 handle 一個子節點');
+  assert.equal(authorRow1.children[0].textContent, '@onlyhandle');
+  assert.equal(card1.children[1].className, 'fav-foot', '無 excerpt 時作者列後直接接卡尾');
+
+  // 卡片三:無 author/handle → 降級顯示網址(比照紀錄列樣式，threads.net 如實顯示)。
+  const card2 = doc.ids.favGrid.children[2];
+  const urlNode2 = card2.children[0];
+  assert.equal(urlNode2.className, 'fav-url');
+  assert.deepEqual(
+    urlNode2.children.map((c) => c.textContent),
+    ['threads.net/', '@user_net', '/post/AbC123']
+  );
+
+  // 每張卡片的卡尾動作固定三顆:複製／開啟(<a target=_blank rel=noopener>)／移除。
+  const actions0 = card0.children[2].children[1];
+  assert.equal(actions0.children.length, 3);
+  const openLink0 = actions0.children[1];
+  assert.equal(openLink0.tag, 'a');
+  assert.equal(openLink0.href, FAV_URL_A);
+  assert.equal(openLink0.target, '_blank');
+  assert.equal(openLink0.rel, 'noopener');
+});
+
+test('controller smoke:setFavorites(儲存變動接線層呼叫)即時刷新卡片牆與計數', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { favorites: [] });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.favGrid.children.length, 0);
+  assert.equal(doc.ids.favEmptyState.hidden, false, '空收藏應顯示空狀態');
+  assert.equal(doc.ids.favCountHint.textContent, '收藏 0/500');
+
+  controller.setFavorites([{ id: '@usera/post/AbC123_-xyz', url: FAV_URL_A, at: 1 }]);
+
+  assert.equal(doc.ids.favGrid.children.length, 1);
+  assert.equal(doc.ids.favEmptyState.hidden, true);
+  assert.equal(doc.ids.favCountHint.textContent, '收藏 1/500');
+});
+
+test('controller smoke:分頁 tab 初始狀態——歷史檢視顯示、收藏檢視收合，兩顆 tab 各自標出 on/off', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, {});
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.historyView.hidden, false);
+  assert.equal(doc.ids.favoritesView.hidden, true);
+  assert.equal(doc.ids.tabHistory.classList.contains('on'), true);
+  assert.equal(doc.ids.tabFavorites.classList.contains('on'), false);
+});

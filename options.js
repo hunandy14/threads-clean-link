@@ -26,6 +26,22 @@
   // 吻合才收。
   var POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}$/i;
 
+  // 0.5.0 貼文收藏庫:storage.local key/上限/欄位長度上限，與 background.js
+  // 的 FAVORITES_KEY/FAVORITES_LIMIT/FAVORITES_AUTHOR_MAX/
+  // FAVORITES_EXCERPT_MAX 對齊——options.js 與 background.js 是各自獨立
+  // 載入的腳本，常數無法共用模組，這裡照抄同一份數值，任一邊調整都要記得
+  // 同步另一邊。
+  var FAVORITES_KEY = 'favorites';
+  var FAVORITES_LIMIT = 500;
+  var FAVORITES_AUTHOR_MAX = 100;
+  var FAVORITES_EXCERPT_MAX = 2000;
+
+  // 收藏匯入的網址驗證/正規化樣式，與 background.js 的 FAVORITE_URL_PATTERN
+  // 同一套規則(白名單字元類 + 長度上限，額外容忍尾隨斜線／query／hash);
+  // group 1 = 正規化後的乾淨網址，group 2 = 導出的 id(@user/post/id)。
+  var FAVORITE_URL_PATTERN =
+    /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}))\/?(?:[?#].*)?$/i;
+
   var KINDS = {
     share: { key: 'opKindShare', icon: '#i-link' },
     strip: { key: 'opKindStrip', icon: '#i-scissors' },
@@ -118,6 +134,109 @@
     return { merged: merged.slice(0, HISTORY_LIMIT), added: added, skipped: skipped };
   }
 
+  // ---- 0.5.0 貼文收藏庫:純函式 ----
+
+  // 從 storage 讀出的收藏清單防禦性整形:非陣列→空;逐筆丟掉形狀不對的
+  // 項目(id/url 非字串、at 非有限數字);選填欄位(author/handle/excerpt)
+  // 若存在但型別不是字串，整筆捨棄——形狀不對的資料不強行修補，與
+  // sanitizeEntries 的防禦原則一致。
+  //
+  // url 額外用 FAVORITE_URL_PATTERN 做形狀驗證(縱深防禦，PM 審查後補):
+  // 渲染層 buildFavoriteCard 的 openLink.href = e.url 是本檔唯一的 URL
+  // sink，不該仰賴「寫入端(background.js/匯入合併)永遠沒漏」這個假設——
+  // 萬一 storage.local 被外部竄改或未來寫入路徑出現疏漏，形狀不對的 url
+  // 在讀取階段就整筆丟棄，不會流到 <a href> 或複製到剪貼簿。
+  function sanitizeFavorites(list) {
+    if (!Array.isArray(list)) return [];
+    return list.filter(function (e) {
+      if (!e || typeof e.id !== 'string' || typeof e.url !== 'string') return false;
+      if (!FAVORITE_URL_PATTERN.test(e.url)) return false;
+      if (typeof e.at !== 'number' || !isFinite(e.at)) return false;
+      if (Object.prototype.hasOwnProperty.call(e, 'author') && typeof e.author !== 'string') return false;
+      if (Object.prototype.hasOwnProperty.call(e, 'handle') && typeof e.handle !== 'string') return false;
+      if (Object.prototype.hasOwnProperty.call(e, 'excerpt') && typeof e.excerpt !== 'string') return false;
+      return true;
+    });
+  }
+
+  // 選填欄位截斷:非字串一律回傳 undefined(呼叫端據此決定整欄不寫入),
+  // 字串則截斷至長度上限，與 background.js 的 sanitizeFavoriteField 同規則。
+  function sanitizeFavoriteField(value, max) {
+    return typeof value === 'string' ? value.slice(0, max) : undefined;
+  }
+
+  function buildFavoritesExportPayload(favorites, exportedAt) {
+    return {
+      app: 'threads-clean-link',
+      version: 1,
+      exportedAt: exportedAt,
+      entries: favorites.map(function (e) {
+        var out = { id: e.id, url: e.url, at: e.at };
+        if (typeof e.author === 'string') out.author = e.author;
+        if (typeof e.handle === 'string') out.handle = e.handle;
+        if (typeof e.excerpt === 'string') out.excerpt = e.excerpt;
+        return out;
+      }),
+    };
+  }
+
+  // 收藏匯入合併:url 過 FAVORITE_URL_PATTERN 白名單並正規化、id 一律從
+  // url 重新導出(不信任匯入檔自帶的 id——id 是去重的唯一依據，信任外部
+  // 提供的 id 等於開了偽造去重鍵的後門，與 background.js 的
+  // handleFavoriteToggle 一致);依 id 與現有收藏去重。
+  //
+  // 上限策略(自行裁量，PM 覆核):採「拒收不擠掉既有收藏」，刻意不同於
+  // 淨化紀錄 mergeImportedEntries 的「裁到上限、汰舊留新」——收藏是使用者
+  // 主動典藏的清單，background.js 的 handleFavoriteToggle 對單筆新增的
+  // 既定原則就是滿了直接拒收、絕不擠掉舊收藏，批次匯入延續同一原則:
+  // 既有收藏一筆都不會被匯入內容擠掉，超出剩餘容量的匯入項目一律計入
+  // skipped 並如實在 toast 回報，而非靜默截斷。
+  function mergeImportedFavorites(existing, imported, now) {
+    var seen = {};
+    existing.forEach(function (e) {
+      seen[e.id] = true;
+    });
+    var merged = existing.slice();
+    var added = 0;
+    var skipped = 0;
+
+    imported.forEach(function (raw) {
+      var rawUrl = raw && typeof raw.url === 'string' ? raw.url.trim() : '';
+      var match = FAVORITE_URL_PATTERN.exec(rawUrl);
+      if (!match) {
+        skipped++;
+        return;
+      }
+      var cleanUrl = match[1];
+      var id = match[2];
+      if (seen[id] || merged.length >= FAVORITES_LIMIT) {
+        skipped++;
+        return;
+      }
+
+      var entry = {
+        id: id,
+        url: cleanUrl,
+        at: raw && typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : now,
+      };
+      var author = sanitizeFavoriteField(raw && raw.author, FAVORITES_AUTHOR_MAX);
+      if (author !== undefined) entry.author = author;
+      var handle = sanitizeFavoriteField(raw && raw.handle, FAVORITES_AUTHOR_MAX);
+      if (handle !== undefined) entry.handle = handle;
+      var excerpt = sanitizeFavoriteField(raw && raw.excerpt, FAVORITES_EXCERPT_MAX);
+      if (excerpt !== undefined) entry.excerpt = excerpt;
+
+      seen[id] = true;
+      merged.push(entry);
+      added++;
+    });
+
+    merged.sort(function (a, b) {
+      return b.at - a.at;
+    });
+    return { merged: merged, added: added, skipped: skipped };
+  }
+
   // 統計聚合:總數、各來源數、本週/上週(滾動 7 天)、近 14 天逐「日曆日」
   // 次數(索引 13 = 今天)、最舊一筆時間戳。
   function aggregateStats(entries, nowTs) {
@@ -165,12 +284,14 @@
     };
 
     var entries = [];
+    var favorites = [];
     var locale = 'zh';
     var langPref = null; // null = 未設定,跟隨瀏覽器
     var themePref = 'auto';
     var activeKind = 'all';
     var query = '';
     var pageSize = PAGE_SIZE_DEFAULT;
+    var activeView = 'history'; // 'history' | 'favorites'，與既有紀錄檢視並列的分頁
 
     // 注意:此模組內不得宣告名為 t 的區域變數,以免遮蔽翻譯函式
     // (demo 階段真踩過:var t = createElement(...) 讓整頁渲染炸掉)。
@@ -479,7 +600,27 @@
     }
 
     // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
-    // 紀錄內容源頭是頁面可控管道,禁 innerHTML。
+    // 網址內容源頭是頁面可控管道，禁 innerHTML。淨化紀錄列與收藏卡片的
+    // 降級顯示(無 author/excerpt 時)共用同一份拆解邏輯。
+    function buildUrlNode(url, cls) {
+      var urlEl = document.createElement('div');
+      urlEl.className = cls || 'url';
+      // TLD(com/net)一併捕獲並如實顯示:網址本來就可能來自 threads.net
+      // (POST_URL_PATTERN／FAVORITE_URL_PATTERN 皆同時允許 com 與 net)，
+      // 不可硬寫死 'threads.com/'。
+      var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(url);
+      if (handleMatch) {
+        urlEl.appendChild(document.createTextNode('threads.' + handleMatch[1] + '/'));
+        var handleEl = document.createElement('b');
+        handleEl.textContent = handleMatch[2];
+        urlEl.appendChild(handleEl);
+        urlEl.appendChild(document.createTextNode('/' + handleMatch[3]));
+      } else {
+        urlEl.textContent = url;
+      }
+      return urlEl;
+    }
+
     function renderList() {
       var rowsEl = byId('rows');
       var emptyEl = byId('empty');
@@ -501,21 +642,7 @@
 
         var main = document.createElement('div');
         main.className = 'main';
-        var urlEl = document.createElement('div');
-        urlEl.className = 'url';
-        // TLD(com/net)一併捕獲並如實顯示:紀錄本來就可能來自 threads.net
-        // (POST_URL_PATTERN／KINDS 兩邊都同時允許 com 與 net)，先前這裡
-        // 硬寫死 'threads.com/'，.net 的紀錄會被顯示成錯誤的網域。
-        var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(e.url);
-        if (handleMatch) {
-          urlEl.appendChild(document.createTextNode('threads.' + handleMatch[1] + '/'));
-          var handleEl = document.createElement('b');
-          handleEl.textContent = handleMatch[2];
-          urlEl.appendChild(handleEl);
-          urlEl.appendChild(document.createTextNode('/' + handleMatch[3]));
-        } else {
-          urlEl.textContent = e.url;
-        }
+        var urlEl = buildUrlNode(e.url, 'url');
 
         var meta = document.createElement('div');
         meta.className = 'meta';
@@ -573,11 +700,143 @@
       if (countHint) countHint.textContent = tf('opShowing', { a: visible.length, b: matched.length });
     }
 
+    // ---- 收藏卡片牆 ----
+
+    function persistFavorites(list) {
+      favorites = list;
+      return Promise.resolve(localStore.set({ [FAVORITES_KEY]: list })).catch(function (err) {
+        if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入收藏失敗', err);
+      });
+    }
+
+    // 單張收藏卡片:有 author/handle 時顯示作者列(+ excerpt，兩行截斷);
+    // 兩者皆無時降級顯示網址(比照紀錄列樣式)。無縮圖(刻意，og:image 會
+    // 過期)。卡尾固定放相對時間 + 複製/開啟/移除三個動作。
+    function buildFavoriteCard(e) {
+      var card = document.createElement('div');
+      card.className = 'fav-card';
+
+      var hasAuthor = typeof e.author === 'string' && e.author !== '';
+      var hasHandle = typeof e.handle === 'string' && e.handle !== '';
+      var hasExcerpt = typeof e.excerpt === 'string' && e.excerpt !== '';
+
+      if (hasAuthor || hasHandle) {
+        var authorRow = document.createElement('div');
+        authorRow.className = 'fav-author-row';
+        if (hasAuthor) {
+          var nameEl = document.createElement('span');
+          nameEl.className = 'fav-author-name';
+          nameEl.textContent = e.author;
+          authorRow.appendChild(nameEl);
+        }
+        if (hasHandle) {
+          var handleEl = document.createElement('span');
+          handleEl.className = 'fav-handle';
+          handleEl.textContent = e.handle;
+          authorRow.appendChild(handleEl);
+        }
+        card.appendChild(authorRow);
+        if (hasExcerpt) {
+          var excerptEl = document.createElement('div');
+          excerptEl.className = 'fav-excerpt';
+          excerptEl.textContent = e.excerpt;
+          card.appendChild(excerptEl);
+        }
+      } else {
+        card.appendChild(buildUrlNode(e.url, 'fav-url'));
+      }
+
+      var foot = document.createElement('div');
+      foot.className = 'fav-foot';
+      var timeEl = document.createElement('span');
+      timeEl.className = 'fav-time';
+      timeEl.textContent = relTime(e.at);
+      foot.appendChild(timeEl);
+
+      var actions = document.createElement('div');
+      actions.className = 'fav-actions';
+
+      actions.appendChild(
+        iconBtn('#i-copy', tt('favCopy'), '', function () {
+          var p;
+          try {
+            p = navigator.clipboard.writeText(e.url);
+          } catch (err) {
+            p = Promise.reject(err);
+          }
+          Promise.resolve(p).then(
+            function () {
+              toast(tt('opToastCopied'));
+            },
+            function () {
+              toast(tt('opToastCopyFailed'));
+            }
+          );
+        })
+      );
+
+      // 開啟貼文用 <a target="_blank" rel="noopener">，不是 button——真的
+      // 交給瀏覽器處理開新分頁(可 ctrl/cmd+click 開背景分頁等原生行為)。
+      var openLink = document.createElement('a');
+      openLink.className = 'icon-btn';
+      openLink.title = tt('favOpenPost');
+      openLink.href = e.url;
+      openLink.target = '_blank';
+      openLink.rel = 'noopener';
+      openLink.appendChild(svgUse('#i-external-link'));
+      actions.appendChild(openLink);
+
+      actions.appendChild(
+        iconBtn('#i-trash', tt('favRemove'), 'del', function () {
+          var next = favorites.filter(function (x) {
+            return x.id !== e.id;
+          });
+          persistFavorites(next);
+          renderFavorites();
+          toast(tt('favRemoved'));
+        })
+      );
+
+      foot.appendChild(actions);
+      card.appendChild(foot);
+      return card;
+    }
+
+    function renderFavorites() {
+      var gridEl = byId('favGrid');
+      var emptyEl = byId('favEmptyState');
+      var countEl = byId('favCountHint');
+      if (!gridEl) return;
+
+      gridEl.textContent = '';
+      favorites.forEach(function (e) {
+        gridEl.appendChild(buildFavoriteCard(e));
+      });
+
+      if (emptyEl) emptyEl.hidden = favorites.length > 0;
+      if (countEl) countEl.textContent = tf('favCount', { n: favorites.length, max: FAVORITES_LIMIT });
+    }
+
+    // ---- 分頁切換(淨化紀錄 / 收藏) ----
+
+    function setView(view) {
+      activeView = view === 'favorites' ? 'favorites' : 'history';
+      var historyView = byId('historyView');
+      var favoritesView = byId('favoritesView');
+      if (historyView) historyView.hidden = activeView !== 'history';
+      if (favoritesView) favoritesView.hidden = activeView !== 'favorites';
+      var tabHistory = byId('tabHistory');
+      var tabFavorites = byId('tabFavorites');
+      if (tabHistory) tabHistory.classList.toggle('on', activeView === 'history');
+      if (tabFavorites) tabFavorites.classList.toggle('on', activeView === 'favorites');
+    }
+
     function renderAll() {
       applyI18nDom();
       var stats = renderStats();
       renderChart(stats);
       renderList();
+      renderFavorites();
     }
 
     // ---- 選單/對話框/工具列佈線 ----
@@ -739,6 +998,99 @@
       });
     }
 
+    // 收藏分頁的 ⋯ 選單(匯出/匯入)+ 匯入對話框，佈線模式照抄 bindToolbar
+    // 對應段落(獨立的 DOM id，兩份選單/對話框互不干擾)。
+    function bindFavoritesToolbar() {
+      var favMoreBtn = byId('favMoreBtn');
+      var favMoreMenu = byId('favMoreMenu');
+      function closeFavMenu() {
+        if (favMoreMenu) favMoreMenu.hidden = true;
+        if (favMoreBtn) favMoreBtn.setAttribute('aria-expanded', 'false');
+      }
+      on('favMoreBtn', 'click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        if (!favMoreMenu) return;
+        var opening = favMoreMenu.hidden;
+        favMoreMenu.hidden = !opening;
+        if (favMoreBtn) favMoreBtn.setAttribute('aria-expanded', String(opening));
+      });
+      if (typeof document.addEventListener === 'function') {
+        document.addEventListener('click', function (ev) {
+          var wrap = ev.target && ev.target.closest ? ev.target.closest('.menu-wrap') : null;
+          if (favMoreMenu && !favMoreMenu.hidden && (!wrap || !wrap.contains(favMoreMenu))) closeFavMenu();
+        });
+      }
+
+      // 匯出:直接下載檔案。
+      on('favExportBtn', 'click', function () {
+        closeFavMenu();
+        var payload = buildFavoritesExportPayload(favorites, new Date(now()).toISOString());
+        download('threads-clean-link-favorites.json', JSON.stringify(payload, null, 2));
+        toast(tt('favToastExported'));
+      });
+
+      // 匯入:對話框(選檔或貼上)。
+      var favOverlay = byId('favOverlay');
+      on('favImportBtn', 'click', function () {
+        closeFavMenu();
+        var textEl = byId('favModalText');
+        if (textEl) textEl.value = '';
+        if (favOverlay) favOverlay.hidden = false;
+      });
+      on('favModalClose', 'click', function () {
+        if (favOverlay) favOverlay.hidden = true;
+      });
+      on('favOverlay', 'click', function (ev) {
+        if (favOverlay && ev.target === favOverlay) favOverlay.hidden = true;
+      });
+      on('favModalFile', 'click', function () {
+        var fileInput = byId('favFileInput');
+        if (fileInput && typeof fileInput.click === 'function') fileInput.click();
+      });
+      on('favFileInput', 'change', function () {
+        var fileInput = byId('favFileInput');
+        var f = fileInput && fileInput.files && fileInput.files[0];
+        if (!f || typeof FileReader === 'undefined') return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          var textEl = byId('favModalText');
+          if (textEl) textEl.value = String(reader.result);
+        };
+        reader.readAsText(f);
+        fileInput.value = '';
+      });
+      on('favModalPrimary', 'click', function () {
+        var textEl = byId('favModalText');
+        // 解析階段(JSON 格式 + entries 陣列存在)與淨化紀錄共用同一份純
+        // 函式(parseImportText 不關心條目的內部形狀)，形狀驗證留給
+        // mergeImportedFavorites 逐條把關。
+        var parsed = parseImportText(textEl ? String(textEl.value || '').trim() : '');
+        if (!parsed.ok) {
+          toast(tt(parsed.error === 'badJson' ? 'opToastBadJson' : 'opToastNoEntries'));
+          return;
+        }
+        var result = mergeImportedFavorites(favorites, parsed.entries, now());
+        persistFavorites(result.merged);
+        renderFavorites();
+        if (favOverlay) favOverlay.hidden = true;
+        toast(
+          result.skipped
+            ? tf('favToastImportedSkip', { n: result.added, m: result.skipped })
+            : tf('favToastImported', { n: result.added })
+        );
+      });
+    }
+
+    // 頂部分頁切換(淨化紀錄 / 收藏)。
+    function bindViewTabs() {
+      on('tabHistory', 'click', function () {
+        setView('history');
+      });
+      on('tabFavorites', 'click', function () {
+        setView('favorites');
+      });
+    }
+
     function bindSettings() {
       SETTING_IDS.forEach(function (id) {
         var el = byId(id);
@@ -769,10 +1121,12 @@
     function init() {
       var keys = Object.assign({ langPref: null, themePref: 'auto' }, OPTIONS_DEFAULT_SETTINGS);
       var readSync = Promise.resolve(syncStorage.get(keys));
-      var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [] }));
+      var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [], [FAVORITES_KEY]: [] }));
       return Promise.all([readSync, readLocal]).then(function (results) {
         var settings = results[0] || {};
-        entries = sanitizeEntries(results[1] ? results[1][HISTORY_KEY] : []);
+        var localData = results[1] || {};
+        entries = sanitizeEntries(localData[HISTORY_KEY]);
+        favorites = sanitizeFavorites(localData[FAVORITES_KEY]);
 
         langPref = settings.langPref === 'zh' || settings.langPref === 'en' ? settings.langPref : null;
         locale = i18n.resolveLocale(langPref);
@@ -789,7 +1143,10 @@
         bindSettings();
         bindTopbar();
         bindToolbar();
+        bindFavoritesToolbar();
+        bindViewTabs();
         bindChartTooltip();
+        setView('history');
         renderAll();
       });
     }
@@ -801,7 +1158,13 @@
       renderAll();
     }
 
-    return { init: init, setHistory: setHistory };
+    // 同上，收藏庫版本:互動列書籤 icon 觸發的新增/移除即時反映到卡片牆。
+    function setFavorites(list) {
+      favorites = sanitizeFavorites(list);
+      renderFavorites();
+    }
+
+    return { init: init, setHistory: setHistory, setFavorites: setFavorites };
   }
 
   var api = {
@@ -814,6 +1177,11 @@
     parseImportText: parseImportText,
     mergeImportedEntries: mergeImportedEntries,
     aggregateStats: aggregateStats,
+    FAVORITES_LIMIT: FAVORITES_LIMIT,
+    FAVORITE_URL_PATTERN: FAVORITE_URL_PATTERN,
+    sanitizeFavorites: sanitizeFavorites,
+    buildFavoritesExportPayload: buildFavoritesExportPayload,
+    mergeImportedFavorites: mergeImportedFavorites,
     createOptionsController: createOptionsController,
   };
 
