@@ -19,8 +19,10 @@ on:
       # 使用理由文案(自動送審不會、也不該幫你編這段說明)。這個手動勾選是
       # 「提醒」而非唯一防線——push 觸發時根本沒有畫面可勾，真正的防線是
       # 下面「檢查是否新增權限」那個步驟:它會比對本次與上一版 manifest.json
-      # 的 permissions/host_permissions，偵測到新增就自動跳過送審，不依賴
-      # 人記得勾這個開關。
+      # 的 permissions/host_permissions/optional_permissions/
+      # optional_host_permissions 四個欄位，以及 content_scripts[*].matches
+      # 的聯集(避免只動 content_scripts 擴大生效範圍卻不碰 permissions 陣
+      # 列而繞過檢查)，偵測到新增就自動跳過送審，不依賴人記得勾這個開關。
       skip_publish:
         description: >-
           略過自動送審(publish)，只做打包/上傳草稿。新增權限的版本、或想
@@ -211,9 +213,15 @@ jobs:
       # 自動防線:push 觸發時沒有人會去勾 skip_publish，新增權限的版本若沒
       # 有這一關會被直接自動送審(見 workflow_dispatch.skip_publish 說明旁
       # 的紀律提醒——那只是「提醒」，不是強制)。這裡改用機器比對兜底:抓
-      # 上一個版本 tag 的 manifest.json，跟本次 manifest.json 比對
-      # permissions／host_permissions 兩個陣列，只要有新增項目就設旗標讓
-      # 下面的送審步驟自動跳過，不依賴人記得手動勾選。
+      # 上一個版本 tag 的 manifest.json，跟本次 manifest.json 比對四個權限
+      # 欄位(permissions/host_permissions/optional_permissions/
+      # optional_host_permissions)以及 content_scripts[*].matches 的聯集
+      # (比對邏輯詳見 tools/check-new-permissions.py 檔頭註解——只比
+      # permissions/host_permissions 兩個欄位會被繞過:改
+      # optional_permissions，或不動任何 permission 欄位、只在
+      # content_scripts 加新的 match pattern 擴大生效範圍，都不會被舊版邏
+      # 輯抓到)，只要有新增項目就設旗標讓下面的送審步驟自動跳過，不依賴人
+      # 記得手動勾選。
       - name: 檢查是否新增權限(新增時自動跳過送審)
         id: permcheck
         if: steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)
@@ -252,7 +260,7 @@ jobs:
             echo "::warning::偵測到新權限，自動送審已跳過，請至主控台手動送審並填權限理由(新增項目:$NEW_ITEMS_ONELINE)"
             echo "has_new_permissions=true" >> "$GITHUB_OUTPUT"
           else
-            echo "沒有偵測到新增的 permissions/host_permissions，照常自動送審。"
+            echo "沒有偵測到新增的權限相關欄位，照常自動送審。"
             echo "has_new_permissions=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -261,13 +269,21 @@ jobs:
       # 是機器比對出新權限時自動跳過，兩者任一成立都不送審，改到主控台手
       # 動送審並親自填寫新權限的使用理由文案。
       #
+      # 刻意寫成 fail-closed:條件是 == 'false'(明確確認「無新增」才送審)，
+      # 不是 != 'true'。若 permcheck 步驟本身因為 if 條件不成立而整個被
+      # skip(該 step 的 outcome 是 skipped，has_new_permissions 這個
+      # output 會是空字串)，== 'false' 判定為否、擋下送審;!= 'true' 則會
+      # 誤判為真、照樣送審。空值代表「沒驗證過」，不代表「驗證過沒問題」，
+      # 兩者語意不同，防線本身失效(例如 permcheck 步驟被改壞、被誤刪、或
+      # 未來新增別的觸發路徑忘記接上這個 if)時應該預設擋下而非放行。
+      #
       # access token 復用上一步 cws_upload 的 step output，不重新用
       # refresh token 換發——同一次 run 沒必要換兩次。
       - name: 送審 Chrome Web Store 草稿
         if: >-
           (steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)) &&
           steps.cws_upload.outputs.has_credentials == 'true' &&
-          steps.permcheck.outputs.has_new_permissions != 'true' &&
+          steps.permcheck.outputs.has_new_permissions == 'false' &&
           !(github.event_name == 'workflow_dispatch' && inputs.skip_publish == true)
         env:
           CWS_ACCESS_TOKEN: ${{ steps.cws_upload.outputs.access_token }}
