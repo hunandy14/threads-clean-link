@@ -92,6 +92,13 @@
         if (handle !== undefined) out.handle = handle;
         var excerpt = sanitizeTextField(e.excerpt, ENTRY_EXCERPT_MAX);
         if (excerpt !== undefined) out.excerpt = excerpt;
+        // 0.5.0:seen[]——另一車道(fix/dedup-merge)才會把這個欄位寫進
+        // storage，本分支只負責讓它「路過」不被丟掉(是陣列就留著)，陣列
+        // 內每一筆的形狀驗證交給 buildSeenTimeline 自己把關(缺 at/at 非
+        // 有限數字一律濾掉)，這裡不重複驗證。少這一步的話，即使合併後
+        // storage 真的有 seen，渲染端也永遠讀不到，時間軸鈕會變成永遠打
+        // 不開的死功能。
+        if (Array.isArray(e.seen)) out.seen = e.seen;
         return out;
       });
   }
@@ -217,8 +224,7 @@
   }
 
   // 詳細視窗的「記錄時間」用絕對時間(YYYY-MM-DD HH:mm)，與卡頭的相對時間
-  // (relTime)分開顯示，對齊手機版 formatResolvedTime。手機版的 seen[]
-  // 解析時間軸在擴充功能沒有對應資料，不偽造，整段省略。
+  // (relTime)分開顯示，對齊手機版 formatResolvedTime。
   function formatAbsoluteTime(ts) {
     var d = new Date(ts);
     var pad = function (n) {
@@ -228,6 +234,25 @@
       d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
       ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
     );
+  }
+
+  // 0.5.0:「時間軸」顯示邏輯，對齊手機版 history-detail-dialog.tsx——
+  // seen.length > 1 才顯示時間軸(單筆時主畫面的「記錄時間」已經夠用),
+  // 新到舊排序。另一車道(fix/dedup-merge)才會把 seen:[{at,kind}] 加進
+  // 條目 schema，本分支不含該變更，故防禦寫法:entry.seen 缺席、非陣列，
+  // 或陣列內項目形狀不對(缺 at/at 非有限數字)一律當作不存在，回傳 null
+  // (呼叫端據此決定要不要顯示時間軸鈕)，合併後自然接通不用再改一次。
+  // 來源標籤用既有 KINDS 文案(短碼解析/剪除參數/右鍵還原/貼文按鈕),
+  // 不是手機版的 share/clipboard 二分。
+  function buildSeenTimeline(entry) {
+    var seen = entry && Array.isArray(entry.seen) ? entry.seen : [];
+    var valid = seen.filter(function (r) {
+      return r && typeof r.at === 'number' && isFinite(r.at);
+    });
+    if (valid.length <= 1) return null;
+    return valid.slice().sort(function (a, b) {
+      return b.at - a.at;
+    });
   }
 
   // 統計聚合:總數、各來源數、本週/上週(滾動 7 天)、近 14 天逐「日曆日」
@@ -775,19 +800,25 @@
       return card;
     }
 
-    // ---- 詳細視窗(0.5.0，對齊手機版 history-detail-dialog.tsx)----
+    // ---- 詳細視窗(0.5.0，兩個權威來源逐項對齊:手機版原始碼
+    // history-detail-dialog.tsx/dialog-shell.tsx 定結構與行為，LeafPage
+    // 定案 demo(mlc-card-ogp-demo)的實際 CSS 定間距/字級/圓角/按鈕樣式)----
     //
-    // 版面:卡頭(徽章+相對時間)→ 作者列 → excerpt(15 行截斷，對齊手機版
-    // EXCERPT_DIALOG_LINES)+ 超長時「展開全文」→ 記錄時間(絕對時間)→
-    // 底部動作(複製/開啟/刪除)。
+    // 版面:✕ 關閉鈕(右上，對齊 DialogCloseButton)→ 卡頭(徽章+相對時間)
+    // → 作者列 → excerpt(15 行截斷，對齊 EXCERPT_DIALOG_LINES)+ 超長時
+    // 「展開全文」→ 乾淨網址 kv(標籤在上、數值+複製鈕在下一列，對齊
+    // demo 的 .kv 堆疊排版，不是左右並排)→ 記錄時間 kv(同排版，seen 有
+    // 多筆時多一顆「時間軸」鈕)→ 底部等寬動作列(複製/開啟/刪除，對齊
+    // DialogActions/DialogButton:destructive 只變文字色，不是實心底色)。
+    //
+    // original/removedParams 我們沒存，demo 上那兩列 kv 誠實省略，只留
+    // 乾淨網址一列。
     //
     // 手機版「展開全文」是巢狀開第二層 Modal，理由是「RN 在 iOS 不支援
     // 兄弟層 Modal 並開」——這是 iOS 平台限制，web 沒有這個問題，故改用
     // 原地展開(移除 line-clamp)取代巢狀第二個 overlay，行為等價但實作
-    // 更簡單，PM 已知會此裁量。
-    //
-    // 手機版另有「解析時間軸」(seen[]，多次解析的時間序列):擴充功能的
-    // 條目沒有 seen 資料，此區塊整段省略，不偽造假資料。
+    // 更簡單，PM 已知會此裁量;「時間軸」比照同一個裁量，也用原地開合的
+    // 區塊取代巢狀第二層。
     function openEntryDetail(e) {
       detailEntry = e;
       var overlay = byId('detailOverlay');
@@ -837,8 +868,29 @@
         }
       }
 
+      // 乾淨網址 kv(對齊 demo 的「淨化後連結」列;原始連結/追蹤參數兩列
+      // 我們沒有對應資料，不畫)。
+      var urlValueEl = byId('detailUrlValue');
+      if (urlValueEl) urlValueEl.textContent = e.url;
+
       var recordedTimeEl = byId('detailRecordedTime');
       if (recordedTimeEl) recordedTimeEl.textContent = formatAbsoluteTime(e.at);
+
+      // 時間軸:另一車道(fix/dedup-merge)才會把 seen[] 加進 schema，本
+      // 分支防禦寫法——buildSeenTimeline 對缺席/單筆資料一律回傳 null,
+      // 此時不顯示「時間軸」鈕，主畫面的記錄時間(=at)已經夠用。每次開啟
+      // (含切換到別的條目)都重置成收合狀態，避免上一筆的展開態殘留。
+      var timelineBtn = byId('detailTimelineBtn');
+      var timelineSection = byId('detailTimeline');
+      var timeline = buildSeenTimeline(e);
+      if (timelineSection) {
+        timelineSection.hidden = true;
+        timelineSection.textContent = '';
+      }
+      if (timelineBtn) {
+        timelineBtn.hidden = timeline === null;
+        timelineBtn.textContent = timeline ? tf('opTimelineCount', { n: timeline.length }) : '';
+      }
 
       var openLink = byId('detailOpenLink');
       if (openLink) openLink.href = e.url;
@@ -850,6 +902,24 @@
       var overlay = byId('detailOverlay');
       if (overlay) overlay.hidden = true;
       detailEntry = null;
+    }
+
+    // 時間軸每一列的來源標籤沿用既有 KINDS 文案;kind 不在白名單內(理論
+    // 上不該發生，防禦性處理)就不附標籤，只顯示時間。
+    function buildTimelineRow(record) {
+      var row = document.createElement('div');
+      row.className = 'detail-timeline-row';
+      var timeSpan = document.createElement('span');
+      timeSpan.className = 't';
+      timeSpan.textContent = formatAbsoluteTime(record.at);
+      row.appendChild(timeSpan);
+      if (Object.prototype.hasOwnProperty.call(KINDS, record.kind)) {
+        var kindSpan = document.createElement('span');
+        kindSpan.className = 'k';
+        kindSpan.textContent = tt(KINDS[record.kind].key);
+        row.appendChild(kindSpan);
+      }
+      return row;
     }
 
     function bindDetailDialog() {
@@ -864,14 +934,32 @@
         if (excerptEl) excerptEl.classList.add('expanded');
         if (expandBtn) expandBtn.hidden = true;
       });
+      on('detailUrlCopyBtn', 'click', function () {
+        if (detailEntry) copyEntryUrl(detailEntry);
+      });
+      on('detailTimelineBtn', 'click', function () {
+        var timelineSection = byId('detailTimeline');
+        if (!timelineSection || !detailEntry) return;
+        var opening = timelineSection.hidden;
+        if (opening) {
+          var timeline = buildSeenTimeline(detailEntry) || [];
+          timelineSection.textContent = '';
+          timeline.forEach(function (record) {
+            timelineSection.appendChild(buildTimelineRow(record));
+          });
+        }
+        timelineSection.hidden = !opening;
+      });
       on('detailCopyBtn', 'click', function () {
         if (detailEntry) copyEntryUrl(detailEntry);
       });
       on('detailDeleteBtn', 'click', function () {
         if (detailEntry) deleteEntry(detailEntry);
       });
-      // Esc 關閉:PM 要求的既有 overlay 慣例(既有 overlay/confirmOverlay
-      // 只有點遮罩關閉，沒有 Esc)之外的新增行為，只加在這個新 overlay。
+      // Esc 關閉:兩個權威來源皆支援(手機版 DialogShell 用 Modal 的
+      // onRequestClose,web 沒有對應原生事件，這裡用 keydown 補上同義行為)
+      // ;既有 overlay/confirmOverlay 只有點遮罩關閉，沒有 Esc，新增範圍
+      // 僅限這個新 overlay。
       if (typeof document.addEventListener === 'function') {
         document.addEventListener('keydown', function (ev) {
           if (!ev || ev.key !== 'Escape') return;
@@ -1186,6 +1274,7 @@
     hasCardPreview: hasCardPreview,
     isLongExcerpt: isLongExcerpt,
     buildEntryActions: buildEntryActions,
+    buildSeenTimeline: buildSeenTimeline,
     createOptionsController: createOptionsController,
   };
 

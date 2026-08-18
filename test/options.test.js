@@ -320,6 +320,23 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
   assert.deepEqual(Object.keys(cleaned[1]).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入，但 entry 本身仍保留');
 });
 
+// 0.5.0:seen[] 路過驗證(對齊手機版時間軸資料來源)——另一車道
+// (fix/dedup-merge)才會把這欄真的寫進 storage，本分支先讓 sanitizeEntries
+// 不要把它丟掉，否則合併後渲染端永遠讀不到，時間軸鈕變成打不開的死功能。
+// 陣列內每筆的形狀驗證留給 buildSeenTimeline 自己做，這裡只認「是不是
+// 陣列」。
+test('sanitizeEntries:seen 為陣列時原樣保留，非陣列或缺席則不輸出該欄', () => {
+  const cleaned = options.sanitizeEntries([
+    { url: URL_A, kind: 'share', at: 1, seen: [{ at: 1, kind: 'share' }, { at: 2, kind: 'strip' }] },
+    { url: URL_B, kind: 'share', at: 1, seen: 'not-an-array' },
+    { url: URL_C, kind: 'share', at: 1 },
+  ]);
+
+  assert.deepEqual(cleaned[0].seen, [{ at: 1, kind: 'share' }, { at: 2, kind: 'strip' }]);
+  assert.equal(Object.prototype.hasOwnProperty.call(cleaned[1], 'seen'), false, '非陣列的 seen 不輸出該欄');
+  assert.equal(Object.prototype.hasOwnProperty.call(cleaned[2], 'seen'), false, '缺席的 seen 不輸出該欄');
+});
+
 // ---- 純函式:hasCardPreview ----
 //
 // 與手機版 history-card.tsx 的 hasPreview 邏輯對齊(author 或 excerpt 任一
@@ -344,6 +361,36 @@ test('isLongExcerpt:行數超過 15 行，或字元量超過 15*22=330，任一�
   assert.equal(options.isLongExcerpt(Array(15).fill('line').join('\n')), false, '剛好 15 行不算超標');
   assert.equal(options.isLongExcerpt(''), false, '空字串不是長文');
   assert.equal(options.isLongExcerpt(undefined), false, '非字串輸入不丟例外，回傳 false');
+});
+
+// ---- 純函式:buildSeenTimeline(0.5.0，對齊手機版 history-detail-dialog.tsx
+// 的時間軸——另一車道 fix/dedup-merge 才會把 seen:[{at,kind}] 加進條目
+// schema，本分支防禦寫法:seen 缺席/非陣列/單筆一律回傳 null(呼叫端據此
+// 決定要不要顯示時間軸鈕)，多筆才回傳新到舊排序的陣列)----
+test('buildSeenTimeline:seen 缺席、非陣列或只有一筆時回傳 null(單筆時主畫面的記錄時間已經夠用)', () => {
+  assert.equal(options.buildSeenTimeline({}), null, 'seen 缺席');
+  assert.equal(options.buildSeenTimeline({ seen: 'not-an-array' }), null, 'seen 非陣列');
+  assert.equal(options.buildSeenTimeline({ seen: [] }), null, 'seen 空陣列');
+  assert.equal(options.buildSeenTimeline({ seen: [{ at: 100, kind: 'share' }] }), null, 'seen 只有一筆');
+});
+
+test('buildSeenTimeline:多筆有效紀錄回傳新到舊排序的陣列，形狀不對(缺 at/at 非有限數字)的項目濾掉', () => {
+  const entry = {
+    seen: [
+      { at: 100, kind: 'share' },
+      { at: 300, kind: 'menu' },
+      { at: 200, kind: 'strip' },
+      { at: 'not-a-number', kind: 'share' },
+      { kind: 'share' },
+      null,
+    ],
+  };
+  const timeline = options.buildSeenTimeline(entry);
+  assert.deepEqual(
+    timeline.map((r) => r.at),
+    [300, 200, 100],
+    '新到舊排序，且濾掉 at 非有限數字/缺席與 null 項目'
+  );
 });
 
 // ---- 純函式:buildEntryActions(0.5.0，卡片 ⋮ 選單與詳細視窗底部動作列
@@ -781,6 +828,106 @@ test('controller smoke:詳細視窗的刪除按鈕刪除目前顯示的條目並
 
   assert.equal(doc.ids.rows.children.length, 0, '刪除後卡片牆應重新渲染為空');
   assert.equal(doc.ids.detailOverlay.hidden, true, '刪除目前顯示中的條目應順手關閉詳細視窗');
+});
+
+// 詳細視窗照手機版仿造:乾淨網址列(對齊 demo 的「淨化後連結」kv)——不論
+// 有沒有 author/excerpt 預覽都固定顯示，直接點「詳細視窗照手機版仿造」
+// 任務新增的 detailUrlValue/detailUrlCopyBtn。
+test('controller smoke:詳細視窗固定顯示乾淨網址列，複製按鈕點擊不丟例外', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailUrlValue.textContent, CARD_URL_A);
+  // navigator.clipboard 在這個最小 DOM stub 環境不存在，copyEntryUrl 本身
+  // 用 try/catch 吞掉並改走失敗 toast，這裡只驗證點擊不會讓整條渲染炸掉。
+  assert.doesNotThrow(() => doc.ids.detailUrlCopyBtn.fire('click'));
+});
+
+// 時間軸:單筆(或 seen 缺席，因為本分支還沒接 fix/dedup-merge 的 schema
+// 變更)不顯示時間軸鈕——見 buildSeenTimeline 註解。
+test('controller smoke:seen 缺席或只有一筆時，詳細視窗不顯示時間軸鈕', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailTimelineBtn.hidden, true, 'seen 缺席時不顯示時間軸鈕');
+});
+
+// 時間軸:seen 有多筆(模擬 fix/dedup-merge 合併後的 schema)時顯示時間軸
+// 鈕，點擊後展開，新到舊逐列顯示「時間 + 來源標籤」;再點一次收合。
+test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊展開新到舊逐列顯示時間與來源標籤', async () => {
+  const history = [
+    {
+      url: CARD_URL_A,
+      kind: 'share',
+      at: 3000,
+      seen: [
+        { at: 1000, kind: 'strip' },
+        { at: 3000, kind: 'share' },
+        { at: 2000, kind: 'menu' },
+      ],
+    },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailTimelineBtn.hidden, false, 'seen 有多筆時應顯示時間軸鈕');
+  assert.equal(doc.ids.detailTimelineBtn.textContent, i18n.fmt('zh', 'opTimelineCount', { n: 3 }));
+  assert.equal(doc.ids.detailTimeline.hidden, true, '開啟詳細視窗時時間軸區塊預設收合');
+
+  doc.ids.detailTimelineBtn.fire('click');
+
+  assert.equal(doc.ids.detailTimeline.hidden, false, '點擊時間軸鈕應展開');
+  assert.equal(doc.ids.detailTimeline.children.length, 3);
+  const rows = doc.ids.detailTimeline.children.map((row) => row.children.map((c) => c.textContent));
+  // 絕對時間用本機時區格式化(比照上面「絕對時間格式」的既有慣例，不能
+  // 硬編換算後的字串，換執行機器時區就會炸)，只驗格式與相對新舊排序。
+  rows.forEach((r) => assert.match(r[0], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '每列時間格式 YYYY-MM-DD HH:mm'));
+  assert.deepEqual(
+    rows.map((r) => r[1]),
+    [i18n.t('zh', 'opKindShare'), i18n.t('zh', 'opKindMenu'), i18n.t('zh', 'opKindStrip')],
+    '每列的來源標籤依 kind 對應既有 KINDS 文案，新到舊排序'
+  );
+
+  doc.ids.detailTimelineBtn.fire('click');
+  assert.equal(doc.ids.detailTimeline.hidden, true, '再點一次應收合');
 });
 
 // ============================================================

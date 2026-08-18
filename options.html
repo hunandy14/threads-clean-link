@@ -564,20 +564,75 @@
   .entry-kebab-wrap .icon-btn { width: 28px; height: 28px; }
   .entry-kebab-wrap .menu { min-width: 168px; }
 
-  /* ---- 卡片詳細視窗(0.5.0，對齊手機版 history-detail-dialog.tsx)---- */
-  .modal-detail { max-width: 480px; }
+  /* ---- 卡片詳細視窗(0.5.0)兩個權威來源逐項對齊:
+     - 結構/行為:手機版 history-detail-dialog.tsx + dialog-shell.tsx
+     - 間距/字級/圓角/按鈕樣式:LeafPage 定案 demo(mlc-card-ogp-demo)的
+       實際 CSS(.dialog/.sheet-head/.kv/.linkrow/.copy-btn/.btn)，直接照抄
+       token 數值，不是憑印象重畫。 ---- */
+  .modal-detail {
+    position: relative;
+    max-width: 420px;
+    border-radius: 18px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  /* ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton(top:10,right:10,
+     28x28,radius:8);取代上一輪自製的底部「關閉」按鈕——兩個權威來源都
+     只有右上 ✕ + 點遮罩兩種關法，沒有底部關閉鈕這個設計。 */
+  .detail-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--ink-3);
+    font-size: 15px;
+    line-height: 18px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    z-index: 1;
+  }
+  .detail-close:hover { background: var(--accent-soft); color: var(--accent); }
+  /* sheet-head:demo 的 gap:7px 是字面值，不是 spacing token 的倍數。 */
   .detail-head {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 7px;
     padding-bottom: 12px;
-    margin-bottom: 12px;
     border-bottom: 1px solid var(--grid);
+  }
+  /* 作者列:demo 的 .author/.handle 數值(650/12.5px)與卡片牆現行的
+     .entry-author-name/.entry-handle(600/14px)不同——卡片牆這輪不在
+     範圍內，故另立一組 detail 專屬 class，不動卡片牆既有樣式。 */
+  .detail-author-row { display: flex; align-items: baseline; min-width: 0; }
+  .detail-author-name {
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--ink-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .detail-handle {
+    font-size: 12.5px;
+    font-weight: 400;
+    color: var(--ink-3);
+    margin-left: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
   .detail-excerpt {
     font-size: 13.5px;
-    line-height: 1.48;
-    color: var(--ink-1);
+    line-height: 1.55;
+    color: var(--ink-2);
     display: -webkit-box;
     -webkit-line-clamp: 15;
     -webkit-box-orient: vertical;
@@ -598,18 +653,65 @@
     cursor: pointer;
   }
   .link-btn:hover { text-decoration: underline; }
-  .detail-kv {
+  /* kv:demo 的 .kv 是「標籤在上、數值在下」堆疊排版(flex-direction:
+     column)，不是左右並排——照代碼實作，不是照轉述的「左標籤右數值」。
+     區塊間距靠 .modal-detail 的 gap:12px，不另加每列自己的邊框/留白。 */
+  .detail-kv { display: flex; flex-direction: column; gap: 3px; }
+  .detail-key { font-size: 11px; letter-spacing: 0.05em; color: var(--ink-3); }
+  .detail-value { font-size: 13.5px; line-height: 1.5; color: var(--ink-1); word-break: break-all; }
+  /* linkrow:數值+複製鈕同一列，對齊 demo 的 .linkrow;.ellipsis 讓長網址
+     單行截斷，不擠壓複製鈕。 */
+  .detail-linkrow { display: flex; align-items: center; gap: 8px; }
+  .detail-linkrow .detail-value { flex: 1; }
+  .ellipsis {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal !important;
+  }
+  .copy-btn {
+    appearance: none;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink-3);
+    font: inherit;
+    font-size: 11.5px;
+    padding: 4px 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { background: var(--plane); color: var(--ink-1); }
+  .detail-timeline { display: flex; flex-direction: column; gap: 6px; }
+  .detail-timeline-row {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 0;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--grid);
-    font-size: 12.5px;
+    gap: 8px;
+    font-size: 13.5px;
+    color: var(--ink-1);
   }
-  .detail-key { color: var(--ink-3); }
-  .detail-value { color: var(--ink-1); font-weight: 550; }
+  .detail-timeline-row .k { font-size: 12px; color: var(--ink-3); }
+  /* 底部動作列:對齊 dialog-shell.tsx 的 DialogActions/DialogButton——
+     等寬(flex:1)、outline 邊框、destructive 只變文字色不是實心底色，
+     圓角/padding/字級取自 demo 的 .sheet-actions/.btn。 */
+  .dialog-actions { display: flex; gap: 8px; }
+  .dialog-btn {
+    flex: 1;
+    text-align: center;
+    appearance: none;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: transparent;
+    color: var(--ink-1);
+    font: inherit;
+    font-size: 13px;
+    padding: 9px 0;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+  }
+  .dialog-btn:hover { background: var(--plane); }
+  .dialog-btn.destructive { color: var(--danger); }
 
   footer.about {
     color: var(--ink-3);
@@ -936,21 +1038,26 @@
   </div>
 </div>
 
-<!-- 卡片詳細視窗(0.5.0，對齊手機版 history-detail-dialog.tsx):點卡片
-     本身開啟，Esc 或點遮罩關閉。sr-only 標題供螢幕閱讀器用，視覺上不畫
-     額外標題列，直接從卡頭(徽章/時間)開始;手機版的「解析時間軸」
-     (seen[])在擴充功能沒有對應資料，整段省略，不偽造假資料。 -->
+<!-- 卡片詳細視窗(0.5.0):兩個權威來源逐項對齊——結構/行為照手機版
+     history-detail-dialog.tsx，間距/字級/圓角/按鈕樣式照 LeafPage 定案
+     demo(mlc-card-ogp-demo)的實際 CSS。點卡片本身開啟，✕ 鈕或點遮罩或
+     Esc 關閉。sr-only 標題供螢幕閱讀器用，視覺上不畫額外標題列，直接從
+     卡頭(徽章/時間)開始。original/removedParams 我們沒存，demo 上那兩列
+     誠實省略，只留乾淨網址一列。 -->
 <div class="overlay" id="detailOverlay" hidden>
   <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
     <h3 id="detailTitle" class="sr-only" data-i18n="opDetailTitle">紀錄詳細資訊</h3>
+    <!-- ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton;取代前一版
+         自製的底部「關閉」按鈕，兩個權威來源都沒有這個設計。 -->
+    <button class="detail-close" id="detailClose" data-i18n-title="opClose" title="關閉" aria-label="關閉">✕</button>
     <div class="detail-head">
       <div class="entry-meta">
         <span class="entry-badge" id="detailBadge"></span>
         <span class="entry-time" id="detailTime"></span>
       </div>
-      <div class="entry-author-row" id="detailAuthorRow" hidden>
-        <span class="entry-author-name" id="detailAuthorName"></span>
-        <span class="entry-handle" id="detailHandle"></span>
+      <div class="detail-author-row" id="detailAuthorRow" hidden>
+        <span class="detail-author-name" id="detailAuthorName"></span>
+        <span class="detail-handle" id="detailHandle"></span>
       </div>
       <!-- 15 行截斷，對齊手機版 EXCERPT_DIALOG_LINES;超長時「展開全文」
            原地移除截斷(手機版是巢狀開第二層 Modal，理由是 RN 在 iOS 不
@@ -960,23 +1067,38 @@
       <button class="link-btn" id="detailExpandBtn" hidden data-i18n="opExpandFull">展開全文</button>
       <div id="detailUrlFallback" hidden></div>
     </div>
+
+    <!-- 乾淨網址 kv:標籤在上、數值+複製鈕同一列在下，對齊 demo 的
+         .kv/.linkrow 堆疊排版(不是左標籤右數值並排)。 -->
+    <div class="detail-kv">
+      <span class="detail-key" data-i18n="opUrlLabel">乾淨網址</span>
+      <div class="detail-linkrow">
+        <span class="detail-value ellipsis" id="detailUrlValue"></span>
+        <button class="copy-btn" id="detailUrlCopyBtn" data-i18n="opCopyShort">複製</button>
+      </div>
+    </div>
+
+    <!-- 記錄時間 kv:seen.length > 1(由另一車道 fix/dedup-merge 補上
+         schema)時才出現「時間軸」鈕，防禦寫法見 openEntryDetail/
+         buildSeenTimeline。 -->
     <div class="detail-kv">
       <span class="detail-key" data-i18n="opRecordedTime">記錄時間</span>
-      <span class="detail-value" id="detailRecordedTime"></span>
+      <div class="detail-linkrow">
+        <span class="detail-value" id="detailRecordedTime"></span>
+        <button class="copy-btn" id="detailTimelineBtn" hidden></button>
+      </div>
     </div>
-    <div class="modal-actions">
-      <button class="btn" id="detailCopyBtn">
-        <svg class="icon"><use href="#i-copy"/></svg><span data-i18n="opCopyTitle">複製乾淨網址</span>
-      </button>
-      <a class="btn" id="detailOpenLink" target="_blank" rel="noopener">
-        <svg class="icon"><use href="#i-external-link"/></svg><span data-i18n="opOpenTitle">開啟貼文</span>
-      </a>
-      <button class="btn btn-danger-solid" id="detailDeleteBtn">
-        <svg class="icon"><use href="#i-trash"/></svg><span data-i18n="opDeleteTitle">刪除這筆</span>
-      </button>
-    </div>
-    <div class="modal-actions">
-      <button class="btn" id="detailClose" data-i18n="opClose">關閉</button>
+    <!-- 時間軸展開區:原地開合(取代手機版的巢狀第二層 Modal，理由同展開
+         全文——iOS 平台限制不適用於 web)，新到舊逐筆列「時間 + 來源
+         標籤」，來源標籤沿用既有 kind 文案。 -->
+    <div class="detail-timeline" id="detailTimeline" hidden></div>
+
+    <!-- 底部動作列:對齊 DialogActions/DialogButton，等寬、outline 邊框，
+         destructive 只變文字色(不是實心底色)。 -->
+    <div class="dialog-actions">
+      <button class="dialog-btn" id="detailCopyBtn" data-i18n="opCopyTitle">複製乾淨網址</button>
+      <a class="dialog-btn" id="detailOpenLink" target="_blank" rel="noopener" data-i18n="opOpenTitle">開啟貼文</a>
+      <button class="dialog-btn destructive" id="detailDeleteBtn" data-i18n="opDeleteTitle">刪除這筆</button>
     </div>
   </div>
 </div>
