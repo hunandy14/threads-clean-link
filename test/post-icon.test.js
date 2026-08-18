@@ -296,6 +296,61 @@ test('pickActionRowIndex:候選清單為空或非陣列輸入一律回傳 null�
   assert.equal(pickActionRowIndex(undefined), null);
 });
 
+// ---- buildFavoriteId(0.5.0 貼文收藏庫:從乾淨貼文網址導出收藏用的正規
+// 路徑 id，語意對齊 background.js 的 FAVORITE_URL_PATTERN group 2) ----
+
+test('buildFavoriteId:標準乾淨網址(www + .com)導出 @handle/post/postId', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://www.threads.com/@yuki4382/post/DcDrsdAmhlU'),
+    '@yuki4382/post/DcDrsdAmhlU'
+  );
+});
+
+test('buildFavoriteId:不帶 www、.net 網域同樣可導出 id', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://threads.net/@x/post/abc'),
+    '@x/post/abc'
+  );
+});
+
+test('buildFavoriteId:去除尾隨斜線', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://www.threads.com/@x/post/abc/'),
+    '@x/post/abc'
+  );
+});
+
+test('buildFavoriteId:去除 query 與 hash', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://www.threads.com/@x/post/abc?xmt=1#section'),
+    '@x/post/abc'
+  );
+});
+
+test('buildFavoriteId:非字串輸入一律回傳 null，不丟例外', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(buildFavoriteId(null), null);
+  assert.equal(buildFavoriteId(undefined), null);
+  assert.equal(buildFavoriteId(12345), null);
+});
+
+test('buildFavoriteId:格式不符(非 threads 網域、缺 /post/ 路徑)回傳 null', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(buildFavoriteId('https://evil.example/@x/post/abc'), null);
+  assert.equal(buildFavoriteId('https://www.threads.com/@x/media/abc'), null);
+  assert.equal(buildFavoriteId('not-a-url'), null);
+});
+
 // ============================================================
 // i18n.js 新增 key:iconTooltip(圖示滑鼠提示)、iconCopied(複製成功提示)。
 // zh/en 兩份字典都要有這兩個 key 且非空字串；既有的 zh/en key 集合對齊
