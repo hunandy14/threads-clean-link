@@ -351,6 +351,45 @@ test('buildFavoriteId:格式不符(非 threads 網域、缺 /post/ 路徑)回傳
   assert.equal(buildFavoriteId('not-a-url'), null);
 });
 
+// ---- classifyExcerptCandidate(0.5.0 貼文收藏庫:extractExcerpt 逐段決
+// 策 push／skip／stop 的純函式，PM 審查後修正兩條規則) ----
+
+test('classifyExcerptCandidate:純標點行(如「...」)不是計數字串，應保留為內文(push)，不中止收集', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('...', true), 'push');
+  assert.equal(classifyExcerptCandidate('...', false), 'push');
+});
+
+test('classifyExcerptCandidate:已收集到內文後，正文中單獨成行的時間樣式字串(如「3天」「2026-4-29」)不再被當成時間戳記丟棄，應保留為內文(push)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('3天', true), 'push');
+  assert.equal(classifyExcerptCandidate('2026-4-29', true), 'push');
+});
+
+test('classifyExcerptCandidate:尚未收集到任何內文時，時間樣式字串仍視為時間戳記，略過(skip)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('18小時', false), 'skip');
+  assert.equal(classifyExcerptCandidate('2026-4-29', false), 'skip');
+});
+
+test('classifyExcerptCandidate:計數字串(純數字／千分位逗號／K-M-B 縮寫)一律中止收集(stop)，不論是否已收集到內文', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('97', true), 'stop');
+  assert.equal(classifyExcerptCandidate('2,440', true), 'stop');
+  assert.equal(classifyExcerptCandidate('1.2K', false), 'stop');
+});
+
+test('classifyExcerptCandidate:空字串——已收集到內文時中止(stop)，尚未收集到內文時略過(skip)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('', true), 'stop');
+  assert.equal(classifyExcerptCandidate('', false), 'skip');
+});
+
 // ============================================================
 // i18n.js 新增 key:iconTooltip(圖示滑鼠提示)、iconCopied(複製成功提示)。
 // zh/en 兩份字典都要有這兩個 key 且非空字串；既有的 zh/en key 集合對齊

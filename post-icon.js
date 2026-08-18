@@ -126,6 +126,40 @@
     return match ? match[1] : null;
   }
 
+  // 0.5.0 貼文收藏庫:擷取內文摘要(extractExcerpt)時，逐一判斷候選文字
+  // 段落要 push(當內文)、skip(跳過但繼續看下一個候選)、還是 stop(視為
+  // 內文區段已結束，中止收集)。抽成純函式方便測試，DOM 層的 extractExcerpt
+  // 只負責收集候選文字、呼叫這裡做決策。
+  //
+  // 相對時間戳記("18小時"／"4h"／"2026-4-29" 這類短字串)常以獨立
+  // [dir="auto"] span 呈現，且緊跟在作者名之後、貼文內文之前，擷取內文
+  // 時需要跳過，否則會把時間戳記誤當內文的第一段。PM 審查修正:僅在「尚
+  // 未收集到任何內文」時才套用這條過濾——時間戳記依版面必定出現在內文
+  // 之前，一旦已經開始收集內文，之後若再出現形似「3天」「2026-4-29」的
+  // 字串，那是使用者自己寫的內文(單獨成行)，不該被誤判成時間戳記丟棄。
+  // 涵蓋 zh/en 常見單位字與絕對日期(YYYY-M-D)格式；整串錨定(^...$)避免
+  // 誤傷更長的真實內文。
+  var RELATIVE_TIME_RE =
+    /^(\d+\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)|\d+\s*(秒|分鐘|小時|天|週|周)|\d{4}-\d{1,2}-\d{1,2}|now|Just now|現在|剛剛)$/i;
+
+  // 讚數/回覆數/轉發數這類互動計數，實測格式包含純數字("97")、千分位逗
+  // 號("2,440")、以及可能的 K/M/B 縮寫("1.2K")。內文若掃到這種計數字
+  // 串，視為「內文區段已經結束、進入互動列的計數區」的邊界訊號，中止收
+  // 集。PM 審查修正:要求以數字開頭(`^\d`)，避免內文中單獨成行的純標點
+  // (例如「...」)被誤判成計數而提早截斷——標點不含開頭數字，不會再誤中。
+  var COUNT_LIKE_RE = /^\d[\d,.]*[KMB]?$/i;
+
+  // hasContent:目前是否已經收集到至少一段內文(parts.length > 0)，用來
+  // 決定 RELATIVE_TIME_RE 要不要套用(見上方註解)。text 非字串一律視為空
+  // 字串處理。
+  function classifyExcerptCandidate(text, hasContent) {
+    var normalized = typeof text === 'string' ? text : '';
+    if (COUNT_LIKE_RE.test(normalized)) return 'stop';
+    if (!normalized) return hasContent ? 'stop' : 'skip';
+    if (!hasContent && RELATIVE_TIME_RE.test(normalized)) return 'skip';
+    return 'push';
+  }
+
   // scope(貼文容器或互動列)內是否已經注入過我們的 icon，用來讓注入邏輯
   // 冪等，避免重複插入。scope 缺失或不是帶 querySelector 的物件一律回傳
   // false，不丟例外。
@@ -284,22 +318,9 @@
       // 的 id，不需要這三個欄位)。三者皆為選填，擷取不到就整欄不寫進回
       // 傳物件，由呼叫端決定要不要把該欄位放進 favoriteToggle 訊息——協
       // 定本來就允許缺席(background 端 sanitizeFavoriteField 只處理型別
-      // 為 string 的欄位)。----
-
-      // 相對時間戳記("18小時"／"4h"／"2026-4-29" 這類短字串)常以獨立
-      // [dir="auto"] span 呈現，且緊跟在作者名之後、貼文內文之前，擷取內
-      // 文時需要跳過，否則會把時間戳記誤當內文的第一段。涵蓋 zh/en 常見
-      // 單位字與絕對日期(YYYY-M-D)格式；整串錨定(^...$)避免誤傷真正的
-      // 貼文內文(內文極不可能整段就剛好是這種短樣式)。
-      var RELATIVE_TIME_RE =
-        /^(\d+\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)|\d+\s*(秒|分鐘|小時|天|週|周)|\d{4}-\d{1,2}-\d{1,2}|now|Just now|現在|剛剛)$/i;
-
-      // 讚數/回覆數/轉發數這類互動計數，實測格式包含純數字("97")、千分位
-      // 逗號("2,440")、以及可能的 K/M/B 縮寫("1.2K")。內文若掃到這種計
-      // 數字串，視為「內文區段已經結束、進入互動列的計數區」的邊界訊
-      // 號，中止收集(見 extractExcerpt)。整串錨定，不影響內文中間出現的
-      // 數字(例如「打了 97 折」不會整串只有數字，不會誤判)。
-      var COUNT_LIKE_RE = /^[\d,.]+[KMB]?$/i;
+      // 為 string 的欄位)。RELATIVE_TIME_RE／COUNT_LIKE_RE／
+      // classifyExcerptCandidate 移到檔案頂部的純函式區，供 Node 測試直
+      // 接載入，這裡只呼叫。----
 
       // 與 background.js 的 FAVORITES_EXCERPT_MAX 對齊(PM 核對手機 repo
       // 後裁決的上限)；這裡預先截斷一次，background 端仍會再做一次防禦
@@ -354,11 +375,10 @@
       // ---- 擷取貼文內文摘要:依文件序掃過容器內所有 [dir="auto"] span，
       // 只收「屬於本容器本身」(排除巢狀引用貼文自己的內文)、「不在任何
       // <a> 內」(作者名／時間戳記／引用卡片標題都是整串包在 <a> 裡，內
-      // 文本身不是)的候選;遇到計數字串(COUNT_LIKE_RE)視為內文結束的邊
-      // 界訊號，立即停止收集;已收集到內容後若再遇到空字串，同樣視為邊
-      // 界(部分版面沒有可見計數字串，用空字串兜底)。多段內文(部分貼文
-      // 每行是獨立 span 而非同一個 span 內用 \n 分隔)用 '\n' 接起來。擷
-      // 取不到任何內容回傳 undefined，由呼叫端決定要不要放進訊息。----
+      // 文本身不是)的候選，交給純函式 classifyExcerptCandidate 決定
+      // push／skip／stop(規則見該函式註解)。多段內文(部分貼文每行是獨
+      // 立 span 而非同一個 span 內用 \n 分隔)用 '\n' 接起來。擷取不到任
+      // 何內容回傳 undefined，由呼叫端決定要不要放進訊息。----
       function extractExcerpt(container) {
         try {
           var spans = container.querySelectorAll('[dir="auto"]');
@@ -368,12 +388,9 @@
             if (el.closest && el.closest('div[data-pressable-container]') !== container) continue;
             if (el.closest && el.closest('a')) continue;
             var text = cleanElementText(el);
-            if (COUNT_LIKE_RE.test(text)) break;
-            if (!text) {
-              if (parts.length) break;
-              continue;
-            }
-            if (RELATIVE_TIME_RE.test(text)) continue;
+            var action = classifyExcerptCandidate(text, parts.length > 0);
+            if (action === 'stop') break;
+            if (action === 'skip') continue;
             parts.push(text);
           }
           if (!parts.length) return undefined;
@@ -1218,6 +1235,7 @@
     pickActionRowIndex: pickActionRowIndex,
     filterOwnContainerHrefs: filterOwnContainerHrefs,
     buildFavoriteId: buildFavoriteId,
+    classifyExcerptCandidate: classifyExcerptCandidate,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
