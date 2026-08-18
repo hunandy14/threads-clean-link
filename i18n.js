@@ -21,12 +21,9 @@
       bgFormatError: '轉址結果不是貼文網址，短連結可能已失效或 Threads 網址格式已變動。',
       bgNoTab: '已解析出乾淨網址，但找不到可寫入剪貼簿的分頁:{url}',
       bgClipboardError: '目前分頁無法寫入剪貼簿(可能是瀏覽器限制頁面)，乾淨網址為:{url}',
-      bgSuccess: '已複製乾淨網址:{url}',
-      bgAutoSuccess: '已自動淨化並複製乾淨網址:{url}',
-      // kind:'icon'(貼文互動列複製按鈕，見 post-icon.js)本來就只複製貼文
-      // 原始連結，沒有解析短碼或剪除追蹤參數這類「淨化」動作，沿用
-      // bgAutoSuccess 的「已自動淨化」文案會謊稱做了淨化，故獨立一顆 key。
-      bgIconSuccess: '已複製原始連結:{url}',
+      // 【PM 審查後移除】bgSuccess/bgAutoSuccess/bgIconSuccess(成功類通
+      // 知文案):成功通知整組已拆(R1)，這三顆 key 合併後零讀取端，一併
+      // 清除，不留死 key。
       bgUnexpected: '發生未預期的錯誤，請稍後再試一次。',
 
       // ---- popup ----
@@ -125,16 +122,11 @@
       iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
 
-      // ---- 0.5.0 方案甲(歷史即收藏，撤獨立收藏分頁):互動列書籤 icon
-      // (post-icon.js，另一車道)仍在用 favIconTooltip/favSaved/favRemoved/
-      // favFull，此檔刻意不動 post-icon.js，故保留這 4 個 key；favTabLabel/
-      // favEmpty/favExport/favImport/favCount/favImportDesc/favToast*/
-      // favCopy/favOpenPost/favRemove(options 收藏分頁專用)已隨分頁移除，
-      // 一併刪除;favContextLost 為孤兒提示，移交複製路徑使用，保留。
-      favIconTooltip: '收藏貼文',
-      favSaved: '已加入收藏',
-      favRemoved: '已取消收藏',
-      favFull: '收藏已滿(500 筆上限)',
+      // 【PM 審查後移除】favIconTooltip/favSaved/favRemoved/favFull(互動列
+      // 書籤 icon 文案):R1 合入後書籤 icon 功能已整組移除(方案甲，歷史即
+      // 收藏)，這 4 個 key 合併後零讀取端，一併清除。favContextLost 為孤
+      // 兒提示，已移交複製路徑使用(post-icon.js 的失敗 toast)，保留。
+      //
       // 擴充功能更新時，service worker 的舊連線會失效(context invalidated);
       // 頁面端呼叫 chrome.* API 失敗時顯示此提示，請使用者重新整理頁面。
       favContextLost: '擴充功能已更新，請重新整理頁面',
@@ -147,9 +139,6 @@
       bgFormatError: 'The redirect did not lead to a post URL; the link may be dead or the URL format changed.',
       bgNoTab: 'Resolved the clean URL, but no tab is available for the clipboard write: {url}',
       bgClipboardError: 'This tab cannot accept clipboard writes (possibly a restricted page). Clean URL: {url}',
-      bgSuccess: 'Clean URL copied: {url}',
-      bgAutoSuccess: 'Auto-cleaned and copied: {url}',
-      bgIconSuccess: 'Original link copied: {url}',
       bgUnexpected: 'Unexpected error. Please try again later.',
 
       ppAutoClean: 'Auto-clean the share button',
@@ -230,10 +219,6 @@
       iconTooltip: 'Copy original link',
       iconCopied: 'Original link copied',
 
-      favIconTooltip: 'Save post',
-      favSaved: 'Saved',
-      favRemoved: 'Removed from favorites',
-      favFull: 'Favorites full (500 limit)',
       favContextLost: 'Extension updated — please refresh the page',
     },
   };
