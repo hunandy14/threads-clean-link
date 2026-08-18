@@ -365,14 +365,17 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
 // 紀錄去重合併新增:seen[] 是「先前已經落盤的資料」，讀取階段(sanitizeEntries)
 // 同樣要逐筆 sanitize，偽造/損毀的記錄(at 非數字、kind 不在白名單、非物件)
 // 逐筆丟棄，不因此整個陣列作廢;真的沒有合法記錄剩下時整欄不寫入(缺席不落
-// 空陣列佔位，與 author/handle/excerpt 的慣例一致)。
-test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄，合法記錄仍保留；全丟時整欄不寫入', () => {
+// 空陣列佔位，與 author/handle/excerpt 的慣例一致)。kind 缺席的記錄(手機
+// 版語意的起始種子紀錄，見 background.js 的 mergeHistoryEntry)須視為合法
+// 保留，不得誤殺。
+test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、缺 kind 的種子紀錄視為合法保留；全丟時整欄不寫入', () => {
   const cleaned = options.sanitizeEntries([
     {
       url: URL_A,
       kind: 'share',
       at: 1,
       seen: [
+        { at: 50 }, // 合法(手機版語意的起始種子紀錄，無 kind)
         { at: 100, kind: 'share' }, // 合法
         { at: 'NaN', kind: 'share' }, // at 非數字 → 丟棄
         { at: 200, kind: 'evil' }, // kind 不在白名單 → 丟棄
@@ -386,6 +389,7 @@ test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄，�
 
   const withSeen = cleaned.find((e) => e.url === URL_A);
   assert.deepEqual(withSeen.seen, [
+    { at: 50 },
     { at: 100, kind: 'share' },
     { at: 300, kind: 'icon' },
   ]);

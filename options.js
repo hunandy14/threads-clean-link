@@ -66,11 +66,15 @@
   // 註解):seen[] 是「先前已經落盤的資料」，可能被匯入檔或未來版本的存放
   // 格式汙染，options.js 這側讀取(sanitizeEntries)與匯入
   // (mergeImportedEntries)都是獨立的資料入口，各自要逐筆 sanitize——at
-  // 需為有限數字、kind 需在白名單內，任一不符就整筆丟棄(容忍陣列裡部分
-  // 項目壞掉，不因此整個陣列作廢);白名單直接沿用 KINDS，與 background.js
-  // 的 SEEN_KIND_WHITELIST 是同一組合法值。順便裁到 SEEN_MAX 上限，與
-  // background.js 寫入時的裁切規則對齊(縱深防禦，不假設寫入端永遠沒漏)。
-  // 輸入非陣列一律回傳空陣列。
+  // 需為有限數字，不符就整筆丟棄(容忍陣列裡部分項目壞掉，不因此整個陣列
+  // 作廢)。kind 是選填標籤:background.js 合併時若既有條目缺 seen，會照
+  // 手機版語意補種一筆不帶 kind 的起始紀錄(對齊
+  // `existing.seen ?? [{ at: existing.receivedAt }]`)，這裡要一併容忍，
+  // 不能把合法的種子記錄當成損毀資料丟掉;kind 若有出現則需在白名單內
+  // (直接沿用 KINDS，與 background.js 的 SEEN_KIND_WHITELIST 是同一組合
+  // 法值)，不在白名單就整筆丟棄。順便裁到 SEEN_MAX 上限，與 background.js
+  // 寫入時的裁切規則對齊(縱深防禦，不假設寫入端永遠沒漏)。輸入非陣列一
+  // 律回傳空陣列。
   var SEEN_MAX = 50;
   function sanitizeSeenList(seenList) {
     if (!Array.isArray(seenList)) return [];
@@ -79,6 +83,10 @@
       var record = seenList[i];
       if (!record || typeof record !== 'object') continue;
       if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
+      if (record.kind === undefined) {
+        out.push({ at: record.at });
+        continue;
+      }
       if (!Object.prototype.hasOwnProperty.call(KINDS, record.kind)) continue;
       out.push({ at: record.at, kind: record.kind });
     }

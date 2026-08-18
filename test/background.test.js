@@ -767,9 +767,10 @@ test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗�
 //     值優先、新值缺席沿用舊值;kind 更新為本次來源;seen[] append
 //     {at, kind} 並裁到 50 筆(舊在前新在後)。
 //   - 未命中:新增一筆，seen 為 [{at, kind}] 起始一筆。
-//   - 舊資料沒有 seen 欄位:合併時容忍(當空陣列起算)，不做遷移——與手機
-//     版拿 existing.receivedAt 合成一筆起始紀錄的做法不同，是本檔案規
-//     格明文的刻意簡化(見 background.js 內 mergeHistoryEntry 註解)。
+//   - 舊資料沒有 seen 欄位:合併時照手機版語意補種一筆起始紀錄
+//     [{ at: existing.at }](對齊 existing.seen ?? [{ at:
+//     existing.receivedAt }] 的等效寫法)，種子紀錄不帶 kind，再疊上本
+//     次事件(見 background.js 內 mergeHistoryEntry 註解)。
 // ============================================================
 
 test('紀錄去重合併:視窗內命中時合併為一筆——浮到最前、at 更新、author/handle/excerpt 新值優先缺席沿用舊值、kind 更新為最近一次、seen[] 追加', async () => {
@@ -845,12 +846,19 @@ test('紀錄去重合併:seen[] 累積超過 50 筆時裁到最新 50 筆，捨�
   assert.equal(seen[0].at, seenSeed[1].at, '最舊的一筆(seed[0])被裁掉，陣列開頭往後遞補');
 });
 
-test('紀錄去重合併:視窗內命中但既有條目沒有 seen 欄位(舊資料)時，容忍當空陣列起算，不做遷移', async () => {
+// PM 修訂(規格演進):原本「既有條目沒有 seen 欄位時當空陣列起算，不做
+// 遷移」的規格撤回，改採手機版語意——existing.seen 缺席時補種一筆起始
+// 紀錄 [{ at: existing.at }](對齊手機版 `existing.seen ?? [{ at:
+// existing.receivedAt }]` 的等效寫法)，讓時間軸看得到條目原本第一次出
+// 現的時間;種子紀錄不帶 kind(那一刻沒有對應的來源事件，UI 時間軸端已
+// 容忍缺 kind 標籤)，再疊上本次事件，合併後 seen[] 應有兩筆。
+test('紀錄去重合併:視窗內命中但既有條目沒有 seen 欄位(舊資料)時，照手機語意補種一筆起始紀錄(不帶 kind)，加上本次事件共兩筆', async () => {
   const now = Date.now();
+  const existingAt = now - 60 * 1000;
   const existing = {
     url: CLEANED_NOTICE_CLEAN_URL,
     kind: 'share',
-    at: now - 60 * 1000,
+    at: existingAt,
     // 刻意不帶 seen 欄位，模擬 schema 升級前寫入的舊資料。
   };
   const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
@@ -860,8 +868,11 @@ test('紀錄去重合併:視窗內命中但既有條目沒有 seen 欄位(舊資
 
   const history = bg.storage.localSnapshot().history;
   assert.equal(history.length, 1, '仍應合併為一筆，不因缺少 seen 而改走新增路徑');
-  assert.equal(history[0].seen.length, 1, '缺席的 seen 當空陣列起算，合併後只有本次這一筆(不遷移補一筆舊資料)');
-  assert.equal(history[0].seen[0].kind, 'icon');
+  const seen = history[0].seen;
+  assert.equal(seen.length, 2, '補種一筆起始紀錄，加上本次事件應為兩筆');
+  assert.equal(seen[0].at, existingAt, '種子紀錄的 at 沿用既有條目原本的 at(第一次出現的時間)');
+  assert.equal('kind' in seen[0], false, '種子紀錄不帶 kind，對齊手機版沒有來源標籤的起始記錄');
+  assert.equal(seen[1].kind, 'icon', '本次事件仍照常記 kind');
 });
 
 test('紀錄去重合併:既有條目的 seen[] 若含偽造/損毀資料(at 非數字、kind 不在白名單、非物件)，合併時逐筆 sanitize、不整組作廢', async () => {

@@ -310,18 +310,25 @@ function findDedupIndex(list, url, now) {
   return -1;
 }
 
-// 純函式:seen[] 逐筆 sanitize——at 需為有限數字、kind 需在白名單內，任一
-// 不符就整筆丟棄(容忍陣列裡部分項目壞掉，不因此讓整個陣列作廢)。輸入
-// 非陣列一律回傳空陣列。寫入 storage 前(合併路徑，見 mergeHistoryEntry)
-// 與 options.js 的匯入合併都要過這關，防止偽造/損毀的 seen 資料混進去
-// ——seen 來源是「先前已經落盤的資料」，可能被匯入檔或未來版本的存放格
-// 式汙染，不能照單全收。
+// 純函式:seen[] 逐筆 sanitize——at 需為有限數字，任一不符就整筆丟棄(容
+// 忍陣列裡部分項目壞掉，不因此讓整個陣列作廢)。kind 是選填標籤:缺席時
+// 直接保留(只剩 at)，因為手機版「補種起始紀錄」的種子記錄
+// (`{ at: existing.receivedAt }`，見 mergeHistoryEntry)本來就沒有來
+// 源標籤，UI 時間軸端已經容忍這種缺 kind 的記錄——kind 若有出現則必須
+// 在白名單內，不在白名單就整筆丟棄。輸入非陣列一律回傳空陣列。寫入
+// storage 前(合併路徑，見 mergeHistoryEntry)與 options.js 的匯入合併
+// 都要過這關，防止偽造/損毀的 seen 資料混進去——seen 來源是「先前已經
+// 落盤的資料」，可能被匯入檔或未來版本的存放格式汙染，不能照單全收。
 function sanitizeSeenList(seen) {
   if (!Array.isArray(seen)) return [];
   const out = [];
   for (const record of seen) {
     if (!record || typeof record !== 'object') continue;
     if (typeof record.at !== 'number' || !Number.isFinite(record.at)) continue;
+    if (record.kind === undefined) {
+      out.push({ at: record.at });
+      continue;
+    }
     if (typeof record.kind !== 'string' || SEEN_KIND_WHITELIST.indexOf(record.kind) === -1) continue;
     out.push({ at: record.at, kind: record.kind });
   }
@@ -336,23 +343,23 @@ function sanitizeSeenList(seen) {
 //   - author/handle/excerpt:本次 extra 有值就用本次的，本次缺席才沿用
 //     existing 的舊值(新值優先，但不能讓「這次沒抓到」蓋掉「上次抓到
 //     的」)。
-//   - seen[]:existing.seen 先過 sanitizeSeenList，再 append 本次
-//     {at: now, kind}，裁到最新 SEEN_MAX 筆(捨棄最舊的，陣列順序維持
-//     舊在前新在後)。
-//
-// 【與手機版刻意差異，PM 已知悉並拍板】手機版在 existing.seen 缺席時會
-// 拿 existing.receivedAt 合成一筆起始紀錄再 append
-// (`existing.seen ?? [{ at: existing.receivedAt }]`)，讓時間軸看得到
-// 「這筆條目第一次出現」的時間點；sanitizeSeenList 對非陣列輸入回傳空
-// 陣列，等同「當空陣列起算」，不做這層遷移。代價是 schema 升級前寫入、
-// 本來就沒有 seen 欄位的舊資料，第一次被合併時 seen[] 只會有「這次合
-// 併」這一筆，看不到條目原本第一次出現的時間——這是規格明文要求的簡
-// 化，此處僅如實記錄差異，不是本檔案自行決定。
+//   - seen[]:existing.seen 若已存在(即使是陣列型別、內容需要 sanitize)
+//     就照樣過 sanitizeSeenList;existing.seen 缺席(schema 升級前寫入
+//     的舊資料)時，照手機版語意補種一筆起始紀錄 [{ at: existing.at }]
+//     (PM 修訂:原規格「當空陣列起算」撤回，改採手機版
+//     `existing.seen ?? [{ at: existing.receivedAt }]` 的等效寫法，讓
+//     時間軸看得到條目原本第一次出現的時間;種子記錄不帶 kind，因為那
+//     一刻並沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)，再
+//     append 本次 {at: now, kind}，裁到最新 SEEN_MAX 筆(捨棄最舊的，
+//     陣列順序維持舊在前新在後)。
 function mergeHistoryEntry(existing, url, kind, now, extra) {
   const author = extra && extra.author !== undefined ? extra.author : existing.author;
   const handle = extra && extra.handle !== undefined ? extra.handle : existing.handle;
   const excerpt = extra && extra.excerpt !== undefined ? extra.excerpt : existing.excerpt;
-  const seen = sanitizeSeenList(existing.seen).concat([{ at: now, kind }]).slice(-SEEN_MAX);
+  const priorSeen = Array.isArray(existing.seen)
+    ? sanitizeSeenList(existing.seen)
+    : [{ at: existing.at }];
+  const seen = priorSeen.concat([{ at: now, kind }]).slice(-SEEN_MAX);
 
   const merged = { url, kind, at: now, seen };
   if (author !== undefined) merged.author = author;
