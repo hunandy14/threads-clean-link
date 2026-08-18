@@ -415,6 +415,40 @@ test('guard 端:event.source 非本視窗的回應不被採信，落入逾時 fa
   assert.ok(elapsed >= 2500, `非本視窗來源應被忽略、落入逾時路徑，實際 ${elapsed}ms`);
 });
 
+// 修正:onMessage(TCL_RESOLVE_RES)先前只驗 event.source，未驗 event.origin，
+// 與 bridge.js:29-30 的同款驗證不對稱。這裡比照上一條 event.source 測試，
+// 改用 dispatchRawMessageEvent 偽造一個 source 正確但 origin 錯誤的回應。
+test('guard 端:event.origin 與本頁不符的回應不被採信，落入逾時 fail-open', async () => {
+  const recorder = [];
+  const win = createWindow();
+  win.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || data.type !== 'TCL_RESOLVE_REQ') return;
+    setTimeout(() => {
+      win.dispatchRawMessageEvent({
+        source: win,
+        origin: 'https://evil.example',
+        data: {
+          type: 'TCL_RESOLVE_RES',
+          requestId: data.requestId,
+          ok: true,
+          cleanUrl: CLEAN_POST_URL,
+        },
+      });
+    }, 5);
+  });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  const shareUrl = 'https://www.threads.com/share/ORIGINBAD1';
+
+  const startedAt = Date.now();
+  await sandbox.navigator.clipboard.writeText(shareUrl);
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(recorder.length, 1);
+  assert.equal(recorder[0], shareUrl);
+  assert.ok(elapsed >= 2500, `origin 不符應被忽略、落入逾時路徑，實際 ${elapsed}ms`);
+});
+
 // ---- 解析流程結束後，每次請求的 message 監聽器須正確移除，不累積洩漏 ----
 //
 // 【PM 裁決:S6 期望值調整】原斷言為「解析後回到基準」。v1.1 規格 S6 要求 guard
@@ -686,6 +720,59 @@ test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
 
   assert.equal(recorder[1], SHARE_URL, '偽造來源不得覆蓋既有合法設定');
+  assert.equal(requests.length, 0);
+});
+
+// 修正:TCL_SETTINGS_PUSH 的監聽器先前只驗 event.source，未驗 event.origin，
+// 與 bridge.js:29-30、以及本檔上方 TCL_RESOLVE_RES 的同款驗證不對稱。
+// 比照上兩條 S8 測試的形狀，改偽造一個 source 正確但 origin 錯誤的推播。
+
+test('S8:origin 與本頁不符的 TCL_SETTINGS_PUSH 必須完全忽略，設定不得生效', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+
+  // 偽造 origin、想關掉 autoClean 的推播:必須被忽略，guard 仍以預設值(autoClean=true)淨化。
+  win.dispatchRawMessageEvent({
+    source: win,
+    origin: 'https://evil.example',
+    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: false }) },
+  });
+  await settle();
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  assert.equal(recorder[0], XMT_URL_CLEANED, '偽造 origin 的推播不得生效');
+
+  // 對照組:同樣的內容改由合法管道(origin 相符)下放，必須生效。
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+
+  assert.equal(recorder[1], XMT_URL, '合法 origin 的推播必須生效');
+  assert.equal(requests.length, 0);
+});
+
+test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const requests = trackResolveRequests(win, { respond: true });
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+
+  // 先以合法管道關閉 autoClean。
+  await pushSettings(win, settings({ autoClean: false }));
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+  assert.equal(recorder[0], SHARE_URL);
+  assert.equal(requests.length, 0);
+
+  // 偽造 origin 想把 autoClean 開回來:必須被忽略，設定維持關閉。
+  win.dispatchRawMessageEvent({
+    source: win,
+    origin: 'https://evil.example',
+    data: { type: SETTINGS_PUSH_TYPE, settings: settings({ autoClean: true }) },
+  });
+  await settle();
+  await sandbox.navigator.clipboard.writeText(SHARE_URL);
+
+  assert.equal(recorder[1], SHARE_URL, '偽造 origin 不得覆蓋既有合法設定');
   assert.equal(requests.length, 0);
 });
 

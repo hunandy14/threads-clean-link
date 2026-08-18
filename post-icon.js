@@ -70,6 +70,23 @@
     return null;
   }
 
+  // 從貼文容器內收集到的候選(每個候選帶 href 與「是否直屬本容器」布林
+  // ownContainer)中，過濾出「確實屬於本容器」的 href，依原陣列順序保留。
+  // 排除巢狀在容器內的引用/回覆貼文所貼出的候選(ownContainer 為 false)，
+  // 避免引用貼文誤取到被引文的 permalink——比照 collectActionRowCandidates
+  // 的 closest('div[data-pressable-container]') 巢狀容器防護，同一套判斷
+  // 邏輯搬到純函式讓兩處共用同一個不變量。輸入非陣列、候選形狀不對(缺
+  // href 或非字串 href)一律略過該筆，不丟例外；輸入非陣列直接回傳空陣列。
+  function filterOwnContainerHrefs(candidates) {
+    if (!Array.isArray(candidates)) return [];
+    var out = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var c = candidates[i];
+      if (c && c.ownContainer && typeof c.href === 'string') out.push(c.href);
+    }
+    return out;
+  }
+
   // 以 href 為相對路徑、origin 為基底組出絕對 URL，並去除 query(?...)與
   // hash(#...)。href 非字串、origin 非合法絕對來源、或組不出合法 URL 等
   // 任何非法輸入一律回傳 null，不丟例外(URL 建構子的例外在這裡吞掉)。
@@ -307,17 +324,27 @@
             if (typeof event.preventDefault === 'function') event.preventDefault();
           }
 
-          var container = el.closest ? el.closest('[data-pressable-container]') : null;
+          var container = el.closest ? el.closest('div[data-pressable-container]') : null;
           if (!container) {
             console.warn('[threads-clean-link] 找不到貼文容器，略過複製');
             return;
           }
 
+          // 巢狀容器防護:引用/回覆貼文會巢狀在本容器內，它自己的
+          // a[href*="/post/"] 也會被 querySelectorAll 掃到，若不過濾，
+          // 引用貼文可能誤取到被引文的 permalink。比照
+          // collectActionRowCandidates 的同款判斷:錨點最近的貼文容器
+          // 祖先必須就是目前這個 container 本身才算數。
           var anchors = container.querySelectorAll('a[href*="/post/"]');
-          var hrefs = [];
+          var candidates = [];
           for (var i = 0; i < anchors.length; i++) {
-            hrefs.push(anchors[i].getAttribute('href'));
+            var anchor = anchors[i];
+            var ownContainer = anchor.closest
+              ? anchor.closest('div[data-pressable-container]') === container
+              : true;
+            candidates.push({ href: anchor.getAttribute('href'), ownContainer: ownContainer });
           }
+          var hrefs = filterOwnContainerHrefs(candidates);
 
           var permalink = pickPermalink(hrefs);
           if (!permalink) {
@@ -707,6 +734,7 @@
     buildPostUrl: buildPostUrl,
     hasExistingIcon: hasExistingIcon,
     pickActionRowIndex: pickActionRowIndex,
+    filterOwnContainerHrefs: filterOwnContainerHrefs,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

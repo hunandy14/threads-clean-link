@@ -60,10 +60,12 @@
   }
 
   // S8：來源驗證比照 TCL_RESOLVE_RES 同等級——只信任「本頁面自己發給
-  // 自己」的訊息（event.source 必須是同一個 window）。驗證不過或形狀
-  // 不符的推播完全忽略，不套用任何部分內容，也不影響既有設定。
+  // 自己」的訊息（event.source 必須是同一個 window，event.origin 必須等於
+  // 本頁面 origin，兩者比照 bridge.js 的同款驗證）。驗證不過或形狀不符的
+  // 推播完全忽略，不套用任何部分內容，也不影響既有設定。
   window.addEventListener('message', function (event) {
     if (event.source !== window) return;
+    if (event.origin !== window.location.origin) return;
     var data = event.data;
     if (!data || typeof data !== 'object') return;
     if (data.type !== SETTINGS_PUSH_TYPE) return;
@@ -129,8 +131,11 @@
       }
 
       function onMessage(event) {
-        // 只接受「本頁面自己發給自己」的回應：來源視窗必須是同一個 window。
+        // 只接受「本頁面自己發給自己」的回應：來源視窗必須是同一個 window，
+        // 且 event.origin 必須等於本頁面 origin(比照 bridge.js:29-30 同款
+        // 驗證)。
         if (event.source !== window) return;
+        if (event.origin !== window.location.origin) return;
         var data = event.data;
         if (!data || data.type !== RES_TYPE || data.requestId !== requestId) return;
         if (data.ok && typeof data.cleanUrl === 'string' && data.cleanUrl) {
