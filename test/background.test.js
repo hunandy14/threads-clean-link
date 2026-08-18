@@ -620,6 +620,7 @@ test('紀錄:kind 缺失或非白名單的 cleanedNotice 整則忽略——不�
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL });
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'menu' });
   bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'evil' });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icons' });
   await settle();
 
   assert.equal(bg.storage.localSnapshot().history, undefined, '非法 kind 不得留下任何紀錄');
@@ -952,17 +953,6 @@ test('紀錄:removedParams 走訪次數本身封頂(不只收滿筆數封頂)—
     false,
     '掃描只看前 20 筆原始項目，遠在陣列尾端的合法項目不該被找到，整欄應不寫入'
   );
-});
-
-test('紀錄:kind 為 icon 以外的未知字串仍被白名單拒絕，不記錄、不通知', async () => {
-  const bg = loadBackgroundWithSettings({ saveHistory: true });
-
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icons' });
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'bogus' });
-  await settle();
-
-  assert.equal(bg.storage.localSnapshot().history, undefined, '白名單以外的 kind 不得留下任何紀錄');
-  assert.deepEqual(bg.notifications, [], '白名單以外的 kind 不得發出任何通知');
 });
 
 test('紀錄:saveHistory=false 時自動與右鍵兩條路徑都不記錄', async () => {

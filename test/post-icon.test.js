@@ -75,16 +75,11 @@ test('pickPermalink:排除以 /media 結尾的候選，回傳剩下的那個(不
   assert.equal(pickPermalink([media, post]), post, 'media 排在前面，過濾後順序不受影響');
 });
 
-test('pickPermalink:全部候選都以 /media 結尾時回傳 null', () => {
+test('pickPermalink:全部候選都以 /media 結尾時回傳 null(排除大小寫不敏感，如 /MEDIA)', () => {
   const { pickPermalink } = loadPostIcon();
 
   assert.equal(pickPermalink(['/@x/post/abc/media']), null);
-});
-
-test('pickPermalink:排除 /media 結尾時大小寫不敏感(例如 /MEDIA)', () => {
-  const { pickPermalink } = loadPostIcon();
-
-  assert.equal(pickPermalink(['/@a/post/X/MEDIA']), null);
+  assert.equal(pickPermalink(['/@a/post/X/MEDIA']), null, '大小寫不敏感');
 });
 
 test('pickPermalink:空陣列回傳 null', () => {
@@ -193,31 +188,23 @@ test('buildPostUrl:只帶 query(?xmt=...)時同樣去除', () => {
   );
 });
 
-test('buildPostUrl:href 非字串(null／undefined／數字)一律回傳 null，不丟例外', () => {
+test('buildPostUrl:href 非字串或 origin 非合法絕對來源時一律回傳 null，不丟例外', () => {
   const { buildPostUrl } = loadPostIcon();
 
   assert.equal(buildPostUrl(null, 'https://www.threads.com'), null);
   assert.equal(buildPostUrl(undefined, 'https://www.threads.com'), null);
   assert.equal(buildPostUrl(12345, 'https://www.threads.com'), null);
-});
-
-test('buildPostUrl:origin 非合法絕對來源時回傳 null，不丟例外', () => {
-  const { buildPostUrl } = loadPostIcon();
-
   assert.equal(buildPostUrl('/@x/post/abc', 'not-a-url'), null);
   assert.equal(buildPostUrl('/@x/post/abc', null), null);
   assert.equal(buildPostUrl('/@x/post/abc', undefined), null);
 });
 
-test('buildPostUrl:href 為 javascript: 這類非常規 scheme 時回傳 null，不丟例外', () => {
+// 惡意 href(非常規 scheme／協定相對)一律回傳 null，不得被組成看似合法的
+// 絕對網址——這兩種輸入是頁面 DOM 可控的攻擊面。
+test('buildPostUrl:href 為 javascript: 或 //evil.com/x 這類惡意輸入時回傳 null，不丟例外', () => {
   const { buildPostUrl } = loadPostIcon();
 
   assert.equal(buildPostUrl('javascript:alert(1)', 'https://www.threads.com'), null);
-});
-
-test('buildPostUrl:href 為 //evil.com/x 這類協定相對輸入時回傳 null，不丟例外', () => {
-  const { buildPostUrl } = loadPostIcon();
-
   assert.equal(buildPostUrl('//evil.com/x', 'https://www.threads.com'), null);
 });
 

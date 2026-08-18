@@ -529,7 +529,7 @@ test('F 案:MAIN world 沒帶 original/removedParams 時，轉發的訊息也不
 // 整欄丟棄，不讓垃圾 payload 越過 content script → service worker 的程
 // 序邊界。
 
-test('code review #1:original 超過 MAX_CLEAN_URL_LENGTH(2048)時整欄丟棄，不轉發', async () => {
+test('code review #1:original 超過 MAX_CLEAN_URL_LENGTH(2048)或型別不是字串時整欄丟棄，不轉發', async () => {
   const { win, sentMessages } = loadBridgeForNotice();
 
   win.postMessage({
@@ -539,21 +539,14 @@ test('code review #1:original 超過 MAX_CLEAN_URL_LENGTH(2048)時整欄丟棄�
     original: 'https://x.example/' + 'a'.repeat(2048),
   });
   await settle();
-
   const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
-  assert.equal(notices.length, 1);
   assert.equal(notices[0].original, undefined, '超長 original 應整欄丟棄');
-});
-
-test('code review #1:original 型別不是字串時整欄丟棄，不轉發', async () => {
-  const { win, sentMessages } = loadBridgeForNotice();
 
   win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'strip', original: 12345 });
   await settle();
-
-  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].original, undefined);
+  const notices2 = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices2.length, 2);
+  assert.equal(notices2[1].original, undefined, '非字串 original 應整欄丟棄');
 });
 
 test('code review #1:removedParams 型別不是陣列時整欄丟棄，不轉發', async () => {
