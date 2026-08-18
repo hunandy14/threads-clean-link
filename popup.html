@@ -124,10 +124,11 @@
     color: inherit;
     text-align: left;
   }
+  /* chevron-right(Lucide,inline SVG):顏色跟文字同階(currentColor 繼承
+     .nav-row 的 color: inherit)，垂直置中靠 .setting-row 既有的
+     align-items: center。 */
   .nav-chev {
     color: var(--muted);
-    font-size: 16px;
-    line-height: 1;
     flex-shrink: 0;
   }
   footer {
@@ -149,13 +150,15 @@
       <span class="setting-row-label" data-i18n="ppAutoClean">自動淨化分享按鈕</span>
       <input type="checkbox" id="autoClean" class="switch" />
     </label>
-    <label class="setting-row" for="notifySuccess">
-      <span class="setting-row-label" data-i18n="ppNotify">成功時顯示通知</span>
-      <input type="checkbox" id="notifySuccess" class="switch" />
+    <!-- 0.5.0 方案甲:新增「貼文複製按鈕」開關，取代原本這裡的「成功時顯示
+         通知」(notifySuccess 整組移除，完整設定收在 options 頁)。 -->
+    <label class="setting-row" for="postCopyEnabled">
+      <span class="setting-row-label" data-i18n="popPostCopyLabel">貼文複製按鈕</span>
+      <input type="checkbox" id="postCopyEnabled" class="switch" />
     </label>
     <button class="setting-row nav-row" id="openOptions" type="button">
       <span class="setting-row-label" data-i18n="ppHistorySettings">紀錄與設定</span>
-      <span class="nav-chev" aria-hidden="true">›</span>
+      <svg class="nav-chev" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
     </button>
   </div>
   <footer data-i18n="ppFooter">盡力而為，處理失敗不影響原功能。</footer>
