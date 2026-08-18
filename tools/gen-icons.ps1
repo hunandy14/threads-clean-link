@@ -1,5 +1,5 @@
 <#
-  依品牌來源 SVG(tools/app-icon.svg)重新產生擴充功能圖示
+  依品牌來源 SVG(assets/store/icon/app-icon.svg)重新產生擴充功能圖示
   (icons/icon16.png、icon48.png、icon128.png)。
 
   來源 SVG 是使用者手機 app 的 icon:橘底方塊 + 黑色盾牌 + 白鏈節(Lucide
@@ -19,12 +19,12 @@
 
 $ErrorActionPreference = 'Stop'
 
-$iconsDir = Join-Path $PSScriptRoot '..\icons'
+$iconsDir = Join-Path $PSScriptRoot '..' 'icons'
 if (-not (Test-Path $iconsDir)) {
     New-Item -ItemType Directory -Path $iconsDir -Force | Out-Null
 }
 
-$svgPath = Join-Path $PSScriptRoot 'app-icon.svg'
+$svgPath = Join-Path $PSScriptRoot '..' 'assets' 'store' 'icon' 'app-icon.svg'
 if (-not (Test-Path $svgPath)) {
     throw "找不到品牌來源 SVG:$svgPath"
 }

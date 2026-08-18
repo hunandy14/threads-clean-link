@@ -30,6 +30,10 @@
     share: { key: 'opKindShare', icon: '#i-link' },
     strip: { key: 'opKindStrip', icon: '#i-scissors' },
     menu: { key: 'opKindMenu', icon: '#i-mouse' },
+    // 貼文互動列複製 icon(post-icon.js)寫入剪貼簿成功後的路徑，沿用既有
+    // #i-copy 符號(options.html 已定義，opCopyTitle 那顆複製鈕也用它)，
+    // 不必為此另刻一顆 SVG。
+    icon: { key: 'opKindIcon', icon: '#i-copy' },
   };
 
   // ---- 純函式 ----

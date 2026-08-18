@@ -37,11 +37,19 @@
       if (data.cleanUrl.length > MAX_CLEAN_URL_LENGTH) return;
       if (typeof data.kind !== 'string' || !data.kind || data.kind.length > MAX_KIND_LENGTH) return;
       try {
-        chrome.runtime.sendMessage({
+        // MV3 下不帶 callback 呼叫 sendMessage 會回傳 Promise：background
+        // 的 cleanedNotice 監聽器 return false(同步處理完即關通道)，該
+        // Promise 會以「message port closed」reject，不接 .catch 就會在
+        // 頁面 console 留下 unhandled promise rejection。回傳值先防禦性
+        // 檢查是不是真的 Promise 再接空 .catch 吞掉。
+        var maybePromise = chrome.runtime.sendMessage({
           type: 'cleanedNotice',
           cleanUrl: data.cleanUrl,
           kind: data.kind,
         });
+        if (maybePromise && typeof maybePromise.catch === 'function') {
+          maybePromise.catch(function () {});
+        }
       } catch (e) {
         // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而為。
       }

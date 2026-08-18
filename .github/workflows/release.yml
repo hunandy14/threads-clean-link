@@ -10,7 +10,17 @@ on:
       upload_only:
         description: >-
           僅重新打包並上傳 Chrome Web Store 草稿，略過建立 GitHub
-          Release(用於審核通過後、tag 已存在時補上傳新草稿)
+          Release(用於審核通過後、tag 已存在時補上傳新草稿);除非同時
+          勾選 skip_publish，否則上傳成功後仍會自動送審
+        type: boolean
+        default: false
+      # 紀律提醒:新增權限的版本不要走自動發布——先勾選這個選項只上傳草稿，
+      # 或乾脆先不合併進 main，改到開發者主控台手動送審並親自填寫新權限的
+      # 使用理由文案(自動送審不會、也不該幫你編這段說明)。
+      skip_publish:
+        description: >-
+          略過自動送審(publish)，只做打包/上傳草稿。新增權限的版本、或想
+          先人工檢查草稿再送審時開啟
         type: boolean
         default: false
 
@@ -105,6 +115,7 @@ jobs:
             --notes-file release-notes.md
 
       - name: 上傳新版草稿至 Chrome Web Store
+        id: cws_upload
         if: steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)
         env:
           CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
@@ -116,9 +127,11 @@ jobs:
           # 上架，不應該讓整個發版流程因為還沒設定商店憑證而失敗。
           if [ -z "$CWS_CLIENT_ID" ] || [ -z "$CWS_CLIENT_SECRET" ] || \
              [ -z "$CWS_REFRESH_TOKEN" ] || [ -z "$CWS_EXTENSION_ID" ]; then
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
             echo "未設定 CWS 憑證，跳過商店上傳。"
             exit 0
           fi
+          echo "has_credentials=true" >> "$GITHUB_OUTPUT"
 
           ZIP_PATH="dist/threads-clean-link-v${{ steps.version.outputs.version }}.zip"
           if [ ! -f "$ZIP_PATH" ]; then
@@ -127,7 +140,12 @@ jobs:
           fi
 
           # ---- 1) 用 refresh token 換一次性 access token ----
-          # 安全紅線:$TOKEN_RESPONSE / access token 本身絕不 echo，只在失敗
+          # 安全性據實說明(不是「絕對不落地」):client_secret／refresh_token
+          # 經環境變數展開後，仍會成為這行 curl 呼叫的命令列參數，執行期間
+          # 理論上可被同一台機器上的 ps 看到；GitHub 託管 runner 是單租戶
+          # 的臨時機，跑完即整台回收，這個暴露面可以接受，因此不改成
+          # --header @file 之類的寫法。真正要顧的是別讓它落進我們自己印出
+          # 的 log:$TOKEN_RESPONSE／access token 本身絕不 echo，只在失敗
           # 時取 Google 回傳的錯誤說明欄位印出，不印整包回應。
           #
           # GitHub Actions 預設以 bash -eo pipefail 執行 run 區塊:若回應不是
@@ -156,6 +174,11 @@ jobs:
             exit 1
           fi
 
+          # access token 換到手就立刻遮罩:之後任何 log 行只要含有這個字串，
+          # GitHub 都會自動印成 ***，發布步驟要復用它時才敢放進 step output。
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
+
           # ---- 2) 上傳 zip(成為商店草稿新版本，不呼叫 publish)----
           UPLOAD_RESPONSE=$(curl -sS -X PUT \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -179,4 +202,56 @@ jobs:
             exit 1
           fi
 
-          echo "草稿已上傳(uploadState=SUCCESS)，請至開發者主控台按提交審查。"
+          echo "草稿已上傳(uploadState=SUCCESS)。"
+
+      # 只在「上傳步驟真的跑了且憑證齊全」時才嘗試發布，並額外開一個
+      # skip_publish 閥門:新增權限的版本、或想先人工複查草稿再送審時，
+      # 用 skip_publish 擋掉這一步，改到主控台手動按提交審查。
+      #
+      # access token 復用上一步 cws_upload 的 step output，不重新用
+      # refresh token 換發——同一次 run 沒必要換兩次。
+      - name: 送審 Chrome Web Store 草稿
+        if: >-
+          (steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)) &&
+          steps.cws_upload.outputs.has_credentials == 'true' &&
+          !(github.event_name == 'workflow_dispatch' && inputs.skip_publish == true)
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.cws_upload.outputs.access_token }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+        run: |
+          if [ -z "$CWS_ACCESS_TOKEN" ]; then
+            echo "沒有可復用的 access token(上傳步驟未成功換發)，跳過送審。"
+            exit 0
+          fi
+
+          # 安全性據實說明(不是「絕對不落地」):access token 經環境變數展開
+          # 後，一樣會成為這行 curl 呼叫(-H 參數)的命令列參數，執行期間理論
+          # 上可被同一台機器上的 ps 看到；GitHub 託管 runner 是單租戶的臨時
+          # 機，跑完即整台回收，這個暴露面可以接受，不因此改寫 curl 呼叫
+          # 方式。真正要顧的是別讓它落進我們自己印出的 log:回應本身不會
+          # 回傳 token，可以整包印出方便除錯。
+          PUBLISH_RESPONSE=$(curl -sS -w '\n%{http_code}' -X POST \
+            -H "Authorization: Bearer $CWS_ACCESS_TOKEN" \
+            -H 'x-goog-api-version: 2' \
+            -H 'Content-Length: 0' \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/$CWS_EXTENSION_ID/publish")
+
+          HTTP_CODE=$(printf '%s' "$PUBLISH_RESPONSE" | tail -n1)
+          BODY=$(printf '%s' "$PUBLISH_RESPONSE" | sed '$d')
+
+          echo "送審回應(HTTP $HTTP_CODE):"
+          echo "$BODY"
+
+          # 用 jq -c 保留原始 JSON 引號(如 ["OK"])再拿去 grep，比對「帶引號的
+          # 整詞」而非裸字串:避免日後 Google 新增類似 NOT_OK 之類的狀態碼時，
+          # 'OK' 這種寬鬆子字串比對誤判成功。
+          STATUS_LIST=$(printf '%s' "$BODY" | jq -c '.status // []' 2>/dev/null || true)
+
+          if [ "$HTTP_CODE" = '200' ] && printf '%s' "$STATUS_LIST" | grep -q '"OK"'; then
+            echo "已成功送出審查，請至開發者主控台確認狀態。"
+          elif printf '%s' "$STATUS_LIST" | grep -q '"ITEM_PENDING_REVIEW"'; then
+            echo "::warning::此版本已在審查佇列中(ITEM_PENDING_REVIEW)，視為可重試情境，草稿已上傳成功，不視為本次執行失敗。"
+          else
+            echo "送審失敗(HTTP ${HTTP_CODE:-無}，status=${STATUS_LIST:-無})"
+            exit 1
+          fi
