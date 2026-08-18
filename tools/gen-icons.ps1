@@ -19,12 +19,12 @@
 
 $ErrorActionPreference = 'Stop'
 
-$iconsDir = Join-Path $PSScriptRoot '..\icons'
+$iconsDir = Join-Path $PSScriptRoot '..' 'icons'
 if (-not (Test-Path $iconsDir)) {
     New-Item -ItemType Directory -Path $iconsDir -Force | Out-Null
 }
 
-$svgPath = Join-Path $PSScriptRoot '..\assets\store\icon\app-icon.svg'
+$svgPath = Join-Path $PSScriptRoot '..' 'assets' 'store' 'icon' 'app-icon.svg'
 if (-not (Test-Path $svgPath)) {
     throw "找不到品牌來源 SVG:$svgPath"
 }
