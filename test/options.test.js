@@ -92,7 +92,11 @@ test('mergeImportedEntries:錨定驗證 url、以 url 去重、kind/at 非法時
   assert.equal(result.merged[0].at, NOW, 'at 缺失應補 now');
 });
 
-test('mergeImportedEntries:合併後裁到上限 1000,留最新', () => {
+// 【使用者拍板，規格翻轉】紀錄不設上限:舊版在此裁到 HISTORY_LIMIT(1000)
+// 筆、汰舊留新;新版合併結果完全不裁切，連同 HISTORY_LIMIT 這個常數與其
+// api 匯出都一併移除(此檔內唯一用途就是這道截斷)。這裡改寫成鎖「不裁切」
+// 的正面斷言，而非單純刪除，讓新行為有測試覆蓋。
+test('mergeImportedEntries:合併結果不裁切，超過舊版上限(1000)也全數保留', () => {
   const existing = Array.from({ length: 999 }, (_, i) => ({
     url: `https://www.threads.com/@u/post/E${i}`,
     kind: 'share',
@@ -100,17 +104,18 @@ test('mergeImportedEntries:合併後裁到上限 1000,留最新', () => {
   }));
   const imported = [
     { url: URL_A, kind: 'share', at: 99999 },
-    { url: URL_B, kind: 'share', at: 1 }, // 最舊,合併後被裁掉
+    { url: URL_B, kind: 'share', at: 1 }, // 舊版會被裁掉的最舊一筆，新版應保留
   ];
 
   const result = options.mergeImportedEntries(existing, imported, 50000);
-  assert.equal(result.merged.length, options.HISTORY_LIMIT);
-  assert.equal(result.merged[0].url, URL_A, '最新的在最前');
+  assert.equal(result.merged.length, 1001, '999 + 2 筆全數保留，不裁切');
+  assert.equal(result.merged[0].url, URL_A, '新到舊排序，最新的在最前');
   assert.equal(
     result.merged.some((e) => e.url === URL_B),
-    false,
-    '超出上限時裁掉最舊的一筆'
+    true,
+    '舊版會被上限裁掉的最舊一筆，新版應保留'
   );
+  assert.equal(options.HISTORY_LIMIT, undefined, 'HISTORY_LIMIT 常數已隨上限移除一併撤除');
 });
 
 test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀,entries 只留三欄', () => {
@@ -327,6 +332,33 @@ test('hasCardPreview:author 或 excerpt 任一存在即為 true;皆缺席或僅�
   assert.equal(options.hasCardPreview({}), false);
   assert.equal(options.hasCardPreview({ handle: '@onlyhandle' }), false, '單獨 handle 不算有預覽，對齊手機版邏輯');
   assert.equal(options.hasCardPreview({ author: '' }), false, '空字串視同缺席');
+});
+
+// ---- 純函式:isLongExcerpt(0.5.0，對齊手機版 history-detail-dialog.tsx 的
+// EXCERPT_DIALOG_LINES=15 長文判定)----
+test('isLongExcerpt:行數超過 15 行，或字元量超過 15*22=330，任一超標即為長文', () => {
+  assert.equal(options.isLongExcerpt('短短一句'), false);
+  assert.equal(options.isLongExcerpt('A'.repeat(330)), false, '剛好等於門檻不算超標');
+  assert.equal(options.isLongExcerpt('A'.repeat(331)), true, '字元量超標');
+  assert.equal(options.isLongExcerpt(Array(16).fill('line').join('\n')), true, '16 行，行數超標(> 15 行)');
+  assert.equal(options.isLongExcerpt(Array(15).fill('line').join('\n')), false, '剛好 15 行不算超標');
+  assert.equal(options.isLongExcerpt(''), false, '空字串不是長文');
+  assert.equal(options.isLongExcerpt(undefined), false, '非字串輸入不丟例外，回傳 false');
+});
+
+// ---- 純函式:buildEntryActions(0.5.0，卡片 ⋮ 選單與詳細視窗底部動作列
+// 共用的動作組成——手機版 開啟/分享/刪除 映射為 web 的 複製/開啟/刪除)----
+test('buildEntryActions:固定回傳複製/開啟/刪除三項，順序固定，開啟項帶正確 href', () => {
+  const entry = { url: 'https://www.threads.com/@usera/post/AbC123', kind: 'share', at: 1 };
+  const actions = options.buildEntryActions(entry);
+  assert.deepEqual(
+    actions.map((a) => a.type),
+    ['copy', 'open', 'delete']
+  );
+  assert.equal(actions[0].titleKey, 'opCopyTitle');
+  assert.equal(actions[1].titleKey, 'opOpenTitle');
+  assert.equal(actions[1].href, entry.url, '開啟項的 href 應等於該條目的 url');
+  assert.equal(actions[2].titleKey, 'opDeleteTitle');
 });
 
 // ---- 設定頁不再出現 notifySuccess 控件(PM 審查後補) ----
@@ -558,7 +590,7 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   assert.equal(doc.ids.rows.children.length, 2);
 
   // 卡片一:有預覽(author+handle+excerpt)——卡頭(徽章+時間)→ 作者列 →
-  // excerpt，三個動作(複製/開啟/刪除)常駐於 entry-actions。
+  // excerpt → ⋮ 選單(取代舊版 hover 三鈕，見 buildEntryCard)。
   const card0 = doc.ids.rows.children[0];
   assert.equal(card0.className, 'entry-card');
   const header0 = card0.children[0];
@@ -576,14 +608,17 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   assert.equal(excerptEl0.className, 'entry-excerpt');
   assert.equal(excerptEl0.textContent, 'hello world');
 
-  const actions0 = card0.children[3];
-  assert.equal(actions0.className, 'entry-actions');
-  assert.equal(actions0.children.length, 3, '複製/開啟/刪除三個動作固定常駐 DOM(CSS 控制 hover 才顯示)');
-  const openLink0 = actions0.children[1];
-  assert.equal(openLink0.tag, 'a');
-  assert.equal(openLink0.href, CARD_URL_A);
-  assert.equal(openLink0.target, '_blank');
-  assert.equal(openLink0.rel, 'noopener');
+  const kebabWrap0 = card0.children[3];
+  assert.equal(kebabWrap0.className, 'entry-kebab-wrap');
+  const kebabMenu0 = kebabWrap0.children[1];
+  assert.equal(kebabMenu0.children.length, 3, '⋮ 選單固定三個動作:複製/開啟/刪除');
+  const openItem0 = kebabMenu0.children[1];
+  assert.equal(openItem0.tag, 'a', '開啟貼文用原生 <a>，不是 button');
+  assert.equal(openItem0.href, CARD_URL_A);
+  assert.equal(openItem0.target, '_blank');
+  assert.equal(openItem0.rel, 'noopener');
+  const deleteItem0 = kebabMenu0.children[2];
+  assert.equal(deleteItem0.className, 'menu-item danger');
 
   // 卡片二:無 author/excerpt → 降級顯示網址(threads.net 如實顯示，不誤植 .com)。
   const card1 = doc.ids.rows.children[1];
@@ -595,7 +630,7 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   );
 });
 
-test('controller smoke:卡片刪除動作直接改 storage 並重新渲染', async () => {
+test('controller smoke:卡片 ⋮ 選單的刪除動作直接改 storage 並重新渲染', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
   const doc = makeDocumentStub();
@@ -613,10 +648,221 @@ test('controller smoke:卡片刪除動作直接改 storage 並重新渲染', asy
   assert.equal(doc.ids.rows.children.length, 1);
 
   const card = doc.ids.rows.children[0];
-  const actions = card.children[card.children.length - 1];
-  const delBtn = actions.children[2];
-  delBtn.fire('click');
+  const kebabWrap = card.children[card.children.length - 1];
+  const kebabMenu = kebabWrap.children[1];
+  const deleteItem = kebabMenu.children[2];
+  deleteItem.fire('click');
   await settle();
 
   assert.equal(doc.ids.rows.children.length, 0, '刪除後卡片牆應重新渲染為空');
+});
+
+// 點卡片本身(非 ⋮ 選單區)開詳細視窗，對齊手機版 history-card.tsx 的
+// onPress;詳細視窗版面(帶預覽/降級網址、展開全文)另見下方獨立測試。
+test('controller smoke:點卡片本身開啟詳細視窗，顯示卡頭/作者列/excerpt 與記錄時間', async () => {
+  const history = [
+    { url: CARD_URL_A, kind: 'share', author: 'Dafu', handle: '@dafucoding', excerpt: 'hello world', at: 3000 },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  // 注意:DOM stub 的節點預設 hidden:false(不解析真實 HTML 的 hidden
+  // 屬性)，初始收合狀態由瀏覽器端的 hidden 屬性把關，這裡不驗初始值，
+  // 只驗點擊後的開啟/關閉轉換。
+  const card = doc.ids.rows.children[0];
+  card.fire('click');
+
+  assert.equal(doc.ids.detailOverlay.hidden, false);
+  assert.equal(doc.ids.detailBadge.textContent, '短碼解析');
+  assert.equal(doc.ids.detailAuthorRow.hidden, false);
+  assert.equal(doc.ids.detailAuthorName.textContent, 'Dafu');
+  assert.equal(doc.ids.detailHandle.textContent, '@dafucoding');
+  assert.equal(doc.ids.detailExcerpt.hidden, false);
+  assert.equal(doc.ids.detailExcerpt.textContent, 'hello world');
+  assert.equal(doc.ids.detailExpandBtn.hidden, true, '短內文不顯示展開全文');
+  assert.equal(doc.ids.detailUrlFallback.hidden, true);
+  // 絕對時間用本機時區格式化(new Date().getFullYear() 等皆為本機時區),
+  // 不能硬編 UTC 換算後的字串(換執行機器時區就會炸)，改驗格式。
+  assert.match(doc.ids.detailRecordedTime.textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '絕對時間格式 YYYY-MM-DD HH:mm');
+  assert.equal(doc.ids.detailOpenLink.href, CARD_URL_A);
+
+  doc.ids.detailClose.fire('click');
+  assert.equal(doc.ids.detailOverlay.hidden, true, '關閉按鈕應收合詳細視窗');
+});
+
+// 降級網址條目(無 author/excerpt)開詳細視窗:比照卡片一樣降級顯示網址，
+// 不畫作者列/excerpt。
+test('controller smoke:降級網址條目的詳細視窗顯示網址列，不顯示作者列/excerpt', async () => {
+  const history = [{ url: CARD_URL_NET, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailAuthorRow.hidden, true);
+  assert.equal(doc.ids.detailExcerpt.hidden, true);
+  assert.equal(doc.ids.detailUrlFallback.hidden, false);
+  assert.deepEqual(
+    doc.ids.detailUrlFallback.children[0].children.map((c) => c.textContent),
+    ['threads.net/', '@user_net', '/post/AbC123']
+  );
+});
+
+// 長內文(超過 15 行或字元量門檻)開詳細視窗時顯示「展開全文」，點擊後
+// 原地移除截斷(見 openEntryDetail 註解:web 版不像手機版開巢狀第二層
+// Modal，那是 iOS 平台限制，web 沒有這個問題)。
+test('controller smoke:長內文顯示「展開全文」，點擊後移除截斷 class', async () => {
+  const longExcerpt = 'A'.repeat(400); // 超過 15*22=330 字元門檻
+  const history = [{ url: CARD_URL_A, kind: 'share', author: 'Dafu', excerpt: longExcerpt, at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailExpandBtn.hidden, false, '長內文應顯示展開全文按鈕');
+  assert.equal(doc.ids.detailExcerpt.classList.contains('expanded'), false);
+
+  doc.ids.detailExpandBtn.fire('click');
+
+  assert.equal(doc.ids.detailExcerpt.classList.contains('expanded'), true, '點擊後應加上 expanded class 原地展開');
+  assert.equal(doc.ids.detailExpandBtn.hidden, true, '展開後按鈕本身收合');
+});
+
+// 詳細視窗底部的複製/刪除按鈕操作目前顯示中的 entry(見 detailEntry)。
+test('controller smoke:詳細視窗的刪除按鈕刪除目前顯示的條目並收合視窗', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  assert.equal(doc.ids.detailOverlay.hidden, false);
+
+  doc.ids.detailDeleteBtn.fire('click');
+
+  assert.equal(doc.ids.rows.children.length, 0, '刪除後卡片牆應重新渲染為空');
+  assert.equal(doc.ids.detailOverlay.hidden, true, '刪除目前顯示中的條目應順手關閉詳細視窗');
+});
+
+// ============================================================
+// 0.5.0:常開頁面的即時性稽核——設定在 popup(或另一個 options 分頁)
+// 改動時，常開的本頁要同步反映(controller.setSyncSettings，由接線層的
+// chrome.storage.onChanged 監聽器在 areaName==='sync' 時呼叫)。
+// ============================================================
+
+test('setSyncSettings:別處變更的開關值同步套用到本頁 checkbox，不觸發寫回(不呼叫 syncStorage.set)', async () => {
+  const storage = createChromeStorage({ langPref: 'zh', autoClean: false, postCopyEnabled: true }, {});
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  const setCallsBefore = storage.calls.set.length;
+  controller.setSyncSettings({ autoClean: { newValue: true, oldValue: false } });
+
+  assert.equal(doc.ids.autoClean.checked, true, '別處把 autoClean 改成 true，本頁 checkbox 應同步');
+  assert.equal(storage.calls.set.length, setCallsBefore, '同步別處的變更不應再寫回 storage(避免迴圈)');
+});
+
+test('setSyncSettings:langPref 變更時同步語言並重新渲染卡片文案;themePref 變更時套用主題', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  // 換語言前:卡片徽章是中文(短碼解析)。data-i18n 靜態節點的翻譯要靠
+  // document.querySelectorAll 掃描更新，DOM stub 的 querySelectorAll 是
+  // no-op 掃不到，所以改驗證會重新渲染的卡片(badge 直接用 tt() 設
+  // textContent，不靠 data-i18n 掃描)，一樣能證明 locale 真的切換了。
+  const badgeBefore = doc.ids.rows.children[0].children[0].children[0].children[0];
+  assert.equal(badgeBefore.textContent, '短碼解析');
+
+  controller.setSyncSettings({ langPref: { newValue: 'en', oldValue: 'zh' } });
+
+  const badgeAfter = doc.ids.rows.children[0].children[0].children[0].children[0];
+  assert.equal(badgeAfter.textContent, 'Resolved', '別處把語言改成 en，重新渲染後卡片徽章應變成英文');
+
+  controller.setSyncSettings({ themePref: { newValue: 'dark', oldValue: 'auto' } });
+  assert.equal(doc.documentElement.dataset.theme, 'dark', '別處把主題改成 dark，本頁應套用');
+});
+
+// 常開分頁背景時不即時跳動，回到分頁(visibilitychange → visible)才重算
+// 一次相對時間標籤——這裡直接測 controller.refresh() 這個由接線層呼叫的
+// 進入點，驗證它會重新渲染卡片牆(entries 不變，只是重新產生 DOM)。
+test('refresh:重新渲染卡片牆(視覺上等同重算相對時間標籤)，不改變 entries 內容', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  const beforeCard = doc.ids.rows.children[0];
+  controller.refresh();
+  const afterCard = doc.ids.rows.children[0];
+
+  assert.equal(doc.ids.rows.children.length, 1, 'entries 沒變，卡片數量應維持一致');
+  assert.notStrictEqual(beforeCard, afterCard, 'refresh 應重新建構卡片 DOM(非原地保留舊節點)');
 });

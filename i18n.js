@@ -35,10 +35,16 @@
       ppFooter: '盡力而為，處理失敗不影響原功能。',
 
       // ---- options:頁首與統計 ----
-      opSub: '脆連結清潔工 · 設定與淨化紀錄',
+      // 0.5.0 使用者拍板改名:「淨化紀錄」→「紀錄」(歷史即收藏之後，這裡
+      // 存的不只是淨化動作，也有貼文互動列複製、右鍵還原等非淨化來源)。
+      // 統計磚/圖表標題等衍生文案一併判斷連動(見各 key 註解)。
+      opSub: '脆連結清潔工 · 設定與紀錄',
       opThemeTitle: '切換主題',
       opLangTitle: '語言 / Language',
-      opTileTotal: '累計淨化',
+      // 衍生文案連動:此磚統計的是 stats.total(entries.length，所有 kind
+      // 都算，不只淨化類的 share/strip),「累計淨化」用詞已不準確，改用
+      // 「累計紀錄」對齊改名主題。
+      opTileTotal: '累計紀錄',
       opSince: '自 {d} 以來',
       opTileWeek: '本週',
       opVsLastWeek: '較上週',
@@ -47,9 +53,11 @@
       opShareOfTotal: '佔 {p}%',
 
       // ---- options:活動圖 ----
-      opChartTitle: '近 14 天淨化活動',
+      // 衍生文案連動:圖表統計的是每日全部 kind 筆數，不只淨化類，標題/
+      // 描述比照 opTileTotal 拿掉「淨化」。
+      opChartTitle: '近 14 天活動',
       opChartUnit: '單位:次',
-      opChartDesc: '近 14 天每日淨化次數',
+      opChartDesc: '近 14 天每日活動次數',
       opToday: '今天',
       opTimes: '{n} 次',
 
@@ -61,15 +69,17 @@
       // 同輪已把成功通知整組拆光，這顆開關合併後零讀取端，留著是誤導
       // 使用者的死 UI，不是「另一車道尚未拆通知」——上一輪的保留理由是
       // 過期情報。
-      opSaveName: '保存淨化紀錄',
-      opSaveDesc: '僅存於本機，上限 1,000 筆，自動汰舊',
+      opSaveName: '保存紀錄',
+      // 使用者拍板:紀錄不設上限，移除「上限 1,000 筆，自動汰舊」字樣，
+      // 只講儲存範圍。
+      opSaveDesc: '僅存於本機',
       // 0.5.0 方案甲:與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關
       // 說明(popup 只留精簡標籤)。
       opPostCopyName: '貼文複製按鈕',
       opPostCopyDesc: '在貼文互動列顯示複製連結按鈕',
 
       // ---- options:紀錄清單 ----
-      opHistoryTitle: '淨化紀錄',
+      opHistoryTitle: '紀錄',
       opMoreTitle: '更多動作',
       opFilterTitle: '依來源篩選',
       opExportJson: '匯出 JSON',
@@ -94,6 +104,15 @@
       // 0.5.0 方案甲:紀錄卡片化後新增「開啟貼文」動作(<a target=_blank
       // rel=noopener>)，複製/刪除沿用既有 opCopyTitle/opDeleteTitle。
       opOpenTitle: '開啟貼文',
+
+      // ---- options:卡片詳細視窗(0.5.0，對齊手機版 history-detail-dialog) ----
+      // sr-only 標題，螢幕閱讀器用;視覺上詳細視窗直接從卡頭(徽章/時間)
+      // 開始，不另外畫一條可見標題列。
+      opDetailTitle: '紀錄詳細資訊',
+      // 內文超長(對齊手機版 EXCERPT_DIALOG_LINES=15 行截斷)時的展開按鈕。
+      opExpandFull: '展開全文',
+      // 詳細視窗內顯示的絕對記錄時間(與卡頭的相對時間分開顯示)。
+      opRecordedTime: '記錄時間',
 
       // ---- options:匯入對話框與 toast ----
       opImportTitle: '匯入紀錄',
@@ -149,7 +168,7 @@
       opSub: 'Threads Clean Link · Settings & history',
       opThemeTitle: 'Toggle theme',
       opLangTitle: 'Language / 語言',
-      opTileTotal: 'Total cleaned',
+      opTileTotal: 'Total records',
       opSince: 'Since {d}',
       opTileWeek: 'This week',
       opVsLastWeek: 'vs last week',
@@ -158,20 +177,20 @@
       opShareOfTotal: '{p}% of total',
 
       opChartTitle: 'Activity, last 14 days',
-      opChartUnit: 'unit: cleanings',
-      opChartDesc: 'Daily cleanings over the last 14 days',
+      opChartUnit: 'unit: entries',
+      opChartDesc: 'Daily activity over the last 14 days',
       opToday: 'Today',
       opTimes: '{n}×',
 
       opSettingsTitle: 'Settings',
       opAutoCleanName: 'Auto-clean the share button',
       opAutoCleanDesc: 'Intercepts the official “Copy link”, resolves short codes and strips tracking params',
-      opSaveName: 'Keep cleaning history',
-      opSaveDesc: 'Local only, capped at 1,000 entries (oldest pruned)',
+      opSaveName: 'Keep history',
+      opSaveDesc: 'Local only',
       opPostCopyName: 'Post copy button',
       opPostCopyDesc: 'Show a copy-link button on posts’ action row',
 
-      opHistoryTitle: 'Cleaning history',
+      opHistoryTitle: 'History',
       opMoreTitle: 'More actions',
       opFilterTitle: 'Filter by source',
       opExportJson: 'Export JSON',
@@ -194,6 +213,10 @@
       opCopyTitle: 'Copy clean URL',
       opDeleteTitle: 'Delete entry',
       opOpenTitle: 'Open post',
+
+      opDetailTitle: 'Record details',
+      opExpandFull: 'Show full text',
+      opRecordedTime: 'Recorded at',
 
       opImportTitle: 'Import history',
       opImportDesc: 'Pick a previously exported .json file or paste its content; merged with existing entries, deduped by URL.',
