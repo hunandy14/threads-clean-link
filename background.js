@@ -16,18 +16,28 @@ const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z
 // 「截」出前段乾淨網址，加上 $ 會讓截取失效。
 const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\/post\/[^/?#]+/i;
 
-// cleanedNotice 專用的「錨定」樣式(比照 clipboard-guard.js 的 POST_URL_RE)。
-// 該訊息的 cleanUrl 來自頁面腳本可自由 postMessage 的管道，內容會直接進到
-// 使用者看到的通知訊息，因此必須「整串完全吻合」才採信。
-//
-// 這裡刻意用「白名單字元類 + 長度上限」而非排除法:排除法(如 [^/?#\s]+)
-// 只擋得住帶空白的尾隨文字，中文釣魚句本來就不需要空白，
+// 全 repo 單一權威的乾淨貼文網址驗證樣式(code review #5:url 樣式統
+// 一)。這裡刻意用「白名單字元類 + 長度上限」而非排除法:排除法(如
+// [^/?#\s]+)只擋得住帶空白的尾隨文字，中文釣魚句本來就不需要空白，
 // 「合法前綴 + 帳號異常，請至 evil.example 重新登入」照樣整串吻合而過關;
 // 純英數長串同理。Threads 的 handle 與 post id 實際上都只有 ASCII
 // (handle 允許英數、底線、句點;post id 是 base64url 短碼)，收緊到實際
-// 字母表不會誤殺，且誤殺的代價只是少一則通知，屬 fail-safe 方向。
-// 通知路徑的 cleanUrl 一律是已淨化結果，本來就不帶 query 與 hash。
-const NOTICE_CLEAN_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}$/i;
+// 字母表不會誤殺。長度上限 80，對齊 options.js 的 POST_URL_PATTERN(UI
+// 車道同步把該側的上限一併調整到 80，兩份常數各自獨立維護，本檔無建置
+// 系統可共用單一來源，但字元類與長度都保持一致)。
+//
+// 原名 NOTICE_CLEAN_URL_PATTERN，只用在 cleanedNotice 這一條訊息通道的
+// 驗證(該訊息的 cleanUrl 來自頁面腳本可自由 postMessage 的管道，內容會
+// 直接進到使用者看到的通知訊息，因此必須「整串完全吻合」才採信)。code
+// review 指出 menu 路徑(右鍵選單)寫入 history 前完全沒有同等級的驗證
+// ——extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字
+// 元類、不錨定收尾，用來從帶 query/hash 的轉址結果「截」出前段乾淨網
+// 址)，這個寬鬆特性只該用於「截字串」，不該讓寬鬆匹配到的內容不經檢查
+// 就直接流進 history——渲染/去重/點擊跳轉都吃這個 url 欄位。改名反映
+// 新的更廣用途:cleanedNotice(見 handleCleanedNotice)與 menu 路徑寫入
+// history 前(見 handleShareLinkClick)都要過這一關，兩條路徑共用同一份
+// 權威驗證，history.url 欄位的格式才能在整個 repo 保持一致。
+const POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}$/i;
 
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
@@ -220,7 +230,21 @@ async function handleShareLinkClick(info, tab) {
   // F 案:右鍵路徑不經 guard/bridge，original(shareUrl)與 removedParams
   // (finalUrl 與 cleanUrl 的差集)background 自己手上就有，見
   // buildMenuHistoryExtra。
-  await recordHistory(cleanUrl, 'menu', buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl));
+  //
+  // code review #5(url 樣式統一):extractCleanPostUrl 用的
+  // CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字元類、不錨定收尾，見上方
+  // POST_URL_PATTERN 註解)，只該用來從轉址結果「截」出前段乾淨網址，寬
+  // 鬆匹配到的內容不該不經檢查就流進 history。寫入前再用全 repo 單一權
+  // 威的 POST_URL_PATTERN 驗一次;不符合就只略過記錄(console.warn)，不
+  // 影響已經完成的剪貼簿複製——複製本身不因這個邊界情況失敗。
+  if (POST_URL_PATTERN.test(cleanUrl)) {
+    await recordHistory(cleanUrl, 'menu', buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl));
+  } else {
+    console.warn(
+      '[threads-clean-link] 右鍵路徑解析出的網址不符嚴格白名單樣式，略過記錄(不影響已複製到剪貼簿的內容)',
+      cleanUrl
+    );
+  }
 }
 
 // 右鍵路徑(menu)專用的 extra 建構:不經 guard/bridge，original(使用者
@@ -254,7 +278,7 @@ async function getSettings() {
 }
 
 // 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
-// NOTICE_CLEAN_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
+// POST_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
 // 任何紀錄;紀錄只用驗證通過的字串，不夾帶原文的任何其餘部分。
 // kind 同屬頁面可控輸入,白名單驗證(自動路徑只可能是 share/strip/icon),
 // 非法即整則忽略——guard 與 background 同版本出貨,沒有相容性負擔,
@@ -268,7 +292,7 @@ async function getSettings() {
 // icon／bridge.js 從貼文容器 DOM 順手擷取)為選填欄位，一併寫入。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
-  if (typeof cleanUrl !== 'string' || !NOTICE_CLEAN_URL_PATTERN.test(cleanUrl)) {
+  if (typeof cleanUrl !== 'string' || !POST_URL_PATTERN.test(cleanUrl)) {
     return;
   }
   const kind =
@@ -331,11 +355,23 @@ function sanitizeOriginalField(value, maxLen, url) {
 // 整筆丟棄(容忍陣列裡部分項目壞掉，不因此讓整個陣列作廢，寫法對齊
 // sanitizeSeenList)。輸入非陣列，或 sanitize 後一筆不剩，回傳
 // undefined(呼叫端據此整欄不寫入，缺席不落空陣列佔位)。
+//
+// code review #1(輸入端筆數上限):走訪次數本身也要封頂，不能只靠「收滿
+// REMOVED_PARAMS_MAX 筆合法項目就 break」——如果輸入陣列夾帶大量畸形項
+// 目、合法項目卻很晚才出現(甚至根本不存在合法項目)，舊寫法會把整個超
+// 大陣列掃過一輪才停下，等同讓呼叫端可以用一個超大 payload 拖慢處理時
+// 間(雖然 bridge.js 已經在自己那層擋掉超過筆數上限的陣列，這裡仍是縱深
+// 防禦，不假設呼叫端一定有先過濾——recordHistory 的另一個呼叫端
+// buildMenuHistoryExtra 走 diffRemovedParams，理論上受 finalUrl 實際
+// query 參數量限制，但不排除惡意重新導向目標帶超多參數)。改成用索引界
+// 定的迴圈，最多只看前 REMOVED_PARAMS_MAX 筆原始項目，不論其中有幾筆合
+// 法——掃描量與收穫量同時封頂在同一個常數，程式碼也更簡單。
 function sanitizeRemovedParams(value) {
   if (!Array.isArray(value)) return undefined;
   const out = [];
-  for (const item of value) {
-    if (out.length >= REMOVED_PARAMS_MAX) break;
+  const scanLimit = Math.min(value.length, REMOVED_PARAMS_MAX);
+  for (let i = 0; i < scanLimit; i++) {
+    const item = value[i];
     if (!item || typeof item !== 'object') continue;
     if (typeof item.key !== 'string' || item.key.length === 0 || item.key.length > REMOVED_PARAM_KEY_MAX) continue;
     if (typeof item.value !== 'string' || item.value.length > REMOVED_PARAM_VALUE_MAX) continue;
