@@ -232,7 +232,7 @@ test('mergeImportedEntries:匯入條目帶偽造 seen 時逐筆 sanitize，且�
   ]);
 
   const allDropped = result.merged.find((e) => e.url === URL_B);
-  assert.equal('seen' in allDropped, false, 'seen[] 全部不合法時,整欄不寫入');
+  assert.equal('seen' in allDropped, false, 'seen[] 全部不合法時，整欄不寫入');
 
   const capped = result.merged.find((e) => e.url === URL_C);
   assert.equal(capped.seen.length, 50, '匯入的 seen[] 應裁到上限 50 筆');
@@ -367,8 +367,10 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
 // 逐筆丟棄，不因此整個陣列作廢;真的沒有合法記錄剩下時整欄不寫入(缺席不落
 // 空陣列佔位，與 author/handle/excerpt 的慣例一致)。kind 缺席的記錄(手機
 // 版語意的起始種子紀錄，見 background.js 的 mergeHistoryEntry)須視為合法
-// 保留，不得誤殺。
-test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、缺 kind 的種子紀錄視為合法保留；全丟時整欄不寫入', () => {
+// 保留，不得誤殺。另外併入 fix/detail-mimic 車道的獨有案例:seen 整欄本身
+// 非陣列(不是陣列內某一筆形狀不對，是整個欄位型別就錯)同樣視為缺席，不
+// 輸出該欄。
+test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、缺 kind 的種子紀錄視為合法保留；全丟或整欄非陣列時都不寫入', () => {
   const cleaned = options.sanitizeEntries([
     {
       url: URL_A,
@@ -385,6 +387,7 @@ test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、�
     },
     { url: URL_B, kind: 'share', at: 1, seen: [{ at: 'NaN', kind: 'evil' }] },
     { url: URL_C, kind: 'share', at: 1 },
+    { url: 'https://www.threads.com/@userd/post/JkL012', kind: 'share', at: 1, seen: 'not-an-array' },
   ]);
 
   const withSeen = cleaned.find((e) => e.url === URL_A);
@@ -395,10 +398,13 @@ test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、�
   ]);
 
   const allDropped = cleaned.find((e) => e.url === URL_B);
-  assert.equal('seen' in allDropped, false, 'seen[] 全部不合法時,整欄不寫入');
+  assert.equal('seen' in allDropped, false, 'seen[] 全部不合法時，整欄不寫入');
 
   const noSeen = cleaned.find((e) => e.url === URL_C);
-  assert.equal('seen' in noSeen, false, '原本就沒有 seen 欄位的舊資料,讀取後也不憑空生出來');
+  assert.equal('seen' in noSeen, false, '原本就沒有 seen 欄位的舊資料，讀取後也不憑空生出來');
+
+  const notArray = cleaned.find((e) => e.url === 'https://www.threads.com/@userd/post/JkL012');
+  assert.equal('seen' in notArray, false, 'seen 整欄非陣列(不是陣列內某一筆形狀不對)同樣視為缺席，不輸出該欄');
 });
 
 // ---- 純函式:hasCardPreview ----
@@ -425,6 +431,36 @@ test('isLongExcerpt:行數超過 15 行，或字元量超過 15*22=330，任一�
   assert.equal(options.isLongExcerpt(Array(15).fill('line').join('\n')), false, '剛好 15 行不算超標');
   assert.equal(options.isLongExcerpt(''), false, '空字串不是長文');
   assert.equal(options.isLongExcerpt(undefined), false, '非字串輸入不丟例外，回傳 false');
+});
+
+// ---- 純函式:buildSeenTimeline(0.5.0，對齊手機版 history-detail-dialog.tsx
+// 的時間軸——另一車道 fix/dedup-merge 才會把 seen:[{at,kind}] 加進條目
+// schema，本分支防禦寫法:seen 缺席/非陣列/單筆一律回傳 null(呼叫端據此
+// 決定要不要顯示時間軸鈕)，多筆才回傳新到舊排序的陣列)----
+test('buildSeenTimeline:seen 缺席、非陣列或只有一筆時回傳 null(單筆時主畫面的記錄時間已經夠用)', () => {
+  assert.equal(options.buildSeenTimeline({}), null, 'seen 缺席');
+  assert.equal(options.buildSeenTimeline({ seen: 'not-an-array' }), null, 'seen 非陣列');
+  assert.equal(options.buildSeenTimeline({ seen: [] }), null, 'seen 空陣列');
+  assert.equal(options.buildSeenTimeline({ seen: [{ at: 100, kind: 'share' }] }), null, 'seen 只有一筆');
+});
+
+test('buildSeenTimeline:多筆有效紀錄回傳新到舊排序的陣列，形狀不對(缺 at/at 非有限數字)的項目濾掉', () => {
+  const entry = {
+    seen: [
+      { at: 100, kind: 'share' },
+      { at: 300, kind: 'menu' },
+      { at: 200, kind: 'strip' },
+      { at: 'not-a-number', kind: 'share' },
+      { kind: 'share' },
+      null,
+    ],
+  };
+  const timeline = options.buildSeenTimeline(entry);
+  assert.deepEqual(
+    timeline.map((r) => r.at),
+    [300, 200, 100],
+    '新到舊排序，且濾掉 at 非有限數字/缺席與 null 項目'
+  );
 });
 
 // ---- 純函式:buildEntryActions(0.5.0，卡片 ⋮ 選單與詳細視窗底部動作列
@@ -862,6 +898,106 @@ test('controller smoke:詳細視窗的刪除按鈕刪除目前顯示的條目並
 
   assert.equal(doc.ids.rows.children.length, 0, '刪除後卡片牆應重新渲染為空');
   assert.equal(doc.ids.detailOverlay.hidden, true, '刪除目前顯示中的條目應順手關閉詳細視窗');
+});
+
+// 詳細視窗照手機版仿造:乾淨網址列(對齊 demo 的「淨化後連結」kv)——不論
+// 有沒有 author/excerpt 預覽都固定顯示，直接點「詳細視窗照手機版仿造」
+// 任務新增的 detailUrlValue/detailUrlCopyBtn。
+test('controller smoke:詳細視窗固定顯示乾淨網址列，複製按鈕點擊不丟例外', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailUrlValue.textContent, CARD_URL_A);
+  // navigator.clipboard 在這個最小 DOM stub 環境不存在，copyEntryUrl 本身
+  // 用 try/catch 吞掉並改走失敗 toast，這裡只驗證點擊不會讓整條渲染炸掉。
+  assert.doesNotThrow(() => doc.ids.detailUrlCopyBtn.fire('click'));
+});
+
+// 時間軸:單筆(或 seen 缺席，因為本分支還沒接 fix/dedup-merge 的 schema
+// 變更)不顯示時間軸鈕——見 buildSeenTimeline 註解。
+test('controller smoke:seen 缺席或只有一筆時，詳細視窗不顯示時間軸鈕', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailTimelineBtn.hidden, true, 'seen 缺席時不顯示時間軸鈕');
+});
+
+// 時間軸:seen 有多筆(模擬 fix/dedup-merge 合併後的 schema)時顯示時間軸
+// 鈕，點擊後展開，新到舊逐列顯示「時間 + 來源標籤」;再點一次收合。
+test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊展開新到舊逐列顯示時間與來源標籤', async () => {
+  const history = [
+    {
+      url: CARD_URL_A,
+      kind: 'share',
+      at: 3000,
+      seen: [
+        { at: 1000, kind: 'strip' },
+        { at: 3000, kind: 'share' },
+        { at: 2000, kind: 'menu' },
+      ],
+    },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailTimelineBtn.hidden, false, 'seen 有多筆時應顯示時間軸鈕');
+  assert.equal(doc.ids.detailTimelineBtn.textContent, i18n.fmt('zh', 'opTimelineCount', { n: 3 }));
+  assert.equal(doc.ids.detailTimeline.hidden, true, '開啟詳細視窗時時間軸區塊預設收合');
+
+  doc.ids.detailTimelineBtn.fire('click');
+
+  assert.equal(doc.ids.detailTimeline.hidden, false, '點擊時間軸鈕應展開');
+  assert.equal(doc.ids.detailTimeline.children.length, 3);
+  const rows = doc.ids.detailTimeline.children.map((row) => row.children.map((c) => c.textContent));
+  // 絕對時間用本機時區格式化(比照上面「絕對時間格式」的既有慣例，不能
+  // 硬編換算後的字串，換執行機器時區就會炸)，只驗格式與相對新舊排序。
+  rows.forEach((r) => assert.match(r[0], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '每列時間格式 YYYY-MM-DD HH:mm'));
+  assert.deepEqual(
+    rows.map((r) => r[1]),
+    [i18n.t('zh', 'opKindShare'), i18n.t('zh', 'opKindMenu'), i18n.t('zh', 'opKindStrip')],
+    '每列的來源標籤依 kind 對應既有 KINDS 文案，新到舊排序'
+  );
+
+  doc.ids.detailTimelineBtn.fire('click');
+  assert.equal(doc.ids.detailTimeline.hidden, true, '再點一次應收合');
 });
 
 // ============================================================

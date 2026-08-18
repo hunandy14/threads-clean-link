@@ -113,6 +113,17 @@
       opExpandFull: '展開全文',
       // 詳細視窗內顯示的絕對記錄時間(與卡頭的相對時間分開顯示)。
       opRecordedTime: '記錄時間',
+      // kv 列標籤，顯示條目實際存的乾淨網址(對齊手機版「淨化後連結」列;
+      // original/removedParams 我們沒存，誠實省略，只留這一列)。
+      opUrlLabel: '乾淨網址',
+      // kv 列旁的小顆複製鈕文案，對齊 LeafPage demo 的 .copy-btn(短版
+      // 「複製」，空間有限;完整版「複製乾淨網址」留給底部動作列)。
+      opCopyShort: '複製',
+      // 時間軸按鈕(seen.length > 1 才出現)與展開後的區塊標題，對齊手機版
+      // 「解析時間軸(共 N 次)」;來源標籤沿用既有 kind 文案(opKindShare
+      // 等)，不是手機版的 share/clipboard 二分。
+      opTimelineBtn: '時間軸',
+      opTimelineCount: '時間軸(共 {n} 次)',
 
       // ---- options:匯入對話框與 toast ----
       opImportTitle: '匯入紀錄',
@@ -217,6 +228,10 @@
       opDetailTitle: 'Record details',
       opExpandFull: 'Show full text',
       opRecordedTime: 'Recorded at',
+      opUrlLabel: 'Clean URL',
+      opCopyShort: 'Copy',
+      opTimelineBtn: 'Timeline',
+      opTimelineCount: 'Timeline ({n})',
 
       opImportTitle: 'Import history',
       opImportDesc: 'Pick a previously exported .json file or paste its content; merged with existing entries, deduped by URL.',
