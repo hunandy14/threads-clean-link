@@ -196,7 +196,7 @@ async function handleShareLinkClick(info, tab) {
     return;
   }
 
-  // 只有實際寫入剪貼簿成功才留紀錄,與自動路徑的「寫入成功才記錄」語意
+  // 只有實際寫入剪貼簿成功才留紀錄，與自動路徑的「寫入成功才記錄」語意
   // 一致;saveHistory 的把關在 recordHistory 內。使用者變更設定規格:
   // 成功類通知(notifySuccess)整組移除，右鍵路徑不再於此發送成功通知，
   // 失敗類通知(上面幾個 notifyByKey 呼叫)不受影響、維持系統通知。
@@ -301,8 +301,12 @@ function recordHistory(url, kind, extra) {
       if (!settings.saveHistory) return;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
-      // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷),組新陣列後裁上限。
-      const entry = Object.assign({ url, kind, at: Date.now() }, extra);
+      // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新陣列後裁上限。
+      // extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎把
+      // url/kind/at 也塞進 extra 物件，核心欄位仍會覆蓋回正確值，不會被
+      // 外部輸入蓋掉(現況 extra 只可能是 extractHistoryExtraFields 的回
+      // 傳值，不會有這三個鍵，此處屬防未來的加固)。
+      const entry = Object.assign({}, extra, { url, kind, at: Date.now() });
       const next = [entry].concat(list).slice(0, HISTORY_LIMIT);
       await chrome.storage.local.set({ [HISTORY_KEY]: next });
     })
