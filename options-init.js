@@ -33,12 +33,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   controller.init();
 
-  // background 在頁面開著時寫入新紀錄/收藏 → 即時刷新清單、統計與卡片牆。
+  // background 在頁面開著時寫入新紀錄 → 即時刷新卡片牆與統計。
   if (chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener(function (changes, areaName) {
-      if (areaName !== 'local' || !changes) return;
-      if (changes.history) controller.setHistory(changes.history.newValue || []);
-      if (changes.favorites) controller.setFavorites(changes.favorites.newValue || []);
+      if (areaName !== 'local' || !changes || !changes.history) return;
+      controller.setHistory(changes.history.newValue || []);
     });
   }
 });

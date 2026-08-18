@@ -1,10 +1,16 @@
-// test/popup.test.js — v1.1 popup 控制頁邏輯層的行為契約(規格 S7，
+// test/popup.test.js — popup 控制頁邏輯層的行為契約(規格 S7，
 // 並在此固定設定鍵的預設值)。
 //
 // ============================================================
 // 【R1-1 開關合併】設定鍵砍為兩顆:autoClean、notifySuccess。resolveShortcode
 // 徹底移除(設定形狀、popup 控件、縮排子項一併移除)，短碼解析與 ?xmt 剪參
 // 都收在 autoClean 這一顆之下。原本 resolveShortcode 的禁用連動測試隨之刪除。
+//
+// 【0.5.0 方案甲，使用者拍板三條設定變更】notifySuccess 開關整組移除
+// (底層設定鍵仍在 background.js 使用，只是不再放 popup 快捷開關，完整設定
+// 收在 options 頁);新增 postCopyEnabled(貼文複製按鈕，預設 true);
+// autoClean 預設值改 false(配合 background.js 同步調整的新預設)。兩個
+// 設定鍵維持不變的只有「兩顆」這個數量，鍵名與預設值都跟著換。
 //
 // 【設計約定(S7 明文允許)】
 // 本專案測試環境是 Node 內建 test runner，沒有 DOM harness(無 jsdom、
@@ -17,7 +23,7 @@
 //     兩個設定鍵的預設值物件。
 //   createPopupController({ document, storage }) → { init(): Promise }
 //     - document 只透過 getElementById(id) 取控件，兩個 checkbox 的 id 為
-//       'autoClean'、'notifySuccess'(與 chrome.storage.sync 的鍵同名)。
+//       'autoClean'、'postCopyEnabled'(與 chrome.storage.sync 的鍵同名)。
 //     - storage 是 chrome.storage.sync 形狀的物件(get / set)，由外部注入，
 //       popup 邏輯層不直接碰全域 chrome，才能離線測試。
 //     - init() 依序:讀取設定 → 套用到兩個 checkbox 的 checked → 為兩個
@@ -35,7 +41,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { createChromeStorage, createCheckboxDocument } = require('./support/helpers');
 
-const IDS = ['autoClean', 'notifySuccess'];
+const IDS = ['autoClean', 'postCopyEnabled'];
 
 // 尚未實作 popup.js 時 require 會丟 MODULE_NOT_FOUND:刻意延遲到各測試內部
 // 才載入，讓紅燈落在個別測試上，而不是整個測試檔在載入階段就崩掉。
@@ -56,26 +62,29 @@ function setup(initial = {}) {
 }
 
 // ---- S7 / R1-1:兩個設定鍵與預設值 ----
+//
+// 0.5.0 方案甲(規格變更，授權更新):autoClean 預設改 false、notifySuccess
+// 換成 postCopyEnabled(預設 true)。
 
-test('S7:DEFAULT_SETTINGS 只有兩顆鍵，autoClean:true、notifySuccess:false', () => {
+test('S7:DEFAULT_SETTINGS 只有兩顆鍵，autoClean:false、postCopyEnabled:true', () => {
   const popup = loadPopup();
 
   assert.deepEqual(popup.DEFAULT_SETTINGS, {
-    autoClean: true,
-    notifySuccess: false,
+    autoClean: false,
+    postCopyEnabled: true,
   });
 });
 
 // ---- S7:兩開關讀 chrome.storage.sync ----
 
 test('S7:init() 把 chrome.storage.sync 既有設定逐一套用到兩個 checkbox', async () => {
-  const { storage, doc, controller } = setup({ autoClean: false, notifySuccess: true });
+  const { storage, doc, controller } = setup({ autoClean: true, postCopyEnabled: false });
 
   await controller.init();
   await settle();
 
-  assert.equal(doc.elements.autoClean.checked, false);
-  assert.equal(doc.elements.notifySuccess.checked, true);
+  assert.equal(doc.elements.autoClean.checked, true);
+  assert.equal(doc.elements.postCopyEnabled.checked, false);
   assert.ok(storage.calls.get.length >= 1, 'popup 應向 chrome.storage.sync 讀取設定');
 });
 
@@ -85,8 +94,8 @@ test('S7:storage 為空時，init() 以兩個預設值呈現兩個開關', async
   await controller.init();
   await settle();
 
-  assert.equal(doc.elements.autoClean.checked, true);
-  assert.equal(doc.elements.notifySuccess.checked, false);
+  assert.equal(doc.elements.autoClean.checked, false, '新預設 false，配合 background.js 同步調整');
+  assert.equal(doc.elements.postCopyEnabled.checked, true);
 });
 
 // ---- S7:兩開關寫 chrome.storage.sync ----
@@ -95,12 +104,12 @@ test('S7:storage 為空時，init() 以兩個預設值呈現兩個開關', async
 // chrome.storage.sync)，只差是哪一顆鍵與翻成哪個值。
 test('S7:切換任一開關，新值寫回 chrome.storage.sync', async () => {
   const cases = [
-    { key: 'notifySuccess', next: true },
-    { key: 'autoClean', next: false },
+    { key: 'postCopyEnabled', next: false },
+    { key: 'autoClean', next: true },
   ];
 
   for (const { key, next } of cases) {
-    const { storage, doc, controller } = setup({ autoClean: true, notifySuccess: false });
+    const { storage, doc, controller } = setup({ autoClean: false, postCopyEnabled: true });
     await controller.init();
     await settle();
 
@@ -110,6 +119,17 @@ test('S7:切換任一開關，新值寫回 chrome.storage.sync', async () => {
     assert.equal(storage.snapshot()[key], next, `${key} 的新值應寫回 storage`);
     assert.ok(storage.calls.set.length >= 1, 'popup 應把新值寫回 chrome.storage.sync');
   }
+});
+
+// 0.5.0 方案甲新增:postCopyEnabled 開關獨立驗證預設值與渲染，照既有模式
+// (S7 的兩開關測試已涵蓋綁定/寫回行為，這裡額外鎖定它「新開關」的身分)。
+test('postCopyEnabled:預設 true,render 後 checkbox 呈現開啟狀態', async () => {
+  const { doc, controller } = setup({});
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.elements.postCopyEnabled.checked, true, 'postCopyEnabled 預設應為 true');
 });
 
 // ---- MV3 CSP:popup.html 不得有內嵌 script(靜態防回歸) ----
@@ -159,7 +179,8 @@ function readPopupStyle() {
   return match ? match[1] : '';
 }
 
-test('R1-3:popup.html 只有兩個開關控件，id 為 autoClean 與 notifySuccess', () => {
+// 0.5.0 方案甲(規格變更，授權更新):notifySuccess 換成 postCopyEnabled。
+test('R1-3:popup.html 只有兩個開關控件，id 為 autoClean 與 postCopyEnabled', () => {
   const html = readPopupHtml();
 
   const checkboxes = html.match(/<input\b[^>]*type\s*=\s*["']checkbox["'][^>]*>/gi) || [];
@@ -169,7 +190,7 @@ test('R1-3:popup.html 只有兩個開關控件，id 為 autoClean 與 notifySucc
     const m = tag.match(/\bid\s*=\s*["']([^"']+)["']/i);
     return m ? m[1] : null;
   });
-  assert.deepEqual(ids.sort(), ['autoClean', 'notifySuccess']);
+  assert.deepEqual(ids.sort(), ['autoClean', 'postCopyEnabled']);
 });
 
 test('R1-3:popup.html 不得再有 resolveShortcode 控件與縮排子項', () => {
@@ -259,4 +280,17 @@ test('導航列:popup.html 有 button#openOptions,點擊呼叫 openOptionsPage',
 
   doc.elements.openOptions.fire('click');
   assert.equal(opened, 1, '點擊導航列應呼叫 openOptionsPage 一次');
+});
+
+// 0.5.0 新增(使用者指定):導航列的舊箭頭字元「›」換成 Lucide 的
+// chevron-right inline SVG，靜態讀 popup.html 原文把關，避免日後又退回
+// 純文字符號。
+test('導航列:舊箭頭字元「›」已換成 Lucide chevron-right inline SVG', () => {
+  const html = readPopupHtml();
+
+  assert.equal(html.includes('›'), false, 'popup.html 不應再含舊箭頭字元「›」');
+  assert.ok(
+    /<svg\b[^>]*class="nav-chev"[^>]*>[\s\S]*?<path d="m9 18 6-6-6-6"\/>[\s\S]*?<\/svg>/.test(html),
+    'nav-chev 應為 Lucide chevron-right 的 inline SVG(path d="m9 18 6-6-6-6")'
+  );
 });

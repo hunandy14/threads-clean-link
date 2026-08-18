@@ -5,16 +5,26 @@
   'use strict';
 
   // R1-1 併開關：resolveShortcode 徹底移除，短碼解析與 ?xmt 剪參都收在
-  // autoClean 這一顆之下。兩個設定鍵：autoClean 預設開啟，notifySuccess
-  // 預設關閉，避免安裝後立刻被成功通知洗版。
-  // (saveHistory 是 options 頁的事,popup 不放開關,故不在此預設值內。)
+  // autoClean 這一顆之下。
+  //
+  // 0.5.0 方案甲(使用者拍板三條設定變更):
+  //   - 移除「成功時顯示通知」開關(notifySuccess)整組——成功通知已在 R1
+  //     同輪整組拆光，這顆開關合併後零讀取端。失敗通知仍在:Threads 頁內
+  //     toast(guard/bridge 路徑)+ 右鍵選單路徑的系統通知，兩者都不受這顆
+  //     開關影響、一律顯示，只是「成功」這個分支已經沒有通知可關。options
+  //     頁同步移除鏡像的 opNotifyName/opNotifyDesc 設定列，不留死 UI。
+  //   - autoClean 預設值改 false，配合 background.js(另一車道)同步調整
+  //     的新預設，popup 這側的初始渲染 fallback 要跟著改，否則使用者第
+  //     一次開 popup 看到的開關狀態會跟 background 實際行為不一致。
+  //   - 新增 postCopyEnabled(貼文複製按鈕，post-icon.js 的複製按鈕注入
+  //     開關，另一車道讀取)，預設 true。
   var DEFAULT_SETTINGS = {
-    autoClean: true,
-    notifySuccess: false,
+    autoClean: false,
+    postCopyEnabled: true,
   };
 
   // checkbox 的 id 與 chrome.storage.sync 的鍵同名。
-  var SETTING_IDS = ['autoClean', 'notifySuccess'];
+  var SETTING_IDS = ['autoClean', 'postCopyEnabled'];
 
   function createPopupController(deps) {
     var document = deps.document;
