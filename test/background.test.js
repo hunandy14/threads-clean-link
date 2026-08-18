@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
 // background.js 依賴共用 i18n 模組(真實環境靠 importScripts 載入);
 // 測試把 i18n.js 原始碼接在前面,兩支腳本共用同一個 sandbox 全域。
@@ -627,6 +628,34 @@ test('紀錄:notifySuccess=true 時，kind 為 icon 的 cleanedNotice 比照 sha
 
   assert.equal(bg.notifications.length, 1);
   assert.equal(bg.notifications[0].id, 'threads-clean-link-autoclean-success');
+});
+
+// 修正:kind 為 icon 時，通知文案不得沿用 bgAutoSuccess 的「已自動淨化」
+// 說法——貼文互動列複製 icon(post-icon.js)只是原樣複製貼文連結，沒有解析
+// 短碼或剪除追蹤參數這類「淨化」動作，繼續用 bgAutoSuccess 等同謊稱做了
+// 淨化。通知 id 三者仍共用同一個 AUTOCLEAN_SUCCESS_NOTIFICATION_ID(上一條
+// 測試已鎖住)，這裡另外斷言訊息「內容」:icon 用新增的 bgIconSuccess key，
+// share 維持 bgAutoSuccess 不變，兩者不得相同。
+test('通知文案:kind 為 icon 時使用 bgIconSuccess(不謊稱自動淨化)，share 維持 bgAutoSuccess 不變', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+  await settle();
+
+  assert.equal(bg.notifications.length, 2);
+  assert.equal(
+    bg.notifications[0].options.message,
+    i18n.fmt('en', 'bgIconSuccess', { url: CLEANED_NOTICE_CLEAN_URL }),
+    'icon 應使用 bgIconSuccess 文案'
+  );
+  assert.equal(
+    bg.notifications[1].options.message,
+    i18n.fmt('en', 'bgAutoSuccess', { url: CLEANED_NOTICE_CLEAN_URL }),
+    'share 仍應維持 bgAutoSuccess 文案不動'
+  );
+  assert.notEqual(bg.notifications[0].options.message, bg.notifications[1].options.message);
 });
 
 test('紀錄:kind 為 icon 以外的未知字串仍被白名單拒絕，不記錄、不通知', async () => {

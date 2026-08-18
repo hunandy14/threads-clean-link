@@ -99,7 +99,13 @@ if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChange
     if (!chrome.contextMenus || typeof chrome.contextMenus.update !== 'function') return;
     const locale = TCLI18N.resolveLocale(changes.langPref.newValue);
     try {
-      chrome.contextMenus.update(CONTEXT_MENU_ID, { title: TCLI18N.t(locale, 'bgMenuTitle') });
+      // MV3 下不帶 callback 呼叫 update() 會回傳 Promise：同步 try/catch
+      // 接不到非同步 rejection，比照 safeNotify(見檔尾)的 ?.catch() 模式，
+      // 對回傳值另外補一次 .catch，兩者都只記錄、不外拋。
+      const updating = chrome.contextMenus.update(CONTEXT_MENU_ID, { title: TCLI18N.t(locale, 'bgMenuTitle') });
+      updating?.catch((err) => {
+        console.error('[threads-clean-link] 更新右鍵選單標題失敗(非同步)', err);
+      });
     } catch (err) {
       console.error('[threads-clean-link] 更新右鍵選單標題失敗', err);
     }
@@ -232,7 +238,13 @@ async function handleCleanedNotice(message) {
 
   const settings = await getSettings();
   if (settings.notifySuccess) {
-    notifyByKey(AUTOCLEAN_SUCCESS_NOTIFICATION_ID, 'bgAutoSuccess', { url: cleanUrl });
+    // kind:'icon'(貼文互動列複製按鈕)只是原樣複製貼文連結，沒有解析短碼
+    // 或剪除追蹤參數這類「淨化」動作，用 bgAutoSuccess 的「已自動淨化」
+    // 文案會謊稱做了淨化；改用專屬的 bgIconSuccess 如實描述。share/strip
+    // 兩條既有自動路徑維持 bgAutoSuccess 不變。通知 id 三者共用同一個
+    // AUTOCLEAN_SUCCESS_NOTIFICATION_ID，只有文案 key 依 kind 分流。
+    const messageKey = kind === 'icon' ? 'bgIconSuccess' : 'bgAutoSuccess';
+    notifyByKey(AUTOCLEAN_SUCCESS_NOTIFICATION_ID, messageKey, { url: cleanUrl });
   }
 }
 

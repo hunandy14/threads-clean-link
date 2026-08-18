@@ -23,6 +23,10 @@
       bgClipboardError: '目前分頁無法寫入剪貼簿(可能是瀏覽器限制頁面)，乾淨網址為:{url}',
       bgSuccess: '已複製乾淨網址:{url}',
       bgAutoSuccess: '已自動淨化並複製乾淨網址:{url}',
+      // kind:'icon'(貼文互動列複製按鈕，見 post-icon.js)本來就只複製貼文
+      // 原始連結，沒有解析短碼或剪除追蹤參數這類「淨化」動作，沿用
+      // bgAutoSuccess 的「已自動淨化」文案會謊稱做了淨化，故獨立一顆 key。
+      bgIconSuccess: '已複製原始連結:{url}',
       bgUnexpected: '發生未預期的錯誤，請稍後再試一次。',
 
       // ---- popup ----
@@ -120,6 +124,7 @@
       bgClipboardError: 'This tab cannot accept clipboard writes (possibly a restricted page). Clean URL: {url}',
       bgSuccess: 'Clean URL copied: {url}',
       bgAutoSuccess: 'Auto-cleaned and copied: {url}',
+      bgIconSuccess: 'Original link copied: {url}',
       bgUnexpected: 'Unexpected error. Please try again later.',
 
       ppAutoClean: 'Auto-clean the share button',
