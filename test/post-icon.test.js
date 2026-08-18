@@ -296,6 +296,100 @@ test('pickActionRowIndex:候選清單為空或非陣列輸入一律回傳 null�
   assert.equal(pickActionRowIndex(undefined), null);
 });
 
+// ---- buildFavoriteId(0.5.0 貼文收藏庫:從乾淨貼文網址導出收藏用的正規
+// 路徑 id，語意對齊 background.js 的 FAVORITE_URL_PATTERN group 2) ----
+
+test('buildFavoriteId:標準乾淨網址(www + .com)導出 @handle/post/postId', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://www.threads.com/@yuki4382/post/DcDrsdAmhlU'),
+    '@yuki4382/post/DcDrsdAmhlU'
+  );
+});
+
+test('buildFavoriteId:不帶 www、.net 網域同樣可導出 id', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://threads.net/@x/post/abc'),
+    '@x/post/abc'
+  );
+});
+
+test('buildFavoriteId:去除尾隨斜線', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://www.threads.com/@x/post/abc/'),
+    '@x/post/abc'
+  );
+});
+
+test('buildFavoriteId:去除 query 與 hash', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(
+    buildFavoriteId('https://www.threads.com/@x/post/abc?xmt=1#section'),
+    '@x/post/abc'
+  );
+});
+
+test('buildFavoriteId:非字串輸入一律回傳 null，不丟例外', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(buildFavoriteId(null), null);
+  assert.equal(buildFavoriteId(undefined), null);
+  assert.equal(buildFavoriteId(12345), null);
+});
+
+test('buildFavoriteId:格式不符(非 threads 網域、缺 /post/ 路徑)回傳 null', () => {
+  const { buildFavoriteId } = loadPostIcon();
+
+  assert.equal(buildFavoriteId('https://evil.example/@x/post/abc'), null);
+  assert.equal(buildFavoriteId('https://www.threads.com/@x/media/abc'), null);
+  assert.equal(buildFavoriteId('not-a-url'), null);
+});
+
+// ---- classifyExcerptCandidate(0.5.0 貼文收藏庫:extractExcerpt 逐段決
+// 策 push／skip／stop 的純函式，PM 審查後修正兩條規則) ----
+
+test('classifyExcerptCandidate:純標點行(如「...」)不是計數字串，應保留為內文(push)，不中止收集', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('...', true), 'push');
+  assert.equal(classifyExcerptCandidate('...', false), 'push');
+});
+
+test('classifyExcerptCandidate:已收集到內文後，正文中單獨成行的時間樣式字串(如「3天」「2026-4-29」)不再被當成時間戳記丟棄，應保留為內文(push)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('3天', true), 'push');
+  assert.equal(classifyExcerptCandidate('2026-4-29', true), 'push');
+});
+
+test('classifyExcerptCandidate:尚未收集到任何內文時，時間樣式字串仍視為時間戳記，略過(skip)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('18小時', false), 'skip');
+  assert.equal(classifyExcerptCandidate('2026-4-29', false), 'skip');
+});
+
+test('classifyExcerptCandidate:計數字串(純數字／千分位逗號／K-M-B 縮寫)一律中止收集(stop)，不論是否已收集到內文', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('97', true), 'stop');
+  assert.equal(classifyExcerptCandidate('2,440', true), 'stop');
+  assert.equal(classifyExcerptCandidate('1.2K', false), 'stop');
+});
+
+test('classifyExcerptCandidate:空字串——已收集到內文時中止(stop)，尚未收集到內文時略過(skip)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('', true), 'stop');
+  assert.equal(classifyExcerptCandidate('', false), 'skip');
+});
+
 // ============================================================
 // i18n.js 新增 key:iconTooltip(圖示滑鼠提示)、iconCopied(複製成功提示)。
 // zh/en 兩份字典都要有這兩個 key 且非空字串；既有的 zh/en key 集合對齊
