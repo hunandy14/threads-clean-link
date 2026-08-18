@@ -1,7 +1,7 @@
 // test/favorites.test.js — background.js 的貼文收藏庫(0.5.0 基座)行為
 // 契約:favoriteToggle 訊息的 toggle 語意、id 導出與正規化、上限拒收、
 // url 驗證、欄位截斷/丟棄、storage 失敗處理。互動列書籤 icon 與 options
-// 收藏分頁皆由其他車道實作,本檔只鎖 background 這側的訊息協定與 schema。
+// 收藏分頁皆由其他車道實作，本檔只鎖 background 這側的訊息協定與 schema。
 'use strict';
 
 const test = require('node:test');
@@ -11,7 +11,7 @@ const path = require('node:path');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
 
 // background.js 依賴共用 i18n 模組(真實環境靠 importScripts 載入);
-// 測試把 i18n.js 原始碼接在前面,兩支腳本共用同一個 sandbox 全域。
+// 測試把 i18n.js 原始碼接在前面，兩支腳本共用同一個 sandbox 全域。
 const SRC =
   fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
   '\n' +
@@ -50,7 +50,7 @@ function loadFavorites(localSeed) {
   return { storage, onMessageListeners };
 }
 
-// 刻意不掛 chrome.storage,模擬 hasStorageLocal() 判假的情境。
+// 刻意不掛 chrome.storage，模擬 hasStorageLocal() 判假的情境。
 function loadFavoritesNoStorage() {
   const onMessageListeners = [];
   const chrome = {
@@ -71,8 +71,8 @@ function loadFavoritesNoStorage() {
   return { onMessageListeners };
 }
 
-// 建立 chrome.storage.local.get/set 可依需求丟例外的 mock,測 storage
-// 失敗路徑用(createChromeStorage 沒有「失敗模式」,這裡另外手刻)。
+// 建立 chrome.storage.local.get/set 可依需求丟例外的 mock，測 storage
+// 失敗路徑用(createChromeStorage 沒有「失敗模式」，這裡另外手刻)。
 function loadFavoritesWithFailingStorage({ failGet = false, failSet = false, seed = [] } = {}) {
   const onMessageListeners = [];
   const setCalls = [];
@@ -107,8 +107,8 @@ function loadFavoritesWithFailingStorage({ failGet = false, failSet = false, see
 }
 
 // 派送訊息給全部已註冊的 onMessage 監聽器(比照 background.test.js 的
-// sendRuntimeMessage 慣例),同步蒐集各監聽器的回傳值(true/false 通道
-// 契約),非同步蒐集 sendResponse 收到的回應。
+// sendRuntimeMessage 慣例)，同步蒐集各監聽器的回傳值(true/false 通道
+// 契約)，非同步蒐集 sendResponse 收到的回應。
 function dispatch(onMessageListeners, message) {
   const returns = [];
   const response = new Promise((resolve) => {
@@ -131,12 +131,12 @@ function seedFavorites(count) {
 // 訊息通道契約
 // ============================================================
 
-test('onMessage 契約:favoriteToggle 回傳 true 保持通道,其他訊息類型該監聽器回傳 false', async () => {
+test('onMessage 契約:favoriteToggle 回傳 true 保持通道，其他訊息類型該監聽器回傳 false', async () => {
   const { onMessageListeners } = loadFavorites();
   const { returns, response } = dispatch(onMessageListeners, { type: 'favoriteToggle', url: CLEAN_URL });
 
-  // 三支監聽器(resolveShare/cleanedNotice/favoriteToggle)都會被派送到,
-  // 只有相符類型的那支回傳 true,其餘回傳 false;至少要有一個 true。
+  // 三支監聽器(resolveShare/cleanedNotice/favoriteToggle)都會被派送到，
+  // 只有相符類型的那支回傳 true，其餘回傳 false;至少要有一個 true。
   assert.ok(returns.includes(true), 'favoriteToggle 訊息應有監聽器回傳 true 保持通道開啟');
   assert.equal(returns.filter((r) => r === true).length, 1, '只該有一支監聽器認領 favoriteToggle');
 
@@ -144,7 +144,7 @@ test('onMessage 契約:favoriteToggle 回傳 true 保持通道,其他訊息類�
   assert.equal(res.ok, true);
 });
 
-test('onMessage 契約:不認得的訊息類型,所有監聽器都回傳 false 且不呼叫 sendResponse', () => {
+test('onMessage 契約:不認得的訊息類型，所有監聽器都回傳 false 且不呼叫 sendResponse', () => {
   const { onMessageListeners } = loadFavorites();
   let called = false;
   const returns = onMessageListeners.map((fn) => fn({ type: 'somethingElse' }, {}, () => {
@@ -158,7 +158,7 @@ test('onMessage 契約:不認得的訊息類型,所有監聽器都回傳 false �
 // toggle 新增 / 移除 / 去重(依 id)
 // ============================================================
 
-test('新增:合法 url 且不存在收藏時,存入陣列頭並回 {ok:true, saved:true}', async () => {
+test('新增:合法 url 且不存在收藏時，存入陣列頭並回 {ok:true, saved:true}', async () => {
   const { storage, onMessageListeners } = loadFavorites();
   const { response } = dispatch(onMessageListeners, {
     type: 'favoriteToggle',
@@ -182,7 +182,7 @@ test('新增:合法 url 且不存在收藏時,存入陣列頭並回 {ok:true, sa
   assert.equal(typeof list[0].at, 'number');
 });
 
-test('新增:選填欄位全部省略時,條目只有 { id, url, at },不含 author/handle/excerpt 鍵', async () => {
+test('新增:選填欄位全部省略時，條目只有 { id, url, at }，不含 author/handle/excerpt 鍵', async () => {
   const { storage, onMessageListeners } = loadFavorites();
   await dispatch(onMessageListeners, { type: 'favoriteToggle', url: CLEAN_URL }).response;
 
@@ -190,7 +190,7 @@ test('新增:選填欄位全部省略時,條目只有 { id, url, at },不含 aut
   assert.deepEqual(Object.keys(entry).sort(), ['at', 'id', 'url']);
 });
 
-test('移除:對已存在的 id 再次 toggle 會移除該筆,回 {ok:true, saved:false}', async () => {
+test('移除:對已存在的 id 再次 toggle 會移除該筆，回 {ok:true, saved:false}', async () => {
   const { storage, onMessageListeners } = loadFavorites();
   await dispatch(onMessageListeners, { type: 'favoriteToggle', url: CLEAN_URL }).response;
   assert.equal(storage.localSnapshot().favorites.length, 1);
@@ -202,7 +202,7 @@ test('移除:對已存在的 id 再次 toggle 會移除該筆,回 {ok:true, save
   assert.equal(storage.localSnapshot().favorites.length, 0);
 });
 
-test('去重:第二次 toggle 用「同一貼文的不同 query/hash 變形」,依 id 判定為同一筆並移除', async () => {
+test('去重:第二次 toggle 用「同一貼文的不同 query/hash 變形」，依 id 判定為同一筆並移除', async () => {
   const { storage, onMessageListeners } = loadFavorites();
   await dispatch(onMessageListeners, { type: 'favoriteToggle', url: CLEAN_URL }).response;
   assert.equal(storage.localSnapshot().favorites.length, 1);
@@ -212,8 +212,8 @@ test('去重:第二次 toggle 用「同一貼文的不同 query/hash 變形」,�
     url: `${CLEAN_URL}/?xmt=AQGabc`,
   }).response;
 
-  assert.equal(res.ok, true, 'id 相同即視為同一筆收藏,不因 query/hash 不同而各自成一筆');
-  assert.equal(res.saved, false, 'id 相同即視為同一筆收藏,不因 query/hash 不同而各自成一筆');
+  assert.equal(res.ok, true, 'id 相同即視為同一筆收藏，不因 query/hash 不同而各自成一筆');
+  assert.equal(res.saved, false, 'id 相同即視為同一筆收藏，不因 query/hash 不同而各自成一筆');
   assert.equal(storage.localSnapshot().favorites.length, 0);
 });
 
@@ -241,7 +241,7 @@ const ID_DERIVATION_VARIANTS = [
   { label: '尾隨斜線 + 查詢字串', url: `${CLEAN_URL}/?xmt=AQGabc` },
 ];
 
-test('id 導出:尾隨斜線／查詢參數／hash 等變形,一律導出相同的 id 與正規化後的 url', async () => {
+test('id 導出:尾隨斜線／查詢參數／hash 等變形，一律導出相同的 id 與正規化後的 url', async () => {
   for (const { label, url } of ID_DERIVATION_VARIANTS) {
     const { storage, onMessageListeners } = loadFavorites();
     const res = await dispatch(onMessageListeners, { type: 'favoriteToggle', url }).response;
@@ -249,8 +249,8 @@ test('id 導出:尾隨斜線／查詢參數／hash 等變形,一律導出相同�
     assert.equal(res.ok, true, `${label}:應成功新增`);
     assert.equal(res.saved, true, `${label}:應成功新增`);
     const entry = storage.localSnapshot().favorites[0];
-    assert.equal(entry.id, FAV_ID, `${label}:id 應正規化為 @user/post/id,不含尾綴`);
-    assert.equal(entry.url, CLEAN_URL, `${label}:url 應正規化為乾淨網址,不含尾隨斜線/query/hash`);
+    assert.equal(entry.id, FAV_ID, `${label}:id 應正規化為 @user/post/id，不含尾綴`);
+    assert.equal(entry.url, CLEAN_URL, `${label}:url 應正規化為乾淨網址，不含尾隨斜線/query/hash`);
   }
 });
 
@@ -313,7 +313,7 @@ test('並發:同一貼文並發 toggle 兩次，依呼叫順序序列化執行�
 // 上限拒收(不擠掉舊收藏)
 // ============================================================
 
-test('上限:已滿 500 筆時,新增不存在的 id 回 {ok:false, reason:"full"},且不寫入、不擠掉舊收藏', async () => {
+test('上限:已滿 500 筆時，新增不存在的 id 回 {ok:false, reason:"full"}，且不寫入、不擠掉舊收藏', async () => {
   const seed = seedFavorites(500);
   const { storage, onMessageListeners } = loadFavorites(seed);
 
@@ -326,7 +326,7 @@ test('上限:已滿 500 筆時,新增不存在的 id 回 {ok:false, reason:"full
   assert.equal(list.some((item) => item.id === FAV_ID), false, '拒收的新項目不得混入陣列');
 });
 
-test('上限:已滿 500 筆時,對既有收藏 toggle 仍可正常移除(移除不受上限限制)', async () => {
+test('上限:已滿 500 筆時，對既有收藏 toggle 仍可正常移除(移除不受上限限制)', async () => {
   const seed = seedFavorites(500);
   const { storage, onMessageListeners } = loadFavorites(seed);
 
@@ -341,7 +341,7 @@ test('上限:已滿 500 筆時,對既有收藏 toggle 仍可正常移除(移除�
 });
 
 // ============================================================
-// url 驗證:不合法形狀一律拒絕(reason:'invalid-url'),不觸碰 storage
+// url 驗證:不合法形狀一律拒絕(reason:'invalid-url')，不觸碰 storage
 // ============================================================
 
 const INVALID_URL_CASES = [
@@ -362,7 +362,7 @@ const INVALID_URL_CASES = [
   { label: 'url 為數字', url: 12345 },
 ];
 
-test('url 驗證:不合法形狀一律回 {ok:false, reason:"invalid-url"},且不呼叫 storage.local.set', async () => {
+test('url 驗證:不合法形狀一律回 {ok:false, reason:"invalid-url"}，且不呼叫 storage.local.set', async () => {
   for (const { label, url } of INVALID_URL_CASES) {
     const { storage, onMessageListeners } = loadFavorites();
     const res = await dispatch(onMessageListeners, { type: 'favoriteToggle', url }).response;
@@ -385,7 +385,7 @@ test('url 驗證:handle/postId 剛好等於 60 字元上限時仍合法放行(�
 // 欄位截斷 / 非字串欄位丟棄
 // ============================================================
 
-test('欄位截斷:author/handle 截斷至 100 字元,excerpt 截斷至 2000 字元', async () => {
+test('欄位截斷:author/handle 截斷至 100 字元，excerpt 截斷至 2000 字元', async () => {
   const { storage, onMessageListeners } = loadFavorites();
   await dispatch(onMessageListeners, {
     type: 'favoriteToggle',
@@ -420,7 +420,7 @@ test('欄位截斷:剛好等於上限長度時不截斷(邊界值)', async () =>
   assert.equal(entry.excerpt, 'E'.repeat(2000));
 });
 
-test('非字串欄位丟棄:author/handle/excerpt 為非字串型別時,整欄不寫入條目', async () => {
+test('非字串欄位丟棄:author/handle/excerpt 為非字串型別時，整欄不寫入條目', async () => {
   const { storage, onMessageListeners } = loadFavorites();
   await dispatch(onMessageListeners, {
     type: 'favoriteToggle',
@@ -437,7 +437,7 @@ test('非字串欄位丟棄:author/handle/excerpt 為非字串型別時,整欄�
   assert.deepEqual(Object.keys(entry).sort(), ['at', 'id', 'url']);
 });
 
-test('非字串欄位丟棄:null 值同樣視為非字串,整欄不寫入條目', async () => {
+test('非字串欄位丟棄:null 值同樣視為非字串，整欄不寫入條目', async () => {
   const { storage, onMessageListeners } = loadFavorites();
   await dispatch(onMessageListeners, {
     type: 'favoriteToggle',
