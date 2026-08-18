@@ -299,17 +299,63 @@
     return lines > EXCERPT_DIALOG_LINES || Array.from(excerpt).length > EXCERPT_DIALOG_LINES * 22;
   }
 
-  // 0.5.0:卡片 ⋮ 選單與詳細視窗底部動作列共用的動作組成——手機版
-  // history-card.tsx 的快捷列是複製/分享，history-detail-dialog.tsx 的
-  // 動作列是開啟/分享/刪除;web 沒有原生分享，PM 裁決映射為
-  // 複製連結/開啟貼文/刪除。獨立成純函式方便直接測動作組成與 href 計算，
-  // 不用整條搭 DOM。
-  function buildEntryActions(entry) {
-    return [
-      { type: 'copy', titleKey: 'opCopyTitle' },
-      { type: 'open', titleKey: 'opOpenTitle', href: entry.url },
-      { type: 'delete', titleKey: 'opDeleteTitle' },
-    ];
+  // UI 全面對齊手機任務:互動模型翻轉後卡片右上常駐的 ⋮ 選單整組移除
+  // (見 options.html 的 .entry-card 註解)，buildEntryActions 是該選單
+  // 專用的動作組成純函式，唯一呼叫端消失後這顆函式也一併移除(PM 授權
+  // 「原 kebab 相關碼與測試移除」)。刪除動作收斂到只在詳細視窗做，底部
+  // 動作列(detailCopyBtn/detailOpenLink/detailDeleteBtn)本來就是寫死的
+  // 靜態 HTML，不經這顆函式生成，故移除它不影響底部動作列。
+
+  // UI 全面對齊手機任務，work item 5/7:純函式:formatDisplayUrl——對齊
+  // 手機版 lib/format-display-url.ts，把完整網址轉成適合顯示的精簡路徑
+  // (去 scheme + 網域，只留 path+query+hash，去掉開頭斜線)。用於詳細
+  // 視窗的「淨化後連結」與「原始連結」兩列的顯示值(複製仍用完整原始
+  // 網址，只影響顯示)。解析失敗 fail-open 回傳原字串，非字串輸入回傳
+  // 空字串(呼叫端已經先做過型別檢查，這裡是最後一道防線)。
+  function formatDisplayUrl(url) {
+    if (typeof url !== 'string') return '';
+    var parsed;
+    try {
+      parsed = new URL(url);
+    } catch (e) {
+      return url;
+    }
+    var path = parsed.pathname + parsed.search + parsed.hash;
+    var trimmed = path.replace(/^\/+/, '');
+    return trimmed || url;
+  }
+
+  // UI 全面對齊手機任務，work item 7:純函式:buildDetailExtraRows——對齊
+  // 手機版 CopyRow 的「原始連結」「追蹤參數 {name}」兩類列。
+  //
+  // 【審查修正】removedParams 元素的欄位名是 { key, value }，不是
+  // { name, value }——權威來源是手機版 link-cleaner.ts:171 與
+  // detail-dialog 的 p.key，也是 F 案(feat/record-origin)background.js
+  // 的 sanitizeRemovedParams 實際落盤的形狀(見上面 REMOVED_PARAM_KEY_MAX
+  // 那組門檻)。上一輪(feat/ui-align-mobile)寫成 p.name 是本分支自己的
+  // fixture/實作誤植，兩邊 schema 沒對齊測試卻是綠的——因為測試 fixture
+  // 也一起錯著寫，形成互相遮蔽的假綠燈。這裡讀 p.key，回傳物件本身仍用
+  // `name` 這個 key(給下面 tf('opTrackingParamLabel', { name: row.name })
+  // 這行的 i18n 樣板插值用，屬顯示層命名，跟資料層的 key/value 是两回事，
+  // 不用跟著改)。
+  //
+  // entry.original 缺席/非字串/與 cleaned 相同(手機版:
+  // item.original !== item.cleaned 才顯示)一律不產生該列；
+  // entry.removedParams 缺席/非陣列/陣列內項目形狀不對(缺 key/value 或
+  // 非字串)一律濾掉該筆，不因此整組作廢。回傳陣列供呼叫端逐筆建 DOM，
+  // 每筆為 { type: 'original' | 'param', name?, display, copyValue }。
+  function buildDetailExtraRows(entry) {
+    var rows = [];
+    if (!entry) return rows;
+    if (typeof entry.original === 'string' && entry.original !== '' && entry.original !== entry.url) {
+      rows.push({ type: 'original', display: formatDisplayUrl(entry.original), copyValue: entry.original });
+    }
+    var params = Array.isArray(entry.removedParams) ? entry.removedParams : [];
+    params.forEach(function (p) {
+      if (!p || typeof p.key !== 'string' || p.key === '' || typeof p.value !== 'string') return;
+      rows.push({ type: 'param', name: p.key, display: p.value, copyValue: p.value });
+    });
+    return rows;
   }
 
   // 詳細視窗的「記錄時間」用絕對時間(YYYY-MM-DD HH:mm)，與卡頭的相對時間
@@ -397,9 +443,6 @@
     var activeKind = 'all';
     var query = '';
     var pageSize = PAGE_SIZE_DEFAULT;
-    // 目前開著的卡片 ⋮ 選單的關閉函式(同一時間只開一個;外部點擊/開新的
-    // 選單時呼叫它關掉上一個)。
-    var closeActiveEntryMenu = null;
     // 目前詳細視窗顯示中的條目(複製/刪除按鈕靠它找到要操作的 entry)。
     var detailEntry = null;
 
@@ -700,15 +743,6 @@
       });
     }
 
-    function iconBtn(href, title, extraCls, onClick) {
-      var b = document.createElement('button');
-      b.className = 'icon-btn' + (extraCls ? ' ' + extraCls : '');
-      b.title = title;
-      b.appendChild(svgUse(href));
-      b.addEventListener('click', onClick);
-      return b;
-    }
-
     // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
     // 網址內容源頭是頁面可控管道，禁 innerHTML。紀錄卡片降級顯示(無
     // author/excerpt 時)靠這份拆解邏輯。
@@ -730,14 +764,14 @@
       return urlEl;
     }
 
-    var ACTION_ICON = { copy: '#i-copy', open: '#i-external-link', delete: '#i-trash' };
-
-    // 複製/刪除是卡片 ⋮ 選單與詳細視窗共用的動作，獨立成函式避免兩處各自
-    // 維護一份;「開啟」是原生 <a target=_blank>，不需要 JS 邏輯。
-    function copyEntryUrl(e) {
+    // 複製是卡片高亮態快捷鈕/詳細視窗/original-removedParams 附加列共用的
+    // 動作，獨立成通用的「複製任意文字」函式(copyText)，copyEntryUrl 是
+    // 針對 entry.url 的特化版本，避免每個呼叫端各自組 try/catch。
+    // 「開啟」是原生 <a target=_blank>，不需要 JS 邏輯。
+    function copyText(value) {
       var p;
       try {
-        p = navigator.clipboard.writeText(e.url);
+        p = navigator.clipboard.writeText(value);
       } catch (err) {
         p = Promise.reject(err);
       }
@@ -751,9 +785,15 @@
       );
     }
 
-    // 刪除沿用既有慣例等級:直接改 storage + toast，不另開確認框(「清除
-    // 全部」這種一次清光的破壞性動作才走確認框;刪單筆歷來就是即時動作，
-    // 卡片 ⋮ 選單與詳細視窗的刪除都沿用同一等級，不因為多了個入口就加重)。
+    function copyEntryUrl(e) {
+      copyText(e.url);
+    }
+
+    // 刪除只在詳細視窗做(照手機版 DialogActions 的位置——手機版本來就
+    // 沒有卡片層級的刪除入口，這輪互動模型翻轉撤掉 web 自製的常駐 ⋮ 選單
+    // 後兩邊收斂一致)。沿用既有慣例等級:直接改 storage + toast，不另開
+    // 確認框(「清除全部」這種一次清光的破壞性動作才走確認框;刪單筆歷來
+    // 就是即時動作)。
     function deleteEntry(e) {
       var next = entries.filter(function (x) {
         return !(x.url === e.url && x.at === e.at);
@@ -769,14 +809,21 @@
     // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址
     // (比照舊版紀錄列樣式)。無縮圖(刻意，og:image 會過期)。
     //
-    // 互動模型對齊手機版:點卡片本身(排除 ⋮ 選單區)開詳細視窗
-    // (history-card.tsx 的 onPress);卡片右上是常駐的 ⋮ 選單(取代舊版
-    // hover 浮動三鈕——手機版卡片的快捷動作只在「選中態」才浮現且僅有
-    // 複製/分享兩顆，web 沒有選取態概念，改成常駐選單更直覺，選單項比照
-    // buildEntryActions 映射複製/開啟/刪除三項)。
+    // UI 全面對齊手機任務(使用者拍板:互動照手機):照手機版的「選中態」
+    // 取代上一輪自製的常駐 ⋮ 選單——手機版沒有 web 這種常駐選單，是
+    // hover/press 時邊框轉主色、右上浮出複製/分享兩顆快捷 icon(Copy/
+    // Share2)，web 用 :hover 與 :focus-within 模擬同一套視覺(見
+    // options.html 的 .entry-card 註解)，快捷鈕映射複製連結/開啟貼文;
+    // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。刪除動作
+    // 隨互動模型翻轉收斂到只在詳細視窗做，卡片層級不再有刪除入口。
     function buildEntryCard(e) {
       var card = document.createElement('div');
       card.className = 'entry-card';
+      // 鍵盤可聚焦，讓 :focus-within 高亮態也能靠 Tab 觸發(不只滑鼠
+      // hover);role="button" + Enter/Space 觸發，補上瀏覽器對原生
+      // button/a 才有的鍵盤啟動行為(div 預設沒有)。
+      card.setAttribute('tabindex', '0');
+      card.setAttribute('role', 'button');
 
       var header = document.createElement('div');
       header.className = 'entry-header';
@@ -820,98 +867,88 @@
         card.appendChild(buildUrlNode(e.url, 'entry-url'));
       }
 
-      var kebabWrap = document.createElement('div');
-      kebabWrap.className = 'entry-kebab-wrap';
+      // 高亮態右上浮出的兩顆快捷鈕:複製連結(對應手機 Copy)、開啟貼文
+      // (對應手機 Share2——web 沒有原生分享，PM 裁決這顆快捷鈕映射為
+      // 開啟貼文;注意這跟詳細視窗底部動作列的「分享→複製」映射是兩件
+      // 事，各自照各自的權威來源，不強行統一)。平時態靠 CSS display:none
+      // 隱藏，兩顆按鈕都要 stopPropagation，否則點下去會被卡片自己的
+      // click 冒泡到，順手把詳細視窗也開了。
+      var quickWrap = document.createElement('div');
+      quickWrap.className = 'entry-quick';
 
-      var kebabBtn = document.createElement('button');
-      kebabBtn.className = 'icon-btn entry-kebab';
-      kebabBtn.title = tt('opMoreTitle');
-      kebabBtn.setAttribute('aria-haspopup', 'menu');
-      kebabBtn.setAttribute('aria-expanded', 'false');
-      kebabBtn.appendChild(svgUse('#i-more'));
-
-      var kebabMenu = document.createElement('div');
-      kebabMenu.className = 'menu entry-menu';
-      kebabMenu.hidden = true;
-      kebabMenu.setAttribute('role', 'menu');
-
-      function closeKebab() {
-        kebabMenu.hidden = true;
-        kebabBtn.setAttribute('aria-expanded', 'false');
-        if (closeActiveEntryMenu === closeKebab) closeActiveEntryMenu = null;
-      }
-
-      kebabBtn.addEventListener('click', function (ev) {
+      var quickCopyBtn = document.createElement('button');
+      quickCopyBtn.type = 'button';
+      quickCopyBtn.className = 'entry-quick-btn';
+      quickCopyBtn.title = tt('opQuickCopyTitle');
+      quickCopyBtn.setAttribute('aria-label', tt('opQuickCopyTitle'));
+      quickCopyBtn.appendChild(svgUse('#i-copy'));
+      quickCopyBtn.addEventListener('click', function (ev) {
         if (ev && ev.stopPropagation) ev.stopPropagation();
-        var opening = kebabMenu.hidden;
-        if (closeActiveEntryMenu) closeActiveEntryMenu();
-        if (opening) {
-          kebabMenu.hidden = false;
-          kebabBtn.setAttribute('aria-expanded', 'true');
-          closeActiveEntryMenu = closeKebab;
-        }
+        copyEntryUrl(e);
       });
+      quickWrap.appendChild(quickCopyBtn);
 
-      buildEntryActions(e).forEach(function (action) {
-        var item = action.type === 'open' ? document.createElement('a') : document.createElement('button');
-        item.className = 'menu-item' + (action.type === 'delete' ? ' danger' : '');
-        item.setAttribute('role', 'menuitem');
-        if (action.type === 'open') {
-          item.href = action.href;
-          item.target = '_blank';
-          item.rel = 'noopener';
-        }
-        item.appendChild(svgUse(ACTION_ICON[action.type]));
-        var label = document.createElement('span');
-        label.textContent = tt(action.titleKey);
-        item.appendChild(label);
-        item.addEventListener('click', function (ev) {
-          if (ev && ev.stopPropagation) ev.stopPropagation();
-          closeKebab();
-          if (action.type === 'copy') copyEntryUrl(e);
-          else if (action.type === 'delete') deleteEntry(e);
-          // 'open' 交給瀏覽器原生 <a> 行為，這裡不用額外處理。
-        });
-        kebabMenu.appendChild(item);
+      var quickOpenBtn = document.createElement('a');
+      quickOpenBtn.className = 'entry-quick-btn';
+      quickOpenBtn.href = e.url;
+      quickOpenBtn.target = '_blank';
+      quickOpenBtn.rel = 'noopener';
+      quickOpenBtn.title = tt('opOpenTitle');
+      quickOpenBtn.setAttribute('aria-label', tt('opOpenTitle'));
+      quickOpenBtn.appendChild(svgUse('#i-external-link'));
+      quickOpenBtn.addEventListener('click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        // 開啟交給瀏覽器原生 <a> 行為，這裡只需要擋掉冒泡。
       });
+      quickWrap.appendChild(quickOpenBtn);
 
-      kebabWrap.appendChild(kebabBtn);
-      kebabWrap.appendChild(kebabMenu);
-      card.appendChild(kebabWrap);
+      card.appendChild(quickWrap);
 
-      // 點卡片本身(排除 ⋮ 選單區)開詳細視窗，對齊手機版 onPress。
+      // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。
       card.addEventListener('click', function (ev) {
         var target = ev && ev.target;
-        if (target && target.closest && target.closest('.entry-kebab-wrap')) return;
+        if (target && target.closest && target.closest('.entry-quick')) return;
+        openEntryDetail(e);
+      });
+      card.addEventListener('keydown', function (ev) {
+        if (!ev || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+        var target = ev.target;
+        if (target && target.closest && target.closest('.entry-quick')) return;
+        ev.preventDefault();
         openEntryDetail(e);
       });
 
       return card;
     }
 
-    // ---- 詳細視窗(0.5.0，兩個權威來源逐項對齊:手機版原始碼
-    // history-detail-dialog.tsx/dialog-shell.tsx 定結構與行為，LeafPage
-    // 定案 demo(mlc-card-ogp-demo)的實際 CSS 定間距/字級/圓角/按鈕樣式)----
+    // ---- 詳細視窗(UI 全面對齊手機任務:結構/行為/間距/字級/圓角/按鈕
+    // 樣式一律照手機版 history-detail-dialog.tsx + dialog-shell.tsx 的
+    // 字面 token 值，唯一數值權威，LeafPage demo 已除名)----
     //
     // 版面:✕ 關閉鈕(右上，對齊 DialogCloseButton)→ 卡頭(徽章+相對時間)
-    // → 作者列 → excerpt(15 行截斷，對齊 EXCERPT_DIALOG_LINES)+ 超長時
-    // 「展開全文」→ 乾淨網址 kv(標籤在上、數值+複製鈕在下一列，對齊
-    // demo 的 .kv 堆疊排版，不是左右並排)→ 記錄時間 kv(同排版，seen 有
-    // 多筆時多一顆「時間軸」鈕)→ 底部等寬動作列(複製/開啟/刪除，對齊
+    // → 作者列(16px/600 + 14px/500)→ excerpt(15 行截斷，對齊
+    // EXCERPT_DIALOG_LINES)+ 超長時「展開全文」(主色+展開圖示)→ 淨化後
+    // 連結 kv(標籤在上、數值+複製鈕在下一列，accent 強調，值為
+    // formatDisplayUrl 後的正規路徑)→ 原始連結/追蹤參數 kv(有資料才畫，
+    // 見 buildDetailExtraRows)→ 記錄時間 kv(seen 有多筆時多一顆「時間軸」
+    // 鈕，點下去開子層視窗)→ 底部等寬動作列(複製/開啟/刪除，對齊
     // DialogActions/DialogButton:destructive 只變文字色，不是實心底色)。
-    //
-    // original/removedParams 我們沒存，demo 上那兩列 kv 誠實省略，只留
-    // 乾淨網址一列。
     //
     // 手機版「展開全文」是巢狀開第二層 Modal，理由是「RN 在 iOS 不支援
     // 兄弟層 Modal 並開」——這是 iOS 平台限制，web 沒有這個問題，故改用
     // 原地展開(移除 line-clamp)取代巢狀第二個 overlay，行為等價但實作
-    // 更簡單，PM 已知會此裁量;「時間軸」比照同一個裁量，也用原地開合的
-    // 區塊取代巢狀第二層。
+    // 更簡單。「時間軸」則相反:PM 補充使用者提供的手機實機截圖後改回
+    // 巢狀子層視窗(timelineOverlay)，因為手機版時間軸本來就是巢狀 Modal
+    // (沒有 iOS 平台限制要迴避)，逐項對齊實機截圖比「展開全文」那條
+    // web 化裁量更優先。
     function openEntryDetail(e) {
       detailEntry = e;
       var overlay = byId('detailOverlay');
       if (!overlay) return;
+
+      // 每次開啟(含切換到別的條目)都把子層時間軸視窗收合，避免上一筆
+      // 的展開態殘留到這一筆。
+      closeTimelineOverlay();
 
       var badge = byId('detailBadge');
       if (badge) badge.textContent = tt(KINDS[e.kind].key);
@@ -957,28 +994,36 @@
         }
       }
 
-      // 乾淨網址 kv(對齊 demo 的「淨化後連結」列;原始連結/追蹤參數兩列
-      // 我們沒有對應資料，不畫)。
+      // 淨化後連結 kv:值顯示正規路徑(formatDisplayUrl)，不是完整網址;
+      // 複製仍用完整原始網址(detailUrlCopyBtn 的 handler 用 e.url)。
       var urlValueEl = byId('detailUrlValue');
-      if (urlValueEl) urlValueEl.textContent = e.url;
+      if (urlValueEl) urlValueEl.textContent = formatDisplayUrl(e.url);
+
+      // 原始連結/追蹤參數列:有資料才畫，見 buildDetailExtraRows 的防禦
+      // 寫法(另一車道尚未把 schema 併進來時，這裡永遠是空陣列)。
+      var extraRowsEl = byId('detailExtraRows');
+      if (extraRowsEl) {
+        extraRowsEl.textContent = '';
+        buildDetailExtraRows(e).forEach(function (row) {
+          extraRowsEl.appendChild(buildExtraRowEl(row));
+        });
+      }
 
       var recordedTimeEl = byId('detailRecordedTime');
       if (recordedTimeEl) recordedTimeEl.textContent = formatAbsoluteTime(e.at);
 
-      // 時間軸:另一車道(fix/dedup-merge)才會把 seen[] 加進 schema，本
+      // 時間軸鈕:另一車道(fix/dedup-merge)才會把 seen[] 加進 schema，本
       // 分支防禦寫法——buildSeenTimeline 對缺席/單筆資料一律回傳 null,
-      // 此時不顯示「時間軸」鈕，主畫面的記錄時間(=at)已經夠用。每次開啟
-      // (含切換到別的條目)都重置成收合狀態，避免上一筆的展開態殘留。
+      // 此時不顯示「時間軸」鈕，主畫面的記錄時間(=at)已經夠用。鈕本身是
+      // 純文字(次數改顯示在子層視窗的標題)，內容固定不隨資料變動，但仍
+      // 沿用本檔一貫的「JS 端顯式賦值」慣例(不只靠 data-i18n 的靜態套用)
+      // ——這個 controller smoke 測試組全程用最小 DOM stub，stub 的
+      // querySelectorAll('[data-i18n]') 恆回傳空陣列，只有 JS 顯式賦值的
+      // 文字才驗證得到。
       var timelineBtn = byId('detailTimelineBtn');
-      var timelineSection = byId('detailTimeline');
-      var timeline = buildSeenTimeline(e);
-      if (timelineSection) {
-        timelineSection.hidden = true;
-        timelineSection.textContent = '';
-      }
       if (timelineBtn) {
-        timelineBtn.hidden = timeline === null;
-        timelineBtn.textContent = timeline ? tf('opTimelineCount', { n: timeline.length }) : '';
+        timelineBtn.hidden = buildSeenTimeline(e) === null;
+        timelineBtn.textContent = tt('opTimelineBtn');
       }
 
       var openLink = byId('detailOpenLink');
@@ -990,25 +1035,83 @@
     function closeEntryDetail() {
       var overlay = byId('detailOverlay');
       if (overlay) overlay.hidden = true;
+      closeTimelineOverlay();
       detailEntry = null;
     }
 
-    // 時間軸每一列的來源標籤沿用既有 KINDS 文案;kind 不在白名單內(理論
-    // 上不該發生，防禦性處理)就不附標籤，只顯示時間。
-    function buildTimelineRow(record) {
+    // original/removedParams 附加列:與淨化後連結列同一套 kv/linkrow/
+    // copy-btn 結構(照手機版同一個 CopyRow 元件)，差別只在標籤文案與
+    // 沒有 accent 強調。複製鈕直接複製該列的原始值(copyValue)，不是
+    // formatDisplayUrl 過的顯示值。
+    function buildExtraRowEl(row) {
+      var wrap = document.createElement('div');
+      wrap.className = 'detail-kv';
+      var keyEl = document.createElement('span');
+      keyEl.className = 'detail-key';
+      keyEl.textContent = row.type === 'original' ? tt('opOriginalLabel') : tf('opTrackingParamLabel', { name: row.name });
+      wrap.appendChild(keyEl);
+      var linkRow = document.createElement('div');
+      linkRow.className = 'detail-linkrow';
+      var valueEl = document.createElement('span');
+      valueEl.className = 'detail-value ellipsis';
+      valueEl.textContent = row.display;
+      linkRow.appendChild(valueEl);
+      var copyBtn = document.createElement('button');
+      copyBtn.className = 'copy-btn';
+      copyBtn.textContent = tt('opCopyShort');
+      copyBtn.addEventListener('click', function () {
+        copyText(row.copyValue);
+      });
+      linkRow.appendChild(copyBtn);
+      wrap.appendChild(linkRow);
+      return wrap;
+    }
+
+    // 時間軸每一列:軌道+圓點(最新一筆實心主色，其餘空心)+ 時間(絕對
+    // 時間，最新一筆用一般文字色，其餘 textSecondary)+「 · 」+ 來源標籤
+    // (沿用既有 KINDS 文案;kind 不在白名單內就不附標籤，只顯示時間)。
+    // isFirst/isLast 決定圓點是否填色、要不要接續軌道線。
+    function buildTimelineRow(record, isFirst, isLast) {
       var row = document.createElement('div');
-      row.className = 'detail-timeline-row';
+      row.className = 'timeline-row';
+
+      var rail = document.createElement('div');
+      rail.className = 'timeline-rail';
+      var dot = document.createElement('div');
+      dot.className = 'timeline-dot' + (isFirst ? ' filled' : '');
+      rail.appendChild(dot);
+      if (!isLast) {
+        var line = document.createElement('div');
+        line.className = 'timeline-line';
+        rail.appendChild(line);
+      }
+      row.appendChild(rail);
+
+      // 時間/來源標籤各自用獨立 span 直接賦值 textContent(不是拼接單一
+      // 字串塞給 textEl)，比照本檔一貫寫法(見 buildEntryCard 的 badge/
+      // headTime 等)——controller smoke 測試組的最小 DOM stub，.textContent
+      // 的 getter 只讀直接賦值過的內部字串，不會遞迴聚合子節點內容，得
+      // 靠這個結構才驗證得到。
+      var textEl = document.createElement('div');
+      textEl.className = 'timeline-text' + (isFirst ? '' : ' secondary');
       var timeSpan = document.createElement('span');
-      timeSpan.className = 't';
       timeSpan.textContent = formatAbsoluteTime(record.at);
-      row.appendChild(timeSpan);
+      textEl.appendChild(timeSpan);
       if (Object.prototype.hasOwnProperty.call(KINDS, record.kind)) {
         var kindSpan = document.createElement('span');
-        kindSpan.className = 'k';
-        kindSpan.textContent = tt(KINDS[record.kind].key);
-        row.appendChild(kindSpan);
+        kindSpan.className = 'timeline-kind';
+        kindSpan.textContent = '　· ' + tt(KINDS[record.kind].key);
+        textEl.appendChild(kindSpan);
       }
+      row.appendChild(textEl);
       return row;
+    }
+
+    // 時間軸子層視窗:收合(重置內容並隱藏)。openEntryDetail 切換條目時、
+    // closeEntryDetail 關閉詳細視窗時都要呼叫，避免殘留上一筆的展開態。
+    function closeTimelineOverlay() {
+      var timelineOverlay = byId('timelineOverlay');
+      if (timelineOverlay) timelineOverlay.hidden = true;
     }
 
     function bindDetailDialog() {
@@ -1026,18 +1129,27 @@
       on('detailUrlCopyBtn', 'click', function () {
         if (detailEntry) copyEntryUrl(detailEntry);
       });
+      // 時間軸鈕開子層視窗(照手機版巢狀 Modal 的 showSeenHistory 分支)，
+      // 標題帶次數(opTimelineCount)，逐列新到舊渲染。
       on('detailTimelineBtn', 'click', function () {
+        if (!detailEntry) return;
+        var timeline = buildSeenTimeline(detailEntry) || [];
+        var titleEl = byId('timelineTitle');
+        if (titleEl) titleEl.textContent = tf('opTimelineCount', { n: timeline.length });
         var timelineSection = byId('detailTimeline');
-        if (!timelineSection || !detailEntry) return;
-        var opening = timelineSection.hidden;
-        if (opening) {
-          var timeline = buildSeenTimeline(detailEntry) || [];
+        if (timelineSection) {
           timelineSection.textContent = '';
-          timeline.forEach(function (record) {
-            timelineSection.appendChild(buildTimelineRow(record));
+          timeline.forEach(function (record, i) {
+            timelineSection.appendChild(buildTimelineRow(record, i === 0, i === timeline.length - 1));
           });
         }
-        timelineSection.hidden = !opening;
+        var timelineOverlay = byId('timelineOverlay');
+        if (timelineOverlay) timelineOverlay.hidden = false;
+      });
+      on('timelineClose', 'click', closeTimelineOverlay);
+      on('timelineOverlay', 'click', function (ev) {
+        var timelineOverlay = byId('timelineOverlay');
+        if (timelineOverlay && ev.target === timelineOverlay) closeTimelineOverlay();
       });
       on('detailCopyBtn', 'click', function () {
         if (detailEntry) copyEntryUrl(detailEntry);
@@ -1046,12 +1158,17 @@
         if (detailEntry) deleteEntry(detailEntry);
       });
       // Esc 關閉:兩個權威來源皆支援(手機版 DialogShell 用 Modal 的
-      // onRequestClose,web 沒有對應原生事件，這裡用 keydown 補上同義行為)
-      // ;既有 overlay/confirmOverlay 只有點遮罩關閉，沒有 Esc，新增範圍
-      // 僅限這個新 overlay。
+      // onRequestClose,web 沒有對應原生事件，這裡用 keydown 補上同義
+      // 行為)。時間軸子層視窗開著時 Esc 只關時間軸(比照手機版巢狀
+      // Modal 逐層關閉的直覺)，沒開才輪到關詳細視窗本身。
       if (typeof document.addEventListener === 'function') {
         document.addEventListener('keydown', function (ev) {
           if (!ev || ev.key !== 'Escape') return;
+          var timelineOverlay = byId('timelineOverlay');
+          if (timelineOverlay && !timelineOverlay.hidden) {
+            closeTimelineOverlay();
+            return;
+          }
           var overlay = byId('detailOverlay');
           if (overlay && !overlay.hidden) closeEntryDetail();
         });
@@ -1161,11 +1278,6 @@
           var wrap = ev.target && ev.target.closest ? ev.target.closest('.menu-wrap') : null;
           if (moreMenu && !moreMenu.hidden && (!wrap || !wrap.contains(moreMenu))) closeMenu();
           if (chipsRow && !chipsRow.hidden && (!wrap || !wrap.contains(chipsRow))) closeFilter();
-          // 卡片 ⋮ 選單:每張卡片各自的選單是動態建立的區域變數，靠
-          // closeActiveEntryMenu 這個 controller 層的指標統一關閉，不是
-          // 固定 id，判斷邏輯與 moreMenu/chipsRow 略有不同。
-          var kebabWrap = ev.target && ev.target.closest ? ev.target.closest('.entry-kebab-wrap') : null;
-          if (closeActiveEntryMenu && !kebabWrap) closeActiveEntryMenu();
         });
       }
 
@@ -1362,8 +1474,9 @@
     aggregateStats: aggregateStats,
     hasCardPreview: hasCardPreview,
     isLongExcerpt: isLongExcerpt,
-    buildEntryActions: buildEntryActions,
     buildSeenTimeline: buildSeenTimeline,
+    formatDisplayUrl: formatDisplayUrl,
+    buildDetailExtraRows: buildDetailExtraRows,
     createOptionsController: createOptionsController,
   };
 

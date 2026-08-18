@@ -8,7 +8,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { createChromeStorage } = require('./support/helpers');
+const fs = require('node:fs');
+const { createChromeStorage, runInSandbox } = require('./support/helpers');
 
 const options = require(path.join(__dirname, '..', 'options.js'));
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
@@ -583,19 +584,128 @@ test('buildSeenTimeline:多筆有效紀錄回傳新到舊排序的陣列，形�
   );
 });
 
-// ---- 純函式:buildEntryActions(0.5.0，卡片 ⋮ 選單與詳細視窗底部動作列
-// 共用的動作組成——手機版 開啟/分享/刪除 映射為 web 的 複製/開啟/刪除)----
-test('buildEntryActions:固定回傳複製/開啟/刪除三項，順序固定，開啟項帶正確 href', () => {
-  const entry = { url: 'https://www.threads.com/@usera/post/AbC123', kind: 'share', at: 1 };
-  const actions = options.buildEntryActions(entry);
+// ---- 純函式:buildEntryActions 已隨 UI 全面對齊手機任務移除(卡片 ⋮ 選單
+// 整組撤掉，唯一呼叫端消失，見 options.js 的移除說明註解，PM 授權「原
+// kebab 相關碼與測試移除」)。原本這裡鎖的動作組成不再有意義，改由下方
+// 「卡片 hover 快捷鈕」與詳細視窗底部動作列(靜態 HTML，本來就不經這顆
+// 函式生成)的 controller smoke 測試覆蓋等效行為。----
+
+// ---- 純函式:formatDisplayUrl(UI 全面對齊手機任務，對齊手機版
+// lib/format-display-url.ts)----
+test('formatDisplayUrl:去 scheme 與網域(含 www.)，只留 path+query+hash 並去掉開頭斜線', () => {
+  assert.equal(options.formatDisplayUrl('https://www.threads.com/@usera/post/AbC123'), '@usera/post/AbC123');
+  assert.equal(options.formatDisplayUrl('https://threads.net/@u/post/x?y=1#z'), '@u/post/x?y=1#z');
+});
+test('formatDisplayUrl:解析失敗 fail-open 回傳原字串;非字串輸入回傳空字串', () => {
+  assert.equal(options.formatDisplayUrl('not a url'), 'not a url');
+  assert.equal(options.formatDisplayUrl(undefined), '');
+  assert.equal(options.formatDisplayUrl(null), '');
+});
+
+// ---- 純函式:buildDetailExtraRows(UI 全面對齊手機任務 work item 7，
+// original/removedParams 兩列渲染的資料準備——另一車道正把這兩個欄位存進
+// schema，本分支防禦寫法:缺席/形狀不對就不產生該列)----
+test('buildDetailExtraRows:original 存在且與 url 不同才產生「原始連結」列，值經 formatDisplayUrl', () => {
+  const entry = { url: 'https://www.threads.com/@u/post/x', original: 'https://l.threads.net/share/abc?x=1' };
+  const rows = options.buildDetailExtraRows(entry);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].type, 'original');
+  assert.equal(rows[0].display, 'share/abc?x=1');
+  assert.equal(rows[0].copyValue, entry.original, '複製值用完整原始網址，不是 formatDisplayUrl 過的顯示值');
+});
+test('buildDetailExtraRows:original 缺席/非字串/與 url 相同時都不產生「原始連結」列', () => {
+  assert.equal(options.buildDetailExtraRows({ url: 'https://x/y' }).length, 0, '缺席');
+  assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', original: 123 }).length, 0, '非字串');
+  assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', original: 'https://x/y' }).length, 0, '與 url 相同');
+});
+// 【審查修正】removedParams 元素的欄位名是 { key, value }(手機版
+// link-cleaner.ts:171、detail-dialog 的 p.key，也是 background.js
+// sanitizeRemovedParams 實際落盤的形狀)，不是 { name, value }——這裡的
+// fixture 曾經寫錯欄位名，單分支測試因為連 fixture 帶實作一起錯而全綠，
+// 合併後才會被另一車道的真實資料打穿(見 buildDetailExtraRows 上方註解)。
+test('buildDetailExtraRows:removedParams 逐筆產生「追蹤參數 {name}」列，形狀不對的項目濾掉不影響其他筆', () => {
+  const entry = {
+    url: 'https://x/y',
+    removedParams: [
+      { key: 'igsh', value: 'aBc123' },
+      { key: 123, value: 'bad-key-type' },
+      { value: 'missing-key' },
+      { key: 'utm_source', value: 456 },
+      null,
+      { key: 'xmt', value: 'kept' },
+    ],
+  };
+  const rows = options.buildDetailExtraRows(entry);
   assert.deepEqual(
-    actions.map((a) => a.type),
-    ['copy', 'open', 'delete']
+    rows.map((r) => ({ name: r.name, display: r.display })),
+    [
+      { name: 'igsh', display: 'aBc123' },
+      { name: 'xmt', display: 'kept' },
+    ]
   );
-  assert.equal(actions[0].titleKey, 'opCopyTitle');
-  assert.equal(actions[1].titleKey, 'opOpenTitle');
-  assert.equal(actions[1].href, entry.url, '開啟項的 href 應等於該條目的 url');
-  assert.equal(actions[2].titleKey, 'opDeleteTitle');
+  assert.ok(rows.every((r) => r.type === 'param'));
+});
+test('buildDetailExtraRows:removedParams 缺席或非陣列時不產生任何追蹤參數列', () => {
+  assert.equal(options.buildDetailExtraRows({ url: 'https://x/y' }).length, 0);
+  assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', removedParams: 'nope' }).length, 0);
+});
+
+// ---- 跨層釘住:background.js 的 sanitizeRemovedParams 產出與 options.js
+// 讀取端鍵名必須一致(審查修正的直接動因)----
+//
+// 【背景】UI 全面對齊手機任務把 buildDetailExtraRows 的 removedParams
+// fixture 寫成 { name, value }，但兩個權威來源(手機版 link-cleaner.ts:171
+// 與 detail-dialog 的 p.key，以及 F 案 background.js 的 sanitizeRemovedParams
+// 實際落盤形狀)都是 { key, value }——單分支測試因為連 fixture 都一起寫
+// 錯而全綠，合併後才會被另一車道的真實資料打穿，兩列變死功能。
+//
+// 這裡不只比對「兩份原始碼字面上都寫 key」這種容易再度一起漂移的弱驗
+// 證，而是真的載入 background.js(vm sandbox，比照 background.test.js
+// 的載入方式)跑一次它的 sanitizeRemovedParams，把「background 端真實
+// 產出」原封不動餵給「options 端真實讀取路徑」(sanitizeEntries →
+// buildDetailExtraRows)，斷言資料完整活著走完全程、沒有中途被無聲濾掉
+// ——這才是兩層真的用同一把鑰匙的證據，比對靜態常數更難被同類回歸繞過。
+test('跨層釘住:background.js sanitizeRemovedParams 的輸出鍵名(key/value)與 options.js 讀取端一致，資料不會在兩層之間被無聲濾掉', () => {
+  const bgSrc =
+    fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
+    '\n' +
+    fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+  // 最小 chrome mock:只滿足 background.js 檔案最外層註冊監聽器所需的
+  // 呼叫面(見 background.test.js 的 makeChrome 同一組道理)，不需要完整
+  // 還原每個 API，這裡只是借殼跑 sanitizeRemovedParams 這顆頂層函式。
+  const chrome = {
+    runtime: {
+      onInstalled: { addListener: () => {} },
+      onMessage: { addListener: () => {} },
+    },
+    contextMenus: { onClicked: { addListener: () => {} } },
+  };
+  const sandbox = runInSandbox(bgSrc, { chrome, console });
+  assert.equal(typeof sandbox.sanitizeRemovedParams, 'function', 'background.js 應在頂層(非閉包內)宣告 sanitizeRemovedParams，測試才拿得到');
+
+  // background 端的真實 sanitizer，餵一筆合法輸入，取得「background 端
+  // 真的會落盤的形狀」。sandbox 內建立的陣列/物件跑在 vm context 內，
+  // 直接對它跟這裡的字面陣列 deepEqual 比對，即使內容相同也會因為
+  // 「跨 realm」的 Array/Object.prototype 不同而判不相等(assert/strict
+  // 的 deepEqual 等於 deepStrictEqual，會查 prototype)；JSON 序列化一輪
+  // 換成本地 realm 的一般物件，繞開這個純屬 vm 隔離機制的假陽性，不影響
+  // 資料內容本身的比對。
+  const bgOutput = JSON.parse(JSON.stringify(sandbox.sanitizeRemovedParams([{ key: 'igsh', value: 'aBc123' }])));
+  assert.deepEqual(bgOutput, [{ key: 'igsh', value: 'aBc123' }], 'background 端輸出的形狀是本次跨層比對的基準');
+
+  // 原封不動餵給 options 端的完整讀取路徑:先過 sanitizeEntries(讀取階段
+  // 的防禦性整形)，再過 buildDetailExtraRows(渲染前的資料準備)。任一端
+  // 鍵名對不上，removedParams 就會在中途被整欄濾掉，這一列會憑空消失。
+  const entry = { url: URL_A, kind: 'share', at: 1, removedParams: bgOutput };
+  const cleaned = options.sanitizeEntries([entry])[0];
+  assert.deepEqual(cleaned.removedParams, bgOutput, 'options.sanitizeEntries 應原樣保留 background 端產出的形狀，不因鍵名不符而整欄丟棄');
+
+  const rows = options.buildDetailExtraRows(cleaned);
+  assert.deepEqual(
+    rows.map((r) => ({ name: r.name, display: r.display })),
+    [{ name: 'igsh', display: 'aBc123' }],
+    'buildDetailExtraRows 應能讀出 background 端產出的 key，不會因欄位名不符而整列消失(即本輪審查抓到的死功能)'
+  );
 });
 
 // ---- 設定頁不再出現 notifySuccess 控件(PM 審查後補) ----
@@ -827,7 +937,9 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   assert.equal(doc.ids.rows.children.length, 2);
 
   // 卡片一:有預覽(author+handle+excerpt)——卡頭(徽章+時間)→ 作者列 →
-  // excerpt → ⋮ 選單(取代舊版 hover 三鈕，見 buildEntryCard)。
+  // excerpt → 高亮態快捷鈕組(取代舊版常駐 ⋮ 選單，見 buildEntryCard；
+  // UI 全面對齊手機任務:互動照手機的選中態，平時態靠 CSS display:none
+  // 隱藏，這裡的 DOM stub 不解析 CSS，所以節點一律存在，只驗證結構)。
   const card0 = doc.ids.rows.children[0];
   assert.equal(card0.className, 'entry-card');
   const header0 = card0.children[0];
@@ -845,17 +957,15 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   assert.equal(excerptEl0.className, 'entry-excerpt');
   assert.equal(excerptEl0.textContent, 'hello world');
 
-  const kebabWrap0 = card0.children[3];
-  assert.equal(kebabWrap0.className, 'entry-kebab-wrap');
-  const kebabMenu0 = kebabWrap0.children[1];
-  assert.equal(kebabMenu0.children.length, 3, '⋮ 選單固定三個動作:複製/開啟/刪除');
-  const openItem0 = kebabMenu0.children[1];
-  assert.equal(openItem0.tag, 'a', '開啟貼文用原生 <a>，不是 button');
-  assert.equal(openItem0.href, CARD_URL_A);
-  assert.equal(openItem0.target, '_blank');
-  assert.equal(openItem0.rel, 'noopener');
-  const deleteItem0 = kebabMenu0.children[2];
-  assert.equal(deleteItem0.className, 'menu-item danger');
+  const quickWrap0 = card0.children[3];
+  assert.equal(quickWrap0.className, 'entry-quick');
+  assert.equal(quickWrap0.children.length, 2, '兩顆快捷鈕:複製連結/開啟貼文，對應手機 Copy/Share2');
+  const [quickCopy0, quickOpen0] = quickWrap0.children;
+  assert.equal(quickCopy0.tag, 'button');
+  assert.equal(quickOpen0.tag, 'a', '開啟貼文用原生 <a>，不是 button');
+  assert.equal(quickOpen0.href, CARD_URL_A);
+  assert.equal(quickOpen0.target, '_blank');
+  assert.equal(quickOpen0.rel, 'noopener');
 
   // 卡片二:無 author/excerpt → 降級顯示網址(threads.net 如實顯示，不誤植 .com)。
   const card1 = doc.ids.rows.children[1];
@@ -867,7 +977,11 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   );
 });
 
-test('controller smoke:卡片 ⋮ 選單的刪除動作直接改 storage 並重新渲染', async () => {
+// UI 全面對齊手機任務:互動模型翻轉——卡片右上常駐 ⋮ 選單整組撤掉，刪除
+// 動作收斂到只在詳細視窗做(已有獨立測試覆蓋)，卡片層級改成高亮態的兩顆
+// 快捷鈕(複製連結/開啟貼文)。這裡驗證快捷鈕本身的行為:複製鈕點擊會
+// stopPropagation、不會順手把詳細視窗打開;開啟鈕是原生 <a>，href 正確。
+test('controller smoke:卡片高亮態快捷鈕——複製鈕不冒泡開啟詳細視窗，開啟鈕 href 正確', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
   const doc = makeDocumentStub();
@@ -882,16 +996,25 @@ test('controller smoke:卡片 ⋮ 選單的刪除動作直接改 storage 並重�
   await controller.init();
   await settle();
 
-  assert.equal(doc.ids.rows.children.length, 1);
-
   const card = doc.ids.rows.children[0];
-  const kebabWrap = card.children[card.children.length - 1];
-  const kebabMenu = kebabWrap.children[1];
-  const deleteItem = kebabMenu.children[2];
-  deleteItem.fire('click');
-  await settle();
+  const [quickCopy, quickOpen] = card.children[card.children.length - 1].children;
 
-  assert.equal(doc.ids.rows.children.length, 0, '刪除後卡片牆應重新渲染為空');
+  assert.equal(quickOpen.href, CARD_URL_A);
+  assert.equal(quickOpen.target, '_blank');
+  assert.equal(quickOpen.rel, 'noopener');
+
+  // DOM stub 的 fire() 不模擬真實冒泡，所以「不冒泡」這件事改用行為驗證:
+  // openEntryDetail 是唯一會寫 detailUrlValue 的地方，點擊快捷複製鈕後
+  // 這格應該仍是初始空字串——如果冒泡到卡片誤開了詳細視窗，這格就會被
+  // 填成 CARD_URL_A 的 formatDisplayUrl 值。navigator.clipboard 在這個
+  // 最小 DOM stub 環境不存在，copyEntryUrl 本身用 try/catch 吞掉並改走
+  // 失敗 toast，這裡不驗證複製成功與否，只驗證點擊不會讓整條渲染炸掉、
+  // 也不會誤開詳細視窗。
+  assert.doesNotThrow(() => quickCopy.fire('click'));
+  // DOM stub 的 getElementById 是懶建立(第一次被查詢才生節點)，直接用
+  // getElementById 查(而非既有的 doc.ids.detailUrlValue 捷徑)確保節點
+  // 一定存在，不會因為 openEntryDetail 從未被呼叫過而炸 undefined。
+  assert.equal(doc.getElementById('detailUrlValue').textContent, '', '點快捷複製鈕不應觸發卡片本身的 click(開詳細視窗)');
 });
 
 // 點卡片本身(非 ⋮ 選單區)開詳細視窗，對齊手機版 history-card.tsx 的
@@ -1020,10 +1143,11 @@ test('controller smoke:詳細視窗的刪除按鈕刪除目前顯示的條目並
   assert.equal(doc.ids.detailOverlay.hidden, true, '刪除目前顯示中的條目應順手關閉詳細視窗');
 });
 
-// 詳細視窗照手機版仿造:乾淨網址列(對齊 demo 的「淨化後連結」kv)——不論
-// 有沒有 author/excerpt 預覽都固定顯示，直接點「詳細視窗照手機版仿造」
-// 任務新增的 detailUrlValue/detailUrlCopyBtn。
-test('controller smoke:詳細視窗固定顯示乾淨網址列，複製按鈕點擊不丟例外', async () => {
+// 詳細視窗照手機版:淨化後連結列——不論有沒有 author/excerpt 預覽都固定
+// 顯示，值經 formatDisplayUrl 顯示正規路徑(@handle/post/ID)，不是完整
+// 網址(UI 全面對齊手機任務 work item 5，authored update:上一輪詳細視窗
+// 仿造時這格顯示完整 URL，這次改用手機版 CopyRow 的顯示格式)。
+test('controller smoke:詳細視窗固定顯示淨化後連結列(正規路徑，非完整網址)，複製按鈕點擊不丟例外', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
   const doc = makeDocumentStub();
@@ -1040,10 +1164,64 @@ test('controller smoke:詳細視窗固定顯示乾淨網址列，複製按鈕點
 
   doc.ids.rows.children[0].fire('click');
 
-  assert.equal(doc.ids.detailUrlValue.textContent, CARD_URL_A);
+  assert.equal(doc.ids.detailUrlValue.textContent, '@usera/post/AbC123_-xyz', '顯示值是 formatDisplayUrl 後的正規路徑');
   // navigator.clipboard 在這個最小 DOM stub 環境不存在，copyEntryUrl 本身
   // 用 try/catch 吞掉並改走失敗 toast，這裡只驗證點擊不會讓整條渲染炸掉。
   assert.doesNotThrow(() => doc.ids.detailUrlCopyBtn.fire('click'));
+});
+
+// UI 全面對齊手機任務 work item 7:original/removedParams 有資料時，詳細
+// 視窗應在淨化後連結列與記錄時間列之間畫出對應的 kv 列;沒資料時
+// detailExtraRows 容器保持空。
+test('controller smoke:original/removedParams 有資料時詳細視窗畫出對應列，沒資料時容器為空', async () => {
+  const historyWithExtra = [
+    {
+      url: CARD_URL_A,
+      kind: 'share',
+      at: 1000,
+      original: 'https://l.threads.net/share/xyz?igsh=aBc',
+      removedParams: [{ key: 'igsh', value: 'aBc' }],
+    },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: historyWithExtra });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  const rows = doc.ids.detailExtraRows.children;
+  assert.equal(rows.length, 2, '原始連結 + 一筆追蹤參數');
+  assert.equal(rows[0].children[0].textContent, i18n.t('zh', 'opOriginalLabel'));
+  assert.equal(rows[1].children[0].textContent, i18n.fmt('zh', 'opTrackingParamLabel', { name: 'igsh' }));
+});
+
+test('controller smoke:original/removedParams 缺席時 detailExtraRows 容器保持空', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+
+  assert.equal(doc.ids.detailExtraRows.children.length, 0);
 });
 
 // 時間軸:單筆(或 seen 缺席，因為本分支還沒接 fix/dedup-merge 的 schema
@@ -1068,9 +1246,12 @@ test('controller smoke:seen 缺席或只有一筆時，詳細視窗不顯示時�
   assert.equal(doc.ids.detailTimelineBtn.hidden, true, 'seen 缺席時不顯示時間軸鈕');
 });
 
-// 時間軸:seen 有多筆(模擬 fix/dedup-merge 合併後的 schema)時顯示時間軸
-// 鈕，點擊後展開，新到舊逐列顯示「時間 + 來源標籤」;再點一次收合。
-test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊展開新到舊逐列顯示時間與來源標籤', async () => {
+// 時間軸:seen 有多筆時顯示時間軸鈕(純文字「時間軸」，不帶次數)，點擊後
+// 開啟子層視窗(PM 補充使用者提供的手機實機截圖後，從上一輪的原地展開
+// 改回巢狀 Modal，逐項對齊手機版 showSeenHistory 分支)，標題帶次數
+// 「解析時間軸(共 N 次)」，逐列新到舊顯示「時間 + 來源標籤」，軌道圓點
+// 最新一筆實心、其餘空心，✕ 鈕關閉子層視窗。
+test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊開啟子層視窗，逐列顯示軌道圓點與時間/來源標籤', async () => {
   const history = [
     {
       url: CARD_URL_A,
@@ -1099,25 +1280,75 @@ test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊展開新到�
   doc.ids.rows.children[0].fire('click');
 
   assert.equal(doc.ids.detailTimelineBtn.hidden, false, 'seen 有多筆時應顯示時間軸鈕');
-  assert.equal(doc.ids.detailTimelineBtn.textContent, i18n.fmt('zh', 'opTimelineCount', { n: 3 }));
-  assert.equal(doc.ids.detailTimeline.hidden, true, '開啟詳細視窗時時間軸區塊預設收合');
+  assert.equal(doc.ids.detailTimelineBtn.textContent, i18n.t('zh', 'opTimelineBtn'), '觸發鈕是純文字，不帶次數(次數改顯示在子層視窗標題)');
 
   doc.ids.detailTimelineBtn.fire('click');
 
-  assert.equal(doc.ids.detailTimeline.hidden, false, '點擊時間軸鈕應展開');
-  assert.equal(doc.ids.detailTimeline.children.length, 3);
-  const rows = doc.ids.detailTimeline.children.map((row) => row.children.map((c) => c.textContent));
+  assert.equal(doc.ids.timelineOverlay.hidden, false, '點擊時間軸鈕應開啟子層視窗');
+  assert.equal(doc.ids.timelineTitle.textContent, i18n.fmt('zh', 'opTimelineCount', { n: 3 }), '子層視窗標題帶次數');
+
+  const rows = doc.ids.detailTimeline.children;
+  assert.equal(rows.length, 3);
+
+  // 軌道圓點:最新一筆(index 0)實心，其餘空心;非最後一筆才接續軌道線。
+  assert.equal(rows[0].children[0].children[0].className, 'timeline-dot filled', '最新一筆圓點實心');
+  assert.equal(rows[1].children[0].children[0].className, 'timeline-dot', '其餘圓點空心');
+  assert.equal(rows[2].children[0].children[0].className, 'timeline-dot', '其餘圓點空心');
+  assert.equal(rows[0].children[0].children.length, 2, '非最後一筆有 dot+line 兩個子節點');
+  assert.equal(rows[2].children[0].children.length, 1, '最後一筆(最舊)只有 dot，沒有軌道線');
+
   // 絕對時間用本機時區格式化(比照上面「絕對時間格式」的既有慣例，不能
   // 硬編換算後的字串，換執行機器時區就會炸)，只驗格式與相對新舊排序。
-  rows.forEach((r) => assert.match(r[0], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '每列時間格式 YYYY-MM-DD HH:mm'));
+  // 時間/來源標籤是 textEl 底下兩個獨立的直接子節點(children[0]=時間，
+  // children[1]=來源標籤)，不是拼在同一個節點的字串。
+  rows.forEach((row) => assert.match(row.children[1].children[0].textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '每列時間格式 YYYY-MM-DD HH:mm'));
   assert.deepEqual(
-    rows.map((r) => r[1]),
-    [i18n.t('zh', 'opKindShare'), i18n.t('zh', 'opKindMenu'), i18n.t('zh', 'opKindStrip')],
+    rows.map((row) => row.children[1].children[1].textContent),
+    [
+      '　· ' + i18n.t('zh', 'opKindShare'),
+      '　· ' + i18n.t('zh', 'opKindMenu'),
+      '　· ' + i18n.t('zh', 'opKindStrip'),
+    ],
     '每列的來源標籤依 kind 對應既有 KINDS 文案，新到舊排序'
   );
 
+  doc.ids.timelineClose.fire('click');
+  assert.equal(doc.ids.timelineOverlay.hidden, true, '✕ 鈕應收合時間軸子層視窗');
+});
+
+// 切換條目(或關閉詳細視窗)時，時間軸子層視窗要一併收合，避免上一筆的
+// 展開態殘留到下一筆。
+test('controller smoke:關閉詳細視窗時一併收合已開啟的時間軸子層視窗', async () => {
+  const history = [
+    {
+      url: CARD_URL_A,
+      kind: 'share',
+      at: 3000,
+      seen: [
+        { at: 1000, kind: 'strip' },
+        { at: 3000, kind: 'share' },
+      ],
+    },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
   doc.ids.detailTimelineBtn.fire('click');
-  assert.equal(doc.ids.detailTimeline.hidden, true, '再點一次應收合');
+  assert.equal(doc.ids.timelineOverlay.hidden, false);
+
+  doc.ids.detailClose.fire('click');
+  assert.equal(doc.ids.timelineOverlay.hidden, true, '關閉詳細視窗應順手收合還開著的時間軸子層視窗');
 });
 
 // ============================================================

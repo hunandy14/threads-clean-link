@@ -6,7 +6,21 @@
 <title>Threads Clean Link — 設定與淨化紀錄</title>
 <style>
   /* 版型與配色沿用 popup.html 的 CSS 變數習慣;深淺色各自完整調校,
-     另支援 data-theme 手動覆蓋(auto/light/dark,存 chrome.storage.sync)。 */
+     另支援 data-theme 手動覆蓋(auto/light/dark，存 chrome.storage.sync)。
+
+     【唯一數值權威，UI 全面對齊手機任務起這條紀律】所有跟手機版對齊的數值
+     (色票/間距/字級/圓角)一律以使用者手機 repo 當下源碼為準
+     (src/constants/theme.ts、src/components/history-card.tsx、
+     history-detail-dialog.tsx、dialog-shell.tsx)。先前一輪詳細視窗仿造
+     曾把「LeafPage 定案 demo」的實際 CSS 也列為權威來源之一——這條除名，
+     demo 只是設計稿階段的中間產物，不再拿來核對任何數值，往後只看手機
+     源碼。--accent 改用手機 theme.ts 的暖橘(light #c96f3e / dark
+     #e2925e),--card-outline/--card-selected-border 兩個新 token 同樣照
+     theme.ts 的 cardOutline/cardSelectedBorder 字面值(後者深淺色刻意同
+     色，theme.ts 原文有註解說明「橘光在兩種底色上都成立」)。--accent-soft
+     手機端沒有對應 token(手機不用半透明底做選中態，是本頁既有的 chip/
+     選單懸停視覺慣例)，沿用舊藍色版的相對透明度比例換算成橘色，屬本頁
+     衍生值，非手機源碼字面值。 */
   :root {
     color-scheme: light;
     --plane: #f9f9f7;
@@ -17,9 +31,11 @@
     --grid: #e1e0d9;
     --baseline: #c3c2b7;
     --border: rgba(11, 11, 11, 0.1);
-    --accent: #2a78d6;
-    --accent-soft: rgba(42, 120, 214, 0.12);
+    --accent: #c96f3e;
+    --accent-soft: rgba(201, 111, 62, 0.14);
     --accent-contrast: #ffffff;
+    --card-outline: rgba(43, 42, 39, 0.18);
+    --card-selected-border: #e2925ecc;
     --good: #006300;
     --danger: #d03b3b;
     --danger-soft: rgba(208, 59, 59, 0.1);
@@ -38,9 +54,11 @@
       --grid: #2c2c2a;
       --baseline: #383835;
       --border: rgba(255, 255, 255, 0.1);
-      --accent: #3987e5;
-      --accent-soft: rgba(57, 135, 229, 0.18);
+      --accent: #e2925e;
+      --accent-soft: rgba(226, 146, 94, 0.2);
       --accent-contrast: #ffffff;
+      --card-outline: rgba(255, 255, 255, 0.15);
+      --card-selected-border: #e2925ecc;
       --good: #0ca30c;
       --danger: #e66767;
       --danger-soft: rgba(230, 103, 103, 0.14);
@@ -59,9 +77,11 @@
     --grid: #2c2c2a;
     --baseline: #383835;
     --border: rgba(255, 255, 255, 0.1);
-    --accent: #3987e5;
-    --accent-soft: rgba(57, 135, 229, 0.18);
+    --accent: #e2925e;
+    --accent-soft: rgba(226, 146, 94, 0.2);
     --accent-contrast: #ffffff;
+    --card-outline: rgba(255, 255, 255, 0.15);
+    --card-selected-border: #e2925ecc;
     --good: #0ca30c;
     --danger: #e66767;
     --danger-soft: rgba(230, 103, 103, 0.14);
@@ -430,26 +450,20 @@
   }
   .empty .icon { width: 26px; height: 26px; margin-bottom: 6px; }
 
-  /* ---- 紀錄卡片牆(0.5.0 方案甲:歷史即收藏，清單升級成卡片)----
-     版面/字級數值與使用者手機版 history-card.tsx + constants/theme.ts
-     逐項核對(PM 審查後定案):card gap = Spacing.one(4)、padding =
-     Spacing.three(16)、borderRadius = PanelRadius(12)。邊框顏色沿用本頁
-     既有 --border token(與其餘卡片一致)，不搬手機版调色盤——兩邊配色
-     系統本來就不同(手機 accent 是暖橘 #c96f3e，本頁是藍 #2a78d6)。 */
-  .icon-btn {
-    appearance: none;
-    border: none;
-    background: transparent;
-    color: var(--ink-3);
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    display: grid;
-    place-items: center;
-    cursor: pointer;
-  }
-  .icon-btn:hover { background: var(--accent-soft); color: var(--accent); }
-  .icon-btn.del:hover { background: var(--danger-soft); color: var(--danger); }
+  /* ---- 紀錄卡片牆(UI 全面對齊手機任務，唯一數值權威見上方 :root 註解)
+     ----
+     版面/字級數值與手機版 history-card.tsx + constants/theme.ts 逐項核對:
+     card gap = Spacing.one(4)、padding = Spacing.three(16)、borderRadius =
+     PanelRadius(12)。卡片改「純外框線」風格(手機 v7 定稿的 cardOutline
+     做法):背景 transparent、邊框色 --card-outline，不再填 --surface 底色。
+
+     互動模型改照手機版「選中態」:手機沒有 web 的常駐 ⋮ 選單，是
+     hover/press 時邊框轉主色、寬度 1→1.5，右上浮出兩顆快捷 icon
+     (複製/開啟，對應手機 Copy/Share2)；web 用 :hover 與 :focus-within
+     模擬(:focus-within 讓鍵盤 Tab 到卡片上也能觸發同一套高亮視覺，兩者
+     共用同一組規則)。原本常駐的 ⋮ 選單(entry-kebab-wrap/entry-menu)與
+     其建構碼、測試整組移除——互動模型翻轉後這顆選單失去存在理由，刪除
+     動作收斂到「只在詳細視窗做」，照手機版 DialogActions 的位置。 */
 
   /* 使用者拍板:一排固定兩欄(原本是 auto-fill 依寬度長到三欄)。窄螢幕
      降欄沿用既有斷點系統，見檔尾 @media(max-width:720px)與 .duo 同一個
@@ -467,13 +481,46 @@
     gap: 4px;
     min-height: 124px;
     padding: 16px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--card-outline);
     border-radius: 12px;
-    background: var(--surface);
+    background: transparent;
     min-width: 0;
     cursor: pointer;
   }
-  .entry-card:hover { border-color: var(--baseline); }
+  .entry-card:hover,
+  .entry-card:focus-within {
+    border-color: var(--card-selected-border);
+    border-width: 1.5px;
+    outline: none;
+  }
+  /* 高亮態右上浮出的兩顆快捷鈕(複製連結/開啟貼文)，平時態不佔版面
+     (display:none，不是 opacity/visibility——不高亮時完全不吃 hit-test，
+     也不會被 Tab 意外聚焦到)。 */
+  .entry-quick {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: none;
+    gap: 4px;
+  }
+  .entry-card:hover .entry-quick,
+  .entry-card:focus-within .entry-quick {
+    display: flex;
+  }
+  .entry-quick-btn {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--ink-3);
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .entry-quick-btn:hover { background: var(--accent-soft); color: var(--accent); }
   .entry-header {
     display: flex;
     align-items: center;
@@ -553,34 +600,22 @@
     text-overflow: ellipsis;
   }
   .entry-url b { color: var(--accent); font-weight: 600; }
-  /* 卡片右上常駐的 ⋮ 選單(取代舊版 hover 浮動三鈕):設定/紀錄頁常開，
-     持續可見比 hover 才浮現更利於發現，選單項複製/開啟/刪除沿用既有
-     .menu/.menu-item 元件樣式，不另刻一套。 */
-  .entry-kebab-wrap {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-  }
-  .entry-kebab-wrap .icon-btn { width: 28px; height: 28px; }
-  .entry-kebab-wrap .menu { min-width: 168px; }
 
-  /* ---- 卡片詳細視窗(0.5.0)兩個權威來源逐項對齊:
-     - 結構/行為:手機版 history-detail-dialog.tsx + dialog-shell.tsx
-     - 間距/字級/圓角/按鈕樣式:LeafPage 定案 demo(mlc-card-ogp-demo)的
-       實際 CSS(.dialog/.sheet-head/.kv/.linkrow/.copy-btn/.btn)，直接照抄
-       token 數值，不是憑印象重畫。 ---- */
+  /* ---- 卡片詳細視窗(UI 全面對齊手機任務，唯一數值權威見上方 :root 註解)
+     結構/行為與間距/字級/圓角/按鈕樣式一律照手機版 history-detail-dialog.tsx
+     + dialog-shell.tsx 的字面 token 值，不再參照 LeafPage demo。 ---- */
   .modal-detail {
     position: relative;
     max-width: 420px;
-    border-radius: 18px;
+    border-radius: 12px;
+    border-color: var(--card-outline);
     padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
   }
   /* ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton(top:10,right:10,
-     28x28,radius:8);取代上一輪自製的底部「關閉」按鈕——兩個權威來源都
-     只有右上 ✕ + 點遮罩兩種關法，沒有底部關閉鈕這個設計。 */
+     28x28,radius:8)。 */
   .detail-close {
     position: absolute;
     top: 10px;
@@ -599,29 +634,32 @@
     z-index: 1;
   }
   .detail-close:hover { background: var(--accent-soft); color: var(--accent); }
-  /* sheet-head:demo 的 gap:7px 是字面值，不是 spacing token 的倍數。 */
+  /* head:gap = Spacing.one(4)、paddingBottom = Spacing.two(8)。 */
   .detail-head {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    padding-bottom: 12px;
+    gap: 4px;
+    padding-bottom: 8px;
     border-bottom: 1px solid var(--grid);
   }
-  /* 作者列:demo 的 .author/.handle 數值(650/12.5px)與卡片牆現行的
-     .entry-author-name/.entry-handle(600/14px)不同——卡片牆這輪不在
-     範圍內，故另立一組 detail 專屬 class，不動卡片牆既有樣式。 */
+  /* 作者列:16px/600(ThemedText type="default" 基底 16px + fontWeight:600
+     覆寫)、handle 14px/500(ThemedText type="small" 的基底值，色套
+     textSecondary)。與卡片牆的 .entry-author-name/.entry-handle
+     (14px/600、14px/500)數值不同——卡片牆不在這條 kv 的權威來源範圍內
+     (卡片有卡片自己的字級規格)，兩邊各自忠於各自的來源，不強行同步，
+     故仍另立一組 detail 專屬 class。 */
   .detail-author-row { display: flex; align-items: baseline; min-width: 0; }
   .detail-author-name {
-    font-size: 14px;
-    font-weight: 650;
+    font-size: 16px;
+    font-weight: 600;
     color: var(--ink-1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .detail-handle {
-    font-size: 12.5px;
-    font-weight: 400;
+    font-size: 14px;
+    font-weight: 500;
     color: var(--ink-3);
     margin-left: 6px;
     overflow: hidden;
@@ -640,8 +678,13 @@
     white-space: pre-wrap;
   }
   .detail-excerpt.expanded { -webkit-line-clamp: unset; }
+  /* 展開全文:主色 + 靠左展開圖示(Lucide 風;手機版用「⤢」字元，web 改用
+     現有 SVG symbol 語彙保持整頁圖示系統一致，同一個視覺意圖)。 */
   .link-btn {
     align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     appearance: none;
     border: none;
     background: none;
@@ -653,14 +696,14 @@
     cursor: pointer;
   }
   .link-btn:hover { text-decoration: underline; }
-  /* kv:demo 的 .kv 是「標籤在上、數值在下」堆疊排版(flex-direction:
-     column)，不是左右並排——照代碼實作，不是照轉述的「左標籤右數值」。
-     區塊間距靠 .modal-detail 的 gap:12px，不另加每列自己的邊框/留白。 */
+  .link-btn .icon { width: 13px; height: 13px; }
+  /* kv:標籤在上、數值在下的堆疊排版(照手機版 CopyRow 的 styles.kv)。 */
   .detail-kv { display: flex; flex-direction: column; gap: 3px; }
   .detail-key { font-size: 11px; letter-spacing: 0.05em; color: var(--ink-3); }
   .detail-value { font-size: 13.5px; line-height: 1.5; color: var(--ink-1); word-break: break-all; }
-  /* linkrow:數值+複製鈕同一列，對齊 demo 的 .linkrow;.ellipsis 讓長網址
-     單行截斷，不擠壓複製鈕。 */
+  /* 淨化後連結是唯一「accent 強調」的一列(CopyRow 呼叫時帶 accent
+     prop)，原始連結/追蹤參數兩列沒有這個修飾。 */
+  #detailUrlValue { color: var(--accent); }
   .detail-linkrow { display: flex; align-items: center; gap: 8px; }
   .detail-linkrow .detail-value { flex: 1; }
   .ellipsis {
@@ -671,7 +714,7 @@
   }
   .copy-btn {
     appearance: none;
-    border: 1px solid var(--border);
+    border: 1px solid var(--card-outline);
     border-radius: 8px;
     background: transparent;
     color: var(--ink-3);
@@ -682,25 +725,47 @@
     flex-shrink: 0;
   }
   .copy-btn:hover { background: var(--plane); color: var(--ink-1); }
-  .detail-timeline { display: flex; flex-direction: column; gap: 6px; }
-  .detail-timeline-row {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
+  /* 時間軸子層視窗(疊在詳細視窗上，照手機版巢狀 Modal)內的逐列軌道+
+     圓點:最新一筆實心主色圓點，其餘空心主色圓圈，點與點之間垂直細線
+     相連——字面值照手機版 timelineDot/timelineLine(寬高10、
+     borderWidth1.5、線寬1.5)。 */
+  .timeline-row { display: flex; gap: 12px; }
+  .timeline-rail { width: 10px; display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+  .timeline-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    border: 1.5px solid var(--accent);
+    margin-top: 5px;
+    flex-shrink: 0;
+    box-sizing: border-box;
+  }
+  .timeline-dot.filled { background: var(--accent); }
+  .timeline-line {
+    flex: 1;
+    width: 1.5px;
+    margin-top: 2px;
+    margin-bottom: -3px;
+    background: var(--card-outline);
+  }
+  .timeline-text {
     font-size: 13.5px;
+    line-height: 20px;
+    padding-bottom: 10px;
     color: var(--ink-1);
   }
-  .detail-timeline-row .k { font-size: 12px; color: var(--ink-3); }
+  .timeline-text.secondary { color: var(--ink-3); }
+  .timeline-kind { color: var(--ink-3); }
   /* 底部動作列:對齊 dialog-shell.tsx 的 DialogActions/DialogButton——
-     等寬(flex:1)、outline 邊框、destructive 只變文字色不是實心底色，
-     圓角/padding/字級取自 demo 的 .sheet-actions/.btn。 */
+     等寬(flex:1)、outline 邊框、圓角 PanelRadius(12)，destructive 只變
+     文字色不是實心底色。 */
   .dialog-actions { display: flex; gap: 8px; }
   .dialog-btn {
     flex: 1;
     text-align: center;
     appearance: none;
-    border: 1px solid var(--border);
-    border-radius: 11px;
+    border: 1px solid var(--card-outline);
+    border-radius: 12px;
     background: transparent;
     color: var(--ink-1);
     font: inherit;
@@ -731,17 +796,24 @@
   }
   footer.about a:hover { color: var(--ink-1); }
 
-  /* ---- 對話框 ---- */
+  /* ---- 對話框 ----
+     遮罩透明度 0.55，照手機版 dialog-shell.tsx 的單一共用 DialogShell
+     (全 app 唯一的 dialog 外殼，三個對話框——匯入/清除確認/詳細視窗
+     一致採用，不是只套用在詳細視窗)。 */
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.55);
     display: grid;
     place-items: center;
     padding: 20px;
     z-index: 10;
   }
   .overlay[hidden] { display: none; }
+  /* 時間軸子層視窗疊在詳細視窗之上(照手機版巢狀 Modal 的做法)，z-index
+     取高一階，DOM 順序本身其實已經夠(接在 detailOverlay 後面)，這裡明寫
+     出來避免日後調順序時踩到。 */
+  #timelineOverlay { z-index: 11; }
   .modal {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -845,6 +917,9 @@
     <symbol id="i-github" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></symbol>
     <!-- 0.5.0 方案甲:紀錄卡片「開啟貼文」動作用 i-external-link。 -->
     <symbol id="i-external-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <!-- UI 全面對齊手機:「展開全文」的展開圖示(Lucide maximize-2)，手機版
+         原字是「⤢」字元，web 改用 SVG 符號延續整頁圖示語彙。 -->
+    <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></symbol>
   </defs>
 </svg>
 
@@ -915,7 +990,7 @@
         <label class="setting-row" for="autoClean">
           <span class="txt">
             <span class="name" data-i18n="opAutoCleanName">自動淨化分享按鈕</span>
-            <div class="desc" data-i18n="opAutoCleanDesc">攔截官方「複製連結」，解析短碼、剪除追蹤參數</div>
+            <div class="desc" data-i18n="opAutoCleanDesc">開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。</div>
           </span>
           <input type="checkbox" id="autoClean" class="switch" />
         </label>
@@ -1038,17 +1113,17 @@
   </div>
 </div>
 
-<!-- 卡片詳細視窗(0.5.0):兩個權威來源逐項對齊——結構/行為照手機版
-     history-detail-dialog.tsx，間距/字級/圓角/按鈕樣式照 LeafPage 定案
-     demo(mlc-card-ogp-demo)的實際 CSS。點卡片本身開啟，✕ 鈕或點遮罩或
-     Esc 關閉。sr-only 標題供螢幕閱讀器用，視覺上不畫額外標題列，直接從
-     卡頭(徽章/時間)開始。original/removedParams 我們沒存，demo 上那兩列
-     誠實省略，只留乾淨網址一列。 -->
+<!-- 卡片詳細視窗(UI 全面對齊手機任務):結構/行為/間距/字級/圓角/按鈕樣式
+     一律照手機版 history-detail-dialog.tsx + dialog-shell.tsx 的字面 token
+     值(唯一數值權威，見上方 :root 註解，LeafPage demo 已除名)。點卡片
+     本身開啟，✕ 鈕或點遮罩或 Esc 關閉。sr-only 標題供螢幕閱讀器用，視覺
+     上不畫額外標題列，直接從卡頭(徽章/時間)開始。original/removedParams
+     兩列由另一車道把資料存進 schema 後才有值，渲染端缺席容忍——沒資料就
+     不畫，見 detailExtraRows/buildDetailExtraRows。 -->
 <div class="overlay" id="detailOverlay" hidden>
   <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
     <h3 id="detailTitle" class="sr-only" data-i18n="opDetailTitle">紀錄詳細資訊</h3>
-    <!-- ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton;取代前一版
-         自製的底部「關閉」按鈕，兩個權威來源都沒有這個設計。 -->
+    <!-- ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton。 -->
     <button class="detail-close" id="detailClose" data-i18n-title="opClose" title="關閉" aria-label="關閉">✕</button>
     <div class="detail-head">
       <div class="entry-meta">
@@ -1062,36 +1137,40 @@
       <!-- 15 行截斷，對齊手機版 EXCERPT_DIALOG_LINES;超長時「展開全文」
            原地移除截斷(手機版是巢狀開第二層 Modal，理由是 RN 在 iOS 不
            支援兄弟層 Modal 並開——web 沒有這個限制，原地展開行為等價、
-           實作更簡單)。 -->
+           實作更簡單;時間軸則反過來改回巢狀子層，見下方 timelineOverlay
+           的註解)。 -->
       <div class="detail-excerpt" id="detailExcerpt" hidden></div>
-      <button class="link-btn" id="detailExpandBtn" hidden data-i18n="opExpandFull">展開全文</button>
+      <button class="link-btn" id="detailExpandBtn" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-expand"/></svg>
+        <span data-i18n="opExpandFull">展開全文</span>
+      </button>
       <div id="detailUrlFallback" hidden></div>
     </div>
 
-    <!-- 乾淨網址 kv:標籤在上、數值+複製鈕同一列在下，對齊 demo 的
-         .kv/.linkrow 堆疊排版(不是左標籤右數值並排)。 -->
+    <!-- 淨化後連結 kv:標籤在上、數值+複製鈕同一列在下，照手機版 CopyRow
+         的 styles.kv/.linkRow 堆疊排版(不是左標籤右數值並排);值顯示
+         formatDisplayUrl 後的正規路徑(@handle/post/ID)，accent 強調。 -->
     <div class="detail-kv">
-      <span class="detail-key" data-i18n="opUrlLabel">乾淨網址</span>
+      <span class="detail-key" data-i18n="opUrlLabel">淨化後連結</span>
       <div class="detail-linkrow">
         <span class="detail-value ellipsis" id="detailUrlValue"></span>
         <button class="copy-btn" id="detailUrlCopyBtn" data-i18n="opCopyShort">複製</button>
       </div>
     </div>
 
-    <!-- 記錄時間 kv:seen.length > 1(由另一車道 fix/dedup-merge 補上
-         schema)時才出現「時間軸」鈕，防禦寫法見 openEntryDetail/
-         buildSeenTimeline。 -->
+    <!-- 原始連結/追蹤參數列(有資料才畫，見 buildDetailExtraRows)。 -->
+    <div id="detailExtraRows"></div>
+
+    <!-- 記錄時間 kv:seen.length > 1 時才出現「時間軸」鈕，防禦寫法見
+         openEntryDetail/buildSeenTimeline;點下去開時間軸子層視窗
+         (timelineOverlay)，不是原地展開。 -->
     <div class="detail-kv">
       <span class="detail-key" data-i18n="opRecordedTime">記錄時間</span>
       <div class="detail-linkrow">
         <span class="detail-value" id="detailRecordedTime"></span>
-        <button class="copy-btn" id="detailTimelineBtn" hidden></button>
+        <button class="copy-btn" id="detailTimelineBtn" hidden data-i18n="opTimelineBtn">時間軸</button>
       </div>
     </div>
-    <!-- 時間軸展開區:原地開合(取代手機版的巢狀第二層 Modal，理由同展開
-         全文——iOS 平台限制不適用於 web)，新到舊逐筆列「時間 + 來源
-         標籤」，來源標籤沿用既有 kind 文案。 -->
-    <div class="detail-timeline" id="detailTimeline" hidden></div>
 
     <!-- 底部動作列:對齊 DialogActions/DialogButton，等寬、outline 邊框，
          destructive 只變文字色(不是實心底色)。 -->
@@ -1100,6 +1179,21 @@
       <a class="dialog-btn" id="detailOpenLink" target="_blank" rel="noopener" data-i18n="opOpenTitle">開啟貼文</a>
       <button class="dialog-btn destructive" id="detailDeleteBtn" data-i18n="opDeleteTitle">刪除這筆</button>
     </div>
+  </div>
+</div>
+
+<!-- 時間軸子層視窗:PM 補充(使用者提供手機實機截圖)後改回巢狀 Modal，
+     照手機版 history-detail-dialog.tsx 的 showSeenHistory 分支——疊在
+     詳細視窗上，標題「解析時間軸(共 N 次)」含次數、右上 ✕ 關閉。上一輪
+     詳細視窗仿造曾把它做成原地開合區塊(理由是「展開全文」那條 iOS 巢狀
+     Modal 限制的類比)，這次逐項對照實機截圖後撤回——時間軸在手機版本來
+     就是巢狀 Modal，沒有 iOS 平台限制要迴避，原地展開反而跟手機長得不
+     一樣，故照抄巢狀結構。 -->
+<div class="overlay" id="timelineOverlay" hidden>
+  <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="timelineTitle">
+    <button class="detail-close" id="timelineClose" data-i18n-title="opClose" title="關閉" aria-label="關閉">✕</button>
+    <h3 id="timelineTitle" class="detail-author-name"></h3>
+    <div id="detailTimeline"></div>
   </div>
 </div>
 

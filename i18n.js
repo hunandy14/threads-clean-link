@@ -28,6 +28,12 @@
 
       // ---- popup ----
       ppAutoClean: '自動淨化分享按鈕',
+      // UI 全面對齊手機任務，使用者拍板文案:改脫鉤語意——開關只影響「複製
+      // 到剪貼簿的內容乾不乾淨」，不影響「會不會解析並記錄」(這兩件事本來
+      // 就沒有耦合，舊文案「攔截官方複製連結」容易讓人誤以為關掉後就完全
+      // 不處理)。popup 與 options 兩處共用同一份語意，各自的 key 只是沿用
+      // pp/op 既有前綴慣例，文字內容一致。
+      ppAutoCleanDesc: '開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。',
       // 0.5.0 方案甲:popup 新增「貼文複製按鈕」開關(postCopyEnabled)，
       // 排在自動淨化之後、導航列之前。
       popPostCopyLabel: '貼文複製按鈕',
@@ -64,7 +70,7 @@
       // ---- options:設定 ----
       opSettingsTitle: '設定',
       opAutoCleanName: '自動淨化分享按鈕',
-      opAutoCleanDesc: '攔截官方「複製連結」，解析短碼、剪除追蹤參數',
+      opAutoCleanDesc: '開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。',
       // 【PM 審查後移除】opNotifyName/opNotifyDesc(成功時顯示通知):R1
       // 同輪已把成功通知整組拆光，這顆開關合併後零讀取端，留著是誤導
       // 使用者的死 UI，不是「另一車道尚未拆通知」——上一輪的保留理由是
@@ -104,6 +110,10 @@
       // 0.5.0 方案甲:紀錄卡片化後新增「開啟貼文」動作(<a target=_blank
       // rel=noopener>)，複製/刪除沿用既有 opCopyTitle/opDeleteTitle。
       opOpenTitle: '開啟貼文',
+      // UI 全面對齊手機:卡片高亮態(hover/focus-within)右上浮出的兩顆
+      // 28×28 快捷鈕之一，對應手機 history-card.tsx 的 Copy 圖示;另一顆
+      // (開啟貼文)沿用上面既有的 opOpenTitle，文字剛好一致不必另造 key。
+      opQuickCopyTitle: '複製連結',
 
       // ---- options:卡片詳細視窗(0.5.0，對齊手機版 history-detail-dialog) ----
       // sr-only 標題，螢幕閱讀器用;視覺上詳細視窗直接從卡頭(徽章/時間)
@@ -113,17 +123,24 @@
       opExpandFull: '展開全文',
       // 詳細視窗內顯示的絕對記錄時間(與卡頭的相對時間分開顯示)。
       opRecordedTime: '記錄時間',
-      // kv 列標籤，顯示條目實際存的乾淨網址(對齊手機版「淨化後連結」列;
-      // original/removedParams 我們沒存，誠實省略，只留這一列)。
-      opUrlLabel: '乾淨網址',
-      // kv 列旁的小顆複製鈕文案，對齊 LeafPage demo 的 .copy-btn(短版
-      // 「複製」，空間有限;完整版「複製乾淨網址」留給底部動作列)。
+      // kv 列標籤，對齊手機版 CopyRow 的「淨化後連結」(不是舊版「乾淨
+      // 網址」——UI 全面對齊手機任務改用手機源碼的原字)。
+      opUrlLabel: '淨化後連結',
+      // 「原始連結」「追蹤參數 {name}」兩列(另一車道把 original/
+      // removedParams 存進 schema 後才有資料)，照手機版同一個 CopyRow
+      // 元件、缺席容忍——沒資料就不畫這兩列，不是恆常顯示。
+      opOriginalLabel: '原始連結',
+      opTrackingParamLabel: '追蹤參數 {name}',
+      // kv 列旁的小顆複製鈕文案(對齊手機版 CopyRow 的「複製」，空間有限;
+      // 完整版「複製乾淨網址」留給底部動作列)。
       opCopyShort: '複製',
-      // 時間軸按鈕(seen.length > 1 才出現)與展開後的區塊標題，對齊手機版
-      // 「解析時間軸(共 N 次)」;來源標籤沿用既有 kind 文案(opKindShare
-      // 等)，不是手機版的 share/clipboard 二分。
+      // 「時間軸」觸發鈕(seen.length > 1 才出現於「記錄時間」列旁)，純文字
+      // 不帶次數——次數改到子層視窗的標題(opTimelineCount)。
       opTimelineBtn: '時間軸',
-      opTimelineCount: '時間軸(共 {n} 次)',
+      // 時間軸子層視窗(疊在詳細視窗上，照手機版巢狀 Modal 的做法)的標題，
+      // 對齊手機版原字「解析時間軸(共 N 次)」。來源標籤沿用既有 kind 文案
+      // (opKindShare 等)，不是手機版的 share/clipboard 二分。
+      opTimelineCount: '解析時間軸(共 {n} 次)',
 
       // ---- options:匯入對話框與 toast ----
       opImportTitle: '匯入紀錄',
@@ -172,6 +189,7 @@
       bgUnexpected: 'Unexpected error. Please try again later.',
 
       ppAutoClean: 'Auto-clean the share button',
+      ppAutoCleanDesc: 'On: the copied link is cleaned. Off: your clipboard is left as-is. Either way the post is resolved and recorded.',
       popPostCopyLabel: 'Post copy button',
       ppHistorySettings: 'History & settings',
       ppFooter: 'Best-effort — failures never break the original copy feature.',
@@ -195,7 +213,7 @@
 
       opSettingsTitle: 'Settings',
       opAutoCleanName: 'Auto-clean the share button',
-      opAutoCleanDesc: 'Intercepts the official “Copy link”, resolves short codes and strips tracking params',
+      opAutoCleanDesc: 'On: the copied link is cleaned. Off: your clipboard is left as-is. Either way the post is resolved and recorded.',
       opSaveName: 'Keep history',
       opSaveDesc: 'Local only',
       opPostCopyName: 'Post copy button',
@@ -224,11 +242,14 @@
       opCopyTitle: 'Copy clean URL',
       opDeleteTitle: 'Delete entry',
       opOpenTitle: 'Open post',
+      opQuickCopyTitle: 'Copy link',
 
       opDetailTitle: 'Record details',
       opExpandFull: 'Show full text',
       opRecordedTime: 'Recorded at',
-      opUrlLabel: 'Clean URL',
+      opUrlLabel: 'Cleaned link',
+      opOriginalLabel: 'Original link',
+      opTrackingParamLabel: 'Tracking param {name}',
       opCopyShort: 'Copy',
       opTimelineBtn: 'Timeline',
       opTimelineCount: 'Timeline ({n})',

@@ -4,13 +4,16 @@
 <meta charset="utf-8" />
 <title>Threads Clean Link</title>
 <style>
+  /* --accent 改用手機版 constants/theme.ts 的暖橘(light #c96f3e / dark
+     #e2925e)，UI 全面對齊手機任務——唯一數值權威見 options.html 開頭的
+     :root 註解，本檔沿用同一組數值，不重複整段說明。 */
   :root {
     color-scheme: light dark;
     --bg: #ffffff;
     --fg: #1a1a1a;
     --muted: #6b6b6b;
     --border: #e3e3e3;
-    --accent: #0d6efd;
+    --accent: #c96f3e;
     --switch-track-off: #d0d3d9;
     --switch-thumb: #ffffff;
   }
@@ -20,7 +23,7 @@
       --fg: #f1f1f1;
       --muted: #a3a3a3;
       --border: #3a3b3d;
-      --accent: #6ea8ff;
+      --accent: #e2925e;
       --switch-track-off: #55575c;
       --switch-thumb: #e8e8e8;
     }
@@ -76,6 +79,17 @@
   /* 標籤過長時在自己這一側折行，不把靠右的 switch 擠出列外。 */
   .setting-row-label {
     min-width: 0;
+  }
+  /* 使用者拍板文案(autoClean 描述改脫鉤語意)：popup 空間窄，描述用小字
+     疊在名稱下方，同一顆 <label> 內兩行都能點擊觸發 switch。 */
+  .setting-row-label .name { display: block; }
+  .setting-row-label .desc {
+    display: block;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--muted);
+    margin-top: 2px;
+    font-weight: 400;
   }
   /* 滑動 switch：取消 checkbox 原生打勾外觀，自行畫軌道與滑塊。
      顏色一律走 CSS 變數（--switch-track-off / --switch-thumb / --accent），
@@ -147,7 +161,10 @@
   </header>
   <div class="settings">
     <label class="setting-row" for="autoClean">
-      <span class="setting-row-label" data-i18n="ppAutoClean">自動淨化分享按鈕</span>
+      <span class="setting-row-label">
+        <span class="name" data-i18n="ppAutoClean">自動淨化分享按鈕</span>
+        <span class="desc" data-i18n="ppAutoCleanDesc">開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。</span>
+      </span>
       <input type="checkbox" id="autoClean" class="switch" />
     </label>
     <!-- 0.5.0 方案甲:新增「貼文複製按鈕」開關，取代原本這裡的「成功時顯示

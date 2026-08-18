@@ -734,7 +734,7 @@ test('紀錄:author/handle 截斷至 100 字、excerpt 截斷至 2000 字；空�
 // 列整欄丟棄，陣列逐筆 sanitize(key 非空字串 ≤64、value 字串 ≤512，
 // 任一不符整筆丟棄)並裁到 20 筆上限。
 
-test('紀錄:cleanedNotice 帶合法的 original(share 分支,無 removedParams)時，original 原樣寫入、removedParams 不出現', async () => {
+test('紀錄:cleanedNotice 帶合法的 original(share 分支，無 removedParams)時，original 原樣寫入、removedParams 不出現', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
   const original = 'https://www.threads.com/share/BASzGWiaOw/';
 
@@ -749,7 +749,7 @@ test('紀錄:cleanedNotice 帶合法的 original(share 分支,無 removedParams)
   const history = bg.storage.localSnapshot().history;
   assert.equal(history.length, 1);
   assert.equal(history[0].original, original);
-  assert.equal('removedParams' in history[0], false, 'share 分支沒有 removedParams,不得憑空生出');
+  assert.equal('removedParams' in history[0], false, 'share 分支沒有 removedParams，不得憑空生出');
 });
 
 test('紀錄:cleanedNotice 帶合法的 original 與 removedParams(strip 分支)時，兩欄原樣寫入', async () => {
