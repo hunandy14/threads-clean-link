@@ -106,6 +106,64 @@ test('pickPermalink:非陣列輸入(null／undefined)一律回傳 null，不丟�
   assert.equal(pickPermalink(undefined), null);
 });
 
+// ---- filterOwnContainerHrefs(巢狀容器防護:引用貼文複製錯網址的修正) ----
+//
+// 引用貼文會把被引文的貼文容器巢狀在外層容器內，外層容器用
+// querySelectorAll('a[href*="/post/"]') 收集候選時，也會掃到被引文自己的
+// permalink。過濾規則:只留 ownContainer 為 true(錨點最近的貼文容器祖先
+// 就是目前掃描的這個容器本身)的候選，依原順序保留。
+
+test('filterOwnContainerHrefs:全部候選都屬本容器時，依原順序原樣保留', () => {
+  const { filterOwnContainerHrefs } = loadPostIcon();
+
+  assert.deepEqual(
+    filterOwnContainerHrefs([
+      { href: '/@a/post/1', ownContainer: true },
+      { href: '/@a/post/1/media', ownContainer: true },
+    ]),
+    ['/@a/post/1', '/@a/post/1/media']
+  );
+});
+
+test('filterOwnContainerHrefs:引用貼文序列——排除 ownContainer 為 false 的候選(被引文的 permalink)', () => {
+  const { filterOwnContainerHrefs } = loadPostIcon();
+  // 模擬真實掃描順序:外層容器本身的連結先出現，接著是巢狀在內的引用
+  // 貼文(被引文)自己的連結，最後才是外層容器的 media 連結。
+  const candidates = [
+    { href: '/@outer/post/OUTER1', ownContainer: true },
+    { href: '/@quoted/post/QUOTED1', ownContainer: false },
+    { href: '/@quoted/post/QUOTED1/media', ownContainer: false },
+    { href: '/@outer/post/OUTER1/media', ownContainer: true },
+  ];
+
+  assert.deepEqual(filterOwnContainerHrefs(candidates), [
+    '/@outer/post/OUTER1',
+    '/@outer/post/OUTER1/media',
+  ]);
+});
+
+test('filterOwnContainerHrefs:候選形狀不對(缺 href、href 非字串、候選本身為 null)逐筆略過，不丟例外', () => {
+  const { filterOwnContainerHrefs } = loadPostIcon();
+
+  assert.deepEqual(
+    filterOwnContainerHrefs([
+      { href: '/@a/post/1', ownContainer: true },
+      { ownContainer: true }, // 缺 href
+      { href: 12345, ownContainer: true }, // href 非字串
+      null, // 候選本身為 null
+      { href: '/@b/post/2', ownContainer: false }, // 屬巢狀貼文,排除
+    ]),
+    ['/@a/post/1']
+  );
+});
+
+test('filterOwnContainerHrefs:非陣列輸入(null／undefined)一律回傳空陣列，不丟例外', () => {
+  const { filterOwnContainerHrefs } = loadPostIcon();
+
+  assert.deepEqual(filterOwnContainerHrefs(null), []);
+  assert.deepEqual(filterOwnContainerHrefs(undefined), []);
+});
+
 // ---- buildPostUrl ----
 
 test('buildPostUrl:相對 href 與 origin 組成絕對 URL', () => {
