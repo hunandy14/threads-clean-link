@@ -21,22 +21,17 @@
   var REQ_TYPE = 'TCL_RESOLVE_REQ';
   var RES_TYPE = 'TCL_RESOLVE_RES';
 
-  // R1-2 通知涵蓋自動路徑：實際把淨化後內容寫入剪貼簿成功後，往 bridge.js
-  // 送一則通知，轉發給 background 寫進紀錄(方案甲:歷史即收藏，唯一
-  // 資料集)。成功類通知已依使用者變更設定規格整組移除，這則通知不再有
-  // 「要不要顯示」的把關，background 收到就無條件記錄。
+  // 實際把淨化後內容寫入剪貼簿成功後，往 bridge.js 送一則通知，轉發給
+  // background 寫進紀錄，收到就無條件記錄，沒有「要不要顯示」的把關。
   var CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
   // kind 標示淨化來源('share' 短碼解析 / 'strip' 剪除追蹤參數),供
   // background 寫入紀錄時分類;白名單驗證在 background(信任邊界)。
-  //
-  // F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
   // original(選填)是使用者實際複製到/觸發時的原始連結(share 短碼原文，
   // 或 strip 剝參前的原網址)；removedParams(選填，僅 strip 分支算得出)
-  // 是被剝除的查詢參數清單。兩者都只是「guard 這一層手上已知的原始資
-  // 料」，這裡只做最基本的存在性判斷(與 cleanUrl 相同就不夾帶——沒有
-  // 額外資訊，省一點 postMessage payload)，真正的型別/長度 sanitize 交
-  // 給 background.js(信任邊界)。
+  // 是被剝除的查詢參數清單。這裡只做最基本的存在性判斷(與 cleanUrl 相同
+  // 就不夾帶——沒有額外資訊，省一點 postMessage payload)，真正的型別/
+  // 長度 sanitize 交給 background.js(信任邊界)。
   function notifyCleaned(cleanUrl, kind, original, removedParams) {
     try {
       var payload = { type: CLEANED_NOTICE_TYPE, cleanUrl: cleanUrl, kind: kind };
@@ -52,21 +47,14 @@
     }
   }
 
-  // v1.1 設定規格 S6/S8：常駐監聽 bridge.js 推播的 TCL_SETTINGS_PUSH。
-  // 在收到第一次推播之前一律用預設值運作。使用者變更設定規格:autoClean
-  // 預設值改為 false(關閉)，在收到第一次推播之前，自動淨化／短碼解析
-  // 整段不啟用，與 bridge.js 的 SETTINGS_DEFAULTS 同步改動。
-  // R1-1 併開關：resolveShortcode 徹底移除，短碼解析與 ?xmt 剪參都收在
-  // autoClean 這一顆之下。notifySuccess(成功類通知)已依使用者變更設定
-  // 規格整組移除——這裡從未真正依它分支任何邏輯(只是存著轉發)，直接拿
-  // 掉，不留死欄位。
-  //
-  // code review #2(UX 修正:autoClean 關閉時剪貼簿寫入不得被解析壓後)新
-  // 增 saveHistory:recordOnly(autoClean 關閉)流程改成「先原生寫入、事
-  // 後 fire-and-forget 補發解析請求」，若 saveHistory 也關閉，解析結果
-  // 反正不會被 background.js 收下，直接省掉整個解析請求，不浪費一次網
-  // 路往返(見下方 writeText／write 的 recordOnly 分支)。預設 true，對齊
-  // background.js 的 DEFAULT_SETTINGS.saveHistory。
+  // 常駐監聽 bridge.js 推播的 TCL_SETTINGS_PUSH，在收到第一次推播之前
+  // 一律用預設值運作(autoClean=false 時自動淨化／短碼解析整段不啟用，
+  // 與 bridge.js 的 SETTINGS_DEFAULTS 同步)。saveHistory:recordOnly
+  // (autoClean 關閉)流程是「先原生寫入、事後 fire-and-forget 補發解析
+  // 請求」，若 saveHistory 也關閉，解析結果反正不會被 background.js
+  // 收下，直接省掉整個解析請求，不浪費一次網路往返(見下方 writeText／
+  // write 的 recordOnly 分支)。預設 true，對齊 background.js 的
+  // DEFAULT_SETTINGS.saveHistory。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
   var currentSettings = {
     autoClean: false,
@@ -111,12 +99,10 @@
   // 沒有 query 部分回傳空陣列。任何解析例外一律回傳空陣列(fail-safe，
   // 不影響已經完成的剪貼簿寫入判斷)。
   //
-  // code review #3(fragment 誤判修正):先以 '#' 切開取「hash 之前」的部
-  // 分再找 '?'——hash 片段內容本身可以合法含有 '?' 字元(例如 '#x?y=1'
-  // 這種前端路由常見寫法)，若直接對整段 tail 做 indexOf('?')，會把 hash
-  // 裡的 '?y=1' 誤判成查詢字串，產生根本不存在的假參數。原寫法反過來
-  // (先找 '?' 再用 '#' 切掉尾段)沒有這層保護，'#x?y=1' 這種只有 hash、
-  // 沒有 query 的輸入會被誤判出一筆 {key:'y', value:'1'}。
+  // 先以 '#' 切開取「hash 之前」的部分再找 '?'——hash 片段內容本身可以
+  // 合法含有 '?' 字元(例如 '#x?y=1' 這種前端路由常見寫法)，若直接對整段
+  // tail 做 indexOf('?')，會把 hash 裡的 '?y=1' 誤判成查詢字串，產生根本
+  // 不存在的假參數。
   function parseRemovedParams(tail) {
     if (typeof tail !== 'string' || !tail) return [];
     var beforeHash = tail.split('#')[0];
@@ -138,9 +124,7 @@
   // 判斷字串是否需要淨化；不需要（含格式不符、沒有 query/hash 可剪）回傳
   // null，需要則回傳 { cleaned, original, removedParams }:cleaned 是去掉
   // query/hash 後的乾淨網址;original 是剝參前的完整原網址(trim 後)，供
-  // F 案(紀錄資料層補齊 original/removedParams)夾帶進 notifyCleaned;
-  // removedParams 是被剝除的查詢參數清單。原名 sanitizeIfTrackedPostUrl，
-  // 只回傳 cleaned 字串，改名反映新回傳形狀。
+  // 夾帶進 notifyCleaned;removedParams 是被剝除的查詢參數清單。
   function stripTrackedPostUrl(str) {
     if (typeof str !== 'string') return null;
     var trimmed = str.trim();
@@ -235,31 +219,28 @@
     clipboard.writeText = function (data) {
       try {
         if (typeof data === 'string') {
-          // 修正規格(記錄與淨化脫鉤):autoClean 只管「剪貼簿要不要被改
-          // 寫」，偵測／解析管線一律照跑，不再因 autoClean 關閉就整段早
-          // 退——「複製就記錄」的語意(歷史即收藏)不該受 autoClean 影響。
+          // autoClean 只管「剪貼簿要不要被改寫」，偵測／解析管線一律照
+          // 跑——「複製就記錄」的語意不該受 autoClean 影響。
           // recordOnly=true(autoClean 關閉)時:剪貼簿一律寫回使用者原本
           // 複製的內容，但解析成功仍會 notifyCleaned 供記錄；解析失敗則
           // 交給 bridge.js 的 recordOnly 分流靜默處理(不跳頁內 toast)。
-          // autoClean 開啟(recordOnly=false)時行為與修正前完全一致。
           var recordOnly = !currentSettings.autoClean;
 
           if (isShareUrl(data)) {
-            // F 案:share 分支只拿得到「短碼原文」當 original，沒有
+            // share 分支只拿得到「短碼原文」當 original，沒有
             // removedParams——伺服器端重新導向前的網址帶了哪些查詢參數，
             // guard 這一層無從得知(那是 background.js 解析短碼時才看得到
             // 的資訊，這裡不硬造)。
             var shareOriginal = data.trim();
 
             if (recordOnly) {
-              // code review #2(UX 修正):autoClean 關閉時，剪貼簿要不要
-              // 被改寫已經不取決於解析結果(recordOnly 恆寫回原始
-              // data)，沒有理由讓使用者等最多 2.5 秒的橋接逾時、甚至因
-              // 分頁失焦而 NotAllowedError——原生寫入立刻執行，成功後才
-              // 「事後」發解析請求補記錄(fire-and-forget，不 await、不
-              // 阻塞這次 writeText 的回傳)。saveHistory 也關閉時，解析
-              // 結果反正不會被 background.js 的 recordHistory 收下，直
-              // 接省掉整個解析請求，不浪費一次網路往返。
+              // autoClean 關閉時，剪貼簿要不要被改寫已經不取決於解析結果
+              // (recordOnly 恆寫回原始 data)，沒有理由讓使用者等最多 2.5
+              // 秒的橋接逾時、甚至因分頁失焦而 NotAllowedError——原生寫入
+              // 立刻執行，成功後才「事後」發解析請求補記錄(fire-and-forget，
+              // 不 await、不阻塞這次 writeText 的回傳)。saveHistory 也
+              // 關閉時，解析結果反正不會被 background.js 的 recordHistory
+              // 收下，直接省掉整個解析請求，不浪費一次網路往返。
               return Promise.resolve(nativeWriteText(data)).then(function (result) {
                 if (currentSettings.saveHistory) {
                   // requestResolveShareUrl 設計上一律 resolve(成功給字
@@ -278,13 +259,13 @@
               });
             }
 
-            // autoClean 開啟(recordOnly=false)時行為與修正前完全一
-            // 致:先解析、解析成功才寫入乾淨網址。
+            // autoClean 開啟(recordOnly=false)時:先解析、解析成功才
+            // 寫入乾淨網址。
             return requestResolveShareUrl(shareOriginal, false).then(function (cleanUrl) {
               // cleanUrl 需通過貼文網址格式驗證才信任，否則視同解析失敗。
               var resolved = typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl);
               if (resolved) {
-                // R1-2：只有「實際寫入剪貼簿」才發通知——原生寫入先跑，
+                // 只有「實際寫入剪貼簿」才發通知——原生寫入先跑，
                 // 成功之後(.then 的 onFulfilled)才 notifyCleaned，若原生
                 // 寫入被拒(rejection)則不會進到這裡，也就不會誤發通知。
                 // Promise.resolve 包一層:原生若回傳非 Promise，直接 .then
@@ -307,8 +288,8 @@
             // 這個中間狀態:能剪就是能剪。recordOnly 時剪貼簿仍寫回原始
             // data，只是照樣 notifyCleaned 供記錄。
             toWrite = recordOnly ? data : stripped.cleaned;
-            // R1-2：?xmt 剪參分支同樣只在原生寫入成功後才發通知。
-            // Promise.resolve 包一層的理由同上(防非 Promise 回傳時重複呼叫原生)。
+            // ?xmt 剪參分支同樣只在原生寫入成功後才發通知。Promise.resolve
+            // 包一層的理由同上(防非 Promise 回傳時重複呼叫原生)。
             return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
               notifyCleaned(stripped.cleaned, 'strip', stripped.original, stripped.removedParams);
               return result;
@@ -342,30 +323,28 @@
           items[0].types[0] === 'text/plain' &&
           typeof window.ClipboardItem === 'function'
         ) {
-          // 修正規格(記錄與淨化脫鉤):autoClean 只管「剪貼簿要不要被改
-          // 寫」，偵測／解析管線一律照跑，不再因 autoClean 關閉就整段早
-          // 退，理由與 writeText 分支相同(見上方註解)。
+          // autoClean 只管「剪貼簿要不要被改寫」，偵測／解析管線一律照
+          // 跑，理由與 writeText 分支相同(見上方註解)。
           var recordOnly = !currentSettings.autoClean;
 
           var item = items[0];
 
-          // R1-2：只有實際解析／剪參成功(代表真的判定出可記錄的乾淨網
-          // 址)才需要在原生寫入成功後發通知；記錄「這次若成功要通知的
-          // cleanUrl 與其來源 kind」，fail-open／未改寫的路徑保持 null，
-          // 不發通知。recordOnly 時即使成功也不重建 ClipboardItem(剪貼簿
-          // 維持原始 items)，但一樣要記下 cleanedUrlForNotice 供記錄。
-          // F 案:cleanedOriginalForNotice／cleanedRemovedParamsForNotice
-          // 比照同一套「先記下，最後才在原生寫入成功後一併帶進
-          // notifyCleaned」的模式，share 分支只填 original，strip 分支兩
-          // 者都填。
+          // 只有實際解析／剪參成功(代表真的判定出可記錄的乾淨網址)才需
+          // 要在原生寫入成功後發通知；記錄「這次若成功要通知的 cleanUrl
+          // 與其來源 kind」，fail-open／未改寫的路徑保持 null，不發通知。
+          // recordOnly 時即使成功也不重建 ClipboardItem(剪貼簿維持原始
+          // items)，但一樣要記下 cleanedUrlForNotice 供記錄。
+          // cleanedOriginalForNotice／cleanedRemovedParamsForNotice 比照
+          // 同一套「先記下，最後才在原生寫入成功後一併帶進 notifyCleaned」
+          // 的模式，share 分支只填 original，strip 分支兩者都填。
           var cleanedUrlForNotice = null;
           var cleanedKindForNotice = null;
           var cleanedOriginalForNotice = null;
           var cleanedRemovedParamsForNotice = null;
-          // code review #2(UX 修正):recordOnly 情境下，share 分支不需要
-          // 等解析結果就能決定要寫什麼(恆為 items 不變)，這裡先記下短碼
-          // 原文讓 decideWhatToWrite 立刻回傳、不阻塞 nativeWrite；解析
-          // 改成 nativeWrite 成功後才發的 fire-and-forget，見下方呼叫端。
+          // recordOnly 情境下，share 分支不需要等解析結果就能決定要寫什麼
+          // (恆為 items 不變)，這裡先記下短碼原文讓 decideWhatToWrite 立刻
+          // 回傳、不阻塞 nativeWrite；解析改成 nativeWrite 成功後才發的
+          // fire-and-forget，見下方呼叫端。
           var recordOnlyShareOriginal = null;
 
           // decideWhatToWrite 只決定要寫入的內容(讀取 blob、判斷短碼／?xmt、
@@ -378,7 +357,7 @@
             })
             .then(function (text) {
               if (isShareUrl(text)) {
-                // F 案:share 分支只拿得到「短碼原文」當 original，理由同
+                // share 分支只拿得到「短碼原文」當 original，理由同
                 // writeText 分支(見上方 shareOriginal 註解)。
                 var shareOriginal = text.trim();
 
@@ -432,7 +411,7 @@
 
           // 真正呼叫原生 write 的地方，刻意不包 catch：原生呼叫的 rejection
           // 要原樣傳回頁面，我們永不重試原生寫入，且只在這唯一一處呼叫。
-          // R1-2：notifyCleaned 只在 nativeWrite 的 Promise 成功(onFulfilled)
+          // notifyCleaned 只在 nativeWrite 的 Promise 成功(onFulfilled)
           // 且確實做了替換時才呼叫；原生寫入被拒(rejection)會跳過 onFulfilled，
           // 自然不會誤發通知，rejection 也原樣往外傳。
           return decideWhatToWrite.then(function (toWrite) {
@@ -440,9 +419,9 @@
               if (cleanedUrlForNotice !== null && cleanedKindForNotice !== null) {
                 notifyCleaned(cleanedUrlForNotice, cleanedKindForNotice, cleanedOriginalForNotice, cleanedRemovedParamsForNotice);
               }
-              // code review #2(UX 修正):recordOnly 的 share 分支，解析
-              // 請求在原生寫入成功後才發、不 await，理由同 writeText 分
-              // 支。saveHistory 關閉時直接省掉整個解析請求。
+              // recordOnly 的 share 分支，解析請求在原生寫入成功後才發、
+              // 不 await，理由同 writeText 分支。saveHistory 關閉時直接
+              // 省掉整個解析請求。
               if (recordOnlyShareOriginal !== null && currentSettings.saveHistory) {
                 requestResolveShareUrl(recordOnlyShareOriginal, true).then(function (cleanUrl) {
                   var resolved = typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl);

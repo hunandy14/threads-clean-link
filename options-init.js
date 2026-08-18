@@ -37,7 +37,7 @@ document.addEventListener('DOMContentLoaded', function () {
   //   - local 區:background 在頁面開著時寫入新紀錄 → 即時刷新卡片牆與
   //     統計(既有接線)。
   //   - sync 區:popup 或另一個開著的 options 分頁改了設定(開關/語言/
-  //     主題)→ 本頁同步反映，不留過期狀態(0.5.0 新增)。
+  //     主題)→ 本頁同步反映，不留過期狀態。
   if (chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener(function (changes, areaName) {
       if (!changes) return;
@@ -49,7 +49,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  // 回到分頁時重算相對時間標籤(0.5.0 新增)。頁面留在背景分頁的期間不會
+  // 回到分頁時重算相對時間標籤。頁面留在背景分頁的期間不會
   // 即時跳動——這是刻意的範圍取捨:背景分頁沒有計時器持續刷新，只在
   // visibilitychange(切回來)這個時機點重算一次，避免常駐 interval 空耗
   // 資源;使用者實際會看到文字的時候(切回分頁)保證是最新的。
