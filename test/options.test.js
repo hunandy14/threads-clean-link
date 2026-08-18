@@ -374,9 +374,9 @@ test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日
   assert.equal(stats.oldestAt, t0 - 14 * DAY - 3600e3);
 });
 
-// KINDS 表補上 icon 後,aggregateStats 的 counts 要能統計 kind:'icon' 的
-// 筆數(供 options.html 統計磚 #statIcon 使用,修正前 counts[e.kind]++ 對
-// 缺席鍵會產生 NaN 而不計數),且沒有 icon 來源紀錄時 counts.icon 應為 0
+// KINDS 表補上 icon 後，aggregateStats 的 counts 要能統計 kind:'icon' 的
+// 筆數(供 options.html 統計磚 #statIcon 使用，修正前 counts[e.kind]++ 對
+// 缺席鍵會產生 NaN 而不計數)，且沒有 icon 來源紀錄時 counts.icon 應為 0
 // 而非 undefined。
 test('aggregateStats:counts 應統計 kind 為 icon 的筆數;無 icon 來源時 counts.icon 為 0(而非 undefined)', () => {
   const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime();
