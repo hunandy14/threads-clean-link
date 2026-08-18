@@ -123,6 +123,19 @@
       favEmpty: '還沒有收藏，到貼文按書籤試試',
       favExport: '匯出收藏',
       favImport: '匯入收藏',
+
+      // ---- options:收藏分頁卡片牆(0.5.0)----
+      favCopy: '複製連結',
+      favOpenPost: '開啟貼文',
+      favRemove: '移除收藏',
+      favCount: '收藏 {n}/{max}',
+      favImportDesc: '選擇先前匯出的收藏 .json 檔，或直接貼上內容;與現有收藏以 id 去重合併，上限 500 筆，超出剩餘容量的部分會略過(不擠掉既有收藏)。',
+      favToastExported: '已下載收藏備份檔',
+      favToastImported: '已匯入 {n} 筆收藏',
+      favToastImportedSkip: '已匯入 {n} 筆收藏，略過 {m} 筆(重複、格式不符或已達上限)',
+      // 擴充功能更新時，service worker 的舊連線會失效(context invalidated);
+      // 頁面端呼叫 chrome.* API 失敗時顯示此提示，請使用者重新整理頁面。
+      favContextLost: '擴充功能已更新，請重新整理頁面',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -222,6 +235,16 @@
       favEmpty: 'No favorites yet — tap the bookmark on a post',
       favExport: 'Export favorites',
       favImport: 'Import favorites',
+
+      favCopy: 'Copy link',
+      favOpenPost: 'Open post',
+      favRemove: 'Remove favorite',
+      favCount: 'Favorites {n}/{max}',
+      favImportDesc: 'Pick a previously exported favorites .json file or paste its content; merged with existing favorites and deduped by id, capped at 500 — entries beyond the remaining capacity are skipped (existing favorites are never evicted).',
+      favToastExported: 'Favorites backup downloaded',
+      favToastImported: 'Imported {n} favorites',
+      favToastImportedSkip: 'Imported {n}, skipped {m} (duplicate, invalid, or at capacity)',
+      favContextLost: 'Extension updated — please refresh the page',
     },
   };
 
