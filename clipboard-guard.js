@@ -22,13 +22,13 @@
   var RES_TYPE = 'TCL_RESOLVE_RES';
 
   // R1-2 通知涵蓋自動路徑：實際把淨化後內容寫入剪貼簿成功後，往 bridge.js
-  // 送一則通知，轉發給 background 寫進淨化紀錄(方案甲:歷史即收藏，唯一
+  // 送一則通知，轉發給 background 寫進紀錄(方案甲:歷史即收藏，唯一
   // 資料集)。成功類通知已依使用者變更設定規格整組移除，這則通知不再有
   // 「要不要顯示」的把關，background 收到就無條件記錄。
   var CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
   // kind 標示淨化來源('share' 短碼解析 / 'strip' 剪除追蹤參數),供
-  // background 寫入淨化紀錄時分類;白名單驗證在 background(信任邊界)。
+  // background 寫入紀錄時分類;白名單驗證在 background(信任邊界)。
   function notifyCleaned(cleanUrl, kind) {
     try {
       window.postMessage(

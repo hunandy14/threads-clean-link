@@ -10,7 +10,7 @@
   // R1-2 通知涵蓋自動路徑：MAIN world(clipboard-guard.js)實際把淨化後
   // 內容寫入剪貼簿後，會送一則 TCL_CLEANED_NOTICE 過來，這裡原樣轉發成
   // chrome.runtime.sendMessage(cleanedNotice) 給 service worker。方案甲
-  // (歷史即收藏)之後，淨化紀錄是唯一資料集，background 收到就無條件記
+  // (歷史即收藏)之後，紀錄是唯一資料集，background 收到就無條件記
   // 錄一筆(不再有 notifySuccess 這種「要不要顯示通知」的把關——成功類
   // 通知已依使用者變更設定規格整組移除，見 background.js)。
   var NOTICE_TYPE = 'TCL_CLEANED_NOTICE';

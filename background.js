@@ -33,13 +33,13 @@ const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
 
 // 使用者變更設定規格:
-//   - notifySuccess(成功類通知)整組移除——方案甲(歷史即收藏)之後，淨化
-//     紀錄是唯一資料集，cleanedNotice 收到就無條件記錄，不再有「要不要
+//   - notifySuccess(成功類通知)整組移除——方案甲(歷史即收藏)之後，紀
+//     錄是唯一資料集，cleanedNotice 收到就無條件記錄，不再有「要不要
 //     顯示成功通知」這道關卡。失敗／錯誤類通知不受影響，永遠觸發(右鍵
 //     選單路徑維持系統通知；share/strip 自動路徑改頁內 toast，見
 //     bridge.js／post-icon.js)。
 //   - autoClean 預設值改為 false(關閉)。
-// saveHistory(淨化紀錄功能鍵，只有 background 記錄時把關會讀，guard/
+// saveHistory(紀錄功能鍵，只有 background 記錄時把關會讀，guard/
 // bridge 不下放)維持 true。autoClean 的預設值需與 popup.js／bridge.js／
 // clipboard-guard.js 同步改動。
 const DEFAULT_SETTINGS = {
@@ -47,20 +47,20 @@ const DEFAULT_SETTINGS = {
   saveHistory: true,
 };
 
-// 淨化紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
-// 紀錄量),新到舊排列。使用者拍板:紀錄不設上限(移除原本 1000 筆的裁切)
+// 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
+// 紀錄量），新到舊排列。使用者拍板:紀錄不設上限(移除原本 1000 筆的裁切)
 // ——chrome.storage.local 沒有 unlimitedStorage 權限時仍有總容量配額，
 // 寫入超限時走優雅降級(見 recordHistory 的 isQuotaExceededError 分
 // 支)，不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能。
 // unlimitedStorage 權限之後再議，這裡不新增任何權限。
 const HISTORY_KEY = 'history';
 
-// 方案甲(歷史即收藏):淨化紀錄條目上，author/handle/excerpt 為選填欄
+// 方案甲(歷史即收藏):紀錄條目上，author/handle/excerpt 為選填欄
 // 位，由複製 icon(post-icon.js)或 bridge.js(share/strip 路徑，經
 // findContainerByCleanUrl 就地擷取)順手從貼文容器 DOM 附上。長度上限沿
 // 用 0.5.0 貼文收藏庫基座原本替 favorites 訂的門檻(PM 核對手機 repo 後
-// 裁決，與手機版 post-meta 的 EXCERPT_MAX_CHARS 對齊)，欄位改落在淨化
-// 紀錄條目上，常數改名反映新用途。
+// 裁決，與手機版 post-meta 的 EXCERPT_MAX_CHARS 對齊)，欄位改落在紀
+// 錄條目上，常數改名反映新用途。
 const HISTORY_EXCERPT_MAX = 2000;
 // author/handle 共用同一個長度上限;兩者性質相近(顯示名稱/帳號代稱)，
 // 沒有各自訂上限的必要。
@@ -145,7 +145,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // R1-2 通知涵蓋自動路徑:clipboard-guard.js 實際把淨化後內容寫入剪貼簿後，
-// 經 bridge.js 送來這則通知。方案甲(歷史即收藏)之後，這是淨化紀錄(唯
+// 經 bridge.js 送來這則通知。方案甲(歷史即收藏)之後，這是紀錄(唯
 // 一資料集)的其中一條入筆路徑，收到合法通知就無條件記錄，不再有
 // notifySuccess 這種「要不要顯示通知」的把關(已依使用者變更設定規格
 // 整組移除)。
@@ -232,7 +232,7 @@ async function getSettings() {
 // 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
 // 不透過本訊息通道,避免頁面腳本偽造 kind:'menu' 混充右鍵來源。
 //
-// 方案甲(歷史即收藏)：淨化紀錄是唯一資料集，成功類通知(notifySuccess)
+// 方案甲(歷史即收藏)：紀錄是唯一資料集，成功類通知(notifySuccess)
 // 已依使用者變更設定規格整組移除，這裡不再有「要不要顯示通知」的分支
 // ——收到合法 notice 就無條件記錄一筆，author/handle/excerpt(複製
 // icon／bridge.js 從貼文容器 DOM 順手擷取)為選填欄位，一併寫入。
@@ -276,7 +276,7 @@ function sanitizeHistoryField(value, maxLen) {
   return value.slice(0, maxLen);
 }
 
-// ---- 淨化紀錄 ----
+// ---- 紀錄 ----
 
 function hasStorageLocal() {
   return !!(
@@ -323,14 +323,14 @@ function recordHistory(url, kind, extra) {
         // 則重新拋出，交給外層 catch 統一以 console.error 記錄，維持
         // 既有「非預期錯誤」的可見度。
         if (isQuotaExceededError(err)) {
-          console.warn('[threads-clean-link] 淨化紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)', err);
+          console.warn('[threads-clean-link] 紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)', err);
           return;
         }
         throw err;
       }
     })
     .catch((err) => {
-      console.error('[threads-clean-link] 寫入淨化紀錄失敗', err);
+      console.error('[threads-clean-link] 寫入紀錄失敗', err);
     });
   return historyWriteChain;
 }
