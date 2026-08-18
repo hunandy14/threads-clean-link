@@ -7,12 +7,10 @@
   var REQ_TYPE = 'TCL_RESOLVE_REQ';
   var RES_TYPE = 'TCL_RESOLVE_RES';
 
-  // R1-2 通知涵蓋自動路徑：MAIN world(clipboard-guard.js)實際把淨化後
-  // 內容寫入剪貼簿後，會送一則 TCL_CLEANED_NOTICE 過來，這裡原樣轉發成
-  // chrome.runtime.sendMessage(cleanedNotice) 給 service worker。方案甲
-  // (歷史即收藏)之後，紀錄是唯一資料集，background 收到就無條件記
-  // 錄一筆(不再有 notifySuccess 這種「要不要顯示通知」的把關——成功類
-  // 通知已依使用者變更設定規格整組移除，見 background.js)。
+  // MAIN world(clipboard-guard.js)實際把淨化後內容寫入剪貼簿後，會送一
+  // 則 TCL_CLEANED_NOTICE 過來，這裡原樣轉發成
+  // chrome.runtime.sendMessage(cleanedNotice) 給 service worker，收到就
+  // 無條件記錄一筆，沒有「要不要顯示通知」的把關。
   var NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
   // cleanUrl 長度上限:這條管道的內容由頁面腳本自由指定，先在 bridge 擋掉
@@ -24,15 +22,15 @@
   // 一樣交給 background。形狀不對整則丟棄，不轉發殘缺訊息。
   var MAX_KIND_LENGTH = 16;
 
-  // removedParams 陣列筆數上限(code review #1):與 background.js 的
-  // REMOVED_PARAMS_MAX 對齊(兩份常數各自獨立維護，本檔無建置系統可共用
-  // 單一來源)。超過上限直接整欄丟棄，不逐筆截斷——bridge 這層只負責擋
-  // 住超大 payload 越過程序邊界，細部 sanitize 交給 background.js。
+  // removedParams 陣列筆數上限，與 background.js 的 REMOVED_PARAMS_MAX
+  // 對齊(兩份常數各自獨立維護，本檔無建置系統可共用單一來源)。超過上限
+  // 直接整欄丟棄，不逐筆截斷——bridge 這層只負責擋住超大 payload 越過
+  // 程序邊界，細部 sanitize 交給 background.js。
   var MAX_REMOVED_PARAMS = 20;
 
-  // 使用者變更設定規格:share/strip 的短碼解析在 Threads 頁面內失敗時，
-  // 改用頁內 toast 提示(取代原本完全靜默的 fail-open)。真正的 toast 渲
-  // 染邏輯(含文案 i18n 對應、樣式、自動消失)在 post-icon.js(同
+  // share/strip 的短碼解析在 Threads 頁面內失敗時，改用頁內 toast 提示。
+  // 真正的 toast 渲染邏輯(含文案 i18n 對應、樣式、自動消失)在
+  // post-icon.js(同
   // ISOLATED world，document_idle 稍晚載入)，這裡只是執行期守衛後轉呼
   // 叫——TCLPostIcon 可能還沒初始化完成、或使用者的擴充功能是舊版沒有這
   // 個 API，兩種情況都靜默略過，不影響既有的 reply() 轉發流程。孤兒情境
@@ -71,23 +69,19 @@
           cleanUrl: data.cleanUrl,
           kind: data.kind,
         };
-        // F 案(紀錄資料層補齊 original/removedParams，對齊手機
-        // ShareHistoryItem):guard 端(clipboard-guard.js)已經在自己那層
-        // 決定要不要夾帶這兩個欄位(original 與 cleanUrl 相同就不夾、
-        // removedParams 空陣列就不夾)，這裡原樣照轉，缺席就是缺席，不
-        // 硬造。細部 sanitize(型別、逐筆欄位長度)交給 background.js
-        // (信任邊界)。
+        // guard 端(clipboard-guard.js)已經在自己那層決定要不要夾帶這兩
+        // 個欄位(original 與 cleanUrl 相同就不夾、removedParams 空陣列
+        // 就不夾)，這裡原樣照轉，缺席就是缺席，不硬造。
         //
-        // code review #1(bridge 透傳補界限):這裡仍要做「型別 + 邊界」
-        // 這一層把關，不能只信任 undefined 判斷——這條 postMessage 管道
-        // 內容由頁面腳本自由指定，一則刻意灌爆的假通知可能夾帶超長
-        // original 字串或超大 removedParams 陣列，直接越過 content
-        // script → service worker 的程序邊界。original 比照既有的
-        // MAX_CLEAN_URL_LENGTH 做型別+長度檢查(與 cleanUrl 同一種「頁面
-        // 可控字串」，用同一把尺);removedParams 檢查 Array.isArray + 筆
-        // 數上限，超限就整欄丟棄(不做逐筆截斷——這裡只負責擋住超大
-        // payload，逐筆欄位 sanitize 交給 background.js 的
-        // sanitizeRemovedParams)。
+        // 這裡仍要做「型別 + 邊界」這一層把關，不能只信任 undefined 判斷
+        // ——這條 postMessage 管道內容由頁面腳本自由指定，一則刻意灌爆的
+        // 假通知可能夾帶超長 original 字串或超大 removedParams 陣列，直
+        // 接越過 content script → service worker 的程序邊界。original
+        // 比照既有的 MAX_CLEAN_URL_LENGTH 做型別+長度檢查(與 cleanUrl 同
+        // 一種「頁面可控字串」，用同一把尺);removedParams 檢查
+        // Array.isArray + 筆數上限，超限就整欄丟棄(不做逐筆截斷——這裡
+        // 只負責擋住超大 payload，逐筆欄位 sanitize 交給 background.js
+        // 的 sanitizeRemovedParams)。
         if (
           typeof data.original === 'string' &&
           data.original &&
@@ -98,8 +92,8 @@
         if (Array.isArray(data.removedParams) && data.removedParams.length <= MAX_REMOVED_PARAMS) {
           payload.removedParams = data.removedParams;
         }
-        // 方案甲(歷史即收藏):share/strip 這兩條自動路徑(clipboard-guard.js
-        // 經這裡轉發)原本沒有貼文容器可用(clipboard-guard.js 在 MAIN
+        // share/strip 這兩條自動路徑(clipboard-guard.js 經這裡轉發)原本
+        // 沒有貼文容器可用(clipboard-guard.js 在 MAIN
         // world，不碰 chrome.* API，也不做 DOM 擷取)。轉發前，若
         // post-icon.js(同 ISOLATED world，document_idle 稍晚載入)已經把
         // TCLPostIcon 掛上 window，就地用 findContainerByCleanUrl 找出這
@@ -180,7 +174,7 @@
 
     try {
       chrome.runtime.sendMessage({ type: 'resolveShare', url: data.url }, function (response) {
-        // code review #4:lastError(SW 可能剛好休眠中被喚醒失敗、或訊息通
+        // lastError(SW 可能剛好休眠中被喚醒失敗、或訊息通
         // 道已關閉)與缺少有效回應(no-response)都屬「連線層」失敗，不是
         // 「解析層」真失敗——這種情境下使用者的複製動作本身通常已經成
         // 功，只是這次沒能順道解析／記錄，SW 冷啟時很常見。這兩種原因不
@@ -222,21 +216,13 @@
   // 觸發時（例如使用者在 popup 切換開關）再次推播最新值。
   // ------------------------------------------------------------
 
-  // R1-1 併開關：resolveShortcode 徹底移除。使用者變更設定規格:
-  // notifySuccess(成功類通知)整組移除，clipboard-guard.js 從未真正依它
-  // 分支任何邏輯(只是存著)，這裡不再推播這顆鍵；postCopyEnabled 只影響
-  // ISOLATED world 的 post-icon.js 是否注入 icon，不需要下放給沒有
-  // chrome.* API 的 clipboard-guard.js。autoClean 預設值改為 false(使
-  // 用者變更設定規格)，clipboard-guard.js 的內建預設值需同步改動，見該
-  // 檔。
-  //
-  // code review #2(UX 修正:autoClean 關閉時剪貼簿寫入不得被解析壓後)新
-  // 增 saveHistory:clipboard-guard.js 的 recordOnly(autoClean 關閉)流
-  // 程改成「先原生寫入、事後 fire-and-forget 補發解析請求」，若
-  // saveHistory 也關閉，解析結果反正不會被 background.js 的
-  // recordHistory 收下，這顆設定值讓 guard 端可以直接省掉整個解析請
-  // 求，不浪費一次網路往返——guard 原本沒有讀這顆設定的管道(它只在
-  // background.js 記錄時把關)，這裡下放給 MAIN world 是新增的用途。
+  // 只下放 autoClean/saveHistory 兩顆鍵:postCopyEnabled 只影響 ISOLATED
+  // world 的 post-icon.js 是否注入 icon，不需要下放給沒有 chrome.* API
+  // 的 clipboard-guard.js。autoClean 預設值 false，clipboard-guard.js 的
+  // 內建預設值需同步。saveHistory 讓 clipboard-guard.js 的 recordOnly
+  // (autoClean 關閉)流程可以在 saveHistory 也關閉時直接省掉整個解析請
+  // 求(解析結果反正不會被 background.js 的 recordHistory 收下)，不浪費
+  // 一次網路往返。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
   var SETTINGS_KEYS = ['autoClean', 'saveHistory'];
   var SETTINGS_DEFAULTS = {

@@ -7,15 +7,9 @@
 (function (root) {
   'use strict';
 
-  // 三顆開關的預設值。autoClean 與 popup.js、background.js、bridge.js 一致
-  // (0.5.0 方案甲:預設改 false，配合另一車道調整 background.js 的預設值);
-  // saveHistory 與 background.js 一致(guard/bridge 不下放);postCopyEnabled
-  // 與 popup.js 鏡像(貼文互動列複製按鈕，見 post-icon.js，另一車道)。
-  //
-  // 【PM 審查後移除】notifySuccess(成功時顯示通知)整組:R1 同輪已把成功
-  // 通知整套拆光，這顆開關合併後零讀取端，留著只會變成誤導使用者的死
-  // UI——不是「另一車道尚未拆通知」，是已經拆完了，上一輪的保留理由是
-  // 過期情報。
+  // 三顆開關的預設值，跨檔鏡像義務:autoClean 與 popup.js/background.js/
+  // bridge.js 一致;saveHistory 與 background.js 一致(guard/bridge 不下放);
+  // postCopyEnabled 與 popup.js 鏡像(貼文互動列複製按鈕，見 post-icon.js)。
   var OPTIONS_DEFAULT_SETTINGS = {
     autoClean: false,
     saveHistory: true,
@@ -27,38 +21,22 @@
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
 
-  // 0.5.0 方案甲(歷史即收藏，撤獨立收藏分頁):淨化紀錄欄位長度上限，選填的
-  // author/handle/excerpt 由 background.js(另一車道)落盤，options.js 這側
-  // 在讀取/匯入時再做一次防禦性截斷(縱深防禦，不依賴寫入端永遠沒漏)。
+  // 淨化紀錄欄位長度上限;author/handle/excerpt 由 background.js 落盤，
+  // options.js 讀取/匯入時再做一次防禦性截斷(縱深防禦，不依賴寫入端)。
   var ENTRY_AUTHOR_MAX = 100;
   var ENTRY_EXCERPT_MAX = 2000;
 
-  // 貼文網址驗證/正規化樣式:白名單字元類(handle:英數/底線/句點;post id:
-  // 英數/連字號/底線，皆有長度上限)，額外容忍尾隨斜線／查詢字串／hash——
-  // 匯入檔或頁面 DOM 擷取的 href 常帶這些，不應因此整筆拒收。group 1 = 正
-  // 規化後的乾淨網址(不含尾隨斜線/query/hash)。
-  //
-  // 前身是 0.5.0 收藏庫基座的 FAVORITE_URL_PATTERN;方案甲撤了獨立收藏，
-  // 這裡改名為通用的貼文 url 驗證，供 mergeImportedEntries 使用(取代原本
-  // 較嚴格、不容忍尾綴的舊版 POST_URL_PATTERN)。
-  //
-  // 【審查修正，url 樣式統一】長度上限 60→80(handle/post id 各自)——這裡
-  // 是全 repo 對「合法貼文網址長什麼樣」的單一權威定義，字元類本身不放寬
-  // (仍是嚴格白名單，只調長度上限)。right-click(menu)寫入路徑走的是
-  // background.js 自己的驗證，過去兩邊上限沒對齊，本頁讀取/整形寫回時
-  // 就可能把 background 端認可、但超出這裡舊上限(60)的合法 menu 紀錄
-  // 當「形狀不對」整筆濾掉，使用者會發現右鍵還原的紀錄「消失了」。runtime
-  // 車道會讓 menu 寫入端跟進同一組上限(80)，兩邊數字一致之後這類誤刪
-  // 才會真正根治;persistHistory 沿用既有「整形後寫回」慣例不變(entries
-  // 進來時已經過 sanitizeEntries/mergeImportedEntries 的正規化，寫回
-  // storage 的內容本來就是整形後的)。
+  // 貼文網址驗證/正規化樣式:全 repo 對「合法貼文網址長什麼樣」的單一
+  // 權威定義——白名單字元類(handle:英數/底線/句點;post id:英數/連字號/
+  // 底線)，各自 1-80 字元，容忍尾隨斜線／查詢字串／hash(匯入檔或頁面
+  // DOM 擷取的 href 常帶這些，不應因此整筆拒收)。group 1 = 正規化後的
+  // 乾淨網址。background.js 的 menu 寫入路徑須維持同一組上限，否則本頁
+  // 讀取/整形寫回時會把合法紀錄當「形狀不對」濾掉。
   var POST_URL_PATTERN =
     /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}))\/?(?:[?#].*)?$/i;
 
-  // 【審查修正】刪除每個 kind 項目的死欄位 icon(如 '#i-link')——badge 渲染
-  // (buildEntryCard/openEntryDetail/buildTimelineRow)一律只用 .key 查
-  // i18n 文案，純文字 pill 徽章，從沒有任何地方讀過 .icon 這個屬性畫過
-  // SVG，是舊版圖示式徽章設計淘汰後留下的殘骸。
+  // badge 渲染(buildEntryCard/openEntryDetail/buildTimelineRow)只用 .key
+  // 查 i18n 文案，純文字 pill，KINDS 不需要 icon 欄位。
   var KINDS = {
     share: { key: 'opKindShare' },
     strip: { key: 'opKindStrip' },
@@ -69,32 +47,23 @@
 
   // ---- 純函式 ----
 
-  // 選填欄位截斷:非字串一律回傳 undefined(呼叫端據此決定整欄不寫入),
-  // 字串則截斷至長度上限。author/handle/excerpt 共用同一份規則。
-  //
-  // 【審查修正】補空字串丟棄，與 background.js 的 sanitizeHistoryField
-  // 對齊(該函式明文:「空字串比照非字串同樣丟棄，不落 author:'' 這種空
-  // 欄位」)。原本這裡漏了這條，等於兩層對「合法值」的認定不一致——
-  // background 端已經先擋掉空字串，options 端理論上收不到，但讀取/匯入
-  // 階段是獨立信任邊界(縱深防禦，不假設寫入端永遠沒漏)，仍應該自己也擋。
+  // 選填欄位截斷:非字串或空字串一律回傳 undefined(呼叫端據此整欄不寫
+  // 入)，字串則截斷至長度上限。author/handle/excerpt 共用同一份規則，
+  // 與 background.js 的 sanitizeHistoryField 對齊(獨立信任邊界，不假設
+  // 寫入端沒漏)。
   function sanitizeTextField(value, max) {
     if (typeof value !== 'string' || value.length === 0) return undefined;
     return value.slice(0, max);
   }
 
-  // 紀錄去重合併(見 background.js 的 mergeHistoryEntry/sanitizeSeenList
-  // 註解):seen[] 是「先前已經落盤的資料」，可能被匯入檔或未來版本的存放
-  // 格式汙染，options.js 這側讀取(sanitizeEntries)與匯入
-  // (mergeImportedEntries)都是獨立的資料入口，各自要逐筆 sanitize——at
-  // 需為有限數字，不符就整筆丟棄(容忍陣列裡部分項目壞掉，不因此整個陣列
-  // 作廢)。kind 是選填標籤:background.js 合併時若既有條目缺 seen，會照
-  // 手機版語意補種一筆不帶 kind 的起始紀錄(對齊
-  // `existing.seen ?? [{ at: existing.receivedAt }]`)，這裡要一併容忍，
-  // 不能把合法的種子記錄當成損毀資料丟掉;kind 若有出現則需在白名單內
-  // (直接沿用 KINDS，與 background.js 的 SEEN_KIND_WHITELIST 是同一組合
-  // 法值)，不在白名單就整筆丟棄。順便裁到 SEEN_MAX 上限，與 background.js
-  // 寫入時的裁切規則對齊(縱深防禦，不假設寫入端永遠沒漏)。輸入非陣列一
-  // 律回傳空陣列。
+  // seen[] 是「先前已經落盤的資料」，讀取(sanitizeEntries)與匯入
+  // (mergeImportedEntries)都是獨立信任邊界，各自逐筆 sanitize——at 需為
+  // 有限數字，不符就整筆丟棄(容忍陣列裡部分項目壞掉，不因此整個陣列
+  // 作廢)。kind 缺席須視為合法(background.js 合併既有條目缺 seen 時，會
+  // 照手機版語意補種一筆不帶 kind 的起始紀錄，`existing.seen ??
+  // [{ at: existing.receivedAt }]`)，不能當成損毀資料丟掉;kind 若有出現
+  // 則需在 KINDS 白名單內(與 background.js 的 SEEN_KIND_WHITELIST 同一組
+  // 合法值)。裁到 SEEN_MAX 上限，與 background.js 寫入時的裁切對齊。
   var SEEN_MAX = 50;
   function sanitizeSeenList(seenList) {
     if (!Array.isArray(seenList)) return [];
@@ -113,12 +82,10 @@
     return out.slice(-SEEN_MAX);
   }
 
-  // F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
-  // original 選填欄位，規則同 sanitizeTextField(非字串/空字串整欄丟棄，
-  // 字串截斷至長度上限)，額外多一條——截斷「前」若與該筆條目自己的 url
-  // 完全相同就整欄丟棄:手機版語意是「取與 cleaned 不同者」，相同代表沒
-  // 有額外資訊。與 background.js 的 sanitizeOriginalField 規則一致(縱深
-  // 防禦，不依賴寫入端永遠沒漏)。
+  // original 選填欄位，規則同 sanitizeTextField，額外多一條:與該筆條目
+  // 自己的 url 完全相同就整欄丟棄(手機版語意是「取與 cleaned 不同者」，
+  // 相同代表沒有額外資訊)。與 background.js 的 sanitizeOriginalField
+  // 規則一致。
   var ENTRY_ORIGINAL_MAX = 2048;
   function sanitizeOriginalField(value, url) {
     if (typeof value !== 'string' || value.length === 0) return undefined;
@@ -126,13 +93,12 @@
     return value.slice(0, ENTRY_ORIGINAL_MAX);
   }
 
-  // F 案:removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value },
+  // removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value }，
   // 與 background.js 的 sanitizeRemovedParams 同一組門檻)。上限
   // REMOVED_PARAMS_MAX 筆，每筆 key 需為非空字串且 ≤ REMOVED_PARAM_KEY_MAX、
   // value 需為字串(可為空字串)且 ≤ REMOVED_PARAM_VALUE_MAX，任一不符就整
-  // 筆丟棄(容忍陣列裡部分項目壞掉，不因此讓整個陣列作廢，寫法對齊
-  // sanitizeSeenList)。輸入非陣列，或 sanitize 後一筆不剩，回傳
-  // undefined(呼叫端據此整欄不寫入)。
+  // 筆丟棄(容忍陣列裡部分項目壞掉，寫法對齊 sanitizeSeenList)。輸入非
+  // 陣列，或 sanitize 後一筆不剩，回傳 undefined。
   var REMOVED_PARAMS_MAX = 20;
   var REMOVED_PARAM_KEY_MAX = 64;
   var REMOVED_PARAM_VALUE_MAX = 512;
@@ -151,14 +117,12 @@
   }
 
   // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
-  // 項目——url 除了型別是字串，還要通過 POST_URL_PATTERN 的形狀驗證才收
-  // (縱深防禦，PM 審查後補:上一輪收藏庫基座的 sanitizeFavorites 就有這道
-  // url 形狀檢查，方案甲把收藏搬進 sanitizeEntries 時漏掉了，這裡補回來)。
+  // 項目——url 除了型別是字串，還要通過 POST_URL_PATTERN 的形狀驗證才收。
   // 渲染層 buildEntryCard 的 openLink.href = e.url、剪貼簿複製都是 url
-  // sink，不該仰賴「寫入端(background.js/匯入合併)永遠沒漏」這個假設，
-  // 讀取階段就該把形狀不對的 url 整筆擋掉。選填欄位(author/handle/
-  // excerpt,0.5.0 方案甲新增)型別不是字串就整欄丟棄、字串則截斷至長度
-  // 上限，entry 本身仍保留(與核心欄位的「整筆丟棄」規則不同，見下方 map)。
+  // sink，不該仰賴「寫入端永遠沒漏」這個假設，讀取階段就該把形狀不對的
+  // url 整筆擋掉。選填欄位(author/handle/excerpt)型別不是字串就整欄
+  // 丟棄、字串則截斷至長度上限，entry 本身仍保留(與核心欄位的「整筆
+  // 丟棄」規則不同，見下方 map)。
   function sanitizeEntries(list) {
     if (!Array.isArray(list)) return [];
     return list
@@ -180,18 +144,13 @@
         if (handle !== undefined) out.handle = handle;
         var excerpt = sanitizeTextField(e.excerpt, ENTRY_EXCERPT_MAX);
         if (excerpt !== undefined) out.excerpt = excerpt;
-        // 紀錄去重合併新增:seen[] 比照 author/handle/excerpt 的「缺席不落
-        // 空值」慣例——sanitize 後真的有剩才寫入，全丟或本來就沒有都整欄
-        // 不寫。這一行同時承擔驗證與保留兩職:sanitizeSeenList 逐筆丟掉
-        // 形狀不對的項目(縱深防禦，同上面 url 的道理，不該仰賴寫入端永遠
-        // 沒漏)，同時也是讓 seen 真正「路過」存活到渲染層的唯一關卡——
-        // 少這一步，即使 storage 真的有 seen，渲染端也永遠讀不到，詳細
-        // 視窗的「時間軸」鈕會變成永遠打不開的死功能。
+        // seen[] 比照 author/handle/excerpt 的「缺席不落空值」慣例。這一行
+        // 同時承擔驗證與保留兩職——少了它，即使 storage 真的有 seen，渲染
+        // 端也永遠讀不到，詳細視窗的「時間軸」鈕會變成永遠打不開的死功能。
         var seenList = sanitizeSeenList(e.seen);
         if (seenList.length > 0) out.seen = seenList;
-        // F 案:original/removedParams 比照 author/handle/excerpt 的「缺席
-        // 不落空值」慣例。original 的相同判斷用這筆條目自己的 url(out.url，
-        // 此時已通過上面的形狀驗證)。
+        // original/removedParams 比照同一套「缺席不落空值」慣例。original
+        // 的相同判斷用這筆條目自己的 url(out.url，此時已通過形狀驗證)。
         var original = sanitizeOriginalField(e.original, out.url);
         if (original !== undefined) out.original = original;
         var removedParams = sanitizeRemovedParams(e.removedParams);
@@ -210,15 +169,10 @@
     });
   }
 
-  // 0.5.0 方案甲:entries 只留三個核心欄位的年代已過去，author/handle/
-  // excerpt 為字串時一併輸出(選填，沿用「非字串/缺席就整欄不寫」的慣例)。
-  //
-  // 【審查修正】補上 seen/original/removedParams 三欄，同一套「缺席不寫」
-  // 慣例——先前只匯出 author/handle/excerpt，這三個較晚加入 schema 的
-  // 欄位被漏掉，使用者匯出備份、換裝置/瀏覽器匯入回來時，時間軸與
-  // 原始連結/追蹤參數資料會無聲消失(entries 本身還在，只是這幾欄丟了)。
-  // 匯出值直接沿用 entry 已經 sanitize 過的形狀(entries 參數本身就是
-  // sanitizeEntries 的輸出)，不必在這裡重新驗證。
+  // 匯出 entries 含所有選填欄位(author/handle/excerpt/seen/original/
+  // removedParams)，沿用「非字串/缺席就整欄不寫」的慣例;漏掉任一欄，
+  // 使用者換裝置/瀏覽器匯入回來時該欄資料會無聲消失。值直接沿用 entry
+  // 已經 sanitize 過的形狀，不必在這裡重新驗證。
   function buildExportPayload(entries, exportedAt) {
     return {
       app: 'threads-clean-link',
@@ -255,11 +209,8 @@
   // 匯入合併:url 過 POST_URL_PATTERN 白名單並正規化(容忍尾隨斜線/query/
   // hash)、以正規化後的 url 與現有去重;kind 非白名單→'share',at 非有限
   // 數字→now;author/handle/excerpt 逐條 sanitize(型別+截斷，規則同
-  // sanitizeEntries)。合併後新到舊排序。
-  //
-  // 【使用者拍板，紀錄不設上限】合併結果不再裁切——舊版在此 slice(0,
-  // HISTORY_LIMIT) 到 1000 筆，現在移除，匯入多少留多少;HISTORY_LIMIT
-  // 常數本身也一併移除(此檔內唯一用途就是這道截斷)。
+  // sanitizeEntries)。合併後新到舊排序，結果不裁切(紀錄不設上限，匯入
+  // 多少留多少)。
   function mergeImportedEntries(existing, imported, now) {
     var seen = {};
     existing.forEach(function (e) {
@@ -288,14 +239,11 @@
       if (handle !== undefined) entry.handle = handle;
       var excerpt = sanitizeTextField(raw && raw.excerpt, ENTRY_EXCERPT_MAX);
       if (excerpt !== undefined) entry.excerpt = excerpt;
-      // 紀錄去重合併新增:匯入檔的 seen[] 屬外部輸入，同樣要逐筆 sanitize
-      // (見 sanitizeSeenList 註解)，防止偽造/損毀的 at、kind 混進來。
+      // 匯入檔的 seen[]/original/removedParams 皆屬外部輸入，同樣要逐筆
+      // sanitize，防止偽造/損毀資料混進來。original 的相同判斷用正規化
+      // 後的 url(match[1])，不是匯入檔裡未正規化的原始 url 字串。
       var seenList = sanitizeSeenList(raw && raw.seen);
       if (seenList.length > 0) entry.seen = seenList;
-      // F 案:匯入檔的 original/removedParams 同屬外部輸入，逐欄 sanitize
-      // (見 sanitizeOriginalField/sanitizeRemovedParams 註解)。original 的
-      // 相同判斷用正規化後的 url(match[1])，不是匯入檔裡未正規化的原始
-      // url 字串。
       var original = sanitizeOriginalField(raw && raw.original, url);
       if (original !== undefined) entry.original = original;
       var removedParams = sanitizeRemovedParams(raw && raw.removedParams);
@@ -319,7 +267,7 @@
     );
   }
 
-  // 0.5.0:卡片詳細視窗長文判定，與手機版 history-detail-dialog.tsx 的
+  // 卡片詳細視窗長文判定，與手機版 history-detail-dialog.tsx 的
   // isLongExcerpt 對齊(EXCERPT_DIALOG_LINES=15):行數或字元量任一超標就
   // 顯示「展開全文」。字元量門檻沿用手機版估算(每行約 22 字，15*22=330)。
   var EXCERPT_DIALOG_LINES = 15;
@@ -329,19 +277,10 @@
     return lines > EXCERPT_DIALOG_LINES || Array.from(excerpt).length > EXCERPT_DIALOG_LINES * 22;
   }
 
-  // UI 全面對齊手機任務:互動模型翻轉後卡片右上常駐的 ⋮ 選單整組移除
-  // (見 options.html 的 .entry-card 註解)，buildEntryActions 是該選單
-  // 專用的動作組成純函式，唯一呼叫端消失後這顆函式也一併移除(PM 授權
-  // 「原 kebab 相關碼與測試移除」)。刪除動作收斂到只在詳細視窗做，底部
-  // 動作列(detailCopyBtn/detailOpenLink/detailDeleteBtn)本來就是寫死的
-  // 靜態 HTML，不經這顆函式生成，故移除它不影響底部動作列。
-
-  // UI 全面對齊手機任務，work item 5/7:純函式:formatDisplayUrl——對齊
-  // 手機版 lib/format-display-url.ts，把完整網址轉成適合顯示的精簡路徑
-  // (去 scheme + 網域，只留 path+query+hash，去掉開頭斜線)。用於詳細
-  // 視窗的「淨化後連結」與「原始連結」兩列的顯示值(複製仍用完整原始
-  // 網址，只影響顯示)。解析失敗 fail-open 回傳原字串，非字串輸入回傳
-  // 空字串(呼叫端已經先做過型別檢查，這裡是最後一道防線)。
+  // 對齊手機版 lib/format-display-url.ts，把完整網址轉成適合顯示的精簡
+  // 路徑(去 scheme + 網域，只留 path+query+hash，去掉開頭斜線)。用於
+  // 詳細視窗的「淨化後連結」與「原始連結」兩列的顯示值(複製仍用完整
+  // 原始網址，只影響顯示)。解析失敗 fail-open 回傳原字串。
   function formatDisplayUrl(url) {
     if (typeof url !== 'string') return '';
     var parsed;
@@ -355,25 +294,13 @@
     return trimmed || url;
   }
 
-  // UI 全面對齊手機任務，work item 7:純函式:buildDetailExtraRows——對齊
-  // 手機版 CopyRow 的「原始連結」「追蹤參數 {name}」兩類列。
-  //
-  // 【審查修正】removedParams 元素的欄位名是 { key, value }，不是
-  // { name, value }——權威來源是手機版 link-cleaner.ts:171 與
-  // detail-dialog 的 p.key，也是 F 案(feat/record-origin)background.js
-  // 的 sanitizeRemovedParams 實際落盤的形狀(見上面 REMOVED_PARAM_KEY_MAX
-  // 那組門檻)。上一輪(feat/ui-align-mobile)寫成 p.name 是本分支自己的
-  // fixture/實作誤植，兩邊 schema 沒對齊測試卻是綠的——因為測試 fixture
-  // 也一起錯著寫，形成互相遮蔽的假綠燈。這裡讀 p.key，回傳物件本身仍用
-  // `name` 這個 key(給下面 tf('opTrackingParamLabel', { name: row.name })
-  // 這行的 i18n 樣板插值用，屬顯示層命名，跟資料層的 key/value 是两回事，
-  // 不用跟著改)。
-  //
-  // entry.original 缺席/非字串/與 cleaned 相同(手機版:
-  // item.original !== item.cleaned 才顯示)一律不產生該列；
-  // entry.removedParams 缺席/非陣列/陣列內項目形狀不對(缺 key/value 或
-  // 非字串)一律濾掉該筆，不因此整組作廢。回傳陣列供呼叫端逐筆建 DOM，
-  // 每筆為 { type: 'original' | 'param', name?, display, copyValue }。
+  // 對齊手機版 CopyRow 的「原始連結」「追蹤參數 {name}」兩類列。
+  // removedParams 元素的欄位名是 { key, value }(手機版 link-cleaner.ts:171
+  // 與 background.js 的 sanitizeRemovedParams 皆同);回傳物件用 name 是
+  // 顯示層/i18n 樣板插值命名(見下面 tf('opTrackingParamLabel', { name:
+  // row.name })那行)，跟資料層的 key 是兩回事，不要混淆。entry.original
+  // 缺席/非字串/與 cleaned 相同、entry.removedParams 缺席/非陣列/項目
+  // 缺 key 或 value 皆不產生該列，逐筆容錯不因單筆壞掉波及整組。
   function buildDetailExtraRows(entry) {
     var rows = [];
     if (!entry) return rows;
@@ -401,14 +328,11 @@
     );
   }
 
-  // 0.5.0:「時間軸」顯示邏輯，對齊手機版 history-detail-dialog.tsx——
-  // seen.length > 1 才顯示時間軸(單筆時主畫面的「記錄時間」已經夠用),
-  // 新到舊排序。另一車道(fix/dedup-merge)才會把 seen:[{at,kind}] 加進
-  // 條目 schema，本分支不含該變更，故防禦寫法:entry.seen 缺席、非陣列，
-  // 或陣列內項目形狀不對(缺 at/at 非有限數字)一律當作不存在，回傳 null
-  // (呼叫端據此決定要不要顯示時間軸鈕)，合併後自然接通不用再改一次。
-  // 來源標籤用既有 KINDS 文案(短碼解析/剪除參數/右鍵還原/貼文按鈕),
-  // 不是手機版的 share/clipboard 二分。
+  // 「時間軸」顯示邏輯，對齊手機版 history-detail-dialog.tsx——
+  // seen.length > 1 才顯示時間軸(單筆時卡頭的相對時間已經夠用)，新到舊
+  // 排序。防禦寫法:entry.seen 缺席、非陣列，或陣列內項目形狀不對(缺
+  // at/at 非有限數字)一律當作不存在，回傳 null。來源標籤用既有 KINDS
+  // 文案，不是手機版的 share/clipboard 二分。
   function buildSeenTimeline(entry) {
     var seen = entry && Array.isArray(entry.seen) ? entry.seen : [];
     var valid = seen.filter(function (r) {
@@ -421,14 +345,10 @@
   }
 
   // 統計聚合:總數、各來源數、本週/上週(滾動 7 天)、近 14 天逐「日曆日」
-  // 次數(索引 13 = 今天)、最舊一筆時間戳。
-  //
-  // 【審查後補註】counts 算了 share/strip/menu/icon 四個 kind 的筆數，但
-  // 統計磚版面(options.html 的 .stats)只給短碼解析/剪除參數/貼文按鈕
-  // 三個 kind 各開一格(加上累計/本週共 5 格)，menu(右鍵還原)沒有對應
-  // 磚——這是刻意的版面取捨，不是漏畫:右鍵還原是低頻的手動備援路徑，
-  // 不特別佔一格版面。counts.menu 仍照算，一來維持四個 kind 算法一致不用
-  // 特殊處理，二來日後若要幫它加磚，這裡不必再回頭補。
+  // 次數(索引 13 = 今天)、最舊一筆時間戳。counts 算了 share/strip/menu/
+  // icon 四個 kind，但統計磚版面(options.html 的 .stats)只給短碼解析/
+  // 剪除參數/貼文按鈕三個各開一格——menu(右鍵還原)是刻意不佔版面的低頻
+  // 手動路徑，counts.menu 仍照算是為了四個 kind 算法一致，不特殊處理。
   function aggregateStats(entries, nowTs) {
     var todayStart = new Date(nowTs);
     todayStart.setHours(0, 0, 0, 0);
@@ -826,19 +746,12 @@
       copyText(e.url);
     }
 
-    // 刪除只在詳細視窗做(照手機版 DialogActions 的位置——手機版本來就
-    // 沒有卡片層級的刪除入口，這輪互動模型翻轉撤掉 web 自製的常駐 ⋮ 選單
-    // 後兩邊收斂一致)。沿用既有慣例等級:直接改 storage + toast，不另開
-    // 確認框(「清除全部」這種一次清光的破壞性動作才走確認框;刪單筆歷來
-    // 就是即時動作)。
-    //
-    // 【審查修正】改以 url 比對(不再疊 at)——紀錄以 url 去重合併之後，
-    // 同一個 url 本來就只會有一筆，疊 at 反而是多餘的精準比對，一旦
-    // detailEntry 手上拿的是切換條目前的舊物件(at 因別處寫入而更新過)
-    // 就會比對失敗，刪不掉正在看的那筆。同時補上「有沒有真的命中」的判斷:
-    // 沒命中(例如已經被別的分頁/storage 同步事件先刪掉)就不寫入、不動
-    // 視窗、也不發「已刪除」的成功 toast——避免對使用者謊報一個沒發生的
-    // 動作。
+    // 刪除只在詳細視窗做(照手機版 DialogActions 的位置，卡片層級沒有
+    // 刪除入口)。沿用既有慣例等級:直接改 storage + toast，不另開確認框
+    // (「清除全部」這種一次清光的破壞性動作才走確認框)。以 url 比對
+    // (不疊 at，紀錄以 url 去重後同一個 url 只會有一筆);沒有真的命中
+    // (例如已被別的分頁/storage 同步事件先刪掉)就不寫入、不動視窗、也
+    // 不發「已刪除」成功 toast，避免對使用者謊報一個沒發生的動作。
     function deleteEntry(e) {
       var hit = false;
       var next = entries.filter(function (x) {
@@ -857,16 +770,12 @@
 
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
     // 相對時間)→ hasCardPreview 為真時顯示作者列(author 粗體 + @handle
-    // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址
-    // (比照舊版紀錄列樣式)。無縮圖(刻意，og:image 會過期)。
-    //
-    // UI 全面對齊手機任務(使用者拍板:互動照手機):照手機版的「選中態」
-    // 取代上一輪自製的常駐 ⋮ 選單——手機版沒有 web 這種常駐選單，是
-    // hover/press 時邊框轉主色、右上浮出複製/分享兩顆快捷 icon(Copy/
-    // Share2)，web 用 :hover 與 :focus-within 模擬同一套視覺(見
-    // options.html 的 .entry-card 註解)，快捷鈕映射複製連結/開啟貼文;
-    // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。刪除動作
-    // 隨互動模型翻轉收斂到只在詳細視窗做，卡片層級不再有刪除入口。
+    // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址。
+    // 無縮圖(刻意，og:image 會過期)。互動照手機版的「選中態」:
+    // hover/press 時邊框轉主色、右上浮出複製/分享兩顆快捷 icon，web 用
+    // :hover 與 :focus-within 模擬(見 options.html 的 .entry-card 註解);
+    // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。卡片層級
+    // 沒有刪除入口。
     function buildEntryCard(e) {
       var card = document.createElement('div');
       card.className = 'entry-card';
@@ -919,11 +828,10 @@
       }
 
       // 高亮態右上浮出的兩顆快捷鈕:複製連結(對應手機 Copy)、開啟貼文
-      // (對應手機 Share2——web 沒有原生分享，PM 裁決這顆快捷鈕映射為
-      // 開啟貼文;注意這跟詳細視窗底部動作列的「分享→複製」映射是兩件
-      // 事，各自照各自的權威來源，不強行統一)。平時態靠 CSS display:none
-      // 隱藏，兩顆按鈕都要 stopPropagation，否則點下去會被卡片自己的
-      // click 冒泡到，順手把詳細視窗也開了。
+      // (對應手機 Share2——web 沒有原生分享)。注意這跟詳細視窗底部動作列
+      // 的「分享→複製」映射是兩件事，不強行統一。平時態靠 CSS
+      // display:none 隱藏，兩顆按鈕都要 stopPropagation，否則點下去會被
+      // 卡片自己的 click 冒泡到，順手把詳細視窗也開了。
       var quickWrap = document.createElement('div');
       quickWrap.className = 'entry-quick';
 
@@ -972,26 +880,20 @@
       return card;
     }
 
-    // ---- 詳細視窗(UI 全面對齊手機任務:結構/行為/間距/字級/圓角/按鈕
-    // 樣式一律照手機版 history-detail-dialog.tsx + dialog-shell.tsx 的
-    // 字面 token 值，唯一數值權威，LeafPage demo 已除名)----
+    // ---- 詳細視窗:結構/間距/字級/圓角/按鈕樣式一律照手機版
+    // history-detail-dialog.tsx + dialog-shell.tsx 的字面 token 值 ----
     //
-    // 版面:✕ 關閉鈕(右上，對齊 DialogCloseButton)→ 卡頭(徽章+相對時間)
-    // → 作者列(16px/600 + 14px/500)→ excerpt(15 行截斷，對齊
-    // EXCERPT_DIALOG_LINES)+ 超長時「展開全文」(主色+展開圖示)→ 淨化後
-    // 連結 kv(標籤在上、數值+複製鈕在下一列，accent 強調，值為
-    // formatDisplayUrl 後的正規路徑)→ 原始連結/追蹤參數 kv(有資料才畫，
-    // 見 buildDetailExtraRows)→ 記錄時間 kv(seen 有多筆時多一顆「時間軸」
-    // 鈕，點下去開子層視窗)→ 底部等寬動作列(複製/開啟/刪除，對齊
-    // DialogActions/DialogButton:destructive 只變文字色，不是實心底色)。
+    // 版面:✕ 關閉鈕 → 卡頭(徽章+相對時間)→ 作者列(16px/600 + 14px/500)
+    // → excerpt(15 行截斷，對齊 EXCERPT_DIALOG_LINES)+ 超長時「展開全文」
+    // → 淨化後連結 kv(accent 強調，值為 formatDisplayUrl 後的正規路徑)
+    // → 原始連結/追蹤參數 kv(有資料才畫，見 buildDetailExtraRows)→
+    // 記錄時間 kv(seen 有多筆時多一顆「時間軸」鈕，開子層視窗)→ 底部
+    // 等寬動作列(複製/開啟/刪除，destructive 只變文字色)。
     //
-    // 手機版「展開全文」是巢狀開第二層 Modal，理由是「RN 在 iOS 不支援
-    // 兄弟層 Modal 並開」——這是 iOS 平台限制，web 沒有這個問題，故改用
-    // 原地展開(移除 line-clamp)取代巢狀第二個 overlay，行為等價但實作
-    // 更簡單。「時間軸」則相反:PM 補充使用者提供的手機實機截圖後改回
-    // 巢狀子層視窗(timelineOverlay)，因為手機版時間軸本來就是巢狀 Modal
-    // (沒有 iOS 平台限制要迴避)，逐項對齊實機截圖比「展開全文」那條
-    // web 化裁量更優先。
+    // 「展開全文」用原地展開(移除 line-clamp)取代手機版的巢狀第二層
+    // Modal——手機版那樣做是為了繞過 RN 在 iOS 不支援兄弟層 Modal 並開的
+    // 限制，web 沒有這個問題。「時間軸」則是巢狀子層視窗(timelineOverlay)，
+    // 對齊手機版時間軸本來就是巢狀 Modal 的做法。
     function openEntryDetail(e) {
       detailEntry = e;
       var overlay = byId('detailOverlay');
@@ -1035,11 +937,8 @@
           urlFallback.textContent = '';
         }
       } else {
-        // 【審查修正】比照上面有預覽分支，四欄都要清空(不是只設 hidden)——
-        // authorName/excerpt 的 textContent、handleEl 的 hidden 與
-        // textContent 少清一步，上一筆的殘留文字就會在 hidden 失效(見上方
-        // 全域 [hidden] 修正)或未來改版時露出，或被螢幕閱讀器讀到隱藏
-        // 文字，兩個問題疊加正是「上一筆作者殘留到下一筆」的根治對象。
+        // 比照上面有預覽分支，四欄都要清空(不是只設 hidden)，否則上一筆
+        // 的殘留文字會在 hidden 失效或未來改版時露出，或被螢幕閱讀器讀到。
         if (authorRow) authorRow.hidden = true;
         if (authorName) authorName.textContent = '';
         if (handleEl) {
@@ -1064,8 +963,7 @@
       var urlValueEl = byId('detailUrlValue');
       if (urlValueEl) urlValueEl.textContent = formatDisplayUrl(e.url);
 
-      // 原始連結/追蹤參數列:有資料才畫，見 buildDetailExtraRows 的防禦
-      // 寫法(另一車道尚未把 schema 併進來時，這裡永遠是空陣列)。
+      // 原始連結/追蹤參數列:有資料才畫，見 buildDetailExtraRows。
       var extraRowsEl = byId('detailExtraRows');
       if (extraRowsEl) {
         extraRowsEl.textContent = '';
@@ -1077,14 +975,11 @@
       var recordedTimeEl = byId('detailRecordedTime');
       if (recordedTimeEl) recordedTimeEl.textContent = formatAbsoluteTime(e.at);
 
-      // 時間軸鈕:另一車道(fix/dedup-merge)才會把 seen[] 加進 schema，本
-      // 分支防禦寫法——buildSeenTimeline 對缺席/單筆資料一律回傳 null,
-      // 此時不顯示「時間軸」鈕，主畫面的記錄時間(=at)已經夠用。鈕本身是
-      // 純文字(次數改顯示在子層視窗的標題)，內容固定不隨資料變動，但仍
-      // 沿用本檔一貫的「JS 端顯式賦值」慣例(不只靠 data-i18n 的靜態套用)
-      // ——這個 controller smoke 測試組全程用最小 DOM stub，stub 的
-      // querySelectorAll('[data-i18n]') 恆回傳空陣列，只有 JS 顯式賦值的
-      // 文字才驗證得到。
+      // 時間軸鈕:buildSeenTimeline 對缺席/單筆資料回傳 null 時不顯示，
+      // 主畫面的記錄時間(=at)已經夠用。鈕文字固定不隨資料變動(次數改
+      // 顯示在子層視窗標題)，仍在 JS 端顯式賦值——最小 DOM stub 的
+      // querySelectorAll('[data-i18n]') 恆回傳空陣列，只有顯式賦值的
+      // 文字才測得到。
       var timelineBtn = byId('detailTimelineBtn');
       if (timelineBtn) {
         timelineBtn.hidden = buildSeenTimeline(e) === null;
@@ -1482,14 +1377,9 @@
     }
 
     // storage.onChanged(local 區)時由接線層呼叫,讓 background 新寫入的
-    // 紀錄即時出現在開著的頁面上。
-    //
-    // 【審查修正】詳細視窗開著時，storage 被別處(background 新寫入、另一
-    // 分頁刪除/清除/匯入)更新的整合:以 url 在新清單裡重新定位
-    // detailEntry——找得到就用新資料刷新視窗內容(openEntryDetail 會重繪
-    // 全部欄位，也會順手收合時間軸子層視窗，不留舊資料的展開態)；找不到
-    // (這筆已經被刪除/清除)就關閉詳細視窗，不留著顯示一筆已經不存在的
-    // 紀錄。detailEntry 為 null(視窗本來就沒開)時什麼都不做。
+    // 紀錄即時出現在開著的頁面上。詳細視窗開著時以 url 重新定位
+    // detailEntry:找得到就用新資料刷新視窗內容，找不到(已被刪除/清除)
+    // 就關閉詳細視窗，不留著顯示一筆已經不存在的紀錄。
     function setHistory(list) {
       entries = sanitizeEntries(list);
       if (detailEntry) {

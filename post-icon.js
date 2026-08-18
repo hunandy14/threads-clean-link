@@ -109,27 +109,27 @@
     }
   }
 
-  // 0.5.0 貼文收藏庫:擷取內文摘要(extractExcerpt)時，逐一判斷候選文字
-  // 段落要 push(當內文)、skip(跳過但繼續看下一個候選)、還是 stop(視為
-  // 內文區段已結束，中止收集)。抽成純函式方便測試，DOM 層的 extractExcerpt
-  // 只負責收集候選文字、呼叫這裡做決策。
+  // 擷取內文摘要(extractExcerpt)時，逐一判斷候選文字段落要 push(當
+  // 內文)、skip(跳過但繼續看下一個候選)、還是 stop(視為內文區段已結
+  // 束，中止收集)。抽成純函式方便測試，DOM 層的 extractExcerpt 只負責
+  // 收集候選文字、呼叫這裡做決策。
   //
   // 相對時間戳記("18小時"／"4h"／"2026-4-29" 這類短字串)常以獨立
   // [dir="auto"] span 呈現，且緊跟在作者名之後、貼文內文之前，擷取內文
-  // 時需要跳過，否則會把時間戳記誤當內文的第一段。PM 審查修正:僅在「尚
-  // 未收集到任何內文」時才套用這條過濾——時間戳記依版面必定出現在內文
-  // 之前，一旦已經開始收集內文，之後若再出現形似「3天」「2026-4-29」的
-  // 字串，那是使用者自己寫的內文(單獨成行)，不該被誤判成時間戳記丟棄。
-  // 涵蓋 zh/en 常見單位字與絕對日期(YYYY-M-D)格式；整串錨定(^...$)避免
-  // 誤傷更長的真實內文。
+  // 時需要跳過，否則會把時間戳記誤當內文的第一段。僅在「尚未收集到任何
+  // 內文」時才套用這條過濾——時間戳記依版面必定出現在內文之前，一旦已
+  // 經開始收集內文，之後若再出現形似「3天」「2026-4-29」的字串，那是
+  // 使用者自己寫的內文(單獨成行)，不該被誤判成時間戳記丟棄。涵蓋 zh/en
+  // 常見單位字與絕對日期(YYYY-M-D)格式；整串錨定(^...$)避免誤傷更長的
+  // 真實內文。
   var RELATIVE_TIME_RE =
     /^(\d+\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)|\d+\s*(秒|分鐘|小時|天|週|周)|\d{4}-\d{1,2}-\d{1,2}|now|Just now|現在|剛剛)$/i;
 
   // 讚數/回覆數/轉發數這類互動計數，實測格式包含純數字("97")、千分位逗
   // 號("2,440")、以及可能的 K/M/B 縮寫("1.2K")。內文若掃到這種計數字
   // 串，視為「內文區段已經結束、進入互動列的計數區」的邊界訊號，中止收
-  // 集。PM 審查修正:要求以數字開頭(`^\d`)，避免內文中單獨成行的純標點
-  // (例如「...」)被誤判成計數而提早截斷——標點不含開頭數字，不會再誤中。
+  // 集。要求以數字開頭(`^\d`)，避免內文中單獨成行的純標點(例如
+  // 「...」)被誤判成計數而提早截斷。
   var COUNT_LIKE_RE = /^\d[\d,.]*[KMB]?$/i;
 
   // hasContent:目前是否已經收集到至少一段內文(parts.length > 0)，用來
@@ -172,10 +172,10 @@
     return 'bgUnexpected';
   }
 
-  // 方案甲(歷史即收藏):bridge.js 收到 TCL_CLEANED_NOTICE 轉發給
-  // background 前，需要在目前頁面 DOM 找出「這個乾淨網址對應的貼文容
-  // 器」，才能就地補 author/handle/excerpt。findContainerByCleanUrl(見下)
-  // 的比對核心抽成這兩個純函式，供 Node 測試直接載入。
+  // bridge.js 收到 TCL_CLEANED_NOTICE 轉發給 background 前，需要在目前
+  // 頁面 DOM 找出「這個乾淨網址對應的貼文容器」，才能就地補
+  // author/handle/excerpt。findContainerByCleanUrl(見下)的比對核心抽成
+  // 這兩個純函式，供 Node 測試直接載入。
   //
   // 從絕對或相對的網址／href 字串擷取「path 段」：去 query(?...)、去
   // hash(#...)、去尾隨斜線，其餘原樣保留(不動大小寫——Threads 的
@@ -320,13 +320,11 @@
       // i18n.js 理論上一定會在 post-icon.js 之前載入(manifest content_scripts
       // 陣列順序保證)，但防禦性地假設 TCLI18N 可能不存在或呼叫時丟例外：
       // 退回這份內建的英文字面值表，不要讓使用者看到原始 key 字串。
-      // favContextLost(孤兒情境提示，原書籤 icon 車道的事故改進項目，方
-      // 案甲重組後改掛在複製 icon 的 notifyBackgroundCleaned 失敗路徑)的
-      // zh/en 兩個字面值由另一車道併入 i18n.js 字典(此分支刻意不動
-      // i18n.js，避免合併衝突)；在該字典還沒有這個 key 的期間，TCLI18N.t()
-      // 對不存在的 key 會直接回傳 key 本身字串(見 i18n.js 的 t() 實
-      // 作)，不會丟例外，因此一般的 t(key) 掉不到下面的 FALLBACK_STRINGS
-      // ——這裡才需要 favContextLost 專屬的 tContextLost()，見下方。
+      // TCLI18N.t() 對不存在的 key 會直接回傳 key 本身字串(見 i18n.js 的
+      // t() 實作)，不會丟例外，一般的 t(key) 掉不到下面的
+      // FALLBACK_STRINGS——favContextLost(掛在複製 icon 的
+      // notifyBackgroundCleaned 失敗路徑)才需要專屬的 tContextLost()，見
+      // 下方。
       var FALLBACK_STRINGS = {
         iconTooltip: 'Copy original link',
         iconCopied: 'Original link copied',
@@ -365,19 +363,17 @@
         return fallback[currentLocale] || fallback.en || 'favContextLost';
       }
 
-      // ---- 方案甲(歷史即收藏):從貼文容器 DOM 擷取 author/handle/excerpt，
-      // 在複製 icon 成功寫入剪貼簿後呼叫(見 notifyBackgroundCleaned)，附
-      // 進 cleanedNotice 訊息讓 background 記錄進淨化紀錄。bridge.js 的
-      // share/strip 路徑透過 root.TCLPostIcon.findContainerByCleanUrl 找到
-      // 容器後，也是呼叫這兩個函式取得同一組欄位。三者皆為選填，擷取不
-      // 到就整欄不寫進回傳物件，由呼叫端決定要不要放進訊息——協定本來就
-      // 允許缺席(background 端的欄位驗證只處理型別為 string 的值)。
+      // ---- 從貼文容器 DOM 擷取 author/handle/excerpt，在複製 icon 成功
+      // 寫入剪貼簿後呼叫(見 notifyBackgroundCleaned)，附進 cleanedNotice
+      // 訊息讓 background 記錄進淨化紀錄。bridge.js 的 share/strip 路徑
+      // 透過 root.TCLPostIcon.findContainerByCleanUrl 找到容器後，也是
+      // 呼叫這兩個函式取得同一組欄位。三者皆為選填，擷取不到就整欄不寫
+      // 進回傳物件(background 端的欄位驗證只處理型別為 string 的值)。
       // RELATIVE_TIME_RE／COUNT_LIKE_RE／classifyExcerptCandidate 定義在
       // 檔案頂部的純函式區，供 Node 測試直接載入，這裡只呼叫。----
 
-      // 與 background.js 的 FAVORITES_EXCERPT_MAX 對齊(PM 核對手機 repo
-      // 後裁決的上限)；這裡預先截斷一次，background 端仍會再做一次防禦
-      // 性截斷(sanitizeFavoriteField)，兩處各自獨立不互相依賴。
+      // 與 background.js 的長度上限對齊；這裡預先截斷一次，background 端
+      // 仍會再做一次防禦性截斷，兩處各自獨立不互相依賴。
       var EXCERPT_MAX = 2000;
 
       // 複製一份節點、移除所有 [role="button"] 子孫(內文常見的「查看翻
@@ -641,15 +637,13 @@
           }, COPIED_RESET_MS);
         }
 
-        // 孤兒情境提示(事故改進，原書籤 icon 車道的設計，方案甲重組後搬
-        // 到複製 icon 這條路徑):擴充功能更新/重載後，已注入頁面的舊
-        // content script 呼叫 chrome.runtime.sendMessage 會丟出帶
-        // 「Extension context invalidated」字樣的例外——這種情況下複製本
-        // 身已經成功(icon 已經是勾勾狀態)，只是background 記錄淨化紀錄
-        // 這步失敗，且非重新整理頁面不能恢復，蓋掉原本「已複製」的氣泡
-        // 文字改顯示 tContextLost()，比單純吞掉或印一般性警告更能讓使用
-        // 者知道發生什麼事。沿用 showCopiedFeedback 同一套 timer 機制，
-        // 顯示一段時間後一樣復原成預設圖示與文字。
+        // 擴充功能更新/重載後，已注入頁面的舊 content script 呼叫
+        // chrome.runtime.sendMessage 會丟出帶「Extension context
+        // invalidated」字樣的例外——這種情況下複製本身已經成功(icon 已
+        // 經是勾勾狀態)，只是 background 記錄淨化紀錄這步失敗，且非重新
+        // 整理頁面不能恢復，蓋掉原本「已複製」的氣泡文字改顯示
+        // tContextLost()，比單純吞掉或印一般性警告更能讓使用者知道發生
+        // 什麼事。沿用 showCopiedFeedback 同一套 timer 機制。
         function showContextLostBubble() {
           tooltip.textContent = tContextLost();
           tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
@@ -754,9 +748,9 @@
           }
         }
 
-        // 把「已複製乾淨連結」這件事轉知 background，讓淨化紀錄(方案甲:
-        // 歷史即收藏，唯一資料集)能收進這條路徑(kind:'icon'，不冒用右鍵
-        // 選單的 'menu')。同時從貼文容器 DOM 順手擷取 author/handle/excerpt
+        // 把「已複製乾淨連結」這件事轉知 background，讓淨化紀錄能收進這
+        // 條路徑(kind:'icon'，不冒用右鍵選單的 'menu')。同時從貼文容器
+        // DOM 順手擷取 author/handle/excerpt
         // 附進同一則訊息，讓這筆紀錄之後能在 options 頁的卡片牆呈現作者
         // 與內文摘要——三者皆為選填，擷取不到就整欄不放進 payload(協定
         // 允許缺席，background 端只認型別為 string 的值)。整段吞例外(除

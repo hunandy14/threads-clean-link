@@ -21,35 +21,23 @@
       bgFormatError: '轉址結果不是貼文網址，短連結可能已失效或 Threads 網址格式已變動。',
       bgNoTab: '已解析出乾淨網址，但找不到可寫入剪貼簿的分頁:{url}',
       bgClipboardError: '目前分頁無法寫入剪貼簿(可能是瀏覽器限制頁面)，乾淨網址為:{url}',
-      // 【PM 審查後移除】bgSuccess/bgAutoSuccess/bgIconSuccess(成功類通
-      // 知文案):成功通知整組已拆(R1)，這三顆 key 合併後零讀取端，一併
-      // 清除，不留死 key。
       bgUnexpected: '發生未預期的錯誤，請稍後再試一次。',
 
       // ---- popup ----
       ppAutoClean: '自動淨化分享按鈕',
-      // UI 全面對齊手機任務，使用者拍板文案:改脫鉤語意——開關只影響「複製
-      // 到剪貼簿的內容乾不乾淨」，不影響「會不會解析並記錄」(這兩件事本來
-      // 就沒有耦合，舊文案「攔截官方複製連結」容易讓人誤以為關掉後就完全
-      // 不處理)。popup 與 options 兩處共用同一份語意，各自的 key 只是沿用
-      // pp/op 既有前綴慣例，文字內容一致。
+      // 開關只影響「複製到剪貼簿的內容乾不乾淨」，不影響「會不會解析並
+      // 記錄」——popup 與 options 兩處共用同一份語意，文字內容一致。
       ppAutoCleanDesc: '開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。',
-      // 0.5.0 方案甲:popup 新增「貼文複製按鈕」開關(postCopyEnabled)，
-      // 排在自動淨化之後、導航列之前。
       popPostCopyLabel: '貼文複製按鈕',
       ppHistorySettings: '紀錄與設定',
       ppFooter: '盡力而為，處理失敗不影響原功能。',
 
       // ---- options:頁首與統計 ----
-      // 0.5.0 使用者拍板改名:「淨化紀錄」→「紀錄」(歷史即收藏之後，這裡
-      // 存的不只是淨化動作，也有貼文互動列複製、右鍵還原等非淨化來源)。
-      // 統計磚/圖表標題等衍生文案一併判斷連動(見各 key 註解)。
       opSub: '脆連結清潔工 · 設定與紀錄',
       opThemeTitle: '切換主題',
       opLangTitle: '語言 / Language',
-      // 衍生文案連動:此磚統計的是 stats.total(entries.length，所有 kind
-      // 都算，不只淨化類的 share/strip),「累計淨化」用詞已不準確，改用
-      // 「累計紀錄」對齊改名主題。
+      // 此磚統計的是 stats.total(entries.length，所有 kind 都算，不只
+      // 淨化類的 share/strip)。
       opTileTotal: '累計紀錄',
       opSince: '自 {d} 以來',
       opTileWeek: '本週',
@@ -59,8 +47,6 @@
       opShareOfTotal: '佔 {p}%',
 
       // ---- options:活動圖 ----
-      // 衍生文案連動:圖表統計的是每日全部 kind 筆數，不只淨化類，標題/
-      // 描述比照 opTileTotal 拿掉「淨化」。
       opChartTitle: '近 14 天活動',
       opChartUnit: '單位:次',
       opChartDesc: '近 14 天每日活動次數',
@@ -71,16 +57,10 @@
       opSettingsTitle: '設定',
       opAutoCleanName: '自動淨化分享按鈕',
       opAutoCleanDesc: '開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。',
-      // 【PM 審查後移除】opNotifyName/opNotifyDesc(成功時顯示通知):R1
-      // 同輪已把成功通知整組拆光，這顆開關合併後零讀取端，留著是誤導
-      // 使用者的死 UI，不是「另一車道尚未拆通知」——上一輪的保留理由是
-      // 過期情報。
       opSaveName: '保存紀錄',
-      // 使用者拍板:紀錄不設上限，移除「上限 1,000 筆，自動汰舊」字樣，
-      // 只講儲存範圍。
       opSaveDesc: '僅存於本機',
-      // 0.5.0 方案甲:與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關
-      // 說明(popup 只留精簡標籤)。
+      // 與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關說明(popup
+      // 只留精簡標籤)。
       opPostCopyName: '貼文複製按鈕',
       opPostCopyDesc: '在貼文互動列顯示複製連結按鈕',
 
@@ -107,39 +87,26 @@
       opDeviceNote: '紀錄僅保存於這台裝置',
       opCopyTitle: '複製乾淨網址',
       opDeleteTitle: '刪除這筆',
-      // 0.5.0 方案甲:紀錄卡片化後新增「開啟貼文」動作(<a target=_blank
-      // rel=noopener>)，複製/刪除沿用既有 opCopyTitle/opDeleteTitle。
       opOpenTitle: '開啟貼文',
-      // UI 全面對齊手機:卡片高亮態(hover/focus-within)右上浮出的兩顆
-      // 28×28 快捷鈕之一，對應手機 history-card.tsx 的 Copy 圖示;另一顆
-      // (開啟貼文)沿用上面既有的 opOpenTitle，文字剛好一致不必另造 key。
+      // 卡片高亮態(hover/focus-within)右上浮出的兩顆快捷鈕之一;另一顆
+      // (開啟貼文)沿用上面既有的 opOpenTitle。
       opQuickCopyTitle: '複製連結',
 
-      // ---- options:卡片詳細視窗(0.5.0，對齊手機版 history-detail-dialog) ----
+      // ---- options:卡片詳細視窗 ----
       // sr-only 標題，螢幕閱讀器用;視覺上詳細視窗直接從卡頭(徽章/時間)
       // 開始，不另外畫一條可見標題列。
       opDetailTitle: '紀錄詳細資訊',
-      // 內文超長(對齊手機版 EXCERPT_DIALOG_LINES=15 行截斷)時的展開按鈕。
       opExpandFull: '展開全文',
-      // 詳細視窗內顯示的絕對記錄時間(與卡頭的相對時間分開顯示)。
       opRecordedTime: '記錄時間',
-      // kv 列標籤，對齊手機版 CopyRow 的「淨化後連結」(不是舊版「乾淨
-      // 網址」——UI 全面對齊手機任務改用手機源碼的原字)。
       opUrlLabel: '淨化後連結',
-      // 「原始連結」「追蹤參數 {name}」兩列(另一車道把 original/
-      // removedParams 存進 schema 後才有資料)，照手機版同一個 CopyRow
-      // 元件、缺席容忍——沒資料就不畫這兩列，不是恆常顯示。
+      // 「原始連結」「追蹤參數 {name}」兩列缺席容忍——沒資料就不畫，不是
+      // 恆常顯示。
       opOriginalLabel: '原始連結',
       opTrackingParamLabel: '追蹤參數 {name}',
-      // kv 列旁的小顆複製鈕文案(對齊手機版 CopyRow 的「複製」，空間有限;
-      // 完整版「複製乾淨網址」留給底部動作列)。
       opCopyShort: '複製',
-      // 「時間軸」觸發鈕(seen.length > 1 才出現於「記錄時間」列旁)，純文字
-      // 不帶次數——次數改到子層視窗的標題(opTimelineCount)。
+      // 「時間軸」觸發鈕純文字不帶次數——次數改到子層視窗的標題
+      // (opTimelineCount)。
       opTimelineBtn: '時間軸',
-      // 時間軸子層視窗(疊在詳細視窗上，照手機版巢狀 Modal 的做法)的標題，
-      // 對齊手機版原字「解析時間軸(共 N 次)」。來源標籤沿用既有 kind 文案
-      // (opKindShare 等)，不是手機版的 share/clipboard 二分。
       opTimelineCount: '解析時間軸(共 {n} 次)',
 
       // ---- options:匯入對話框與 toast ----
@@ -169,13 +136,9 @@
       iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
 
-      // 【PM 審查後移除】favIconTooltip/favSaved/favRemoved/favFull(互動列
-      // 書籤 icon 文案):R1 合入後書籤 icon 功能已整組移除(方案甲，歷史即
-      // 收藏)，這 4 個 key 合併後零讀取端，一併清除。favContextLost 為孤
-      // 兒提示，已移交複製路徑使用(post-icon.js 的失敗 toast)，保留。
-      //
       // 擴充功能更新時，service worker 的舊連線會失效(context invalidated);
-      // 頁面端呼叫 chrome.* API 失敗時顯示此提示，請使用者重新整理頁面。
+      // 頁面端呼叫 chrome.* API 失敗時顯示此提示，請使用者重新整理頁面
+      // (post-icon.js 的失敗 toast 使用)。
       favContextLost: '擴充功能已更新，請重新整理頁面',
     },
     en: {

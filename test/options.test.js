@@ -374,32 +374,26 @@ test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日
   assert.equal(stats.oldestAt, t0 - 14 * DAY - 3600e3);
 });
 
-// 0.4.0 新增:KINDS 表補上 icon 後,aggregateStats 的 counts 也要能統計
-// kind:'icon' 的筆數,供 options.html 新增的統計磚(#statIcon)使用——修正
-// 前 counts 缺 icon 鍵,e.kind 為 'icon' 時 counts[e.kind] 會是 undefined,
-// counts[e.kind]++ 產生 NaN 而不計數。
-test('aggregateStats:counts 應統計 kind 為 icon 的筆數(修正前缺 icon 鍵導致 NaN)', () => {
+// KINDS 表補上 icon 後,aggregateStats 的 counts 要能統計 kind:'icon' 的
+// 筆數(供 options.html 統計磚 #statIcon 使用,修正前 counts[e.kind]++ 對
+// 缺席鍵會產生 NaN 而不計數),且沒有 icon 來源紀錄時 counts.icon 應為 0
+// 而非 undefined。
+test('aggregateStats:counts 應統計 kind 為 icon 的筆數;無 icon 來源時 counts.icon 為 0(而非 undefined)', () => {
   const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime();
-  const entries = [
-    { url: URL_A, kind: 'icon', at: nowTs - 3600e3 },
-    { url: URL_B, kind: 'icon', at: nowTs - 7200e3 },
-    { url: URL_C, kind: 'share', at: nowTs - 3600e3 },
-  ];
-
-  const stats = options.aggregateStats(entries, nowTs);
+  const stats = options.aggregateStats(
+    [
+      { url: URL_A, kind: 'icon', at: nowTs - 3600e3 },
+      { url: URL_B, kind: 'icon', at: nowTs - 7200e3 },
+      { url: URL_C, kind: 'share', at: nowTs - 3600e3 },
+    ],
+    nowTs
+  );
   assert.equal(stats.counts.icon, 2);
   assert.equal(stats.counts.share, 1);
   assert.equal(stats.total, 3);
-});
 
-test('aggregateStats:沒有任何 icon 來源紀錄時,counts.icon 為 0(而非 undefined)', () => {
-  const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime();
-  const stats = options.aggregateStats(
-    [{ url: URL_A, kind: 'share', at: nowTs }],
-    nowTs
-  );
-
-  assert.equal(stats.counts.icon, 0);
+  const noIcon = options.aggregateStats([{ url: URL_A, kind: 'share', at: nowTs }], nowTs);
+  assert.equal(noIcon.counts.icon, 0);
 });
 
 test('sanitizeEntries:非陣列→空;形狀不對的項目逐筆丟棄', () => {
@@ -851,12 +845,9 @@ CROSS_LAYER_URL_CASES.forEach(({ label, url, expectSurvive }) => {
 // 死 UI。這裡從兩個角度釘住它不會再出現:純函式層的 SETTING_IDS/
 // OPTIONS_DEFAULT_SETTINGS 不含這顆鍵，以及 options.html 原文不再有
 // id="notifySuccess" 的控件(靜態檢查，照 popup.test.js 既有的 R1-3 慣例)。
-test('notifySuccess:OPTIONS_DEFAULT_SETTINGS 與 SETTING_IDS 皆不含這顆鍵(成功通知已整組移除)', () => {
+test('notifySuccess:OPTIONS_DEFAULT_SETTINGS/SETTING_IDS 不含這顆鍵，options.html 原文也不再有對應控件(成功通知已整組移除)', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(options.OPTIONS_DEFAULT_SETTINGS, 'notifySuccess'), false);
-});
 
-test('notifySuccess:options.html 原文不再有 id="notifySuccess" 的控件', () => {
-  const fs = require('node:fs');
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   assert.equal(/\bid\s*=\s*["']notifySuccess["']/i.test(html), false, 'options.html 不應再有 notifySuccess 控件');
   assert.equal(/\bopNotify(Name|Desc)\b/.test(html), false, 'options.html 不應再引用 opNotifyName/opNotifyDesc');
@@ -876,7 +867,7 @@ test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important}
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   assert.match(
     html,
-    /\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*;?\s*\}/,
+    /^\s*\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*;?\s*\}/m,
     'options.html 應有全域 [hidden] 規則且帶 !important，才蓋得過同頁面其他元素自己的 display 宣告'
   );
 });

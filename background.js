@@ -16,75 +16,60 @@ const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z
 // 「截」出前段乾淨網址，加上 $ 會讓截取失效。
 const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\/post\/[^/?#]+/i;
 
-// 全 repo 單一權威的乾淨貼文網址驗證樣式(code review #5:url 樣式統
-// 一)。這裡刻意用「白名單字元類 + 長度上限」而非排除法:排除法(如
-// [^/?#\s]+)只擋得住帶空白的尾隨文字，中文釣魚句本來就不需要空白，
-// 「合法前綴 + 帳號異常，請至 evil.example 重新登入」照樣整串吻合而過關;
-// 純英數長串同理。Threads 的 handle 與 post id 實際上都只有 ASCII
-// (handle 允許英數、底線、句點;post id 是 base64url 短碼)，收緊到實際
-// 字母表不會誤殺。長度上限 80，對齊 options.js 的 POST_URL_PATTERN(UI
-// 車道同步把該側的上限一併調整到 80，兩份常數各自獨立維護，本檔無建置
+// 全 repo 單一權威的乾淨貼文網址驗證樣式，錨定整串內容(不只截前段)。
+// 刻意用「白名單字元類 + 長度上限」而非排除法:排除法(如 [^/?#\s]+)只
+// 擋得住帶空白的尾隨文字，中文釣魚句不需要空白，「合法前綴 + 帳號異
+// 常，請至 evil.example 重新登入」照樣整串吻合而過關。Threads 的 handle
+// 與 post id 實際上都只有 ASCII(handle 允許英數/底線/句點;post id 是
+// base64url 短碼)，收緊到實際字母表不會誤殺。長度上限 80，與
+// options.js 的 POST_URL_PATTERN 對齊(兩份常數各自獨立維護，本檔無建置
 // 系統可共用單一來源，但字元類與長度都保持一致)。
 //
-// 原名 NOTICE_CLEAN_URL_PATTERN，只用在 cleanedNotice 這一條訊息通道的
-// 驗證(該訊息的 cleanUrl 來自頁面腳本可自由 postMessage 的管道，內容會
-// 直接進到使用者看到的通知訊息，因此必須「整串完全吻合」才採信)。code
-// review 指出 menu 路徑(右鍵選單)寫入 history 前完全沒有同等級的驗證
-// ——extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字
-// 元類、不錨定收尾，用來從帶 query/hash 的轉址結果「截」出前段乾淨網
-// 址)，這個寬鬆特性只該用於「截字串」，不該讓寬鬆匹配到的內容不經檢查
-// 就直接流進 history——渲染/去重/點擊跳轉都吃這個 url 欄位。改名反映
-// 新的更廣用途:cleanedNotice(見 handleCleanedNotice)與 menu 路徑寫入
-// history 前(見 handleShareLinkClick)都要過這一關，兩條路徑共用同一份
-// 權威驗證，history.url 欄位的格式才能在整個 repo 保持一致。
+// cleanedNotice(見 handleCleanedNotice)與 menu 路徑寫入 history 前(見
+// handleShareLinkClick)都要過這一關，兩條路徑共用同一份權威驗證——
+// extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆(不錨定收尾，
+// 只用來從帶 query/hash 的轉址結果截出前段乾淨網址)，寬鬆匹配到的內容
+// 不能不經這裡的錨定驗證就直接流進 history——渲染/去重/點擊跳轉都吃
+// 這個 url 欄位。
 const POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}$/i;
 
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
 
-// 使用者變更設定規格:
-//   - notifySuccess(成功類通知)整組移除——方案甲(歷史即收藏)之後，紀
-//     錄是唯一資料集，cleanedNotice 收到就無條件記錄，不再有「要不要
-//     顯示成功通知」這道關卡。失敗／錯誤類通知不受影響，永遠觸發(右鍵
-//     選單路徑維持系統通知；share/strip 自動路徑改頁內 toast，見
-//     bridge.js／post-icon.js)。
-//   - autoClean 預設值改為 false(關閉)。
-// saveHistory(紀錄功能鍵，只有 background 記錄時把關會讀，guard/
-// bridge 不下放)維持 true。autoClean 的預設值需與 popup.js／bridge.js／
-// clipboard-guard.js 同步改動。
+// notifySuccess(成功類通知)不存在——紀錄是唯一資料集，cleanedNotice
+// 收到就無條件記錄，沒有「要不要顯示成功通知」這道關卡。失敗／錯誤類
+// 通知不受影響，永遠觸發(右鍵選單路徑維持系統通知；share/strip 自動
+// 路徑改頁內 toast，見 bridge.js／post-icon.js)。saveHistory(只有
+// background 記錄時把關，guard/bridge 不下放)與 autoClean 的預設值須
+// 與 popup.js／bridge.js／clipboard-guard.js 同步。
 const DEFAULT_SETTINGS = {
   autoClean: false,
   saveHistory: true,
 };
 
 // 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
-// 紀錄量），新到舊排列。使用者拍板:紀錄不設上限(移除原本 1000 筆的裁切)
-// ——chrome.storage.local 沒有 unlimitedStorage 權限時仍有總容量配額，
-// 寫入超限時走優雅降級(見 recordHistory 的 isQuotaExceededError 分
-// 支)，不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能。
-// unlimitedStorage 權限之後再議，這裡不新增任何權限。
+// 紀錄量），新到舊排列，不設上限——chrome.storage.local 沒有
+// unlimitedStorage 權限時仍有總容量配額，寫入超限時走優雅降級(見
+// recordHistory 的 isQuotaExceededError 分支)，不重試、不丟例外，只
+// console.warn，不影響複製/淨化等主功能。
 const HISTORY_KEY = 'history';
 
-// 方案甲(歷史即收藏):紀錄條目上，author/handle/excerpt 為選填欄
-// 位，由複製 icon(post-icon.js)或 bridge.js(share/strip 路徑，經
-// findContainerByCleanUrl 就地擷取)順手從貼文容器 DOM 附上。長度上限沿
-// 用 0.5.0 貼文收藏庫基座原本替 favorites 訂的門檻(PM 核對手機 repo 後
-// 裁決，與手機版 post-meta 的 EXCERPT_MAX_CHARS 對齊)，欄位改落在紀
-// 錄條目上，常數改名反映新用途。
+// 紀錄條目上，author/handle/excerpt 為選填欄位，由複製 icon
+// (post-icon.js)或 bridge.js(share/strip 路徑，經 findContainerByCleanUrl
+// 就地擷取)順手從貼文容器 DOM 附上。長度上限與手機版 post-meta 的
+// EXCERPT_MAX_CHARS 對齊。
 const HISTORY_EXCERPT_MAX = 2000;
 // author/handle 共用同一個長度上限;兩者性質相近(顯示名稱/帳號代稱)，
 // 沒有各自訂上限的必要。
 const HISTORY_AUTHOR_MAX = 100;
 
-// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
 // original 是使用者實際複製到/觸發時的原始連結(share 短碼原文，或 strip
 // 剝參前的原網址)，上限沿用 bridge.js 既有的 MAX_CLEAN_URL_LENGTH 門檻
 // (同一種「頁面可控字串」，用同一把尺)。removedParams 是被剝除的追蹤查
 // 詢參數清單，型別對齊手機版 hunandy14/meta-link-clearer 的 RemovedParam
-// ——實測 gh api 讀 src/lib/link-cleaner.ts:171 確認為 { key, value }(派工
-// 文字裡寫的 name 是筆誤，手機版實際欄位是 key，這裡照抄手機的真實形
-// 狀，不照抄文字敘述)。上限與單筆長度沿用一般追蹤參數(如 xmt/utm_*)的
-// 合理範圍，防惡意超長 payload。
+// ({ key, value }，實測 gh api 讀 src/lib/link-cleaner.ts:171 確認)。上限
+// 與單筆長度沿用一般追蹤參數(如 xmt/utm_*)的合理範圍，防惡意超長
+// payload。
 const HISTORY_ORIGINAL_MAX = 2048;
 const REMOVED_PARAMS_MAX = 20;
 const REMOVED_PARAM_KEY_MAX = 64;
@@ -168,11 +153,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
-// R1-2 通知涵蓋自動路徑:clipboard-guard.js 實際把淨化後內容寫入剪貼簿後，
-// 經 bridge.js 送來這則通知。方案甲(歷史即收藏)之後，這是紀錄(唯
-// 一資料集)的其中一條入筆路徑，收到合法通知就無條件記錄，不再有
-// notifySuccess 這種「要不要顯示通知」的把關(已依使用者變更設定規格
-// 整組移除)。
+// clipboard-guard.js 實際把淨化後內容寫入剪貼簿後，經 bridge.js 送來這則
+// 通知——紀錄的其中一條入筆路徑，收到合法通知就無條件記錄，沒有「要不要
+// 顯示通知」的把關。
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'cleanedNotice') {
     return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
@@ -224,19 +207,14 @@ async function handleShareLinkClick(info, tab) {
   }
 
   // 只有實際寫入剪貼簿成功才留紀錄，與自動路徑的「寫入成功才記錄」語意
-  // 一致;saveHistory 的把關在 recordHistory 內。使用者變更設定規格:
-  // 成功類通知(notifySuccess)整組移除，右鍵路徑不再於此發送成功通知，
-  // 失敗類通知(上面幾個 notifyByKey 呼叫)不受影響、維持系統通知。
-  // F 案:右鍵路徑不經 guard/bridge，original(shareUrl)與 removedParams
-  // (finalUrl 與 cleanUrl 的差集)background 自己手上就有，見
-  // buildMenuHistoryExtra。
+  // 一致;saveHistory 的把關在 recordHistory 內。右鍵路徑不經 guard/
+  // bridge，original(shareUrl)與 removedParams(finalUrl 與 cleanUrl 的
+  // 差集)background 自己手上就有，見 buildMenuHistoryExtra。
   //
-  // code review #5(url 樣式統一):extractCleanPostUrl 用的
-  // CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字元類、不錨定收尾，見上方
-  // POST_URL_PATTERN 註解)，只該用來從轉址結果「截」出前段乾淨網址，寬
-  // 鬆匹配到的內容不該不經檢查就流進 history。寫入前再用全 repo 單一權
-  // 威的 POST_URL_PATTERN 驗一次;不符合就只略過記錄(console.warn)，不
-  // 影響已經完成的剪貼簿複製——複製本身不因這個邊界情況失敗。
+  // 寫入前用全 repo 單一權威的 POST_URL_PATTERN 錨定驗一次(見上方註解:
+  // extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆，寬鬆匹配
+  // 到的內容不該不經檢查就流進 history);不符合就只略過記錄
+  // (console.warn)，不影響已經完成的剪貼簿複製。
   if (POST_URL_PATTERN.test(cleanUrl)) {
     await recordHistory(cleanUrl, 'menu', buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl));
   } else {
@@ -277,19 +255,15 @@ async function getSettings() {
   }
 }
 
-// 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
+// 處理 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
 // POST_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
 // 任何紀錄;紀錄只用驗證通過的字串，不夾帶原文的任何其餘部分。
 // kind 同屬頁面可控輸入,白名單驗證(自動路徑只可能是 share/strip/icon),
 // 非法即整則忽略——guard 與 background 同版本出貨,沒有相容性負擔,
 // 形狀不對就是偽造或損毀,fail-safe 丟棄。'menu' 刻意不在此白名單內:
 // 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
-// 不透過本訊息通道,避免頁面腳本偽造 kind:'menu' 混充右鍵來源。
-//
-// 方案甲(歷史即收藏)：紀錄是唯一資料集，成功類通知(notifySuccess)
-// 已依使用者變更設定規格整組移除，這裡不再有「要不要顯示通知」的分支
-// ——收到合法 notice 就無條件記錄一筆，author/handle/excerpt(複製
-// icon／bridge.js 從貼文容器 DOM 順手擷取)為選填欄位，一併寫入。
+// 不透過本訊息通道，避免頁面腳本偽造 kind:'menu' 混充右鍵來源。收到合法
+// notice 就無條件記錄一筆，author/handle/excerpt 為選填欄位一併寫入。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
   if (typeof cleanUrl !== 'string' || !POST_URL_PATTERN.test(cleanUrl)) {
@@ -311,8 +285,8 @@ async function handleCleanedNotice(message) {
 // 進來)，不信任:型別不是 string(或 removedParams 不是陣列)的一律整欄
 // 丟棄(不寫進回傳物件，而非寫入 undefined/空字串)，字串則截斷至各自長
 // 度上限。回傳值直接可以 Object.assign 進 history 條目(見 recordHistory)。
-// url 參數(F 案新增)是本次寫入的乾淨網址，供 sanitizeOriginalField 判斷
-// original 是否與 cleaned 相同(相同就不存)。
+// url 參數是本次寫入的乾淨網址，供 sanitizeOriginalField 判斷 original
+// 是否與 cleaned 相同(相同就不存)。
 function extractHistoryExtraFields(message, url) {
   const extra = {};
   const author = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
@@ -329,43 +303,35 @@ function extractHistoryExtraFields(message, url) {
 }
 
 // 非字串一律回傳 undefined(呼叫端據此整欄丟棄);空字串比照非字串同樣
-// 丟棄(不落 author:'' 這種空欄位)；其餘字串截斷至 maxLen。原名
-// sanitizeFavoriteField(0.5.0 貼文收藏庫基座)，方案甲重組後改給
-// handleCleanedNotice 用，改名反映新用途，邏輯不變。
+// 丟棄(不落 author:'' 這種空欄位)；其餘字串截斷至 maxLen。
 function sanitizeHistoryField(value, maxLen) {
   if (typeof value !== 'string' || value.length === 0) return undefined;
   return value.slice(0, maxLen);
 }
 
-// F 案:original 選填欄位，規則同 sanitizeHistoryField(非字串／空字串整
-// 欄丟棄，字串截斷至長度上限)，額外多一條——截斷「前」若與本次寫入的
-// cleaned url 完全相同就整欄丟棄:手機版語意是「取與 cleaned 不同者」，
-// 相同代表沒有額外資訊，不值得多存一份(guard 端 notifyCleaned 已經先擋
-// 過一次，這裡是信任邊界上的權威判斷，不能只靠上游自律)。
+// original 選填欄位，規則同 sanitizeHistoryField，額外多一條——截斷
+// 「前」若與本次寫入的 cleaned url 完全相同就整欄丟棄:手機版語意是
+// 「取與 cleaned 不同者」，相同代表沒有額外資訊(guard 端已經先擋過一
+// 次，這裡是信任邊界上的權威判斷，不能只靠上游自律)。
 function sanitizeOriginalField(value, maxLen, url) {
   if (typeof value !== 'string' || value.length === 0) return undefined;
   if (value === url) return undefined;
   return value.slice(0, maxLen);
 }
 
-// F 案:removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value },
-// 見上方 REMOVED_PARAMS_MAX 常數註解)。上限 REMOVED_PARAMS_MAX 筆，每筆
-// key 需為非空字串且 ≤ REMOVED_PARAM_KEY_MAX、value 需為字串(可為空字
-// 串，查詢參數本來就允許沒有值)且 ≤ REMOVED_PARAM_VALUE_MAX，任一不符就
-// 整筆丟棄(容忍陣列裡部分項目壞掉，不因此讓整個陣列作廢，寫法對齊
-// sanitizeSeenList)。輸入非陣列，或 sanitize 後一筆不剩，回傳
-// undefined(呼叫端據此整欄不寫入，缺席不落空陣列佔位)。
+// removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value })。
+// 上限 REMOVED_PARAMS_MAX 筆，每筆 key 需為非空字串且 ≤
+// REMOVED_PARAM_KEY_MAX、value 需為字串(可為空字串)且 ≤
+// REMOVED_PARAM_VALUE_MAX，任一不符就整筆丟棄(容忍陣列裡部分項目壞掉，
+// 寫法對齊 sanitizeSeenList)。輸入非陣列，或 sanitize 後一筆不剩，回傳
+// undefined。
 //
-// code review #1(輸入端筆數上限):走訪次數本身也要封頂，不能只靠「收滿
-// REMOVED_PARAMS_MAX 筆合法項目就 break」——如果輸入陣列夾帶大量畸形項
-// 目、合法項目卻很晚才出現(甚至根本不存在合法項目)，舊寫法會把整個超
-// 大陣列掃過一輪才停下，等同讓呼叫端可以用一個超大 payload 拖慢處理時
-// 間(雖然 bridge.js 已經在自己那層擋掉超過筆數上限的陣列，這裡仍是縱深
-// 防禦，不假設呼叫端一定有先過濾——recordHistory 的另一個呼叫端
-// buildMenuHistoryExtra 走 diffRemovedParams，理論上受 finalUrl 實際
-// query 參數量限制，但不排除惡意重新導向目標帶超多參數)。改成用索引界
-// 定的迴圈，最多只看前 REMOVED_PARAMS_MAX 筆原始項目，不論其中有幾筆合
-// 法——掃描量與收穫量同時封頂在同一個常數，程式碼也更簡單。
+// 走訪次數本身也封頂，不是「收滿 REMOVED_PARAMS_MAX 筆合法項目就
+// break」——輸入陣列若夾帶大量畸形項目、合法項目很晚才出現，只靠收穫量
+// 封頂會把整個超大陣列掃過一輪才停下，等同讓呼叫端能用超大 payload 拖
+// 慢處理時間(bridge.js 已在自己那層擋過，這裡仍是縱深防禦，不假設呼叫
+// 端一定有先過濾)。用索引界定的迴圈，最多只看前 REMOVED_PARAMS_MAX 筆
+// 原始項目，掃描量與收穫量同時封頂在同一個常數。
 function sanitizeRemovedParams(value) {
   if (!Array.isArray(value)) return undefined;
   const out = [];
@@ -380,7 +346,7 @@ function sanitizeRemovedParams(value) {
   return out.length > 0 ? out : undefined;
 }
 
-// F 案:右鍵路徑(menu)專用——對齊手機版 hunandy14/meta-link-clearer 的
+// 右鍵路徑(menu)專用——對齊手機版 hunandy14/meta-link-clearer 的
 // src/lib/link-cleaner.ts:diffRemovedParams，比對淨化前後兩個網址，列出
 // 被移除的 query 參數。cleanUrl(extractCleanPostUrl 的結果)一律不含
 // query，afterParams 實際上恆為空集合，等同回報 finalUrl 的全部 query
@@ -402,10 +368,10 @@ function diffRemovedParams(before, after) {
 }
 
 // ---- 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
-// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem，
-// PM 快查確認後拍板)。同一次分享常見走多條路徑(右鍵選單／自動偵測／貼
-// 文互動列複製 icon)，以「乾淨網址在時間視窗內重複寫入」合併為一筆，
-// 讓使用者看到的歷史永遠只有一筆，而不是同一篇貼文洗版。----
+// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem)。
+// 同一次分享常見走多條路徑(右鍵選單／自動偵測／貼文互動列複製 icon)，
+// 以「乾淨網址在時間視窗內重複寫入」合併為一筆，讓使用者看到的歷史永遠
+// 只有一筆，而不是同一篇貼文洗版。----
 
 // 去重視窗:與手機版 DEDUP_WINDOW_MS 對齊，5 分鐘內同一個 url 視為同一
 // 次分享。
@@ -465,19 +431,16 @@ function sanitizeSeenList(seen) {
 // 位，其餘未知欄位自然被丟棄，等同順手做了一次縱深防禦)。
 //   - at 更新為 now(浮到最新，呼叫端負責把回傳的條目移到陣列最前)。
 //   - kind 更新為本次來源(卡片徽章顯示最近一次解析路徑)。
-//   - author/handle/excerpt/original/removedParams(F 案新增):本次 extra
-//     有值就用本次的，本次缺席才沿用 existing 的舊值(新值優先，但不能
-//     讓「這次沒抓到」蓋掉「上次抓到的」)——五個欄位規則完全一致，一起
-//     套同一套 fallback 寫法。
-//   - seen[]:existing.seen 若已存在(即使是陣列型別、內容需要 sanitize)
-//     就照樣過 sanitizeSeenList;existing.seen 缺席(schema 升級前寫入
-//     的舊資料)時，照手機版語意補種一筆起始紀錄 [{ at: existing.at }]
-//     (PM 修訂:原規格「當空陣列起算」撤回，改採手機版
-//     `existing.seen ?? [{ at: existing.receivedAt }]` 的等效寫法，讓
-//     時間軸看得到條目原本第一次出現的時間;種子記錄不帶 kind，因為那
-//     一刻並沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)，再
-//     append 本次 {at: now, kind}，裁到最新 SEEN_MAX 筆(捨棄最舊的，
-//     陣列順序維持舊在前新在後)。
+//   - author/handle/excerpt/original/removedParams:本次 extra 有值就用
+//     本次的，本次缺席才沿用 existing 的舊值(新值優先，但不能讓「這次
+//     沒抓到」蓋掉「上次抓到的」)，五個欄位規則一致。
+//   - seen[]:existing.seen 若已存在就照樣過 sanitizeSeenList;existing.seen
+//     缺席(schema 升級前寫入的舊資料)時，照手機版語意
+//     (`existing.seen ?? [{ at: existing.receivedAt }]`)補種一筆起始
+//     紀錄 [{ at: existing.at }]，讓時間軸看得到條目原本第一次出現的
+//     時間;種子記錄不帶 kind(那一刻沒有對應的來源事件，UI 時間軸端已
+//     容忍缺 kind 標籤)，再 append 本次 {at: now, kind}，裁到最新
+//     SEEN_MAX 筆。
 function mergeHistoryEntry(existing, url, kind, now, extra) {
   const author = extra && extra.author !== undefined ? extra.author : existing.author;
   const handle = extra && extra.handle !== undefined ? extra.handle : existing.handle;
@@ -515,10 +478,9 @@ function hasStorageLocal() {
 // 發生在「清除的同時恰好完成一次淨化」,極罕見且後果僅是多留一筆,接受。
 let historyWriteChain = Promise.resolve();
 
-// extra(選填):方案甲新增的 author/handle/excerpt，加上 F 案新增的
-// original/removedParams，只有實際擷取到的鍵才會出現(自動路徑見
-// extractHistoryExtraFields，右鍵路徑見 buildMenuHistoryExtra)，
-// Object.assign 進條目時不會覆蓋 url/kind/at/seen。
+// extra(選填):author/handle/excerpt/original/removedParams，只有實際
+// 擷取到的鍵才會出現(自動路徑見 extractHistoryExtraFields，右鍵路徑見
+// buildMenuHistoryExtra)，Object.assign 進條目時不會覆蓋 url/kind/at/seen。
 function recordHistory(url, kind, extra) {
   historyWriteChain = historyWriteChain
     .then(async () => {
@@ -538,13 +500,11 @@ function recordHistory(url, kind, extra) {
         const mergedEntry = mergeHistoryEntry(list[dedupIndex], url, kind, now, extra);
         next = [mergedEntry].concat(list.slice(0, dedupIndex), list.slice(dedupIndex + 1));
       } else {
-        // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新陣列
-        // (使用者拍板:紀錄不設上限，不再裁切)。extra 放在前面、核心欄位
-        // 放在後面覆蓋:即使日後呼叫端不慎把 url/kind/at/seen 也塞進 extra
-        // 物件，核心欄位仍會覆蓋回正確值，不會被外部輸入蓋掉(現況 extra
-        // 只可能是 extractHistoryExtraFields 的回傳值，不會有這四個鍵，
-        // 此處屬防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任
-        // 來源，不需要再過 sanitizeSeenList)。
+        // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新
+        // 陣列，不裁切(紀錄不設上限)。extra 放在前面、核心欄位放在後面
+        // 覆蓋:即使日後呼叫端不慎把 url/kind/at/seen 也塞進 extra 物件，
+        // 核心欄位仍會覆蓋回正確值(防未來的加固)。新條目的 seen[] 由本次
+        // 呼叫自行構造(信任來源，不需要再過 sanitizeSeenList)。
         const entry = Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] });
         next = [entry].concat(list);
       }

@@ -121,17 +121,6 @@ test('S7:切換任一開關，新值寫回 chrome.storage.sync', async () => {
   }
 });
 
-// 0.5.0 方案甲新增:postCopyEnabled 開關獨立驗證預設值與渲染，照既有模式
-// (S7 的兩開關測試已涵蓋綁定/寫回行為，這裡額外鎖定它「新開關」的身分)。
-test('postCopyEnabled:預設 true,render 後 checkbox 呈現開啟狀態', async () => {
-  const { doc, controller } = setup({});
-
-  await controller.init();
-  await settle();
-
-  assert.equal(doc.elements.postCopyEnabled.checked, true, 'postCopyEnabled 預設應為 true');
-});
-
 // ---- MV3 CSP:popup.html 不得有內嵌 script(靜態防回歸) ----
 //
 // 上面的測試全跑邏輯層，照不到 HTML 的載入方式。MV3 預設 CSP

@@ -4,9 +4,8 @@
 <meta charset="utf-8" />
 <title>Threads Clean Link</title>
 <style>
-  /* --accent 改用手機版 constants/theme.ts 的暖橘(light #c96f3e / dark
-     #e2925e)，UI 全面對齊手機任務——唯一數值權威見 options.html 開頭的
-     :root 註解，本檔沿用同一組數值，不重複整段說明。 */
+  /* --accent 用手機版 constants/theme.ts 的暖橘(light #c96f3e / dark
+     #e2925e)，唯一數值權威見 options.html 開頭的 :root 註解。 */
   :root {
     color-scheme: light dark;
     --bg: #ffffff;
@@ -80,8 +79,8 @@
   .setting-row-label {
     min-width: 0;
   }
-  /* 使用者拍板文案(autoClean 描述改脫鉤語意)：popup 空間窄，描述用小字
-     疊在名稱下方，同一顆 <label> 內兩行都能點擊觸發 switch。 */
+  /* popup 空間窄，描述用小字疊在名稱下方，同一顆 <label> 內兩行都能點擊
+     觸發 switch。 */
   .setting-row-label .name { display: block; }
   .setting-row-label .desc {
     display: block;
@@ -167,10 +166,8 @@
       </span>
       <input type="checkbox" id="autoClean" class="switch" />
     </label>
-    <!-- 0.5.0 方案甲:新增「貼文複製按鈕」開關，取代原本這裡的「成功時顯示
-         通知」。成功通知已整組移除(合併後零讀取端)；失敗通知不受影響，
-         一律顯示:Threads 頁內 toast(guard/bridge 路徑)、右鍵選單路徑的
-         系統通知。options 頁同步移除鏡像的設定列，不留死 UI。 -->
+    <!-- 失敗通知不受此開關影響，一律顯示:Threads 頁內 toast(guard/bridge
+         路徑)、右鍵選單路徑的系統通知。 -->
     <label class="setting-row" for="postCopyEnabled">
       <span class="setting-row-label" data-i18n="popPostCopyLabel">貼文複製按鈕</span>
       <input type="checkbox" id="postCopyEnabled" class="switch" />
