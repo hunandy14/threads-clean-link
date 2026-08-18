@@ -62,6 +62,29 @@
     return typeof value === 'string' ? value.slice(0, max) : undefined;
   }
 
+  // 紀錄去重合併(見 background.js 的 mergeHistoryEntry/sanitizeSeenList
+  // 註解):seen[] 是「先前已經落盤的資料」，可能被匯入檔或未來版本的存放
+  // 格式汙染，options.js 這側讀取(sanitizeEntries)與匯入
+  // (mergeImportedEntries)都是獨立的資料入口，各自要逐筆 sanitize——at
+  // 需為有限數字、kind 需在白名單內，任一不符就整筆丟棄(容忍陣列裡部分
+  // 項目壞掉，不因此整個陣列作廢);白名單直接沿用 KINDS，與 background.js
+  // 的 SEEN_KIND_WHITELIST 是同一組合法值。順便裁到 SEEN_MAX 上限，與
+  // background.js 寫入時的裁切規則對齊(縱深防禦，不假設寫入端永遠沒漏)。
+  // 輸入非陣列一律回傳空陣列。
+  var SEEN_MAX = 50;
+  function sanitizeSeenList(seenList) {
+    if (!Array.isArray(seenList)) return [];
+    var out = [];
+    for (var i = 0; i < seenList.length; i++) {
+      var record = seenList[i];
+      if (!record || typeof record !== 'object') continue;
+      if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
+      if (!Object.prototype.hasOwnProperty.call(KINDS, record.kind)) continue;
+      out.push({ at: record.at, kind: record.kind });
+    }
+    return out.slice(-SEEN_MAX);
+  }
+
   // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
   // 項目——url 除了型別是字串，還要通過 POST_URL_PATTERN 的形狀驗證才收
   // (縱深防禦，PM 審查後補:上一輪收藏庫基座的 sanitizeFavorites 就有這道
@@ -92,6 +115,11 @@
         if (handle !== undefined) out.handle = handle;
         var excerpt = sanitizeTextField(e.excerpt, ENTRY_EXCERPT_MAX);
         if (excerpt !== undefined) out.excerpt = excerpt;
+        // 紀錄去重合併新增:seen[] 比照 author/handle/excerpt 的「缺席不落
+        // 空值」慣例——sanitize 後真的有剩才寫入，全丟或本來就沒有都整欄
+        // 不寫。
+        var seenList = sanitizeSeenList(e.seen);
+        if (seenList.length > 0) out.seen = seenList;
         return out;
       });
   }
@@ -174,6 +202,10 @@
       if (handle !== undefined) entry.handle = handle;
       var excerpt = sanitizeTextField(raw && raw.excerpt, ENTRY_EXCERPT_MAX);
       if (excerpt !== undefined) entry.excerpt = excerpt;
+      // 紀錄去重合併新增:匯入檔的 seen[] 屬外部輸入，同樣要逐筆 sanitize
+      // (見 sanitizeSeenList 註解)，防止偽造/損毀的 at、kind 混進來。
+      var seenList = sanitizeSeenList(raw && raw.seen);
+      if (seenList.length > 0) entry.seen = seenList;
       merged.push(entry);
       added++;
     });
@@ -217,8 +249,9 @@
   }
 
   // 詳細視窗的「記錄時間」用絕對時間(YYYY-MM-DD HH:mm)，與卡頭的相對時間
-  // (relTime)分開顯示，對齊手機版 formatResolvedTime。手機版的 seen[]
-  // 解析時間軸在擴充功能沒有對應資料，不偽造，整段省略。
+  // (relTime)分開顯示，對齊手機版 formatResolvedTime。紀錄去重合併之後
+  // background.js 已實際落盤 seen[] 解析時間軸資料(見 sanitizeSeenList)，
+  // 但把它畫進 UI 屬另一車道範圍，這裡先不做，仍只顯示 at 的絕對時間。
   function formatAbsoluteTime(ts) {
     var d = new Date(ts);
     var pad = function (n) {

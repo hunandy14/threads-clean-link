@@ -276,6 +276,91 @@ function sanitizeHistoryField(value, maxLen) {
   return value.slice(0, maxLen);
 }
 
+// ---- 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
+// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem，
+// PM 快查確認後拍板)。同一次分享常見走多條路徑(右鍵選單／自動偵測／貼
+// 文互動列複製 icon)，以「乾淨網址在時間視窗內重複寫入」合併為一筆，
+// 讓使用者看到的歷史永遠只有一筆，而不是同一篇貼文洗版。----
+
+// 去重視窗:與手機版 DEDUP_WINDOW_MS 對齊，5 分鐘內同一個 url 視為同一
+// 次分享。
+const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+
+// seen[] 上限:防單一熱門連結無限累積解析紀錄，與手機版 SEEN_AT_MAX
+// 對齊。
+const SEEN_MAX = 50;
+
+// seen[].kind 白名單，與淨化紀錄本身的 kind 白名單同一組('menu' 屬右鍵
+// 選單路徑，額外算進來——handleCleanedNotice 的白名單不含 'menu' 是因為
+// 那條路徑不經這個訊息通道，但 kind 值本身在 seen[] 裡是合法的)。
+const SEEN_KIND_WHITELIST = ['share', 'strip', 'icon', 'menu'];
+
+// 純函式:在既有清單中找出「同一個 url 且在去重視窗內」的條目 index，
+// 找不到回傳 -1。與手機版 mergeDuplicateItem 內的 findIndex 對齊(手機版
+// 比對 cleaned，這裡的 url 是同一個概念——recordHistory 呼叫端一律已傳
+// 入驗證通過的乾淨網址)。
+function findDedupIndex(list, url, now) {
+  if (!Array.isArray(list)) return -1;
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (item && item.url === url && typeof item.at === 'number' && now - item.at <= DEDUP_WINDOW_MS) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// 純函式:seen[] 逐筆 sanitize——at 需為有限數字、kind 需在白名單內，任一
+// 不符就整筆丟棄(容忍陣列裡部分項目壞掉，不因此讓整個陣列作廢)。輸入
+// 非陣列一律回傳空陣列。寫入 storage 前(合併路徑，見 mergeHistoryEntry)
+// 與 options.js 的匯入合併都要過這關，防止偽造/損毀的 seen 資料混進去
+// ——seen 來源是「先前已經落盤的資料」，可能被匯入檔或未來版本的存放格
+// 式汙染，不能照單全收。
+function sanitizeSeenList(seen) {
+  if (!Array.isArray(seen)) return [];
+  const out = [];
+  for (const record of seen) {
+    if (!record || typeof record !== 'object') continue;
+    if (typeof record.at !== 'number' || !Number.isFinite(record.at)) continue;
+    if (typeof record.kind !== 'string' || SEEN_KIND_WHITELIST.indexOf(record.kind) === -1) continue;
+    out.push({ at: record.at, kind: record.kind });
+  }
+  return out;
+}
+
+// 純函式:把本次的 kind/extra 併入既有條目 existing，回傳全新的條目物件
+// (不改動 existing，也不假設 existing 形狀完全乾淨——只挑用得到的欄
+// 位，其餘未知欄位自然被丟棄，等同順手做了一次縱深防禦)。
+//   - at 更新為 now(浮到最新，呼叫端負責把回傳的條目移到陣列最前)。
+//   - kind 更新為本次來源(卡片徽章顯示最近一次解析路徑)。
+//   - author/handle/excerpt:本次 extra 有值就用本次的，本次缺席才沿用
+//     existing 的舊值(新值優先，但不能讓「這次沒抓到」蓋掉「上次抓到
+//     的」)。
+//   - seen[]:existing.seen 先過 sanitizeSeenList，再 append 本次
+//     {at: now, kind}，裁到最新 SEEN_MAX 筆(捨棄最舊的，陣列順序維持
+//     舊在前新在後)。
+//
+// 【與手機版刻意差異，PM 已知悉並拍板】手機版在 existing.seen 缺席時會
+// 拿 existing.receivedAt 合成一筆起始紀錄再 append
+// (`existing.seen ?? [{ at: existing.receivedAt }]`)，讓時間軸看得到
+// 「這筆條目第一次出現」的時間點；sanitizeSeenList 對非陣列輸入回傳空
+// 陣列，等同「當空陣列起算」，不做這層遷移。代價是 schema 升級前寫入、
+// 本來就沒有 seen 欄位的舊資料，第一次被合併時 seen[] 只會有「這次合
+// 併」這一筆，看不到條目原本第一次出現的時間——這是規格明文要求的簡
+// 化，此處僅如實記錄差異，不是本檔案自行決定。
+function mergeHistoryEntry(existing, url, kind, now, extra) {
+  const author = extra && extra.author !== undefined ? extra.author : existing.author;
+  const handle = extra && extra.handle !== undefined ? extra.handle : existing.handle;
+  const excerpt = extra && extra.excerpt !== undefined ? extra.excerpt : existing.excerpt;
+  const seen = sanitizeSeenList(existing.seen).concat([{ at: now, kind }]).slice(-SEEN_MAX);
+
+  const merged = { url, kind, at: now, seen };
+  if (author !== undefined) merged.author = author;
+  if (handle !== undefined) merged.handle = handle;
+  if (excerpt !== undefined) merged.excerpt = excerpt;
+  return merged;
+}
+
 // ---- 紀錄 ----
 
 function hasStorageLocal() {
@@ -304,14 +389,27 @@ function recordHistory(url, kind, extra) {
       if (!settings.saveHistory) return;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
-      // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新陣列
-      // (使用者拍板:紀錄不設上限，不再裁切)。extra 放在前面、核心欄位
-      // 放在後面覆蓋:即使日後呼叫端不慎把 url/kind/at 也塞進 extra 物
-      // 件，核心欄位仍會覆蓋回正確值，不會被外部輸入蓋掉(現況 extra 只
-      // 可能是 extractHistoryExtraFields 的回傳值，不會有這三個鍵，此
-      // 處屬防未來的加固)。
-      const entry = Object.assign({}, extra, { url, kind, at: Date.now() });
-      const next = [entry].concat(list);
+      const now = Date.now();
+
+      // 去重合併(語意對齊手機版，見上方 findDedupIndex/mergeHistoryEntry
+      // 註解):同一個 url 在 DEDUP_WINDOW_MS 內重複寫入，合併為一筆並浮
+      // 到最前;視窗外或找不到同 url 條目才新增一筆。
+      const dedupIndex = findDedupIndex(list, url, now);
+      let next;
+      if (dedupIndex !== -1) {
+        const mergedEntry = mergeHistoryEntry(list[dedupIndex], url, kind, now, extra);
+        next = [mergedEntry].concat(list.slice(0, dedupIndex), list.slice(dedupIndex + 1));
+      } else {
+        // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新陣列
+        // (使用者拍板:紀錄不設上限，不再裁切)。extra 放在前面、核心欄位
+        // 放在後面覆蓋:即使日後呼叫端不慎把 url/kind/at/seen 也塞進 extra
+        // 物件，核心欄位仍會覆蓋回正確值，不會被外部輸入蓋掉(現況 extra
+        // 只可能是 extractHistoryExtraFields 的回傳值，不會有這四個鍵，
+        // 此處屬防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任
+        // 來源，不需要再過 sanitizeSeenList)。
+        const entry = Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] });
+        next = [entry].concat(list);
+      }
       try {
         await chrome.storage.local.set({ [HISTORY_KEY]: next });
       } catch (err) {

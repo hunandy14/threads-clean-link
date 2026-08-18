@@ -463,7 +463,17 @@ test('自動路徑的 cleanedNotice 不影響右鍵路徑的錯誤/失敗通知�
   await settle();
 
   assert.deepEqual(bg.notifications, [], '右鍵成功複製同樣不得觸發通知');
-  assert.equal(bg.storage.localSnapshot().history.length, 2, '兩條路徑都應各自留一筆紀錄');
+  // 規格演進(本次紀錄去重合併):CLEANED_NOTICE_CLEAN_URL 與 SHARE_URL 解析
+  // 後的 CLEAN_POST_URL 是同一個字串，兩次寫入相距僅一個 settle()，落在
+  // 去重視窗內——依新規格應合併為一筆，原本「兩條路徑各自留一筆」的斷言
+  // 已不成立，改驗合併後的不變量:仍只有一筆、kind 更新為最近一次
+  // (menu)、seen[] 累積兩筆(share→menu)。
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '同一乾淨網址在去重視窗內應合併為一筆，不再各自留存');
+  assert.equal(history[0].kind, 'menu', 'kind 應更新為最近一次來源');
+  assert.equal(history[0].seen.length, 2, 'seen[] 應累積兩筆(share、menu)');
+  assert.equal(history[0].seen[0].kind, 'share', 'seen[] 舊在前');
+  assert.equal(history[0].seen[1].kind, 'menu', 'seen[] 新在後');
 });
 
 // R1 審查回饋(阻斷級，方案甲重組後改驗紀錄而非通知):cleanedNotice 的
@@ -746,6 +756,136 @@ test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗�
   await settle();
 
   assert.equal(failed.storage.localSnapshot().history, undefined, '沒寫進剪貼簿就不算淨化成功');
+});
+
+// ============================================================
+// 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
+// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem，
+// PM 快查確認後拍板):recordHistory 改為合併式寫入，以 url(cleaned)為
+// key，在既有清單找「同 url 且 now - entry.at <= 5 分鐘」的條目——
+//   - 命中:合併為一筆並浮到最前;at 更新為 now;author/handle/excerpt 新
+//     值優先、新值缺席沿用舊值;kind 更新為本次來源;seen[] append
+//     {at, kind} 並裁到 50 筆(舊在前新在後)。
+//   - 未命中:新增一筆，seen 為 [{at, kind}] 起始一筆。
+//   - 舊資料沒有 seen 欄位:合併時容忍(當空陣列起算)，不做遷移——與手機
+//     版拿 existing.receivedAt 合成一筆起始紀錄的做法不同，是本檔案規
+//     格明文的刻意簡化(見 background.js 內 mergeHistoryEntry 註解)。
+// ============================================================
+
+test('紀錄去重合併:視窗內命中時合併為一筆——浮到最前、at 更新、author/handle/excerpt 新值優先缺席沿用舊值、kind 更新為最近一次、seen[] 追加', async () => {
+  const now = Date.now();
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 60 * 1000, // 1 分鐘前，落在 5 分鐘去重視窗內
+    author: 'Old Author',
+    handle: '@old',
+    excerpt: 'Old excerpt',
+    seen: [{ at: now - 60 * 1000, kind: 'share' }],
+  };
+  const other = { url: 'https://www.threads.com/@other/post/OtherPost', kind: 'strip', at: now - 1000 };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [other, existing] });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'icon',
+    author: 'New Author',
+    excerpt: 'New excerpt',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 2, '視窗內命中應合併，不新增第三筆');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '合併後的條目應浮到陣列最前');
+  assert.ok(history[0].at >= now, 'at 應更新為本次寫入時間');
+  assert.equal(history[0].kind, 'icon', 'kind 應更新為本次來源');
+  assert.equal(history[0].author, 'New Author', '本次有值的欄位應以新值優先');
+  assert.equal(history[0].handle, '@old', '本次缺席的欄位應沿用舊值');
+  assert.equal(history[0].excerpt, 'New excerpt', '本次有值的欄位應以新值優先');
+  assert.equal(history[0].seen.length, 2, 'seen[] 應在既有一筆基礎上再追加一筆');
+  assert.equal(history[0].seen[0].kind, 'share', 'seen[] 舊在前');
+  assert.equal(history[0].seen[1].kind, 'icon', 'seen[] 新在後');
+  assert.equal(history[1].url, other.url, '未命中的其他條目不受影響');
+});
+
+test('紀錄去重合併:同一 url 但超出去重視窗(> 5 分鐘)時新增一筆，不合併', async () => {
+  const now = Date.now();
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 6 * 60 * 1000, // 6 分鐘前，超出 5 分鐘去重視窗
+    seen: [{ at: now - 6 * 60 * 1000, kind: 'share' }],
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 2, '超出去重視窗應新增一筆，不與舊條目合併');
+  assert.equal(history[0].kind, 'icon', '新條目在最前');
+  assert.equal(history[0].seen.length, 1, '新條目的 seen[] 只有自己這一筆起始紀錄');
+  assert.equal(history[1].url, CLEANED_NOTICE_CLEAN_URL, '視窗外的舊條目原樣保留，不受影響');
+  assert.equal(history[1].kind, 'share', '舊條目的 kind 不因新條目寫入而改變');
+});
+
+test('紀錄去重合併:seen[] 累積超過 50 筆時裁到最新 50 筆，捨棄最舊', async () => {
+  const now = Date.now();
+  const seenSeed = Array.from({ length: 50 }, (_, i) => ({ at: now - (50 - i) * 1000, kind: 'share' }));
+  const existing = { url: CLEANED_NOTICE_CLEAN_URL, kind: 'share', at: now - 1000, seen: seenSeed };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const seen = bg.storage.localSnapshot().history[0].seen;
+  assert.equal(seen.length, 50, 'seen[] 應裁到上限 50 筆');
+  assert.equal(seen[49].kind, 'icon', '最新一筆(本次)保留在陣列尾端');
+  assert.equal(seen[0].at, seenSeed[1].at, '最舊的一筆(seed[0])被裁掉，陣列開頭往後遞補');
+});
+
+test('紀錄去重合併:視窗內命中但既有條目沒有 seen 欄位(舊資料)時，容忍當空陣列起算，不做遷移', async () => {
+  const now = Date.now();
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 60 * 1000,
+    // 刻意不帶 seen 欄位，模擬 schema 升級前寫入的舊資料。
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '仍應合併為一筆，不因缺少 seen 而改走新增路徑');
+  assert.equal(history[0].seen.length, 1, '缺席的 seen 當空陣列起算，合併後只有本次這一筆(不遷移補一筆舊資料)');
+  assert.equal(history[0].seen[0].kind, 'icon');
+});
+
+test('紀錄去重合併:既有條目的 seen[] 若含偽造/損毀資料(at 非數字、kind 不在白名單、非物件)，合併時逐筆 sanitize、不整組作廢', async () => {
+  const now = Date.now();
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 60 * 1000,
+    seen: [
+      { at: now - 120 * 1000, kind: 'share' }, // 合法
+      { at: 'not-a-number', kind: 'share' }, // at 非數字，應丟棄
+      { at: now - 100 * 1000, kind: 'evil' }, // kind 不在白名單，應丟棄
+      'not-an-object', // 非物件，應丟棄
+    ],
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const seen = bg.storage.localSnapshot().history[0].seen;
+  assert.equal(seen.length, 2, '偽造/損毀的 seen 記錄逐筆丟棄，只留合法的一筆加上本次新增的一筆');
+  assert.equal(seen[0].kind, 'share');
+  assert.equal(seen[1].kind, 'icon');
 });
 
 // 使用者拍板(規格翻轉):紀錄不設上限，原本「超過 1000 筆裁掉最舊」的斷

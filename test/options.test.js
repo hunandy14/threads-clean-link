@@ -198,6 +198,48 @@ test('mergeImportedEntries:author/handle 截斷至 100 字元、excerpt 截斷�
   assert.deepEqual(Object.keys(dropped).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入');
 });
 
+// 紀錄去重合併新增(PM 明列測項):匯入條目帶偽造 seen 的 sanitize。匯入檔
+// 是外部輸入，seen[] 逐筆過 at 有限數字、kind 白名單，不合法的記錄整筆丟
+// 棄、不整組作廢；全部不合法時整欄不寫入。上限 SEEN_MAX(50)一併裁切，防
+// 匯入檔夾帶超長偽造陣列。
+test('mergeImportedEntries:匯入條目帶偽造 seen 時逐筆 sanitize，且裁到上限 50 筆', () => {
+  const oversized = Array.from({ length: 60 }, (_, i) => ({ at: i, kind: 'share' }));
+  const result = options.mergeImportedEntries(
+    [],
+    [
+      {
+        url: URL_A,
+        kind: 'share',
+        at: 1,
+        seen: [
+          { at: 10, kind: 'share' }, // 合法
+          { at: 'forged', kind: 'share' }, // at 非數字 → 丟棄
+          { at: 20, kind: 'not-a-real-kind' }, // kind 不在白名單 → 丟棄
+          null, // 非物件 → 丟棄
+          { at: 30, kind: 'icon' }, // 合法
+        ],
+      },
+      { url: URL_B, kind: 'share', at: 1, seen: [{ at: 'x', kind: 'evil' }] },
+      { url: URL_C, kind: 'share', at: 1, seen: oversized },
+    ],
+    1000
+  );
+
+  const withSeen = result.merged.find((e) => e.url === URL_A);
+  assert.deepEqual(withSeen.seen, [
+    { at: 10, kind: 'share' },
+    { at: 30, kind: 'icon' },
+  ]);
+
+  const allDropped = result.merged.find((e) => e.url === URL_B);
+  assert.equal('seen' in allDropped, false, 'seen[] 全部不合法時,整欄不寫入');
+
+  const capped = result.merged.find((e) => e.url === URL_C);
+  assert.equal(capped.seen.length, 50, '匯入的 seen[] 應裁到上限 50 筆');
+  assert.equal(capped.seen[0].at, oversized[10].at, '裁切保留最新的 50 筆(捨棄最舊的 10 筆)');
+  assert.equal(capped.seen[49].at, oversized[59].at);
+});
+
 test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日分桶、最舊時間戳', () => {
   const DAY = 86400000;
   const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime(); // 中午,避開日界線
@@ -318,6 +360,41 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
   assert.equal(cleaned[0].excerpt.length, 2000);
 
   assert.deepEqual(Object.keys(cleaned[1]).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入，但 entry 本身仍保留');
+});
+
+// 紀錄去重合併新增:seen[] 是「先前已經落盤的資料」，讀取階段(sanitizeEntries)
+// 同樣要逐筆 sanitize，偽造/損毀的記錄(at 非數字、kind 不在白名單、非物件)
+// 逐筆丟棄，不因此整個陣列作廢;真的沒有合法記錄剩下時整欄不寫入(缺席不落
+// 空陣列佔位，與 author/handle/excerpt 的慣例一致)。
+test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄，合法記錄仍保留；全丟時整欄不寫入', () => {
+  const cleaned = options.sanitizeEntries([
+    {
+      url: URL_A,
+      kind: 'share',
+      at: 1,
+      seen: [
+        { at: 100, kind: 'share' }, // 合法
+        { at: 'NaN', kind: 'share' }, // at 非數字 → 丟棄
+        { at: 200, kind: 'evil' }, // kind 不在白名單 → 丟棄
+        'not-an-object', // 非物件 → 丟棄
+        { at: 300, kind: 'icon' }, // 合法
+      ],
+    },
+    { url: URL_B, kind: 'share', at: 1, seen: [{ at: 'NaN', kind: 'evil' }] },
+    { url: URL_C, kind: 'share', at: 1 },
+  ]);
+
+  const withSeen = cleaned.find((e) => e.url === URL_A);
+  assert.deepEqual(withSeen.seen, [
+    { at: 100, kind: 'share' },
+    { at: 300, kind: 'icon' },
+  ]);
+
+  const allDropped = cleaned.find((e) => e.url === URL_B);
+  assert.equal('seen' in allDropped, false, 'seen[] 全部不合法時,整欄不寫入');
+
+  const noSeen = cleaned.find((e) => e.url === URL_C);
+  assert.equal('seen' in noSeen, false, '原本就沒有 seen 欄位的舊資料,讀取後也不憑空生出來');
 });
 
 // ---- 純函式:hasCardPreview ----
