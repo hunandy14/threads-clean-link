@@ -455,7 +455,7 @@ test('mergeImportedFavorites:依 id 去重、at 缺失或非法時補 now、無�
   assert.deepEqual(
     result.merged.map((e) => e.id),
     ['@user.b/post/DeF456', '@usera/post/AbC123_-xyz'],
-    '新到舊排序;at 缺失補的 now(12345)大於既有的 100,故排最前'
+    '新到舊排序;at 缺失補的 now(12345)大於既有的 100，故排最前'
   );
   assert.equal(result.merged[0].at, 12345);
 });
@@ -509,7 +509,7 @@ test('mergeImportedFavorites:已存在 499 筆時，匯入 3 筆只收 1 筆(剩
 
   const result = options.mergeImportedFavorites(existing, imported, 99999);
   assert.equal(result.added, 1, '只有剩餘的 1 個容量會被用掉');
-  assert.equal(result.skipped, 2, '超出剩餘容量的匯入項目計入 skipped,不做截斷式汰舊');
+  assert.equal(result.skipped, 2, '超出剩餘容量的匯入項目計入 skipped，不做截斷式汰舊');
   assert.equal(result.merged.length, options.FAVORITES_LIMIT);
   existing.forEach((e) => {
     assert.ok(
@@ -560,14 +560,14 @@ test('controller smoke:收藏分頁渲染卡片牆——有 author/excerpt、僅
   assert.equal(excerptEl0.textContent, 'hello world');
   assert.equal(excerptEl0.className, 'fav-excerpt');
 
-  // 卡片二:只有 handle,無 excerpt → 不渲染 fav-excerpt 節點。
+  // 卡片二:只有 handle，無 excerpt → 不渲染 fav-excerpt 節點。
   const card1 = doc.ids.favGrid.children[1];
   const authorRow1 = card1.children[0];
   assert.equal(authorRow1.children.length, 1, '無 author 時作者列只有 handle 一個子節點');
   assert.equal(authorRow1.children[0].textContent, '@onlyhandle');
   assert.equal(card1.children[1].className, 'fav-foot', '無 excerpt 時作者列後直接接卡尾');
 
-  // 卡片三:無 author/handle → 降級顯示網址(比照紀錄列樣式,threads.net 如實顯示)。
+  // 卡片三:無 author/handle → 降級顯示網址(比照紀錄列樣式，threads.net 如實顯示)。
   const card2 = doc.ids.favGrid.children[2];
   const urlNode2 = card2.children[0];
   assert.equal(urlNode2.className, 'fav-url');

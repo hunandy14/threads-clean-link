@@ -284,7 +284,7 @@
     var activeKind = 'all';
     var query = '';
     var pageSize = PAGE_SIZE_DEFAULT;
-    var activeView = 'history'; // 'history' | 'favorites',與既有紀錄檢視並列的分頁
+    var activeView = 'history'; // 'history' | 'favorites'，與既有紀錄檢視並列的分頁
 
     // 注意:此模組內不得宣告名為 t 的區域變數,以免遮蔽翻譯函式
     // (demo 階段真踩過:var t = createElement(...) 讓整頁渲染炸掉)。
@@ -702,8 +702,8 @@
       });
     }
 
-    // 單張收藏卡片:有 author/handle 時顯示作者列(+ excerpt,兩行截斷);
-    // 兩者皆無時降級顯示網址(比照紀錄列樣式)。無縮圖(刻意,og:image 會
+    // 單張收藏卡片:有 author/handle 時顯示作者列(+ excerpt，兩行截斷);
+    // 兩者皆無時降級顯示網址(比照紀錄列樣式)。無縮圖(刻意，og:image 會
     // 過期)。卡尾固定放相對時間 + 複製/開啟/移除三個動作。
     function buildFavoriteCard(e) {
       var card = document.createElement('div');
@@ -768,7 +768,7 @@
         })
       );
 
-      // 開啟貼文用 <a target="_blank" rel="noopener">,不是 button——真的
+      // 開啟貼文用 <a target="_blank" rel="noopener">，不是 button——真的
       // 交給瀏覽器處理開新分頁(可 ctrl/cmd+click 開背景分頁等原生行為)。
       var openLink = document.createElement('a');
       openLink.className = 'icon-btn';
@@ -992,7 +992,7 @@
     }
 
     // 收藏分頁的 ⋯ 選單(匯出/匯入)+ 匯入對話框，佈線模式照抄 bindToolbar
-    // 對應段落(獨立的 DOM id,兩份選單/對話框互不干擾)。
+    // 對應段落(獨立的 DOM id，兩份選單/對話框互不干擾)。
     function bindFavoritesToolbar() {
       var favMoreBtn = byId('favMoreBtn');
       var favMoreMenu = byId('favMoreMenu');
@@ -1055,7 +1055,7 @@
       on('favModalPrimary', 'click', function () {
         var textEl = byId('favModalText');
         // 解析階段(JSON 格式 + entries 陣列存在)與淨化紀錄共用同一份純
-        // 函式(parseImportText 不關心條目的內部形狀),形狀驗證留給
+        // 函式(parseImportText 不關心條目的內部形狀)，形狀驗證留給
         // mergeImportedFavorites 逐條把關。
         var parsed = parseImportText(textEl ? String(textEl.value || '').trim() : '');
         if (!parsed.ok) {
