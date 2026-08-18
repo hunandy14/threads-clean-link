@@ -140,7 +140,7 @@
   /* ---- 統計磚 ---- */
   .stats {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
     margin-bottom: 12px;
   }
@@ -653,6 +653,13 @@
       <div class="label"><svg class="icon"><use href="#i-scissors"/></svg><span data-i18n="opTileStrip">剪除追蹤參數</span></div>
       <div class="value" id="statStrip">0</div>
       <div class="meta" id="statStripMeta"></div>
+    </div>
+    <!-- 貼文互動列複製 icon(post-icon.js)的統計磚:標籤直接沿用篩選 chip
+         已有的 opKindIcon key(「貼文按鈕」),不另造新 key。 -->
+    <div class="tile">
+      <div class="label"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="opKindIcon">貼文按鈕</span></div>
+      <div class="value" id="statIcon">0</div>
+      <div class="meta" id="statIconMeta"></div>
     </div>
   </section>
 

@@ -139,13 +139,45 @@ test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日
 
   const stats = options.aggregateStats(entries, nowTs);
   assert.equal(stats.total, 5);
-  assert.deepEqual(stats.counts, { share: 3, strip: 1, menu: 1 });
+  // 【規格衝突,如實記錄】counts 補上 icon:0(本輪修正項目 2)後,這個既有的
+  // 整形斷言必然要跟著加上 icon 鍵才能繼續通過——與「既有測試斷言一字不准
+  // 動」的紀律直接衝突,屬修正 counts 缺 icon 鍵這個 bug 本身必然牽動的
+  // 唯一一處,並非另外收緊或弱化判斷,故在此保留機械性更新,PM 覆核。
+  assert.deepEqual(stats.counts, { share: 3, strip: 1, menu: 1, icon: 0 });
   assert.equal(stats.week, 3, '滾動 7 天:今天兩筆 + 昨天一筆');
   assert.equal(stats.weekPrev, 1, '前一個 7 天:只有 13 天前那筆');
   assert.equal(stats.days[13], 2, '索引 13 = 今天');
   assert.equal(stats.days[12], 1, '昨天');
   assert.equal(stats.days[0], 1, '13 個日曆日前落在最左桶');
   assert.equal(stats.oldestAt, t0 - 14 * DAY - 3600e3);
+});
+
+// 0.4.0 新增:KINDS 表補上 icon 後,aggregateStats 的 counts 也要能統計
+// kind:'icon' 的筆數,供 options.html 新增的統計磚(#statIcon)使用——修正
+// 前 counts 缺 icon 鍵,e.kind 為 'icon' 時 counts[e.kind] 會是 undefined,
+// counts[e.kind]++ 產生 NaN 而不計數。
+test('aggregateStats:counts 應統計 kind 為 icon 的筆數(修正前缺 icon 鍵導致 NaN)', () => {
+  const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime();
+  const entries = [
+    { url: URL_A, kind: 'icon', at: nowTs - 3600e3 },
+    { url: URL_B, kind: 'icon', at: nowTs - 7200e3 },
+    { url: URL_C, kind: 'share', at: nowTs - 3600e3 },
+  ];
+
+  const stats = options.aggregateStats(entries, nowTs);
+  assert.equal(stats.counts.icon, 2);
+  assert.equal(stats.counts.share, 1);
+  assert.equal(stats.total, 3);
+});
+
+test('aggregateStats:沒有任何 icon 來源紀錄時,counts.icon 為 0(而非 undefined)', () => {
+  const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime();
+  const stats = options.aggregateStats(
+    [{ url: URL_A, kind: 'share', at: nowTs }],
+    nowTs
+  );
+
+  assert.equal(stats.counts.icon, 0);
 });
 
 test('sanitizeEntries:非陣列→空;形狀不對的項目逐筆丟棄', () => {
@@ -310,4 +342,33 @@ test('controller smoke:init 讀兩區 storage、整條渲染跑完,清單與計�
   assert.equal(doc.ids.rows.children.length, 0);
   assert.equal(doc.ids.empty.hidden, false, '清空後應顯示空狀態');
   assert.equal(doc.ids.countHint.textContent, '顯示 0 / 0 筆');
+});
+
+// 修正前 renderList 的網域段一律硬寫死 'threads.com/'，來自 threads.net 的
+// 紀錄(POST_URL_PATTERN／KINDS 都同時允許 com 與 net)會被顯示成錯誤網域。
+// 這裡直接檢查渲染出來的三段文字節點(網域段／帳號段(<b>)／其餘路徑段)，
+// 網域段須如實為 'threads.net/'。
+test('renderList:threads.net 的紀錄如實顯示 .net,不誤植為 .com', async () => {
+  const NET_URL = 'https://www.threads.net/@user_net/post/AbC123';
+  const storage = createChromeStorage(
+    { langPref: 'zh' },
+    { history: [{ url: NET_URL, kind: 'share', at: 1000 }] }
+  );
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  const li = doc.ids.rows.children[0];
+  const main = li.children[1];
+  const urlEl = main.children[0];
+  const textParts = urlEl.children.map((c) => c.textContent);
+  assert.deepEqual(textParts, ['threads.net/', '@user_net', '/post/AbC123']);
 });
