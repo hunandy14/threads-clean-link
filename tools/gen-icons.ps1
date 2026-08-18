@@ -111,9 +111,25 @@ function New-IconPngFromSvg {
             Remove-Item -Path $OutPath -Force
         }
         $fileUri = 'file:///' + ($tmpHtml -replace '\\', '/')
-        & $Browser --headless=new --disable-gpu --hide-scrollbars `
-            --screenshot="$OutPath" --window-size="$Size,$Size" `
-            --default-background-color=00000000 $fileUri 2>$null | Out-Null
+
+        # 局部把 $ErrorActionPreference 降級成 Continue 再呼叫瀏覽器:chrome
+        # /msedge headless 常態性地把診斷訊息寫到 stderr(不代表失敗)。PS
+        # 5.1(Windows PowerShell)在 $ErrorActionPreference = 'Stop' 下，即
+        # 使這裡已經 2>&1 | Out-Null 把 stderr 併進標準輸出丟棄，仍會把每一
+        # 行 stderr 轉成 NativeCommandError 直接中止腳本(pwsh/PS7 沒有這個
+        # 行為)。用 try/finally 把降級範圍限制在這一次呼叫，執行完立刻還原
+        # 成 Stop，不影響腳本其餘部分的錯誤處理;真正的成功與否交給下面
+        # `Test-Path $OutPath` 判斷產物是否真的寫出來，不會因為放寬
+        # ErrorActionPreference 而漏判實際失敗。
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $Browser --headless=new --disable-gpu --hide-scrollbars `
+                --screenshot="$OutPath" --window-size="$Size,$Size" `
+                --default-background-color=00000000 $fileUri 2>&1 | Out-Null
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
     } finally {
         Remove-Item -Path $tmpHtml -Force -ErrorAction SilentlyContinue
     }
