@@ -1,4 +1,4 @@
-<#
+﻿<#
   依品牌來源 SVG(assets/store/icon/app-icon.svg)重新產生擴充功能圖示
   (icons/icon16.png、icon48.png、icon128.png)。
 
@@ -19,12 +19,16 @@
 
 $ErrorActionPreference = 'Stop'
 
-$iconsDir = Join-Path $PSScriptRoot '..' 'icons'
+# Join-Path 一次只接受兩個位置參數(-Path/-ChildPath);多引數的
+# -AdditionalChildPath 是 PS6+ 才有的語法，PS 5.1(Windows 內建版本)會直接
+# 丟例外。改用 [IO.Path]::Combine——純 .NET 方法呼叫，不受 PowerShell 版本
+# 的 cmdlet 參數集限制，多節路徑一次組完，PS 5.1 與 PS6+/pwsh 都能跑。
+$iconsDir = [IO.Path]::Combine($PSScriptRoot, '..', 'icons')
 if (-not (Test-Path $iconsDir)) {
     New-Item -ItemType Directory -Path $iconsDir -Force | Out-Null
 }
 
-$svgPath = Join-Path $PSScriptRoot '..' 'assets' 'store' 'icon' 'app-icon.svg'
+$svgPath = [IO.Path]::Combine($PSScriptRoot, '..', 'assets', 'store', 'icon', 'app-icon.svg')
 if (-not (Test-Path $svgPath)) {
     throw "找不到品牌來源 SVG:$svgPath"
 }
