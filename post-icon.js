@@ -356,6 +356,13 @@
         // 通知性質，整段吞例外——chrome.runtime 不存在(context 已失效／
         // 非擴充功能頁面)或 sendMessage 本身丟例外，都不得影響前面已經
         // 成功的複製與勾勾回饋。
+        //
+        // MV3 下不帶 callback 呼叫 sendMessage 會回傳 Promise：background
+        // 的 cleanedNotice 監聽器 return false(同步處理完即關通道)，該
+        // Promise 會以「message port closed」reject，若不接 .catch 就會在
+        // 頁面 console 留下 unhandled promise rejection。回傳值先防禦性
+        // 檢查是不是真的 Promise(舊瀏覽器 sendMessage 可能不回傳任何東西)
+        // 再接空 .catch 吞掉。
         function notifyBackgroundCleaned(url) {
           try {
             if (
@@ -365,7 +372,14 @@
             ) {
               return;
             }
-            chrome.runtime.sendMessage({ type: 'cleanedNotice', cleanUrl: url, kind: 'icon' });
+            var maybePromise = chrome.runtime.sendMessage({
+              type: 'cleanedNotice',
+              cleanUrl: url,
+              kind: 'icon',
+            });
+            if (maybePromise && typeof maybePromise.catch === 'function') {
+              maybePromise.catch(function () {});
+            }
           } catch (err) {
             console.warn('[threads-clean-link] 通知 background 記錄淨化紀錄失敗', err);
           }
