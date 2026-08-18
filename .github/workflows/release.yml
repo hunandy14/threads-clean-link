@@ -16,7 +16,11 @@ on:
         default: false
       # 紀律提醒:新增權限的版本不要走自動發布——先勾選這個選項只上傳草稿，
       # 或乾脆先不合併進 main，改到開發者主控台手動送審並親自填寫新權限的
-      # 使用理由文案(自動送審不會、也不該幫你編這段說明)。
+      # 使用理由文案(自動送審不會、也不該幫你編這段說明)。這個手動勾選是
+      # 「提醒」而非唯一防線——push 觸發時根本沒有畫面可勾，真正的防線是
+      # 下面「檢查是否新增權限」那個步驟:它會比對本次與上一版 manifest.json
+      # 的 permissions/host_permissions，偵測到新增就自動跳過送審，不依賴
+      # 人記得勾這個開關。
       skip_publish:
         description: >-
           略過自動送審(publish)，只做打包/上傳草稿。新增權限的版本、或想
@@ -204,9 +208,58 @@ jobs:
 
           echo "草稿已上傳(uploadState=SUCCESS)。"
 
-      # 只在「上傳步驟真的跑了且憑證齊全」時才嘗試發布，並額外開一個
-      # skip_publish 閥門:新增權限的版本、或想先人工複查草稿再送審時，
-      # 用 skip_publish 擋掉這一步，改到主控台手動按提交審查。
+      # 自動防線:push 觸發時沒有人會去勾 skip_publish，新增權限的版本若沒
+      # 有這一關會被直接自動送審(見 workflow_dispatch.skip_publish 說明旁
+      # 的紀律提醒——那只是「提醒」，不是強制)。這裡改用機器比對兜底:抓
+      # 上一個版本 tag 的 manifest.json，跟本次 manifest.json 比對
+      # permissions／host_permissions 兩個陣列，只要有新增項目就設旗標讓
+      # 下面的送審步驟自動跳過，不依賴人記得手動勾選。
+      - name: 檢查是否新增權限(新增時自動跳過送審)
+        id: permcheck
+        if: steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)
+        run: |
+          CURRENT_TAG="v${{ steps.version.outputs.version }}"
+
+          # 找「上一個版本」的 tag:依語意化版本排序所有 v* tag、排除本次
+          # 版本自己的 tag 後取最新的一個。刻意不用
+          # `git describe --tags --abbrev=0 HEAD^`——workflow_dispatch 的
+          # upload_only 情境下 CURRENT_TAG 通常已經存在(補傳審過的版本)，
+          # 此時 HEAD 就在該 tag 上，describe 找到的不保證是真正的上一版；
+          # 用排序+排除自己則兩種觸發情境都適用。
+          PREV_TAG=$(git tag --list 'v*' | grep -v "^${CURRENT_TAG}$" | sort -V | tail -n1 || true)
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "找不到上一個版本的 tag(可能是第一次發版)，沒有基準可比對權限，略過本次檢查。"
+            echo "has_new_permissions=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "上一個版本 tag:$PREV_TAG"
+
+          if ! git show "${PREV_TAG}:manifest.json" > /tmp/prev-manifest.json 2>/dev/null; then
+            echo "::warning::讀不到 $PREV_TAG 的 manifest.json，無法比對權限是否新增，為安全起見視為有新權限、跳過自動送審。"
+            echo "has_new_permissions=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 比對邏輯抽成獨立腳本(tools/check-new-permissions.py)而非寫成內嵌
+          # heredoc:YAML 區塊純量的縮排規則跟 Python 對頂層程式碼「不能有
+          # 前導空白」互斥，內嵌 heredoc 一縮排就會是 IndentationError；抽
+          # 成檔案同時也讓這段比對邏輯可以離開 workflow 單獨本機測試。
+          NEW_ITEMS=$(python3 tools/check-new-permissions.py /tmp/prev-manifest.json manifest.json)
+
+          if [ -n "$NEW_ITEMS" ]; then
+            NEW_ITEMS_ONELINE=$(printf '%s' "$NEW_ITEMS" | paste -sd ',' - | sed 's/,/, /g')
+            echo "::warning::偵測到新權限，自動送審已跳過，請至主控台手動送審並填權限理由(新增項目:$NEW_ITEMS_ONELINE)"
+            echo "has_new_permissions=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "沒有偵測到新增的 permissions/host_permissions，照常自動送審。"
+            echo "has_new_permissions=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 只在「上傳步驟真的跑了且憑證齊全」時才嘗試發布，並額外開兩個閥門:
+      # skip_publish 是人工主動選擇跳過;permcheck 的 has_new_permissions
+      # 是機器比對出新權限時自動跳過，兩者任一成立都不送審，改到主控台手
+      # 動送審並親自填寫新權限的使用理由文案。
       #
       # access token 復用上一步 cws_upload 的 step output，不重新用
       # refresh token 換發——同一次 run 沒必要換兩次。
@@ -214,6 +267,7 @@ jobs:
         if: >-
           (steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)) &&
           steps.cws_upload.outputs.has_credentials == 'true' &&
+          steps.permcheck.outputs.has_new_permissions != 'true' &&
           !(github.event_name == 'workflow_dispatch' && inputs.skip_publish == true)
         env:
           CWS_ACCESS_TOKEN: ${{ steps.cws_upload.outputs.access_token }}
@@ -250,7 +304,7 @@ jobs:
           if [ "$HTTP_CODE" = '200' ] && printf '%s' "$STATUS_LIST" | grep -q '"OK"'; then
             echo "已成功送出審查，請至開發者主控台確認狀態。"
           elif printf '%s' "$STATUS_LIST" | grep -q '"ITEM_PENDING_REVIEW"'; then
-            echo "::warning::此版本已在審查佇列中(ITEM_PENDING_REVIEW)，視為可重試情境，草稿已上傳成功，不視為本次執行失敗。"
+            echo "::warning::此版本已在審查佇列中(ITEM_PENDING_REVIEW)，視為可重試情境，草稿已上傳成功，不視為本次執行失敗。前版審查通過後，手動執行 workflow_dispatch 的 upload_only 模式即可補送本版。"
           else
             echo "送審失敗(HTTP ${HTTP_CODE:-無}，status=${STATUS_LIST:-無})"
             exit 1
