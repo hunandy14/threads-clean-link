@@ -151,7 +151,9 @@
       <input type="checkbox" id="autoClean" class="switch" />
     </label>
     <!-- 0.5.0 方案甲:新增「貼文複製按鈕」開關，取代原本這裡的「成功時顯示
-         通知」(notifySuccess 整組移除，完整設定收在 options 頁)。 -->
+         通知」。成功通知已整組移除(合併後零讀取端)；失敗通知不受影響，
+         一律顯示:Threads 頁內 toast(guard/bridge 路徑)、右鍵選單路徑的
+         系統通知。options 頁同步移除鏡像的設定列，不留死 UI。 -->
     <label class="setting-row" for="postCopyEnabled">
       <span class="setting-row-label" data-i18n="popPostCopyLabel">貼文複製按鈕</span>
       <input type="checkbox" id="postCopyEnabled" class="switch" />

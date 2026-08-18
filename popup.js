@@ -8,9 +8,11 @@
   // autoClean 這一顆之下。
   //
   // 0.5.0 方案甲(使用者拍板三條設定變更):
-  //   - 移除「成功時顯示通知」開關(notifySuccess)整組——底層設定鍵仍在
-  //     background.js 使用(另一車道尚未拆通知)，只是 popup 不再放快捷
-  //     開關，完整設定收在 options 頁(opNotifyName/opNotifyDesc 那列)。
+  //   - 移除「成功時顯示通知」開關(notifySuccess)整組——成功通知已在 R1
+  //     同輪整組拆光，這顆開關合併後零讀取端。失敗通知仍在:Threads 頁內
+  //     toast(guard/bridge 路徑)+ 右鍵選單路徑的系統通知，兩者都不受這顆
+  //     開關影響、一律顯示，只是「成功」這個分支已經沒有通知可關。options
+  //     頁同步移除鏡像的 opNotifyName/opNotifyDesc 設定列，不留死 UI。
   //   - autoClean 預設值改 false，配合 background.js(另一車道)同步調整
   //     的新預設，popup 這側的初始渲染 fallback 要跟著改，否則使用者第
   //     一次開 popup 看到的開關狀態會跟 background 實際行為不一致。

@@ -279,6 +279,25 @@ test('sanitizeEntries:kind 為 icon(貼文按鈕)的項目應保留,不再被白
   );
 });
 
+// 縱深防禦(PM 審查後補):url 額外過 POST_URL_PATTERN 形狀驗證——渲染層
+// buildEntryCard 的 openLink.href = e.url、複製到剪貼簿都是 url sink,
+// 讀取階段就該擋掉形狀不對的 url，不依賴「寫入端永遠沒漏」的假設。上一輪
+// 收藏庫基座的 sanitizeFavorites 有這道檢查，方案甲把收藏搬進
+// sanitizeEntries 時漏了，這裡補回來。
+test('sanitizeEntries:url 形狀不對(非 threads 網域、缺 /post/ 區段、夾帶非法字元等)的條目整筆丟棄', () => {
+  const cleaned = options.sanitizeEntries([
+    { url: URL_A, kind: 'share', at: 1 }, // 合法
+    { url: 'https://www.evil.com/@evil/post/x', kind: 'share', at: 1 }, // 非 threads 網域
+    { url: 'https://www.threads.com/@user/post', kind: 'share', at: 1 }, // 缺貼文 id
+    { url: 'not-a-url', kind: 'share', at: 1 }, // 完全不是網址
+    { url: 'https://www.threads.com/@user/post/x<y>', kind: 'share', at: 1 }, // 夾帶非法字元
+  ]);
+  assert.deepEqual(
+    cleaned.map((e) => e.url),
+    [URL_A]
+  );
+});
+
 // 0.5.0 方案甲(歷史即收藏):entries 擴充選填 author/handle/excerpt。核心
 // 欄位(url/kind/at)合法時，選填欄位為字串則截斷至長度上限，非字串則整欄
 // 丟棄(不影響核心欄位本身，entry 仍保留)——與 mergeImportedEntries 的
@@ -308,6 +327,24 @@ test('hasCardPreview:author 或 excerpt 任一存在即為 true;皆缺席或僅�
   assert.equal(options.hasCardPreview({}), false);
   assert.equal(options.hasCardPreview({ handle: '@onlyhandle' }), false, '單獨 handle 不算有預覽，對齊手機版邏輯');
   assert.equal(options.hasCardPreview({ author: '' }), false, '空字串視同缺席');
+});
+
+// ---- 設定頁不再出現 notifySuccess 控件(PM 審查後補) ----
+//
+// R1 同輪已把成功通知整組拆光，notifySuccess 合併後零讀取端;上一輪誤以
+// 「另一車道尚未拆通知」為由保留這顆開關，是過期情報，變成誤導使用者的
+// 死 UI。這裡從兩個角度釘住它不會再出現:純函式層的 SETTING_IDS/
+// OPTIONS_DEFAULT_SETTINGS 不含這顆鍵，以及 options.html 原文不再有
+// id="notifySuccess" 的控件(靜態檢查，照 popup.test.js 既有的 R1-3 慣例)。
+test('notifySuccess:OPTIONS_DEFAULT_SETTINGS 與 SETTING_IDS 皆不含這顆鍵(成功通知已整組移除)', () => {
+  assert.equal(Object.prototype.hasOwnProperty.call(options.OPTIONS_DEFAULT_SETTINGS, 'notifySuccess'), false);
+});
+
+test('notifySuccess:options.html 原文不再有 id="notifySuccess" 的控件', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.equal(/\bid\s*=\s*["']notifySuccess["']/i.test(html), false, 'options.html 不應再有 notifySuccess 控件');
+  assert.equal(/\bopNotify(Name|Desc)\b/.test(html), false, 'options.html 不應再引用 opNotifyName/opNotifyDesc');
 });
 
 // ---- controller smoke(最小 DOM stub) ----
