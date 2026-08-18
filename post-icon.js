@@ -109,23 +109,6 @@
     }
   }
 
-  // 0.5.0 貼文收藏庫:從一個「乾淨貼文網址」(buildPostUrl 的輸出，或任何
-  // 同形狀的絕對網址)導出收藏用的正規路徑 id(如 @user/post/ABC123)，語
-  // 意對齊 background.js 的 FAVORITE_URL_PATTERN group 2——去 domain、去尾
-  // 隨斜線、去 query/hash。內容腳本用這個 id 對照 storage.local 讀出的
-  // favorites 清單(條目已有 id 欄位)，判斷目前這篇貼文是否已收藏，藉此
-  // 決定書籤 icon 顯示實心或空心。這裡的正則刻意比 background 的驗證正
-  // 則寬鬆(background 才是最終權威，任何 toggle 都會在那邊重新驗證)，
-  // 寬鬆比對的唯一代價是初始顯示狀態偶爾判斷不準，不影響資料正確性。url
-  // 非字串或格式不符一律回傳 null，不丟例外。
-  var FAVORITE_ID_PATTERN =
-    /^https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[^/?#]+\/post\/[^/?#]+)\/?(?:[?#].*)?$/i;
-  function buildFavoriteId(url) {
-    if (typeof url !== 'string') return null;
-    var match = FAVORITE_ID_PATTERN.exec(url);
-    return match ? match[1] : null;
-  }
-
   // 0.5.0 貼文收藏庫:擷取內文摘要(extractExcerpt)時，逐一判斷候選文字
   // 段落要 push(當內文)、skip(跳過但繼續看下一個候選)、還是 stop(視為
   // 內文區段已結束，中止收集)。抽成純函式方便測試，DOM 層的 extractExcerpt
@@ -160,6 +143,92 @@
     return 'push';
   }
 
+  // 使用者變更設定規格:postCopyEnabled(貼文複製按鈕開關)預設 true，只
+  // 有明確存成 false 才視為關閉；其餘(true／undefined／未設定過／其他
+  // 型別的雜訊值)一律視為啟用。正規化邏輯抽成純函式，讀取 storage 的
+  // fallback 與 storage.onChanged 收到新值時都呼叫這裡，行為保證一致。
+  function resolvePostCopyEnabled(rawValue) {
+    return rawValue === false ? false : true;
+  }
+
+  // 使用者變更設定規格:share/strip 解析在 Threads 頁面內失敗時(bridge.js
+  // 收到 resolveShare 的 ok:false 回應或同義訊號)，改用頁內 toast 提示，
+  // 不再靠 background 的系統通知(原本這條路徑其實從未真的發過系統通
+  // 知——clipboard-guard.js 一路是靜默 fail-open，這裡是新增的使用者可
+  // 見信號)。文字沿用 background.js 右鍵路徑既有的失敗文案 i18n key，
+  // 三個已知原因(來自 background.js 的 handleResolveShareMessage)逐一
+  // 對應；其餘原因(bridge/guard 自身的連線層失敗，如逾時、通道關閉、
+  // sendMessage 例外)一律 fallback 到 bgUnexpected，比照右鍵路徑「未預
+  // 期錯誤」的既有處理方式。純函式，供 Node 測試與瀏覽器共用。
+  var RESOLVE_FAILURE_KEY_MAP = {
+    'invalid-url': 'bgInvalid',
+    'network-error': 'bgNetworkError',
+    'format-error': 'bgFormatError',
+  };
+  function resolveFailureToastKey(reason) {
+    if (typeof reason === 'string' && Object.prototype.hasOwnProperty.call(RESOLVE_FAILURE_KEY_MAP, reason)) {
+      return RESOLVE_FAILURE_KEY_MAP[reason];
+    }
+    return 'bgUnexpected';
+  }
+
+  // 方案甲(歷史即收藏):bridge.js 收到 TCL_CLEANED_NOTICE 轉發給
+  // background 前，需要在目前頁面 DOM 找出「這個乾淨網址對應的貼文容
+  // 器」，才能就地補 author/handle/excerpt。findContainerByCleanUrl(見下)
+  // 的比對核心抽成這兩個純函式，供 Node 測試直接載入。
+  //
+  // 從絕對或相對的網址／href 字串擷取「path 段」：去 query(?...)、去
+  // hash(#...)、去尾隨斜線，其餘原樣保留(不動大小寫——Threads 的
+  // handle／post id 大小寫有意義，不該被這裡的比對邏輯抹平)。用 URL 建
+  // 構子搭配佔位 base(相對路徑也能解析出 pathname，佔位 base 本身不影
+  // 響結果)取代自己刻正則剖析 host，同時複用瀏覽器與 Node 都內建的 URL
+  // 全域。輸入非字串、空字串、或組不出合法 URL 一律回傳 null，不丟例外。
+  function extractPostPath(value) {
+    if (typeof value !== 'string' || !value) return null;
+    try {
+      var url = new URL(value, 'http://tcl-path-placeholder.invalid');
+      var pathname = url.pathname.replace(/\/+$/, '');
+      return pathname || '/';
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // 比較兩個網址／href 字串是否指向「同一篇貼文」：只比對 path 段(見
+  // extractPostPath)，容忍尾隨斜線與 query/hash 差異、也容忍其中一個是
+  // 絕對網址、另一個是頁面 DOM 上常見的相對路徑(如 '/@user/post/ID')。
+  // 任一邊解析失敗一律回傳 false，不丟例外。
+  function isSamePostPath(a, b) {
+    var pathA = extractPostPath(a);
+    var pathB = extractPostPath(b);
+    return !!pathA && !!pathB && pathA === pathB;
+  }
+
+  // 輸入一個乾淨貼文網址，在目前頁面 DOM 找出對應的貼文容器：掃過
+  // document 內所有 a[href*="/post/"]，用 isSamePostPath 逐一比對，命中
+  // 後 climb 最近的 div[data-pressable-container] 祖先並回傳。找不到、
+  // 輸入不合法、或任何一步丟例外一律回傳 null。碰 document 的邏輯用
+  // `typeof document !== 'undefined'` 守衛包住(Node 測試環境直接回傳
+  // null，不丟例外)，因此雖然定義在守衛外的純函式區，仍是給 Node 測試
+  // 用的安全 no-op；真正的 DOM 行為由瀏覽器整合層驗證(bridge.js 呼叫
+  // root.TCLPostIcon.findContainerByCleanUrl)。
+  function findContainerByCleanUrl(url) {
+    if (typeof document === 'undefined' || typeof url !== 'string' || !url) return null;
+    try {
+      var anchors = document.querySelectorAll('a[href*="/post/"]');
+      for (var i = 0; i < anchors.length; i++) {
+        var href = anchors[i].getAttribute('href');
+        if (isSamePostPath(url, href)) {
+          var container = anchors[i].closest ? anchors[i].closest('div[data-pressable-container]') : null;
+          if (container) return container;
+        }
+      }
+    } catch (e) {
+      // 找不到就回傳 null，不丟例外。
+    }
+    return null;
+  }
+
   // scope(貼文容器或互動列)內是否已經注入過我們的 icon，用來讓注入邏輯
   // 冪等，避免重複插入。scope 缺失或不是帶 querySelector 的物件一律回傳
   // false，不丟例外。
@@ -173,6 +242,28 @@
   }
 
   // ============================================================
+  // 模組匯出(宣告在 DOM 守衛「外」，因為裡面全是純函式，Node 測試環境也
+  // 用得到)。DOM 守衛內若定義了需要碰 document 的 API(findContainerByCleanUrl
+  // 已經自帶守衛，屬例外；extractPostInfo／showResolveFailureToast 這類
+  // 真正需要 document/t()/樣式基礎設施的函式，改在守衛內對這個物件用
+  // `api.xxx = xxx` 掛上去)，掛的動作發生在守衛內、但 api 變數本身在守衛
+  // 外宣告——閉包讓守衛內的程式碼能直接讀寫外層這個變數。Node 環境永遠
+  // 不會進入守衛，api 上就只會有這裡列出的純函式。
+  // ============================================================
+  var api = {
+    pickPermalink: pickPermalink,
+    buildPostUrl: buildPostUrl,
+    hasExistingIcon: hasExistingIcon,
+    pickActionRowIndex: pickActionRowIndex,
+    filterOwnContainerHrefs: filterOwnContainerHrefs,
+    classifyExcerptCandidate: classifyExcerptCandidate,
+    isSamePostPath: isSamePostPath,
+    resolveFailureToastKey: resolveFailureToastKey,
+    resolvePostCopyEnabled: resolvePostCopyEnabled,
+    findContainerByCleanUrl: findContainerByCleanUrl,
+  };
+
+  // ============================================================
   // DOM 注入層(瀏覽器整合層)。碰 document / MutationObserver 的邏輯全部
   // 收在這個守衛裡，Node 測試環境 require() 本檔時直接跳過整段，不執行、
   // 不丟例外。
@@ -180,10 +271,6 @@
   if (typeof document !== 'undefined') {
     (function () {
       var ICON_CLASS = 'tcl-copy-icon';
-      // 0.5.0 貼文收藏庫:書籤 icon 的外層 wrapper class，與複製 icon 並排
-      // 插在互動列最後，共用同一套樣式規則(見 injectStyle)、同一套
-      // SVG_WRAP_CLASS／TOOLTIP_CLASS 內層結構、同一輪 scanAndInject 掃描。
-      var FAV_ICON_CLASS = 'tcl-fav-icon';
       var STYLE_ID = 'tcl-post-icon-style';
       var TOOLTIP_CLASS = 'tcl-copy-icon-tooltip';
       var TOOLTIP_VISIBLE_CLASS = 'tcl-copy-icon-tooltip--visible';
@@ -220,43 +307,29 @@
         '<path d="M20 6 9 17l-5-5"/>' +
         '</svg>';
 
-      // 0.5.0 貼文收藏庫:書籤(Lucide bookmark)圖示，未收藏空心、已收藏實
-      // 心——兩者共用同一個 path，差別只在 fill:none／currentColor，換圖
-      // 示邏輯比照 LINK_SVG/CHECK_SVG 的 innerHTML 互換模式(見
-      // createFavIconElement 的 render())。
-      var BOOKMARK_OUTLINE_SVG =
-        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
-        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<title></title>' +
-        '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>' +
-        '</svg>';
-      var BOOKMARK_FILLED_SVG =
-        '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" stroke="currentColor" ' +
-        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<title></title>' +
-        '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>' +
-        '</svg>';
-
       // 目前使用的語言，載入時由 chrome.storage.sync 的 langPref 解析；
       // storage.onChanged 觸發時即時更新既有 icon 的文案。
       var currentLocale = 'en';
 
+      // 使用者變更設定規格:postCopyEnabled(貼文複製按鈕開關)。讀取完成
+      // 前的預設值就是最終預設值 true(見 resolvePostCopyEnabled)，讀取
+      // 失敗也維持這個值——與 langPref 的「先假設預設值立刻動作、讀到後
+      // 再補正」策略一致。
+      var postCopyEnabled = true;
+
       // i18n.js 理論上一定會在 post-icon.js 之前載入(manifest content_scripts
       // 陣列順序保證)，但防禦性地假設 TCLI18N 可能不存在或呼叫時丟例外：
       // 退回這份內建的英文字面值表，不要讓使用者看到原始 key 字串。
-      // favContextLost 的 zh/en 兩個字面值由另一車道併入 i18n.js 字典(此
-      // 分支刻意不動 i18n.js，避免合併衝突)；在該字典還沒有這個 key 的期
-      // 間(例如本車道獨立測試、或分支尚未合併)，TCLI18N.t() 對不存在的
-      // key 會直接回傳 key 本身字串(見 i18n.js 的 t() 實作)，不會丟例
-      // 外，因此一般的 t(key) 掉不到下面的 FALLBACK_STRINGS——這裡才需要
-      // favContextLost 專屬的 tContextLost()，見下方。
+      // favContextLost(孤兒情境提示，原書籤 icon 車道的事故改進項目，方
+      // 案甲重組後改掛在複製 icon 的 notifyBackgroundCleaned 失敗路徑)的
+      // zh/en 兩個字面值由另一車道併入 i18n.js 字典(此分支刻意不動
+      // i18n.js，避免合併衝突)；在該字典還沒有這個 key 的期間，TCLI18N.t()
+      // 對不存在的 key 會直接回傳 key 本身字串(見 i18n.js 的 t() 實
+      // 作)，不會丟例外，因此一般的 t(key) 掉不到下面的 FALLBACK_STRINGS
+      // ——這裡才需要 favContextLost 專屬的 tContextLost()，見下方。
       var FALLBACK_STRINGS = {
         iconTooltip: 'Copy original link',
         iconCopied: 'Original link copied',
-        favIconTooltip: 'Save post',
-        favSaved: 'Saved',
-        favRemoved: 'Removed from favorites',
-        favFull: 'Favorites full (500 limit)',
         favContextLost: {
           zh: '擴充功能已更新，請重新整理頁面',
           en: 'Extension updated — please refresh the page',
@@ -292,35 +365,15 @@
         return fallback[currentLocale] || fallback.en || 'favContextLost';
       }
 
-      // ---- 從貼文容器擷取「乾淨貼文網址」:複製 icon 與書籤 icon 共用同一
-      // 套鏈(filterOwnContainerHrefs → pickPermalink → buildPostUrl)，抽成
-      // 共用函式避免兩處各自維護一份。container 缺失或擷取任何一步失敗都
-      // 回傳 null，不丟例外，由呼叫端決定要不要記警告訊息。----
-      function extractContainerCleanUrl(container) {
-        if (!container || typeof container.querySelectorAll !== 'function') return null;
-        var anchors = container.querySelectorAll('a[href*="/post/"]');
-        var candidates = [];
-        for (var i = 0; i < anchors.length; i++) {
-          var anchor = anchors[i];
-          var ownContainer = anchor.closest
-            ? anchor.closest('div[data-pressable-container]') === container
-            : true;
-          candidates.push({ href: anchor.getAttribute('href'), ownContainer: ownContainer });
-        }
-        var hrefs = filterOwnContainerHrefs(candidates);
-        var permalink = pickPermalink(hrefs);
-        if (!permalink) return null;
-        return buildPostUrl(permalink, root.location.origin);
-      }
-
-      // ---- 0.5.0 貼文收藏庫:從貼文容器 DOM 擷取 author/handle/excerpt，
-      // 只在使用者實際點擊書籤 icon 時呼叫(初始收藏狀態只需要 url 導出
-      // 的 id，不需要這三個欄位)。三者皆為選填，擷取不到就整欄不寫進回
-      // 傳物件，由呼叫端決定要不要把該欄位放進 favoriteToggle 訊息——協
-      // 定本來就允許缺席(background 端 sanitizeFavoriteField 只處理型別
-      // 為 string 的欄位)。RELATIVE_TIME_RE／COUNT_LIKE_RE／
-      // classifyExcerptCandidate 移到檔案頂部的純函式區，供 Node 測試直
-      // 接載入，這裡只呼叫。----
+      // ---- 方案甲(歷史即收藏):從貼文容器 DOM 擷取 author/handle/excerpt，
+      // 在複製 icon 成功寫入剪貼簿後呼叫(見 notifyBackgroundCleaned)，附
+      // 進 cleanedNotice 訊息讓 background 記錄進淨化紀錄。bridge.js 的
+      // share/strip 路徑透過 root.TCLPostIcon.findContainerByCleanUrl 找到
+      // 容器後，也是呼叫這兩個函式取得同一組欄位。三者皆為選填，擷取不
+      // 到就整欄不寫進回傳物件，由呼叫端決定要不要放進訊息——協定本來就
+      // 允許缺席(background 端的欄位驗證只處理型別為 string 的值)。
+      // RELATIVE_TIME_RE／COUNT_LIKE_RE／classifyExcerptCandidate 定義在
+      // 檔案頂部的純函式區，供 Node 測試直接載入，這裡只呼叫。----
 
       // 與 background.js 的 FAVORITES_EXCERPT_MAX 對齊(PM 核對手機 repo
       // 後裁決的上限)；這裡預先截斷一次，background 端仍會再做一次防禦
@@ -400,53 +453,116 @@
         }
       }
 
+      // ---- 合併 extractAuthorHandle／extractExcerpt 成單一呼叫，回傳可
+      // 以直接展開進 cleanedNotice payload 的物件(只含實際擷取到的欄
+      // 位)。複製 icon 自己的 notifyBackgroundCleaned 與 bridge.js(經
+      // root.TCLPostIcon.extractPostInfo)共用同一份邏輯，避免兩處各自組
+      // 一次「author/handle/excerpt 挑非 undefined 欄位」的判斷。----
+      function extractPostInfo(container) {
+        var info = extractAuthorHandle(container) || {};
+        var excerpt = extractExcerpt(container);
+        var result = {};
+        if (info.author !== undefined) result.author = info.author;
+        if (info.handle !== undefined) result.handle = info.handle;
+        if (excerpt !== undefined) result.excerpt = excerpt;
+        return result;
+      }
+      api.extractPostInfo = extractPostInfo;
+
       // ---- 樣式注入:hover 圓底高亮 + 點擊回饋氣泡，標 id 防重複注入 ----
-      // 複製 icon 與書籤 icon 的外層 wrapper 結構(圓形點擊區、hover 圓
-      // 底、內層 svg wrapper、氣泡 tooltip)完全相同，只有外層 class 名稱
-      // 不同，這裡把原本針對 ICON_CLASS 寫死的規則改成對一組 class 名稱
-      // 迴圈輸出，兩顆 icon 共用同一份樣式定義，內容與原本針對 ICON_CLASS
-      // 的規則逐字相同(只是換了 class 名稱)，不影響既有複製 icon 的外觀。
       function injectStyle() {
         if (document.getElementById(STYLE_ID)) return;
         var style = document.createElement('style');
         style.id = STYLE_ID;
-        var rules = [];
-        var iconClasses = [ICON_CLASS, FAV_ICON_CLASS];
-        for (var c = 0; c < iconClasses.length; c++) {
-          var cls = iconClasses[c];
-          rules.push(
-            '.' + cls + '{position:relative;display:inline-flex;align-items:center;',
-            'justify-content:center;width:36px;height:36px;border-radius:9999px;cursor:pointer;',
-            'color:inherit;background-color:transparent;}',
-            '.' + cls + ':focus-visible{outline:2px solid currentColor;outline-offset:1px;}',
-            // hover 圓底:實機量測原生互動列按鈕的 hover 背景，深色主題是
-            // rgb(30,30,30)、瞬間出現(無 transition)，這裡照抄精確值與行
-            // 為。淺色主題同樣為實測值 rgb(245,245,245)(CDP 模擬
-            // prefers-color-scheme 實測)。
-            '@media (prefers-color-scheme: dark){.' + cls + ':hover{background-color:rgb(30,30,30);}}',
-            '@media (prefers-color-scheme: light){.' + cls + ':hover{background-color:rgb(245, 245, 245);}}',
-            // svg 設 pointer-events:none 讓滑鼠事件穿透到外層可互動的 div
-            // (click/keydown 都綁在 el，見 createIconElement／
-            // createFavIconElement)，副作用是游標永遠不會落在 svg 上，svg
-            // 內 <title> 的原生 tooltip 因此永不觸發(原生互動列按鈕的 svg
-            // 是 pointer-events:auto 所以有效)。原生 tooltip 改掛在外層 div
-            // 的 title 屬性上才會觸發。
-            '.' + cls + ' .' + SVG_WRAP_CLASS + '{display:inline-flex;pointer-events:none;}',
-            // 點擊回饋自繪氣泡:hover 提示已改用外層 div 的原生 title 屬
-            // 性，這顆 tooltip 元素不再靠 :hover 觸發，只在點擊回饋時由
-            // showCopiedFeedback()／showBubble() 加上 TOOLTIP_VISIBLE_CLASS
-            // 類別顯示，COPIED_RESET_MS 後自動移除。
-            '.' + cls + ' .' + TOOLTIP_CLASS + '{position:absolute;top:calc(100% + 6px);left:50%;',
-            'transform:translateX(-50%);padding:4px 8px;border-radius:6px;font-size:12px;line-height:1.4;',
-            'white-space:nowrap;background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
-            'transition:opacity .12s ease;z-index:1000;}',
-            '@media (prefers-color-scheme: light){.' + cls + ' .' + TOOLTIP_CLASS + '{background:#e5e5e5;color:#050505;}}',
-            '.' + cls + ' .' + TOOLTIP_CLASS + '.' + TOOLTIP_VISIBLE_CLASS + '{opacity:1;}'
-          );
-        }
-        style.textContent = rules.join('');
+        style.textContent = [
+          '.' + ICON_CLASS + '{position:relative;display:inline-flex;align-items:center;',
+          'justify-content:center;width:36px;height:36px;border-radius:9999px;cursor:pointer;',
+          'color:inherit;background-color:transparent;}',
+          '.' + ICON_CLASS + ':focus-visible{outline:2px solid currentColor;outline-offset:1px;}',
+          // hover 圓底:實機量測原生互動列按鈕的 hover 背景，深色主題是
+          // rgb(30,30,30)、瞬間出現(無 transition)，這裡照抄精確值與行
+          // 為。淺色主題同樣為實測值 rgb(245,245,245)(CDP 模擬
+          // prefers-color-scheme 實測)。
+          '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:rgb(30,30,30);}}',
+          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:rgb(245, 245, 245);}}',
+          // svg 設 pointer-events:none 讓滑鼠事件穿透到外層可互動的 div
+          // (click/keydown 都綁在 el，見 createIconElement)，副作用是游
+          // 標永遠不會落在 svg 上，svg 內 <title> 的原生 tooltip 因此永
+          // 不觸發(原生互動列按鈕的 svg 是 pointer-events:auto 所以有
+          // 效)。原生 tooltip 改掛在外層 div 的 title 屬性上才會觸發，見
+          // createIconElement 的 el.title 設定。
+          '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + '{display:inline-flex;pointer-events:none;}',
+          // 點擊後「已複製原始連結」的自繪回饋氣泡:hover 提示已改用外層
+          // div 的原生 title 屬性(見 createIconElement 開頭的 el.title
+          // 設定)，這顆 tooltip 元素不再靠 :hover 觸發，只在點擊回饋時
+          // 由 showCopiedFeedback() 加上 TOOLTIP_VISIBLE_CLASS 類別顯
+          // 示，COPIED_RESET_MS 後自動移除。
+          '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{position:absolute;top:calc(100% + 6px);left:50%;',
+          'transform:translateX(-50%);padding:4px 8px;border-radius:6px;font-size:12px;line-height:1.4;',
+          'white-space:nowrap;background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
+          'transition:opacity .12s ease;z-index:1000;}',
+          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{background:#e5e5e5;color:#050505;}}',
+          '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '.' + TOOLTIP_VISIBLE_CLASS + '{opacity:1;}',
+        ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
+
+      // ---- 使用者變更設定規格:頁內失敗 toast(share/strip 解析在 Threads
+      // 頁面內失敗時顯示)。固定定位在畫面底部置中，視覺語言比照複製 icon
+      // 的自繪氣泡(同款深/淺主題配色、圓角、字級)，3 秒後自動淡出。單一
+      // 常駐節點、重複呼叫會直接覆蓋文字並重新計時，不會疊出多個 toast。
+      var TOAST_ID = 'tcl-toast';
+      var TOAST_STYLE_ID = 'tcl-toast-style';
+      var TOAST_VISIBLE_CLASS = 'tcl-toast--visible';
+      var TOAST_DURATION_MS = 3000;
+      var toastHideTimer = null;
+
+      function injectToastStyle() {
+        if (document.getElementById(TOAST_STYLE_ID)) return;
+        var style = document.createElement('style');
+        style.id = TOAST_STYLE_ID;
+        style.textContent = [
+          '#' + TOAST_ID + '{position:fixed;left:50%;bottom:24px;',
+          'transform:translateX(-50%) translateY(8px);padding:8px 16px;border-radius:8px;',
+          'font-size:13px;line-height:1.4;max-width:min(80vw,420px);text-align:center;',
+          'background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
+          'transition:opacity .15s ease,transform .15s ease;z-index:2147483647;}',
+          '@media (prefers-color-scheme: light){#' + TOAST_ID + '{background:#e5e5e5;color:#050505;}}',
+          '#' + TOAST_ID + '.' + TOAST_VISIBLE_CLASS + '{opacity:1;transform:translateX(-50%) translateY(0);}',
+        ].join('');
+        (document.head || document.documentElement).appendChild(style);
+      }
+
+      function showToast(text) {
+        try {
+          injectToastStyle();
+          var el = document.getElementById(TOAST_ID);
+          if (!el) {
+            el = document.createElement('div');
+            el.id = TOAST_ID;
+            (document.body || document.documentElement).appendChild(el);
+          }
+          el.textContent = text;
+          el.classList.add(TOAST_VISIBLE_CLASS);
+          if (toastHideTimer) clearTimeout(toastHideTimer);
+          toastHideTimer = setTimeout(function () {
+            toastHideTimer = null;
+            el.classList.remove(TOAST_VISIBLE_CLASS);
+          }, TOAST_DURATION_MS);
+        } catch (e) {
+          console.warn('[threads-clean-link] 顯示頁內 toast 失敗', e);
+        }
+      }
+
+      // ---- 給 bridge.js 呼叫(root.TCLPostIcon.showResolveFailureToast):
+      // share/strip 的短碼解析在 Threads 頁面內失敗時，顯示對應失敗文案
+      // 的 toast。reason 依 resolveFailureToastKey(純函式區)對應到 i18n
+      // key，文字沿用既有的 bgInvalid/bgNetworkError/bgFormatError/
+      // bgUnexpected，不需要新增 i18n key。----
+      function showResolveFailureToast(reason) {
+        showToast(t(resolveFailureToastKey(reason)));
+      }
+      api.showResolveFailureToast = showResolveFailureToast;
 
       // ---- 單顆 icon 元素:圖示、tooltip、點擊/鍵盤複製邏輯 ----
       function createIconElement() {
@@ -525,6 +641,31 @@
           }, COPIED_RESET_MS);
         }
 
+        // 孤兒情境提示(事故改進，原書籤 icon 車道的設計，方案甲重組後搬
+        // 到複製 icon 這條路徑):擴充功能更新/重載後，已注入頁面的舊
+        // content script 呼叫 chrome.runtime.sendMessage 會丟出帶
+        // 「Extension context invalidated」字樣的例外——這種情況下複製本
+        // 身已經成功(icon 已經是勾勾狀態)，只是background 記錄淨化紀錄
+        // 這步失敗，且非重新整理頁面不能恢復，蓋掉原本「已複製」的氣泡
+        // 文字改顯示 tContextLost()，比單純吞掉或印一般性警告更能讓使用
+        // 者知道發生什麼事。沿用 showCopiedFeedback 同一套 timer 機制，
+        // 顯示一段時間後一樣復原成預設圖示與文字。
+        function showContextLostBubble() {
+          tooltip.textContent = tContextLost();
+          tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
+          clearFeedbackTimers();
+          resetTimer = setTimeout(function () {
+            resetTimer = null;
+            iconWrap.innerHTML = LINK_SVG;
+            applyIconTitle();
+            tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
+            textResetTimer = setTimeout(function () {
+              textResetTimer = null;
+              tooltip.textContent = t('iconTooltip');
+            }, TOOLTIP_TEXT_RESET_DELAY_MS);
+          }, COPIED_RESET_MS);
+        }
+
         // 語言切換時(storage.onChanged)同步既有 icon 的 aria-label、外層
         // div 的原生 title 屬性(實際觸發 hover tooltip 的地方)、SVG
         // <title>(無障礙語意用途)與自繪 tooltip 文字；aria-label／title
@@ -590,7 +731,7 @@
               .writeText(url)
               .then(function () {
                 showCopiedFeedback();
-                notifyBackgroundCleaned(url);
+                notifyBackgroundCleaned(url, container);
               })
               .catch(function (err) {
                 console.warn('[threads-clean-link] 寫入剪貼簿失敗', err);
@@ -600,19 +741,36 @@
           }
         }
 
-        // 把「已複製乾淨連結」這件事轉知 background，讓 options 頁的淨化
-        // 紀錄能收進這條路徑(kind:'icon'，不冒用右鍵選單的 'menu')。純
-        // 通知性質，整段吞例外——chrome.runtime 不存在(context 已失效／
-        // 非擴充功能頁面)或 sendMessage 本身丟例外，都不得影響前面已經
-        // 成功的複製與勾勾回饋。
+        // sendMessage 失敗時的錯誤分類:辨識「Extension context invalidated」
+        // 類錯誤(孤兒情境，見上方 showContextLostBubble 註解)顯示專屬氣
+        // 泡；其餘錯誤(background 暫時無回應、非擴充功能頁面等)維持原本
+        // 的 console.warn，不打斷已經成功的複製與勾勾回饋。
+        function handleSendError(err) {
+          var msg = err && err.message ? err.message : String(err);
+          if (/extension context invalidated/i.test(msg)) {
+            showContextLostBubble();
+          } else {
+            console.warn('[threads-clean-link] 通知 background 記錄淨化紀錄失敗', err);
+          }
+        }
+
+        // 把「已複製乾淨連結」這件事轉知 background，讓淨化紀錄(方案甲:
+        // 歷史即收藏，唯一資料集)能收進這條路徑(kind:'icon'，不冒用右鍵
+        // 選單的 'menu')。同時從貼文容器 DOM 順手擷取 author/handle/excerpt
+        // 附進同一則訊息，讓這筆紀錄之後能在 options 頁的卡片牆呈現作者
+        // 與內文摘要——三者皆為選填，擷取不到就整欄不放進 payload(協定
+        // 允許缺席，background 端只認型別為 string 的值)。整段吞例外(除
+        // 了轉給 handleSendError 分類)——chrome.runtime 不存在(context 已
+        // 失效／非擴充功能頁面)或 sendMessage 本身丟例外，都不得影響前
+        // 面已經成功的複製與勾勾回饋。
         //
         // MV3 下不帶 callback 呼叫 sendMessage 會回傳 Promise：background
         // 的 cleanedNotice 監聽器 return false(同步處理完即關通道)，該
         // Promise 會以「message port closed」reject，若不接 .catch 就會在
         // 頁面 console 留下 unhandled promise rejection。回傳值先防禦性
         // 檢查是不是真的 Promise(舊瀏覽器 sendMessage 可能不回傳任何東西)
-        // 再接空 .catch 吞掉。
-        function notifyBackgroundCleaned(url) {
+        // 再接 .catch 交給 handleSendError 分類。
+        function notifyBackgroundCleaned(url, container) {
           try {
             if (
               typeof chrome === 'undefined' ||
@@ -621,190 +779,15 @@
             ) {
               return;
             }
-            var maybePromise = chrome.runtime.sendMessage({
-              type: 'cleanedNotice',
-              cleanUrl: url,
-              kind: 'icon',
-            });
-            if (maybePromise && typeof maybePromise.catch === 'function') {
-              maybePromise.catch(function () {});
-            }
-          } catch (err) {
-            console.warn('[threads-clean-link] 通知 background 記錄淨化紀錄失敗', err);
-          }
-        }
+            var payload = { type: 'cleanedNotice', cleanUrl: url, kind: 'icon' };
+            var info = extractPostInfo(container);
+            if (info.author !== undefined) payload.author = info.author;
+            if (info.handle !== undefined) payload.handle = info.handle;
+            if (info.excerpt !== undefined) payload.excerpt = info.excerpt;
 
-        el.addEventListener('click', handleActivate);
-        el.addEventListener('keydown', function (event) {
-          if (event && (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar')) {
-            handleActivate(event);
-          }
-        });
-
-        return el;
-      }
-
-      // ---- 0.5.0 貼文收藏庫:目前已收藏貼文的 id 集合(buildFavoriteId 導
-      // 出的正規路徑)，啟動時從 chrome.storage.local 的 favorites 讀入，
-      // chrome.storage.onChanged 觸發時整份重建。書籤 icon 的初始實心／空
-      // 心狀態、以及運行中即時更新，都靠查這個 Set。----
-      var favoriteIds = new Set();
-
-      function rebuildFavoriteIds(list) {
-        var next = new Set();
-        if (Array.isArray(list)) {
-          for (var i = 0; i < list.length; i++) {
-            if (list[i] && typeof list[i].id === 'string') next.add(list[i].id);
-          }
-        }
-        favoriteIds = next;
-      }
-
-      // ---- 單顆書籤 icon 元素:互動列複製 icon 之後再插一顆，圖示／氣泡／
-      // hover 圓底／冪等機制全部沿用複製 icon 同一套(見 createIconElement
-      // 與 injectStyle)。與複製 icon 最大的差異:這顆有「已收藏／未收藏」
-      // 兩種持久狀態(靠 fill 圖示切換，不是像複製 icon 那樣點擊後幾秒又
-      // 復原)，且點擊要送 favoriteToggle 訊息並依回應決定新狀態，而不是
-      // 直接寫剪貼簿。----
-      function createFavIconElement(container) {
-        var el = document.createElement('div');
-        el.className = FAV_ICON_CLASS;
-        el.setAttribute('role', 'button');
-        el.setAttribute('tabindex', '0');
-        el.setAttribute('aria-label', t('favIconTooltip'));
-        el.setAttribute('title', t('favIconTooltip'));
-
-        var iconWrap = document.createElement('span');
-        iconWrap.className = SVG_WRAP_CLASS;
-        el.appendChild(iconWrap);
-
-        var tooltip = document.createElement('span');
-        tooltip.className = TOOLTIP_CLASS;
-        el.appendChild(tooltip);
-
-        var saved = false;
-        var bubbleResetTimer = null;
-
-        function applyFavIconTitle() {
-          var titleEl = iconWrap.querySelector('title');
-          if (titleEl) titleEl.textContent = t('favIconTooltip');
-        }
-
-        function render() {
-          iconWrap.innerHTML = saved ? BOOKMARK_FILLED_SVG : BOOKMARK_OUTLINE_SVG;
-          applyFavIconTitle();
-        }
-
-        function setSaved(nextSaved) {
-          saved = !!nextSaved;
-          render();
-        }
-
-        // 初始狀態:依這篇貼文目前導出的 url/id 查 favoriteIds Set。id 存
-        // 在 el 上(_tclFavId)，storage.onChanged 更新時直接用它比對，不
-        // 需要重新掃一次 DOM。
-        var initialUrl = extractContainerCleanUrl(container);
-        el._tclFavId = initialUrl ? buildFavoriteId(initialUrl) : null;
-        setSaved(el._tclFavId ? favoriteIds.has(el._tclFavId) : false);
-
-        // 語言切換時同步 aria-label／title／svg <title>；持久狀態(實心／
-        // 空心)與語言無關，不受影響。已顯示中的氣泡文字是一次性事件訊
-        // 息，不因語言切換即時改寫(等它自然消失，比照複製 icon 對「已複
-        // 製」暫時狀態的處理方式)。
-        el._tclApplyLocale = function () {
-          el.setAttribute('aria-label', t('favIconTooltip'));
-          el.setAttribute('title', t('favIconTooltip'));
-          applyFavIconTitle();
-        };
-
-        // storage.onChanged 觸發、favoriteIds 重建後呼叫，依目前這顆 icon
-        // 對應的 id 是否還在集合內同步視覺狀態(涵蓋「別的分頁把它取消收
-        // 藏」這類非本地操作觸發的變化)。
-        el._tclSyncFavoriteState = function () {
-          setSaved(el._tclFavId ? favoriteIds.has(el._tclFavId) : false);
-        };
-
-        function showBubble(text) {
-          tooltip.textContent = text;
-          tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
-          if (bubbleResetTimer) clearTimeout(bubbleResetTimer);
-          bubbleResetTimer = setTimeout(function () {
-            bubbleResetTimer = null;
-            tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
-          }, COPIED_RESET_MS);
-        }
-
-        // sendMessage 失敗時的錯誤分類:擴充功能更新/重載後，已注入頁面
-        // 的舊 content script 呼叫 chrome.runtime.sendMessage 會丟出帶
-        // 「Extension context invalidated」字樣的例外(孤兒情境，事故改
-        // 進項目)——這種情況下重新整理頁面才能恢復，用 favContextLost 提
-        // 示使用者，而不是靜默失敗或印一般性警告。其餘錯誤走一般警告。
-        function handleSendError(err) {
-          var msg = err && err.message ? err.message : String(err);
-          if (/extension context invalidated/i.test(msg)) {
-            showBubble(tContextLost());
-          } else {
-            console.warn('[threads-clean-link] 送出收藏切換訊息失敗', err);
-          }
-        }
-
-        function handleResponse(url, response) {
-          if (!response || response.ok !== true) {
-            var reason = response && response.reason;
-            if (reason === 'full') {
-              showBubble(t('favFull'));
-            } else {
-              console.warn('[threads-clean-link] favoriteToggle 失敗', reason || '(unknown)');
-            }
-            return;
-          }
-          el._tclFavId = buildFavoriteId(url);
-          setSaved(response.saved);
-          showBubble(response.saved ? t('favSaved') : t('favRemoved'));
-        }
-
-        function handleActivate(event) {
-          if (event) {
-            if (typeof event.stopPropagation === 'function') event.stopPropagation();
-            if (typeof event.preventDefault === 'function') event.preventDefault();
-          }
-
-          var liveContainer = el.closest ? el.closest('div[data-pressable-container]') : null;
-          if (!liveContainer) {
-            console.warn('[threads-clean-link] 找不到貼文容器，略過收藏');
-            return;
-          }
-
-          var url = extractContainerCleanUrl(liveContainer);
-          if (!url) {
-            console.warn('[threads-clean-link] 找不到貼文永久連結，略過收藏');
-            return;
-          }
-
-          if (
-            typeof chrome === 'undefined' ||
-            !chrome.runtime ||
-            typeof chrome.runtime.sendMessage !== 'function'
-          ) {
-            console.warn('[threads-clean-link] 此環境不支援 chrome.runtime.sendMessage');
-            return;
-          }
-
-          var info = extractAuthorHandle(liveContainer);
-          var excerpt = extractExcerpt(liveContainer);
-          var payload = { type: 'favoriteToggle', url: url };
-          if (info.author !== undefined) payload.author = info.author;
-          if (info.handle !== undefined) payload.handle = info.handle;
-          if (excerpt !== undefined) payload.excerpt = excerpt;
-
-          try {
             var maybePromise = chrome.runtime.sendMessage(payload);
-            if (maybePromise && typeof maybePromise.then === 'function') {
-              maybePromise
-                .then(function (response) {
-                  handleResponse(url, response);
-                })
-                .catch(handleSendError);
+            if (maybePromise && typeof maybePromise.catch === 'function') {
+              maybePromise.catch(handleSendError);
             }
           } catch (err) {
             handleSendError(err);
@@ -967,23 +950,18 @@
         applyNativeColor(icon, row);
         row.insertBefore(icon, lastWrapper.nextSibling);
 
-        // 0.5.0 貼文收藏庫:書籤 icon 緊接在複製 icon 之後插入，併入同一
-        // 輪掃描、同一次冪等判斷(上面的 hasExistingIcon 檢查已經確保這個
-        // container/row 只會走到這裡一次)，不另開 MutationObserver。icon
-        // 為 null 時(insertBefore(el, null))效果等同 appendChild，此時
-        // icon 剛插入、正是 row 的最後一個子元素，書籤圖示因此準確排在
-        // 複製 icon 右邊。
-        var favIcon = createFavIconElement(container);
-        applyNativeColor(favIcon, row);
-        row.insertBefore(favIcon, icon.nextSibling);
-
         if (scanFailCounts) scanFailCounts.delete(container);
         if (scanFailFirstAt) scanFailFirstAt.delete(container);
         if (injectedContainers) injectedContainers.add(container);
       }
 
-      // ---- 全頁掃描:找出所有貼文容器並補注入 ----
+      // ---- 全頁掃描:找出所有貼文容器並補注入。postCopyEnabled 關閉時整
+      // 個跳過(不注入新 icon)——MutationObserver 的 debounce 掃描仍會不
+      // 斷觸發呼叫，靠這裡單一入口把關比每個呼叫端各自判斷簡單、不會漏
+      // 判。開關本身的切換(移除既有 icon／恢復掃描)由 watchPostCopyEnabledChanges
+      // 與 init() 呼叫 removeAllIcons()／scanAndInject() 處理，不在這裡。----
       function scanAndInject() {
+        if (!postCopyEnabled) return;
         try {
           injectStyle();
           var containers = document.querySelectorAll('div[data-pressable-container]');
@@ -995,11 +973,10 @@
         }
       }
 
-      // ---- 語言切換時，更新頁面上既有 icon 的文案(複製 icon 與書籤 icon
-      // 都有 _tclApplyLocale，一併更新)----
+      // ---- 語言切換時，更新頁面上既有 icon 的文案 ----
       function applyLocaleToExistingIcons() {
         try {
-          var icons = document.querySelectorAll('.' + ICON_CLASS + ', .' + FAV_ICON_CLASS);
+          var icons = document.querySelectorAll('.' + ICON_CLASS);
           for (var i = 0; i < icons.length; i++) {
             if (icons[i]._tclApplyLocale) icons[i]._tclApplyLocale();
           }
@@ -1112,51 +1089,68 @@
         }
       }
 
-      // ---- 0.5.0 貼文收藏庫:讀取 chrome.storage.local 的 favorites 清
-      // 單，建初始 favoriteIds Set。防禦 callback 與 Promise 兩種
-      // chrome.storage.local.get 形態，寫法比照 readLangPref。讀取失敗或
-      // chrome.storage.local 缺席一律回傳空陣列，讓所有書籤 icon 落在
-      // 「未收藏」的安全預設狀態。----
-      function readFavorites(callback) {
+      // ---- 使用者設定:postCopyEnabled(貼文複製按鈕開關，預設 true)。讀
+      // 取邏輯比照 readLangPref——防禦 callback 與 Promise 兩種
+      // chrome.storage.sync.get 形態，讀取失敗或 chrome.storage.sync 缺席
+      // 一律 fallback true(開)，避免設定讀取異常時整個功能悄悄消失。----
+      function readPostCopyEnabled(callback) {
         var done = false;
-        function finish(list) {
+        function finish(value) {
           if (done) return;
           done = true;
-          callback(Array.isArray(list) ? list : []);
+          callback(resolvePostCopyEnabled(value));
         }
         try {
           if (
             typeof chrome === 'undefined' ||
             !chrome.storage ||
-            !chrome.storage.local ||
-            typeof chrome.storage.local.get !== 'function'
+            !chrome.storage.sync ||
+            typeof chrome.storage.sync.get !== 'function'
           ) {
-            finish([]);
+            finish(true);
             return;
           }
-          var maybePromise = chrome.storage.local.get({ favorites: [] }, function (items) {
-            finish(items && items.favorites);
+          var maybePromise = chrome.storage.sync.get({ postCopyEnabled: true }, function (items) {
+            finish(items && typeof items === 'object' ? items.postCopyEnabled : true);
           });
-          // 部分環境(Promise-only 的 storage 實作)不吃回呼引數，get() 本
-          // 身回傳 Promise，改吃這個分支。
           if (maybePromise && typeof maybePromise.then === 'function') {
             maybePromise
               .then(function (items) {
-                finish(items && items.favorites);
+                finish(items && typeof items === 'object' ? items.postCopyEnabled : true);
               })
               .catch(function () {
-                finish([]);
+                finish(true);
               });
           }
         } catch (e) {
-          finish([]);
+          finish(true);
         }
       }
 
-      // ---- chrome.storage.onChanged:favorites 清單變動(使用者在別的分
-      // 頁／options 收藏分頁增減收藏)時，重建 favoriteIds 並同步所有已注
-      // 入書籤 icon 的實心／空心狀態。----
-      function watchFavoritesChanges() {
+      // ---- 移除頁面上所有已注入的複製 icon(postCopyEnabled 關閉時呼
+      // 叫)。掃描移除，冪等:重複呼叫或頁面上本來就沒有 icon 都安全。同
+      // 時清空掃描快取(WeakSet/WeakMap)，讓設定重新打開時 scanAndInject
+      // 不會被「已經注入過」的舊快取擋下，能重新掃描補回 icon。----
+      function removeAllIcons() {
+        try {
+          var icons = document.querySelectorAll('.' + ICON_CLASS);
+          for (var i = 0; i < icons.length; i++) {
+            if (icons[i].parentNode) icons[i].parentNode.removeChild(icons[i]);
+          }
+          if (hasWeakCollections) {
+            injectedContainers = new WeakSet();
+            skippedContainers = new WeakSet();
+            scanFailCounts = new WeakMap();
+            scanFailFirstAt = new WeakMap();
+          }
+        } catch (e) {
+          console.warn('[threads-clean-link] 移除已注入 icon 失敗', e);
+        }
+      }
+
+      // ---- chrome.storage.onChanged:postCopyEnabled 切換時即時反應——關
+      // 閉就移除頁面上所有已注入的 icon，重新打開就恢復掃描注入。----
+      function watchPostCopyEnabledChanges() {
         try {
           if (
             typeof chrome === 'undefined' ||
@@ -1167,36 +1161,26 @@
             return;
           }
           chrome.storage.onChanged.addListener(function (changes, areaName) {
-            if (areaName !== 'local' || !changes || !changes.favorites) return;
-            rebuildFavoriteIds(changes.favorites.newValue);
-            applyFavoriteStateToExistingIcons();
+            if (areaName !== 'sync' || !changes || !changes.postCopyEnabled) return;
+            postCopyEnabled = resolvePostCopyEnabled(changes.postCopyEnabled.newValue);
+            if (postCopyEnabled) {
+              scanAndInject();
+            } else {
+              removeAllIcons();
+            }
           });
         } catch (e) {
-          // 監聽註冊失敗不影響已注入的書籤運作，只是狀態不會跨分頁即時同步。
-        }
-      }
-
-      // ---- favoriteIds 重建後，同步頁面上所有已注入書籤 icon 的視覺狀態
-      // (實心／空心)。每顆 icon 的 _tclSyncFavoriteState 只讀自己身上存
-      // 的 _tclFavId 比對，不重新掃 DOM。----
-      function applyFavoriteStateToExistingIcons() {
-        try {
-          var icons = document.querySelectorAll('.' + FAV_ICON_CLASS);
-          for (var i = 0; i < icons.length; i++) {
-            if (icons[i]._tclSyncFavoriteState) icons[i]._tclSyncFavoriteState();
-          }
-        } catch (e) {
-          // 更新既有書籤狀態失敗不影響其餘流程，下次重新整理會自然修正。
+          // 監聽註冊失敗不影響已注入的 icon 運作，只是開關不會即時跟著變。
         }
       }
 
       function init() {
         // 不等 chrome.storage.sync 的回呼:先用 resolveLocaleSafe(null) 的
-        // 預設語言(環境偵測)立刻掃描注入、啟動 observer，避免 storage 遲
-        // 遲不回呼(甚至永遠不回呼，例如測試/沙箱環境的 mock 不完整)時
-        // icon 整個出不來。langPref 讀到之後再透過 setLocale 補刷已注入
-        // icon 的文案；storage 永不回呼時功能照常運作，只是文案停在預設
-        // 語言。
+        // 預設語言(環境偵測)、postCopyEnabled 的模組層預設值(true)立刻
+        // 掃描注入、啟動 observer，避免 storage 遲遲不回呼(甚至永遠不回
+        // 呼，例如測試/沙箱環境的 mock 不完整)時 icon 整個出不來。
+        // langPref／postCopyEnabled 讀到之後再補刷/補正；storage 永不回
+        // 呼時功能照常運作，只是停在預設狀態。
         setLocale(resolveLocaleSafe(null));
         scanAndInject();
         startObserver();
@@ -1206,15 +1190,17 @@
         });
         watchLangPrefChanges();
 
-        // 0.5.0 貼文收藏庫:不等 chrome.storage.local 的回呼——書籤 icon 已
-        // 在上面的 scanAndInject() 以「未收藏」(空心)的安全預設狀態注入；
-        // favorites 清單讀到之後透過 applyFavoriteStateToExistingIcons 補
-        // 刷正確的實心／空心狀態，理由與 langPref 的先掃描後補刷完全一致。
-        readFavorites(function (list) {
-          rebuildFavoriteIds(list);
-          applyFavoriteStateToExistingIcons();
+        readPostCopyEnabled(function (enabled) {
+          postCopyEnabled = enabled;
+          if (postCopyEnabled) {
+            // 讀取期間可能有新貼文渲染出來但還沒注入，補掃一次；已注入
+            // 的容器靠 hasExistingIcon 冪等，不會重複插入。
+            scanAndInject();
+          } else {
+            removeAllIcons();
+          }
         });
-        watchFavoritesChanges();
+        watchPostCopyEnabledChanges();
       }
 
       if (document.readyState === 'loading') {
@@ -1225,19 +1211,8 @@
     })();
   }
 
-  // ============================================================
-  // 模組匯出
-  // ============================================================
-  var api = {
-    pickPermalink: pickPermalink,
-    buildPostUrl: buildPostUrl,
-    hasExistingIcon: hasExistingIcon,
-    pickActionRowIndex: pickActionRowIndex,
-    filterOwnContainerHrefs: filterOwnContainerHrefs,
-    buildFavoriteId: buildFavoriteId,
-    classifyExcerptCandidate: classifyExcerptCandidate,
-  };
-
+  // api 已在 DOM 守衛「外」宣告(見上方)，守衛內若有掛上 extractPostInfo／
+  // showResolveFailureToast，這裡匯出的就是補完後的完整版本。
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   } else {

@@ -22,8 +22,9 @@
   var RES_TYPE = 'TCL_RESOLVE_RES';
 
   // R1-2 通知涵蓋自動路徑：實際把淨化後內容寫入剪貼簿成功後，往 bridge.js
-  // 送一則通知，由它轉發給 background 決定要不要顯示（notifySuccess 的
-  // 把關位置在 background，見 background.js）。
+  // 送一則通知，轉發給 background 寫進淨化紀錄(方案甲:歷史即收藏，唯一
+  // 資料集)。成功類通知已依使用者變更設定規格整組移除，這則通知不再有
+  // 「要不要顯示」的把關，background 收到就無條件記錄。
   var CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
   // kind 標示淨化來源('share' 短碼解析 / 'strip' 剪除追蹤參數),供
@@ -40,23 +41,20 @@
   }
 
   // v1.1 設定規格 S6/S8：常駐監聽 bridge.js 推播的 TCL_SETTINGS_PUSH。
-  // 在收到第一次推播之前一律用預設值（autoClean 開啟）運作，與現行行為
-  // 完全一致，維持向下相容。
+  // 在收到第一次推播之前一律用預設值運作。使用者變更設定規格:autoClean
+  // 預設值改為 false(關閉)，在收到第一次推播之前，自動淨化／短碼解析
+  // 整段不啟用，與 bridge.js 的 SETTINGS_DEFAULTS 同步改動。
   // R1-1 併開關：resolveShortcode 徹底移除，短碼解析與 ?xmt 剪參都收在
-  // autoClean 這一顆之下。
+  // autoClean 這一顆之下。notifySuccess(成功類通知)已依使用者變更設定
+  // 規格整組移除——這裡從未真正依它分支任何邏輯(只是存著轉發)，直接拿
+  // 掉，不留死欄位。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
   var currentSettings = {
-    autoClean: true,
-    notifySuccess: false,
+    autoClean: false,
   };
 
   function isValidSettingsPayload(settings) {
-    return (
-      settings &&
-      typeof settings === 'object' &&
-      typeof settings.autoClean === 'boolean' &&
-      typeof settings.notifySuccess === 'boolean'
-    );
+    return settings && typeof settings === 'object' && typeof settings.autoClean === 'boolean';
   }
 
   // S8：來源驗證比照 TCL_RESOLVE_RES 同等級——只信任「本頁面自己發給
@@ -73,7 +71,6 @@
 
     currentSettings = {
       autoClean: data.settings.autoClean,
-      notifySuccess: data.settings.notifySuccess,
     };
   });
 
