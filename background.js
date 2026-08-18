@@ -48,9 +48,12 @@ const DEFAULT_SETTINGS = {
 };
 
 // 淨化紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
-// 紀錄量),新到舊排列,上限之外自動汰舊。
+// 紀錄量),新到舊排列。使用者拍板:紀錄不設上限(移除原本 1000 筆的裁切)
+// ——chrome.storage.local 沒有 unlimitedStorage 權限時仍有總容量配額，
+// 寫入超限時走優雅降級(見 recordHistory 的 isQuotaExceededError 分
+// 支)，不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能。
+// unlimitedStorage 權限之後再議，這裡不新增任何權限。
 const HISTORY_KEY = 'history';
-const HISTORY_LIMIT = 1000;
 
 // 方案甲(歷史即收藏):淨化紀錄條目上，author/handle/excerpt 為選填欄
 // 位，由複製 icon(post-icon.js)或 bridge.js(share/strip 路徑，經
@@ -301,19 +304,45 @@ function recordHistory(url, kind, extra) {
       if (!settings.saveHistory) return;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
-      // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新陣列後裁上限。
-      // extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎把
-      // url/kind/at 也塞進 extra 物件，核心欄位仍會覆蓋回正確值，不會被
-      // 外部輸入蓋掉(現況 extra 只可能是 extractHistoryExtraFields 的回
-      // 傳值，不會有這三個鍵，此處屬防未來的加固)。
+      // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新陣列
+      // (使用者拍板:紀錄不設上限，不再裁切)。extra 放在前面、核心欄位
+      // 放在後面覆蓋:即使日後呼叫端不慎把 url/kind/at 也塞進 extra 物
+      // 件，核心欄位仍會覆蓋回正確值，不會被外部輸入蓋掉(現況 extra 只
+      // 可能是 extractHistoryExtraFields 的回傳值，不會有這三個鍵，此
+      // 處屬防未來的加固)。
       const entry = Object.assign({}, extra, { url, kind, at: Date.now() });
-      const next = [entry].concat(list).slice(0, HISTORY_LIMIT);
-      await chrome.storage.local.set({ [HISTORY_KEY]: next });
+      const next = [entry].concat(list);
+      try {
+        await chrome.storage.local.set({ [HISTORY_KEY]: next });
+      } catch (err) {
+        // 配額失敗優雅降級:紀錄不設上限之後，長期使用可能真的把
+        // chrome.storage.local 的容量配額(未申請 unlimitedStorage 權限
+        // 時仍有總量上限)寫爆。這種情況不重試、不丟例外，只
+        // console.warn 留痕跡，本次這筆紀錄就此放棄——不影響複製/淨化
+        // 等主功能持續運作。非配額類錯誤(例如 storage API 本身壞掉)
+        // 則重新拋出，交給外層 catch 統一以 console.error 記錄，維持
+        // 既有「非預期錯誤」的可見度。
+        if (isQuotaExceededError(err)) {
+          console.warn('[threads-clean-link] 淨化紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)', err);
+          return;
+        }
+        throw err;
+      }
     })
     .catch((err) => {
       console.error('[threads-clean-link] 寫入淨化紀錄失敗', err);
     });
   return historyWriteChain;
+}
+
+// 判斷是否為 chrome.storage.local 配額超限的錯誤:Chrome 對總量配額
+// (QUOTA_BYTES)與單筆配額(QUOTA_BYTES_PER_ITEM)超限，都會用開頭包含
+// "QUOTA_BYTES" 字樣的錯誤訊息 reject storage.local.set() 回傳的
+// Promise。用字串比對辨識而不依賴特定錯誤類別/物件形狀，避免不同瀏覽
+// 器或版本的錯誤物件實作差異導致誤判漏接。
+function isQuotaExceededError(err) {
+  const message = (err && err.message) || String(err || '');
+  return /QUOTA_BYTES/i.test(message);
 }
 
 // 不信任呼叫端傳入的 url，一律用 SHARE_URL_PATTERN 重新驗證，
