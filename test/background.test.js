@@ -425,7 +425,7 @@ test('S2:notifySuccess=false 時，剪貼簿寫入失敗的錯誤通知照常觸
 // 右鍵成功「與」自動淨化成功都要通知;notifySuccess=false 時一切成功
 // 通知靜默。自動路徑的成功訊息由 bridge 經 chrome.runtime.sendMessage
 // 送來，形狀為 { type: 'cleanedNotice', cleanUrl, kind }(kind 為淨化來源,
-// 白名單 'share' | 'strip',非法整則忽略——見檔末「淨化紀錄」區塊)。
+// 白名單 'share' | 'strip' | 'icon',非法整則忽略——見檔末「淨化紀錄」區塊)。
 //
 // 【把關位置(規格未明定，本輪測試在此定案)】notifySuccess 的把關由
 // background 負責:它是唯一同時看得到設定與兩條成功路徑的地方，也是
@@ -565,8 +565,9 @@ test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得發出通�
 
 // ============================================================
 // 淨化紀錄(storage.local):background 是唯一的記錄落點。
-//   - 自動路徑:cleanedNotice 通過錨定驗證後記錄,kind 白名單 share|strip,
-//     非法(含缺失、'menu'、任意字串)整則忽略——不記錄也不通知。
+//   - 自動路徑:cleanedNotice 通過錨定驗證後記錄,kind 白名單
+//     share|strip|icon,非法(含缺失、'menu'、任意字串)整則忽略——不記錄
+//     也不通知。('menu' 刻意排除在此訊息白名單外,只由右鍵路徑直接寫入)
 //   - 右鍵路徑:剪貼簿實際寫入成功後記錄 kind:'menu';寫入失敗不留紀錄。
 //   - saveHistory=false 時不記錄;上限 1000 筆,新到舊,超過裁掉最舊。
 // ============================================================
@@ -600,6 +601,43 @@ test('紀錄:kind 缺失或非白名單的 cleanedNotice 整則忽略——不�
   await settle();
 
   assert.equal(bg.storage.localSnapshot().history.length, 1);
+});
+
+// 0.4.0 新增:貼文互動列複製 icon(post-icon.js)點擊複製成功後，經
+// cleanedNotice 送 kind:'icon'——白名單需收下這個新來源，記錄與通知都
+// 比照 share/strip 既有自動路徑一視同仁，不做特殊抑制。
+test('紀錄:cleanedNotice 的 kind 為 icon(貼文互動列複製按鈕)時照常記錄一筆', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: false });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL);
+  assert.equal(history[0].kind, 'icon');
+  assert.equal(typeof history[0].at, 'number');
+});
+
+test('紀錄:notifySuccess=true 時，kind 為 icon 的 cleanedNotice 比照 share/strip 發出成功通知', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  assert.equal(bg.notifications.length, 1);
+  assert.equal(bg.notifications[0].id, 'threads-clean-link-autoclean-success');
+});
+
+test('紀錄:kind 為 icon 以外的未知字串仍被白名單拒絕，不記錄、不通知', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true, notifySuccess: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icons' });
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'bogus' });
+  await settle();
+
+  assert.equal(bg.storage.localSnapshot().history, undefined, '白名單以外的 kind 不得留下任何紀錄');
+  assert.deepEqual(bg.notifications, [], '白名單以外的 kind 不得發出任何通知');
 });
 
 test('紀錄:saveHistory=false 時自動與右鍵兩條路徑都不記錄', async () => {

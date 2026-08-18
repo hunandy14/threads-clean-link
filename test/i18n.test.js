@@ -47,3 +47,12 @@ test('字典對齊:zh 與 en 的 key 集合完全一致', () => {
   const enKeys = Object.keys(i18n.STRINGS.en).sort();
   assert.deepEqual(enKeys, zhKeys, 'zh/en 字典的 key 必須一一對應,不得漏翻');
 });
+
+// 0.4.0 新增:貼文互動列複製 icon(post-icon.js)的淨化紀錄 kind 標籤，
+// options 頁篩選 chip 與紀錄列都靠這個 key 顯示文案。
+test('opKindIcon:zh 與 en 兩份字典皆有此 key，且皆非空字串', () => {
+  assert.equal(typeof i18n.STRINGS.zh.opKindIcon, 'string');
+  assert.ok(i18n.STRINGS.zh.opKindIcon.length > 0);
+  assert.equal(typeof i18n.STRINGS.en.opKindIcon, 'string');
+  assert.ok(i18n.STRINGS.en.opKindIcon.length > 0);
+});

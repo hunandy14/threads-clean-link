@@ -208,15 +208,20 @@ async function getSettings() {
 // 處理 R1-2 的 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
 // NOTICE_CLEAN_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不發任何
 // 通知;通知訊息只用驗證通過的字串，不夾帶原文的任何其餘部分。
-// kind 同屬頁面可控輸入,白名單驗證(自動路徑只可能是 share/strip),
+// kind 同屬頁面可控輸入,白名單驗證(自動路徑只可能是 share/strip/icon),
 // 非法即整則忽略——guard 與 background 同版本出貨,沒有相容性負擔,
-// 形狀不對就是偽造或損毀,fail-safe 丟棄。
+// 形狀不對就是偽造或損毀,fail-safe 丟棄。'menu' 刻意不在此白名單內:
+// 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
+// 不透過本訊息通道,避免頁面腳本偽造 kind:'menu' 混充右鍵來源。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
   if (typeof cleanUrl !== 'string' || !NOTICE_CLEAN_URL_PATTERN.test(cleanUrl)) {
     return;
   }
-  const kind = message.kind === 'share' || message.kind === 'strip' ? message.kind : null;
+  const kind =
+    message.kind === 'share' || message.kind === 'strip' || message.kind === 'icon'
+      ? message.kind
+      : null;
   if (!kind) {
     return;
   }

@@ -341,12 +341,33 @@
               .writeText(url)
               .then(function () {
                 showCopiedFeedback();
+                notifyBackgroundCleaned(url);
               })
               .catch(function (err) {
                 console.warn('[threads-clean-link] 寫入剪貼簿失敗', err);
               });
           } catch (err) {
             console.warn('[threads-clean-link] 寫入剪貼簿時發生例外', err);
+          }
+        }
+
+        // 把「已複製乾淨連結」這件事轉知 background，讓 options 頁的淨化
+        // 紀錄能收進這條路徑(kind:'icon'，不冒用右鍵選單的 'menu')。純
+        // 通知性質，整段吞例外——chrome.runtime 不存在(context 已失效／
+        // 非擴充功能頁面)或 sendMessage 本身丟例外，都不得影響前面已經
+        // 成功的複製與勾勾回饋。
+        function notifyBackgroundCleaned(url) {
+          try {
+            if (
+              typeof chrome === 'undefined' ||
+              !chrome.runtime ||
+              typeof chrome.runtime.sendMessage !== 'function'
+            ) {
+              return;
+            }
+            chrome.runtime.sendMessage({ type: 'cleanedNotice', cleanUrl: url, kind: 'icon' });
+          } catch (err) {
+            console.warn('[threads-clean-link] 通知 background 記錄淨化紀錄失敗', err);
           }
         }
 
