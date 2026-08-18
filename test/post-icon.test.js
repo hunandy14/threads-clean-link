@@ -296,61 +296,6 @@ test('pickActionRowIndex:候選清單為空或非陣列輸入一律回傳 null�
   assert.equal(pickActionRowIndex(undefined), null);
 });
 
-// ---- buildFavoriteId(0.5.0 貼文收藏庫:從乾淨貼文網址導出收藏用的正規
-// 路徑 id，語意對齊 background.js 的 FAVORITE_URL_PATTERN group 2) ----
-
-test('buildFavoriteId:標準乾淨網址(www + .com)導出 @handle/post/postId', () => {
-  const { buildFavoriteId } = loadPostIcon();
-
-  assert.equal(
-    buildFavoriteId('https://www.threads.com/@yuki4382/post/DcDrsdAmhlU'),
-    '@yuki4382/post/DcDrsdAmhlU'
-  );
-});
-
-test('buildFavoriteId:不帶 www、.net 網域同樣可導出 id', () => {
-  const { buildFavoriteId } = loadPostIcon();
-
-  assert.equal(
-    buildFavoriteId('https://threads.net/@x/post/abc'),
-    '@x/post/abc'
-  );
-});
-
-test('buildFavoriteId:去除尾隨斜線', () => {
-  const { buildFavoriteId } = loadPostIcon();
-
-  assert.equal(
-    buildFavoriteId('https://www.threads.com/@x/post/abc/'),
-    '@x/post/abc'
-  );
-});
-
-test('buildFavoriteId:去除 query 與 hash', () => {
-  const { buildFavoriteId } = loadPostIcon();
-
-  assert.equal(
-    buildFavoriteId('https://www.threads.com/@x/post/abc?xmt=1#section'),
-    '@x/post/abc'
-  );
-});
-
-test('buildFavoriteId:非字串輸入一律回傳 null，不丟例外', () => {
-  const { buildFavoriteId } = loadPostIcon();
-
-  assert.equal(buildFavoriteId(null), null);
-  assert.equal(buildFavoriteId(undefined), null);
-  assert.equal(buildFavoriteId(12345), null);
-});
-
-test('buildFavoriteId:格式不符(非 threads 網域、缺 /post/ 路徑)回傳 null', () => {
-  const { buildFavoriteId } = loadPostIcon();
-
-  assert.equal(buildFavoriteId('https://evil.example/@x/post/abc'), null);
-  assert.equal(buildFavoriteId('https://www.threads.com/@x/media/abc'), null);
-  assert.equal(buildFavoriteId('not-a-url'), null);
-});
-
 // ---- classifyExcerptCandidate(0.5.0 貼文收藏庫:extractExcerpt 逐段決
 // 策 push／skip／stop 的純函式，PM 審查後修正兩條規則) ----
 
@@ -388,6 +333,90 @@ test('classifyExcerptCandidate:空字串——已收集到內文時中止(stop)�
 
   assert.equal(classifyExcerptCandidate('', true), 'stop');
   assert.equal(classifyExcerptCandidate('', false), 'skip');
+});
+
+// ---- isSamePostPath(方案甲:findContainerByCleanUrl 的可測核心——比對
+// 兩個網址／href 是否指向同一篇貼文，容忍尾隨斜線／query／hash 差異，也
+// 容忍一邊絕對網址、一邊頁面上常見的相對路徑) ----
+
+test('isSamePostPath:絕對網址與相對路徑，path 段相同視為同一篇貼文', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(
+    isSamePostPath('https://www.threads.com/@yuki4382/post/DcDrsdAmhlU', '/@yuki4382/post/DcDrsdAmhlU'),
+    true
+  );
+});
+
+test('isSamePostPath:容忍尾隨斜線與 query/hash 差異', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(
+    isSamePostPath('https://www.threads.com/@x/post/abc', '/@x/post/abc/?xmt=1#s'),
+    true
+  );
+});
+
+test('isSamePostPath:path 段不同(不同 handle 或 post id)回傳 false', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(isSamePostPath('https://www.threads.com/@a/post/1', '/@b/post/1'), false);
+  assert.equal(isSamePostPath('https://www.threads.com/@a/post/1', '/@a/post/2'), false);
+});
+
+test('isSamePostPath:任一邊非字串／組不出合法網址一律回傳 false，不丟例外', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(isSamePostPath(null, '/@a/post/1'), false);
+  assert.equal(isSamePostPath('/@a/post/1', undefined), false);
+  assert.equal(isSamePostPath(12345, '/@a/post/1'), false);
+});
+
+test('findContainerByCleanUrl:Node 環境(無 document)一律回傳 null，不丟例外', () => {
+  const { findContainerByCleanUrl } = loadPostIcon();
+
+  assert.equal(findContainerByCleanUrl('https://www.threads.com/@a/post/1'), null);
+  assert.equal(findContainerByCleanUrl(null), null);
+});
+
+// ---- resolveFailureToastKey(使用者變更設定規格:share/strip 解析在
+// Threads 頁面內失敗時，頁內 toast 要顯示的 i18n key 對應) ----
+
+test('resolveFailureToastKey:三個已知失敗原因各自對應 background.js 右鍵路徑既有的失敗文案 key', () => {
+  const { resolveFailureToastKey } = loadPostIcon();
+
+  assert.equal(resolveFailureToastKey('invalid-url'), 'bgInvalid');
+  assert.equal(resolveFailureToastKey('network-error'), 'bgNetworkError');
+  assert.equal(resolveFailureToastKey('format-error'), 'bgFormatError');
+});
+
+test('resolveFailureToastKey:未知原因(含非字串)一律 fallback 到 bgUnexpected', () => {
+  const { resolveFailureToastKey } = loadPostIcon();
+
+  assert.equal(resolveFailureToastKey('no-response'), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey('bridge-exception'), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey('Extension context invalidated'), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey(null), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey(undefined), 'bgUnexpected');
+});
+
+// ---- resolvePostCopyEnabled(使用者變更設定規格:postCopyEnabled 開關，
+// 預設 true，只有明確 false 才關閉) ----
+
+test('resolvePostCopyEnabled:明確 false 才視為關閉', () => {
+  const { resolvePostCopyEnabled } = loadPostIcon();
+
+  assert.equal(resolvePostCopyEnabled(false), false);
+});
+
+test('resolvePostCopyEnabled:true／undefined／未設定過／其他雜訊值一律視為啟用(預設 true)', () => {
+  const { resolvePostCopyEnabled } = loadPostIcon();
+
+  assert.equal(resolvePostCopyEnabled(true), true);
+  assert.equal(resolvePostCopyEnabled(undefined), true);
+  assert.equal(resolvePostCopyEnabled(null), true);
+  assert.equal(resolvePostCopyEnabled('false'), true);
+  assert.equal(resolvePostCopyEnabled(0), true);
 });
 
 // ============================================================
