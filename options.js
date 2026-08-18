@@ -140,10 +140,17 @@
   // 項目(id/url 非字串、at 非有限數字);選填欄位(author/handle/excerpt)
   // 若存在但型別不是字串，整筆捨棄——形狀不對的資料不強行修補，與
   // sanitizeEntries 的防禦原則一致。
+  //
+  // url 額外用 FAVORITE_URL_PATTERN 做形狀驗證(縱深防禦，PM 審查後補):
+  // 渲染層 buildFavoriteCard 的 openLink.href = e.url 是本檔唯一的 URL
+  // sink，不該仰賴「寫入端(background.js/匯入合併)永遠沒漏」這個假設——
+  // 萬一 storage.local 被外部竄改或未來寫入路徑出現疏漏，形狀不對的 url
+  // 在讀取階段就整筆丟棄，不會流到 <a href> 或複製到剪貼簿。
   function sanitizeFavorites(list) {
     if (!Array.isArray(list)) return [];
     return list.filter(function (e) {
       if (!e || typeof e.id !== 'string' || typeof e.url !== 'string') return false;
+      if (!FAVORITE_URL_PATTERN.test(e.url)) return false;
       if (typeof e.at !== 'number' || !isFinite(e.at)) return false;
       if (Object.prototype.hasOwnProperty.call(e, 'author') && typeof e.author !== 'string') return false;
       if (Object.prototype.hasOwnProperty.call(e, 'handle') && typeof e.handle !== 'string') return false;

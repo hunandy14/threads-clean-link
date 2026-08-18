@@ -401,6 +401,23 @@ test('sanitizeFavorites:非陣列→空;形狀不對的項目(id/url 非字串�
   );
 });
 
+// 縱深防禦(PM 審查後補):url 額外過 FAVORITE_URL_PATTERN 形狀驗證——
+// buildFavoriteCard 的 openLink.href = e.url 是唯一的 URL sink，讀取階段
+// 就該擋掉形狀不對的 url，不依賴「寫入端永遠沒漏」的假設。
+test('sanitizeFavorites:url 形狀不對(非 threads 網域、缺 /post/ 區段、夾帶非法字元等)的條目整筆丟棄', () => {
+  const cleaned = options.sanitizeFavorites([
+    { id: '@usera/post/AbC123_-xyz', url: FAV_URL_A, at: 1 }, // 合法
+    { id: '@evil/post/x', url: 'https://www.evil.com/@evil/post/x', at: 1 }, // 非 threads 網域
+    { id: '@user/post', url: 'https://www.threads.com/@user/post', at: 1 }, // 缺貼文 id
+    { id: '@user/post/x', url: 'not-a-url', at: 1 }, // 完全不是網址
+    { id: '@user/post/x', url: 'https://www.threads.com/@user/post/x<y>', at: 1 }, // 夾帶非法字元
+  ]);
+  assert.deepEqual(
+    cleaned.map((e) => e.id),
+    ['@usera/post/AbC123_-xyz']
+  );
+});
+
 // ---- 純函式:buildFavoritesExportPayload ----
 
 test('buildFavoritesExportPayload:輸出 app/version/exportedAt/entries 形狀，選填欄位只在為字串時才輸出', () => {
