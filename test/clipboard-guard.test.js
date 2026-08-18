@@ -52,6 +52,10 @@ function loadGuard(clipboard, win) {
     setTimeout,
     clearTimeout,
     console,
+    // F 案(紀錄資料層補齊 original/removedParams):parseRemovedParams 需要
+    // URLSearchParams，vm sandbox 預設不含這個全域，這裡明確注入，讓
+    // clipboard-guard.js 的行為與真實頁面(MAIN world 原生就有)一致。
+    URLSearchParams,
   });
 }
 
@@ -907,7 +911,13 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
 // 收藏，唯一資料集)。
 //
 // 【協定約定】guard → bridge 的訊息形狀:
-//   { type: 'TCL_CLEANED_NOTICE', cleanUrl: <實際寫入剪貼簿的淨化後字串> }
+//   { type: 'TCL_CLEANED_NOTICE', cleanUrl: <實際寫入剪貼簿的淨化後字串>,
+//     kind, original?, removedParams? }
+// original/removedParams(F 案，紀錄資料層補齊，對齊手機 ShareHistoryItem)
+// 選填:original 是使用者實際複製到/觸發時的原始連結(share 短碼原文，
+// 或 strip 剝參前的原網址)，與 cleanUrl 相同就不夾帶;removedParams 是
+// strip 分支剝除的查詢參數清單({key, value}[])，share 分支拿不到(伺服
+// 器端重新導向前的網址帶了哪些參數，guard 這層無從得知)，恆缺席。
 //
 // 【判定基準(規格明文)】必須以 guard「實際把淨化後內容寫入剪貼簿」為準:
 //   - 解析逾時後才回來的遲到結果不得觸發通知(防 timeout race 假通知)
@@ -985,6 +995,102 @@ test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，clean
     assert.equal(notices[0].cleanUrl, expected, `${label}:notice 的 cleanUrl 應等於實際寫入的內容`);
     assert.equal(notices[0].kind, expectedKind, `${label}:notice 應標示淨化來源 kind`);
   }
+});
+
+// ============================================================
+// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+// notifyCleaned 夾帶的 original/removedParams。share 分支只有 original
+// (短碼原文)，沒有 removedParams(伺服器端重新導向前的網址帶了哪些查詢
+// 參數，guard 這層無從得知，不硬造);strip 分支兩者都有。
+// ============================================================
+
+test('F 案:writeText／write() 短碼解析(share)送出的 notice 帶 original(短碼原文)，無 removedParams', async () => {
+  const cases = [
+    {
+      label: 'writeText',
+      run: async (sandbox) => sandbox.navigator.clipboard.writeText(SHARE_URL),
+      makeClipboard: recordingWriteText,
+    },
+    {
+      label: 'write()',
+      run: async (sandbox) =>
+        sandbox.navigator.clipboard.write([
+          new FakeClipboardItem({ 'text/plain': new Blob([SHARE_URL], { type: 'text/plain' }) }),
+        ]),
+      makeClipboard: recordingWrite,
+    },
+  ];
+
+  for (const { label, run, makeClipboard } of cases) {
+    const recorder = [];
+    const win = createWindow();
+    trackResolveRequests(win, { respond: true });
+    const notices = trackCleanedNotices(win);
+    const sandbox = loadGuard(makeClipboard(recorder), win);
+    await pushSettings(win, settings({ autoClean: true }));
+
+    await run(sandbox);
+    await settle();
+
+    assert.equal(notices.length, 1, label);
+    assert.equal(notices[0].original, SHARE_URL, `${label}:original 應為短碼原文`);
+    assert.equal(notices[0].removedParams, undefined, `${label}:share 分支沒有 removedParams`);
+  }
+});
+
+test('F 案:writeText ?xmt 剪參(strip)送出的 notice 帶 original(剝參前原網址)與 removedParams', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true }));
+
+  await sandbox.navigator.clipboard.writeText(XMT_URL);
+  await settle();
+
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].original, XMT_URL, 'original 應為剝參前的原網址');
+  assert.equal(notices[0].removedParams.length, 1);
+  assert.equal(notices[0].removedParams[0].key, 'xmt');
+  assert.equal(notices[0].removedParams[0].value, 'AQG0abc');
+});
+
+test('F 案:write() ?xmt 剪參(strip)送出的 notice 帶 original 與 removedParams', async () => {
+  const recorder = [];
+  const win = createWindow();
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWrite(recorder), win);
+  await pushSettings(win, settings({ autoClean: true }));
+
+  await sandbox.navigator.clipboard.write([
+    new FakeClipboardItem({ 'text/plain': new Blob([XMT_URL], { type: 'text/plain' }) }),
+  ]);
+  await settle();
+
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].original, XMT_URL);
+  assert.equal(notices[0].removedParams.length, 1);
+  assert.equal(notices[0].removedParams[0].key, 'xmt');
+  assert.equal(notices[0].removedParams[0].value, 'AQG0abc');
+});
+
+test('F 案:多個查詢參數時，removedParams 逐一列出(不只抓第一個)', async () => {
+  const multiParamUrl = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7?xmt=AQG0abc&utm_source=ig';
+  const recorder = [];
+  const win = createWindow();
+  const notices = trackCleanedNotices(win);
+  const sandbox = loadGuard(recordingWriteText(recorder), win);
+  await pushSettings(win, settings({ autoClean: true }));
+
+  await sandbox.navigator.clipboard.writeText(multiParamUrl);
+  await settle();
+
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].removedParams.length, 2);
+  assert.equal(notices[0].removedParams[0].key, 'xmt');
+  assert.equal(notices[0].removedParams[0].value, 'AQG0abc');
+  assert.equal(notices[0].removedParams[1].key, 'utm_source');
+  assert.equal(notices[0].removedParams[1].value, 'ig');
 });
 
 test('R1-2:解析逾時後才送達的遲到結果，不得觸發通知(防 timeout race 假通知)', async () => {

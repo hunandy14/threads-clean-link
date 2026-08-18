@@ -93,6 +93,43 @@
     return out.slice(-SEEN_MAX);
   }
 
+  // F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+  // original 選填欄位，規則同 sanitizeTextField(非字串/空字串整欄丟棄，
+  // 字串截斷至長度上限)，額外多一條——截斷「前」若與該筆條目自己的 url
+  // 完全相同就整欄丟棄:手機版語意是「取與 cleaned 不同者」，相同代表沒
+  // 有額外資訊。與 background.js 的 sanitizeOriginalField 規則一致(縱深
+  // 防禦，不依賴寫入端永遠沒漏)。
+  var ENTRY_ORIGINAL_MAX = 2048;
+  function sanitizeOriginalField(value, url) {
+    if (typeof value !== 'string' || value.length === 0) return undefined;
+    if (value === url) return undefined;
+    return value.slice(0, ENTRY_ORIGINAL_MAX);
+  }
+
+  // F 案:removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value },
+  // 與 background.js 的 sanitizeRemovedParams 同一組門檻)。上限
+  // REMOVED_PARAMS_MAX 筆，每筆 key 需為非空字串且 ≤ REMOVED_PARAM_KEY_MAX、
+  // value 需為字串(可為空字串)且 ≤ REMOVED_PARAM_VALUE_MAX，任一不符就整
+  // 筆丟棄(容忍陣列裡部分項目壞掉，不因此讓整個陣列作廢，寫法對齊
+  // sanitizeSeenList)。輸入非陣列，或 sanitize 後一筆不剩，回傳
+  // undefined(呼叫端據此整欄不寫入)。
+  var REMOVED_PARAMS_MAX = 20;
+  var REMOVED_PARAM_KEY_MAX = 64;
+  var REMOVED_PARAM_VALUE_MAX = 512;
+  function sanitizeRemovedParams(value) {
+    if (!Array.isArray(value)) return undefined;
+    var out = [];
+    for (var i = 0; i < value.length; i++) {
+      if (out.length >= REMOVED_PARAMS_MAX) break;
+      var item = value[i];
+      if (!item || typeof item !== 'object') continue;
+      if (typeof item.key !== 'string' || item.key.length === 0 || item.key.length > REMOVED_PARAM_KEY_MAX) continue;
+      if (typeof item.value !== 'string' || item.value.length > REMOVED_PARAM_VALUE_MAX) continue;
+      out.push({ key: item.key, value: item.value });
+    }
+    return out.length > 0 ? out : undefined;
+  }
+
   // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
   // 項目——url 除了型別是字串，還要通過 POST_URL_PATTERN 的形狀驗證才收
   // (縱深防禦，PM 審查後補:上一輪收藏庫基座的 sanitizeFavorites 就有這道
@@ -132,6 +169,13 @@
         // 視窗的「時間軸」鈕會變成永遠打不開的死功能。
         var seenList = sanitizeSeenList(e.seen);
         if (seenList.length > 0) out.seen = seenList;
+        // F 案:original/removedParams 比照 author/handle/excerpt 的「缺席
+        // 不落空值」慣例。original 的相同判斷用這筆條目自己的 url(out.url，
+        // 此時已通過上面的形狀驗證)。
+        var original = sanitizeOriginalField(e.original, out.url);
+        if (original !== undefined) out.original = original;
+        var removedParams = sanitizeRemovedParams(e.removedParams);
+        if (removedParams !== undefined) out.removedParams = removedParams;
         return out;
       });
   }
@@ -218,6 +262,14 @@
       // (見 sanitizeSeenList 註解)，防止偽造/損毀的 at、kind 混進來。
       var seenList = sanitizeSeenList(raw && raw.seen);
       if (seenList.length > 0) entry.seen = seenList;
+      // F 案:匯入檔的 original/removedParams 同屬外部輸入，逐欄 sanitize
+      // (見 sanitizeOriginalField/sanitizeRemovedParams 註解)。original 的
+      // 相同判斷用正規化後的 url(match[1])，不是匯入檔裡未正規化的原始
+      // url 字串。
+      var original = sanitizeOriginalField(raw && raw.original, url);
+      if (original !== undefined) entry.original = original;
+      var removedParams = sanitizeRemovedParams(raw && raw.removedParams);
+      if (removedParams !== undefined) entry.removedParams = removedParams;
       merged.push(entry);
       added++;
     });

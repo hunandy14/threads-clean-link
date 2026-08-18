@@ -364,10 +364,13 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
 // TCL_CLEANED_NOTICE 轉為 chrome.runtime.sendMessage 交給 service worker。
 //
 // 【協定約定】
-//   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl, kind }
-//   bridge → background : { type: 'cleanedNotice', cleanUrl, kind }
+//   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl, kind, original?, removedParams? }
+//   bridge → background : { type: 'cleanedNotice', cleanUrl, kind, original?, removedParams? }
 // kind 為淨化來源('share' | 'strip'),bridge 只做型別與長度把關(≤16 字元
 // 的非空字串),白名單驗證由 background 負責;形狀不對整則丟棄。
+// original/removedParams(F 案，紀錄資料層補齊，對齊手機 ShareHistoryItem)
+// 選填，bridge 純透傳、不做任何驗證，規則與下面的 author/handle/excerpt
+// 透傳一致，真正的 sanitize 交給 background。
 //
 // 【來源驗證(規格明文，比照 S8 等級)】驗證不過的通知必須完全忽略、不得
 // 轉發，否則頁面腳本可以自行 postMessage 偽造「淨化成功」灌出假通知。
@@ -435,6 +438,42 @@ test('R1-2:找不到對應容器時，靜默省略欄位，仍照常轉發最小
   assert.equal(notices[0].author, undefined);
   assert.equal(notices[0].handle, undefined);
   assert.equal(notices[0].excerpt, undefined);
+});
+
+// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+// bridge 純透傳 guard 已經算好的 original/removedParams，規則與上面的
+// author/handle/excerpt 透傳一致——不做任何型別/長度驗證，真正的
+// sanitize 交給 background.js(信任邊界)。
+
+test('F 案:MAIN world 送來的 original/removedParams 原樣透傳給 service worker', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+  const removedParams = [{ key: 'xmt', value: 'AQGabc' }];
+
+  win.postMessage({
+    type: CLEANED_NOTICE_TYPE,
+    cleanUrl: CLEAN_URL,
+    kind: 'strip',
+    original: `${CLEAN_URL}?xmt=AQGabc`,
+    removedParams,
+  });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].original, `${CLEAN_URL}?xmt=AQGabc`);
+  assert.equal(notices[0].removedParams, removedParams, '純透傳同一個陣列參照，不重建');
+});
+
+test('F 案:MAIN world 沒帶 original/removedParams 時，轉發的訊息也不含這兩個欄位', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].original, undefined);
+  assert.equal(notices[0].removedParams, undefined);
 });
 
 test('R1-2:TCLPostIcon 不存在(post-icon.js 尚未載入或舊版)時，照常轉發最小形狀，不丟例外', async () => {

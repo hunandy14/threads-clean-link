@@ -29,12 +29,24 @@
 
   // kind 標示淨化來源('share' 短碼解析 / 'strip' 剪除追蹤參數),供
   // background 寫入紀錄時分類;白名單驗證在 background(信任邊界)。
-  function notifyCleaned(cleanUrl, kind) {
+  //
+  // F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+  // original(選填)是使用者實際複製到/觸發時的原始連結(share 短碼原文，
+  // 或 strip 剝參前的原網址)；removedParams(選填，僅 strip 分支算得出)
+  // 是被剝除的查詢參數清單。兩者都只是「guard 這一層手上已知的原始資
+  // 料」，這裡只做最基本的存在性判斷(與 cleanUrl 相同就不夾帶——沒有
+  // 額外資訊，省一點 postMessage payload)，真正的型別/長度 sanitize 交
+  // 給 background.js(信任邊界)。
+  function notifyCleaned(cleanUrl, kind, original, removedParams) {
     try {
-      window.postMessage(
-        { type: CLEANED_NOTICE_TYPE, cleanUrl: cleanUrl, kind: kind },
-        window.location.origin
-      );
+      var payload = { type: CLEANED_NOTICE_TYPE, cleanUrl: cleanUrl, kind: kind };
+      if (typeof original === 'string' && original && original !== cleanUrl) {
+        payload.original = original;
+      }
+      if (Array.isArray(removedParams) && removedParams.length > 0) {
+        payload.removedParams = removedParams;
+      }
+      window.postMessage(payload, window.location.origin);
     } catch (e) {
       // 通知失敗不影響已經完成的寫入流程。
     }
@@ -74,16 +86,41 @@
     };
   });
 
-  // 判斷字串是否需要淨化；不需要（含格式不符、沒有 query/hash 可剪）回傳 null，
-  // 需要則回傳去掉 query/hash 後的乾淨網址字串。
-  function sanitizeIfTrackedPostUrl(str) {
+  // 從 POST_URL_RE 第 2 組(可能是 ?query、#hash，或 ?query#hash)取出被剝
+  // 除的查詢參數清單({key, value}[])。只看 query，hash 本身不是參數;
+  // 沒有 query 部分回傳空陣列。任何解析例外一律回傳空陣列(fail-safe，
+  // 不影響已經完成的剪貼簿寫入判斷)。
+  function parseRemovedParams(tail) {
+    if (typeof tail !== 'string' || !tail) return [];
+    var qIndex = tail.indexOf('?');
+    if (qIndex === -1) return []; // 只有 #hash，沒有查詢參數可剝
+    var query = tail.slice(qIndex + 1).split('#')[0];
+    if (!query) return [];
+    try {
+      var out = [];
+      new URLSearchParams(query).forEach(function (value, key) {
+        out.push({ key: key, value: value });
+      });
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // 判斷字串是否需要淨化；不需要（含格式不符、沒有 query/hash 可剪）回傳
+  // null，需要則回傳 { cleaned, original, removedParams }:cleaned 是去掉
+  // query/hash 後的乾淨網址;original 是剝參前的完整原網址(trim 後)，供
+  // F 案(紀錄資料層補齊 original/removedParams)夾帶進 notifyCleaned;
+  // removedParams 是被剝除的查詢參數清單。原名 sanitizeIfTrackedPostUrl，
+  // 只回傳 cleaned 字串，改名反映新回傳形狀。
+  function stripTrackedPostUrl(str) {
     if (typeof str !== 'string') return null;
     var trimmed = str.trim();
     var match = POST_URL_RE.exec(trimmed);
     if (!match) return null;
     // 第 2 組非空才代表原本帶了 query 或 hash，才有東西可剪。
     if (!match[2]) return null;
-    return match[1];
+    return { cleaned: match[1], original: trimmed, removedParams: parseRemovedParams(match[2]) };
   }
 
   // 判斷字串（trim 後整體）是不是分享短碼網址。
@@ -180,10 +217,15 @@
           var recordOnly = !currentSettings.autoClean;
 
           if (isShareUrl(data)) {
+            // F 案:share 分支只拿得到「短碼原文」當 original，沒有
+            // removedParams——伺服器端重新導向前的網址帶了哪些查詢參數，
+            // guard 這一層無從得知(那是 background.js 解析短碼時才看得到
+            // 的資訊，這裡不硬造)。
+            var shareOriginal = data.trim();
             // 雙參數 .then(onOk, onErr):onErr 只綁定 requestResolveShareUrl
             // 的 rejection，不會連 nativeWriteText 的 rejection 也接住，確保
             // 原生呼叫只被呼叫一次，其 rejection 原樣傳回呼叫端。
-            return requestResolveShareUrl(data.trim(), recordOnly).then(
+            return requestResolveShareUrl(shareOriginal, recordOnly).then(
               function (cleanUrl) {
                 // cleanUrl 需通過貼文網址格式驗證才信任，否則視同解析失敗。
                 var resolved = typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl);
@@ -199,7 +241,7 @@
                   // 再呼叫一次。包裝後 rejection 語意不變，仍原樣往外傳。
                   var toWrite = recordOnly ? data : cleanUrl;
                   return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
-                    notifyCleaned(cleanUrl, 'share');
+                    notifyCleaned(cleanUrl, 'share', shareOriginal);
                     return result;
                   });
                 }
@@ -223,16 +265,16 @@
           }
 
           var toWrite = data;
-          var cleaned = sanitizeIfTrackedPostUrl(data);
-          if (cleaned !== null) {
+          var stripped = stripTrackedPostUrl(data);
+          if (stripped !== null) {
             // ?xmt 剪參是同步、決定性的判斷(不經網路解析)，沒有「失敗」
             // 這個中間狀態:能剪就是能剪。recordOnly 時剪貼簿仍寫回原始
             // data，只是照樣 notifyCleaned 供記錄。
-            toWrite = recordOnly ? data : cleaned;
+            toWrite = recordOnly ? data : stripped.cleaned;
             // R1-2：?xmt 剪參分支同樣只在原生寫入成功後才發通知。
             // Promise.resolve 包一層的理由同上(防非 Promise 回傳時重複呼叫原生)。
             return Promise.resolve(nativeWriteText(toWrite)).then(function (result) {
-              notifyCleaned(cleaned, 'strip');
+              notifyCleaned(stripped.cleaned, 'strip', stripped.original, stripped.removedParams);
               return result;
             });
           }
@@ -276,8 +318,14 @@
           // cleanUrl 與其來源 kind」，fail-open／未改寫的路徑保持 null，
           // 不發通知。recordOnly 時即使成功也不重建 ClipboardItem(剪貼簿
           // 維持原始 items)，但一樣要記下 cleanedUrlForNotice 供記錄。
+          // F 案:cleanedOriginalForNotice／cleanedRemovedParamsForNotice
+          // 比照同一套「先記下，最後才在原生寫入成功後一併帶進
+          // notifyCleaned」的模式，share 分支只填 original，strip 分支兩
+          // 者都填。
           var cleanedUrlForNotice = null;
           var cleanedKindForNotice = null;
+          var cleanedOriginalForNotice = null;
+          var cleanedRemovedParamsForNotice = null;
 
           // decideWhatToWrite 只決定要寫入的內容(讀取 blob、判斷短碼／?xmt、
           // 橋接解析、重建 ClipboardItem)，任何步驟失敗都 fallback 回傳原始
@@ -289,12 +337,16 @@
             })
             .then(function (text) {
               if (isShareUrl(text)) {
-                return requestResolveShareUrl(text.trim(), recordOnly).then(
+                // F 案:share 分支只拿得到「短碼原文」當 original，理由同
+                // writeText 分支(見上方 shareOriginal 註解)。
+                var shareOriginal = text.trim();
+                return requestResolveShareUrl(shareOriginal, recordOnly).then(
                   function (cleanUrl) {
                     // cleanUrl 需通過貼文網址格式驗證才信任。
                     if (typeof cleanUrl === 'string' && cleanUrl && POST_URL_RE.test(cleanUrl)) {
                       cleanedUrlForNotice = cleanUrl;
                       cleanedKindForNotice = 'share';
+                      cleanedOriginalForNotice = shareOriginal;
                       if (recordOnly) return items;
                       return [
                         new window.ClipboardItem({
@@ -318,16 +370,18 @@
                 );
               }
 
-              var cleaned = sanitizeIfTrackedPostUrl(text);
-              if (cleaned === null) {
+              var stripped = stripTrackedPostUrl(text);
+              if (stripped === null) {
                 return items;
               }
-              cleanedUrlForNotice = cleaned;
+              cleanedUrlForNotice = stripped.cleaned;
               cleanedKindForNotice = 'strip';
+              cleanedOriginalForNotice = stripped.original;
+              cleanedRemovedParamsForNotice = stripped.removedParams;
               if (recordOnly) return items;
               return [
                 new window.ClipboardItem({
-                  'text/plain': new Blob([cleaned], { type: 'text/plain' }),
+                  'text/plain': new Blob([stripped.cleaned], { type: 'text/plain' }),
                 }),
               ];
             })
@@ -336,6 +390,8 @@
               // 沒有發生任何淨化替換，不得發通知。
               cleanedUrlForNotice = null;
               cleanedKindForNotice = null;
+              cleanedOriginalForNotice = null;
+              cleanedRemovedParamsForNotice = null;
               return items;
             });
 
@@ -347,7 +403,7 @@
           return decideWhatToWrite.then(function (toWrite) {
             return nativeWrite(toWrite).then(function (result) {
               if (cleanedUrlForNotice !== null && cleanedKindForNotice !== null) {
-                notifyCleaned(cleanedUrlForNotice, cleanedKindForNotice);
+                notifyCleaned(cleanedUrlForNotice, cleanedKindForNotice, cleanedOriginalForNotice, cleanedRemovedParamsForNotice);
               }
               return result;
             });

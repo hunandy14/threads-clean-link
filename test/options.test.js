@@ -240,6 +240,77 @@ test('mergeImportedEntries:匯入條目帶偽造 seen 時逐筆 sanitize，且�
   assert.equal(capped.seen[49].at, oversized[59].at);
 });
 
+// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+// 匯入檔的 original/removedParams 屬外部輸入，同樣要逐欄 sanitize，規則
+// 與 background.js 落盤前的處理對齊。
+
+test('mergeImportedEntries:匯入條目帶合法的 original/removedParams 時原樣寫入；original 與(正規化後的)url 相同時整欄丟棄', () => {
+  const result = options.mergeImportedEntries(
+    [],
+    [
+      {
+        url: URL_A,
+        kind: 'strip',
+        at: 1,
+        original: `${URL_A}?xmt=AQGabc`,
+        removedParams: [{ key: 'xmt', value: 'AQGabc' }],
+      },
+      {
+        // url 帶尾隨 query，正規化後等於 URL_B;original 與正規化後的
+        // url(URL_B)相同 → 沒有額外資訊，應整欄丟棄。
+        url: `${URL_B}?xmt=AQGabc`,
+        kind: 'share',
+        at: 1,
+        original: URL_B,
+      },
+    ],
+    1000
+  );
+
+  const withOriginal = result.merged.find((e) => e.url === URL_A);
+  assert.equal(withOriginal.original, `${URL_A}?xmt=AQGabc`);
+  assert.deepEqual(withOriginal.removedParams, [{ key: 'xmt', value: 'AQGabc' }]);
+
+  const sameAsUrl = result.merged.find((e) => e.url === URL_B);
+  assert.equal('original' in sameAsUrl, false, '與正規化後的 url 相同的 original 不存');
+});
+
+test('mergeImportedEntries:匯入條目帶偽造 removedParams(key 缺席/超長、value 超長、型別不符)時逐筆 sanitize，且裁到上限 20 筆', () => {
+  const oversized = Array.from({ length: 25 }, (_, i) => ({ key: `p${i}`, value: `v${i}` }));
+  const result = options.mergeImportedEntries(
+    [],
+    [
+      {
+        url: URL_A,
+        kind: 'strip',
+        at: 1,
+        removedParams: [
+          { key: 'xmt', value: 'AQGabc' }, // 合法
+          { key: '', value: 'x' }, // key 空字串 → 丟棄
+          { key: 'k'.repeat(70), value: 'x' }, // key 超過 64 字 → 丟棄
+          { key: 'v', value: 'v'.repeat(600) }, // value 超過 512 字 → 丟棄
+          { key: 123, value: 'x' }, // key 非字串 → 丟棄
+          'not-an-object', // 非物件 → 丟棄
+        ],
+      },
+      { url: URL_B, kind: 'strip', at: 1, removedParams: 'not-an-array' },
+      { url: URL_C, kind: 'strip', at: 1, removedParams: oversized },
+    ],
+    1000
+  );
+
+  const withParams = result.merged.find((e) => e.url === URL_A);
+  assert.deepEqual(withParams.removedParams, [{ key: 'xmt', value: 'AQGabc' }]);
+
+  const notArray = result.merged.find((e) => e.url === URL_B);
+  assert.equal('removedParams' in notArray, false, '非陣列的 removedParams 整欄不寫入');
+
+  const capped = result.merged.find((e) => e.url === URL_C);
+  assert.equal(capped.removedParams.length, 20, '應裁到上限 20 筆');
+  assert.deepEqual(capped.removedParams[0], oversized[0]);
+  assert.deepEqual(capped.removedParams[19], oversized[19]);
+});
+
 test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日分桶、最舊時間戳', () => {
   const DAY = 86400000;
   const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime(); // 中午,避開日界線
@@ -405,6 +476,55 @@ test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、�
 
   const notArray = cleaned.find((e) => e.url === 'https://www.threads.com/@userd/post/JkL012');
   assert.equal('seen' in notArray, false, 'seen 整欄非陣列(不是陣列內某一筆形狀不對)同樣視為缺席，不輸出該欄');
+});
+
+// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+// 讀取階段(sanitizeEntries)同樣要逐欄 sanitize original/removedParams，
+// 規則與 mergeImportedEntries 那組測試一致。
+
+test('sanitizeEntries:original 與該筆條目自己的 url 相同時整欄丟棄，非字串/空字串同樣丟棄，其餘原樣保留(截斷至長度上限)', () => {
+  const cleaned = options.sanitizeEntries([
+    { url: URL_A, kind: 'strip', at: 1, original: `${URL_A}?xmt=AQGabc` }, // 合法
+    { url: URL_B, kind: 'share', at: 1, original: URL_B }, // 與自己的 url 相同 → 丟棄
+    { url: URL_C, kind: 'share', at: 1, original: 12345 }, // 非字串 → 丟棄
+    {
+      url: 'https://www.threads.com/@userd/post/JkL012',
+      kind: 'share',
+      at: 1,
+      original: `x${'a'.repeat(2100)}`,
+    }, // 超長 → 截斷至 2048
+  ]);
+
+  assert.equal(cleaned.find((e) => e.url === URL_A).original, `${URL_A}?xmt=AQGabc`);
+  assert.equal('original' in cleaned.find((e) => e.url === URL_B), false, '與自己的 url 相同不存');
+  assert.equal('original' in cleaned.find((e) => e.url === URL_C), false, '非字串整欄丟棄');
+  assert.equal(
+    cleaned.find((e) => e.url === 'https://www.threads.com/@userd/post/JkL012').original.length,
+    2048,
+    '超長應截斷至 2048 字'
+  );
+});
+
+test('sanitizeEntries:removedParams 逐筆 sanitize，畸形項目丟棄、非陣列整欄丟棄、全丟時整欄不寫入', () => {
+  const cleaned = options.sanitizeEntries([
+    {
+      url: URL_A,
+      kind: 'strip',
+      at: 1,
+      removedParams: [
+        { key: 'xmt', value: 'AQGabc' }, // 合法
+        { key: '', value: 'x' }, // key 空字串 → 丟棄
+        { key: 'k'.repeat(70), value: 'x' }, // key 超長 → 丟棄
+        { key: 'v', value: 'v'.repeat(600) }, // value 超長 → 丟棄
+      ],
+    },
+    { url: URL_B, kind: 'strip', at: 1, removedParams: 'not-an-array' },
+    { url: URL_C, kind: 'strip', at: 1, removedParams: [{ key: '', value: 'x' }] },
+  ]);
+
+  assert.deepEqual(cleaned.find((e) => e.url === URL_A).removedParams, [{ key: 'xmt', value: 'AQGabc' }]);
+  assert.equal('removedParams' in cleaned.find((e) => e.url === URL_B), false, '非陣列整欄丟棄');
+  assert.equal('removedParams' in cleaned.find((e) => e.url === URL_C), false, '全丟時整欄不寫入');
 });
 
 // ---- 純函式:hasCardPreview ----
