@@ -44,7 +44,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
+const { runInSandbox } = require('./support/helpers');
 
 // 尚未實作 post-icon.js 時 require 會丟 MODULE_NOT_FOUND：刻意延遲到各
 // 測試內部才載入，讓紅燈落在個別測試上，而不是整個測試檔在載入階段就崩掉
@@ -52,6 +54,123 @@ const path = require('node:path');
 function loadPostIcon() {
   return require(path.join(__dirname, '..', 'post-icon.js'));
 }
+
+const SRC = fs.readFileSync(path.join(__dirname, '..', 'post-icon.js'), 'utf8');
+
+// ============================================================
+// 【最小 document 假件:只服務「自癒重注入」這兩條測試】
+// 本檔其餘測試一律只測不碰 document 的純函式(見檔頭約定)，但孤兒自癒的
+// 兩個保證天生就在 DOM 層——「啟動時要先清掉舊實例殘留的 icon 節點」與
+// 「孤兒實例不得再掃描注入」，兩者都無法用純函式表達。這裡只搭剛好夠
+// init() 跑完的假件(建立樣式節點、查詢選擇器、移除節點)，並記錄查詢過
+// 的選擇器供斷言;不擴充成通用 DOM harness——完整注入流程(找互動列、插
+// 入節點、點擊回饋)仍屬瀏覽器整合層，不在此檔涵蓋。
+// ============================================================
+
+function createStubNode(nodeName) {
+  return {
+    nodeName,
+    id: '',
+    textContent: '',
+    innerHTML: '',
+    style: {},
+    childNodes: [],
+    classList: { add() {}, remove() {} },
+    setAttribute() {},
+    getAttribute() {
+      return null;
+    },
+    appendChild(child) {
+      this.childNodes.push(child);
+      return child;
+    },
+    removeChild(child) {
+      const idx = this.childNodes.indexOf(child);
+      if (idx !== -1) this.childNodes.splice(idx, 1);
+      return child;
+    },
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    addEventListener() {},
+  };
+}
+
+// staleIconCount:模擬「擴充功能更新前、已孤兒化的舊實例」留在 DOM 上的
+// .tcl-copy-icon 節點數量。每顆掛在自己的父節點下，被摘掉時記錄下來。
+function createFakeDocument(staleIconCount) {
+  let iconNodes = [];
+  const removedIndexes = [];
+  const selectors = [];
+
+  for (let i = 0; i < staleIconCount; i++) {
+    const node = { className: 'tcl-copy-icon', index: i };
+    node.parentNode = {
+      removeChild(child) {
+        removedIndexes.push(child.index);
+        iconNodes = iconNodes.filter((n) => n !== child);
+        return child;
+      },
+    };
+    iconNodes.push(node);
+  }
+
+  return {
+    readyState: 'complete',
+    head: createStubNode('head'),
+    body: createStubNode('body'),
+    documentElement: createStubNode('html'),
+    getElementById() {
+      return null;
+    },
+    createElement(tag) {
+      return createStubNode(tag);
+    },
+    addEventListener() {},
+    querySelectorAll(selector) {
+      selectors.push(selector);
+      // 真實的 querySelectorAll 回傳靜態 NodeList，這裡也回傳快照——實
+      // 作是邊迭代邊 removeChild，回傳活陣列會跳號漏刪。
+      if (selector === '.tcl-copy-icon') return iconNodes.slice();
+      return [];
+    },
+    // ---- 測試專用觀測點 ----
+    selectors,
+    removedIndexes,
+    currentIcons() {
+      return iconNodes.slice();
+    },
+  };
+}
+
+// chromeRef 傳 null 代表「連 chrome 都沒有」；傳 { runtime: {} } 代表孤兒。
+function loadPostIconInFakeDom(doc, chromeRef) {
+  const warnings = [];
+  const sandbox = {
+    window: {
+      location: { origin: 'https://www.threads.com' },
+      navigator: {},
+      getComputedStyle: () => ({ color: '' }),
+    },
+    document: doc,
+    console: {
+      warn: (...args) => warnings.push(args.map(String).join(' ')),
+      error: () => {},
+      log: () => {},
+    },
+    setTimeout,
+    clearTimeout,
+    URL,
+  };
+  if (chromeRef) sandbox.chrome = chromeRef;
+  runInSandbox(SRC, sandbox);
+  return { warnings, api: sandbox.window.TCLPostIcon };
+}
+
+const CONTAINER_SELECTOR = 'div[data-pressable-container]';
 
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
@@ -75,16 +194,11 @@ test('pickPermalink:排除以 /media 結尾的候選，回傳剩下的那個(不
   assert.equal(pickPermalink([media, post]), post, 'media 排在前面，過濾後順序不受影響');
 });
 
-test('pickPermalink:全部候選都以 /media 結尾時回傳 null', () => {
+test('pickPermalink:全部候選都以 /media 結尾時回傳 null(排除大小寫不敏感，如 /MEDIA)', () => {
   const { pickPermalink } = loadPostIcon();
 
   assert.equal(pickPermalink(['/@x/post/abc/media']), null);
-});
-
-test('pickPermalink:排除 /media 結尾時大小寫不敏感(例如 /MEDIA)', () => {
-  const { pickPermalink } = loadPostIcon();
-
-  assert.equal(pickPermalink(['/@a/post/X/MEDIA']), null);
+  assert.equal(pickPermalink(['/@a/post/X/MEDIA']), null, '大小寫不敏感');
 });
 
 test('pickPermalink:空陣列回傳 null', () => {
@@ -193,31 +307,23 @@ test('buildPostUrl:只帶 query(?xmt=...)時同樣去除', () => {
   );
 });
 
-test('buildPostUrl:href 非字串(null／undefined／數字)一律回傳 null，不丟例外', () => {
+test('buildPostUrl:href 非字串或 origin 非合法絕對來源時一律回傳 null，不丟例外', () => {
   const { buildPostUrl } = loadPostIcon();
 
   assert.equal(buildPostUrl(null, 'https://www.threads.com'), null);
   assert.equal(buildPostUrl(undefined, 'https://www.threads.com'), null);
   assert.equal(buildPostUrl(12345, 'https://www.threads.com'), null);
-});
-
-test('buildPostUrl:origin 非合法絕對來源時回傳 null，不丟例外', () => {
-  const { buildPostUrl } = loadPostIcon();
-
   assert.equal(buildPostUrl('/@x/post/abc', 'not-a-url'), null);
   assert.equal(buildPostUrl('/@x/post/abc', null), null);
   assert.equal(buildPostUrl('/@x/post/abc', undefined), null);
 });
 
-test('buildPostUrl:href 為 javascript: 這類非常規 scheme 時回傳 null，不丟例外', () => {
+// 惡意 href(非常規 scheme／協定相對)一律回傳 null，不得被組成看似合法的
+// 絕對網址——這兩種輸入是頁面 DOM 可控的攻擊面。
+test('buildPostUrl:href 為 javascript: 或 //evil.com/x 這類惡意輸入時回傳 null，不丟例外', () => {
   const { buildPostUrl } = loadPostIcon();
 
   assert.equal(buildPostUrl('javascript:alert(1)', 'https://www.threads.com'), null);
-});
-
-test('buildPostUrl:href 為 //evil.com/x 這類協定相對輸入時回傳 null，不丟例外', () => {
-  const { buildPostUrl } = loadPostIcon();
-
   assert.equal(buildPostUrl('//evil.com/x', 'https://www.threads.com'), null);
 });
 
@@ -294,6 +400,186 @@ test('pickActionRowIndex:候選清單為空或非陣列輸入一律回傳 null�
   assert.equal(pickActionRowIndex([]), null);
   assert.equal(pickActionRowIndex(null), null);
   assert.equal(pickActionRowIndex(undefined), null);
+});
+
+// ---- classifyExcerptCandidate(0.5.0 貼文收藏庫:extractExcerpt 逐段決
+// 策 push／skip／stop 的純函式，PM 審查後修正兩條規則) ----
+
+test('classifyExcerptCandidate:純標點行(如「...」)不是計數字串，應保留為內文(push)，不中止收集', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('...', true), 'push');
+  assert.equal(classifyExcerptCandidate('...', false), 'push');
+});
+
+test('classifyExcerptCandidate:已收集到內文後，正文中單獨成行的時間樣式字串(如「3天」「2026-4-29」)不再被當成時間戳記丟棄，應保留為內文(push)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('3天', true), 'push');
+  assert.equal(classifyExcerptCandidate('2026-4-29', true), 'push');
+});
+
+test('classifyExcerptCandidate:尚未收集到任何內文時，時間樣式字串仍視為時間戳記，略過(skip)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('18小時', false), 'skip');
+  assert.equal(classifyExcerptCandidate('2026-4-29', false), 'skip');
+});
+
+test('classifyExcerptCandidate:計數字串(純數字／千分位逗號／K-M-B 縮寫)一律中止收集(stop)，不論是否已收集到內文', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('97', true), 'stop');
+  assert.equal(classifyExcerptCandidate('2,440', true), 'stop');
+  assert.equal(classifyExcerptCandidate('1.2K', false), 'stop');
+});
+
+test('classifyExcerptCandidate:空字串——已收集到內文時中止(stop)，尚未收集到內文時略過(skip)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('', true), 'stop');
+  assert.equal(classifyExcerptCandidate('', false), 'skip');
+});
+
+// ---- isSamePostPath(方案甲:findContainerByCleanUrl 的可測核心——比對
+// 兩個網址／href 是否指向同一篇貼文，容忍尾隨斜線／query／hash 差異，也
+// 容忍一邊絕對網址、一邊頁面上常見的相對路徑) ----
+
+test('isSamePostPath:絕對網址與相對路徑，path 段相同視為同一篇貼文', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(
+    isSamePostPath('https://www.threads.com/@yuki4382/post/DcDrsdAmhlU', '/@yuki4382/post/DcDrsdAmhlU'),
+    true
+  );
+});
+
+test('isSamePostPath:容忍尾隨斜線與 query/hash 差異', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(
+    isSamePostPath('https://www.threads.com/@x/post/abc', '/@x/post/abc/?xmt=1#s'),
+    true
+  );
+});
+
+test('isSamePostPath:path 段不同(不同 handle 或 post id)回傳 false', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(isSamePostPath('https://www.threads.com/@a/post/1', '/@b/post/1'), false);
+  assert.equal(isSamePostPath('https://www.threads.com/@a/post/1', '/@a/post/2'), false);
+});
+
+test('isSamePostPath:任一邊非字串／組不出合法網址一律回傳 false，不丟例外', () => {
+  const { isSamePostPath } = loadPostIcon();
+
+  assert.equal(isSamePostPath(null, '/@a/post/1'), false);
+  assert.equal(isSamePostPath('/@a/post/1', undefined), false);
+  assert.equal(isSamePostPath(12345, '/@a/post/1'), false);
+});
+
+test('findContainerByCleanUrl:Node 環境(無 document)一律回傳 null，不丟例外', () => {
+  const { findContainerByCleanUrl } = loadPostIcon();
+
+  assert.equal(findContainerByCleanUrl('https://www.threads.com/@a/post/1'), null);
+  assert.equal(findContainerByCleanUrl(null), null);
+});
+
+// ---- resolveFailureToastKey(使用者變更設定規格:share/strip 解析在
+// Threads 頁面內失敗時，頁內 toast 要顯示的 i18n key 對應) ----
+
+test('resolveFailureToastKey:三個已知失敗原因各自對應 background.js 右鍵路徑既有的失敗文案 key', () => {
+  const { resolveFailureToastKey } = loadPostIcon();
+
+  assert.equal(resolveFailureToastKey('invalid-url'), 'bgInvalid');
+  assert.equal(resolveFailureToastKey('network-error'), 'bgNetworkError');
+  assert.equal(resolveFailureToastKey('format-error'), 'bgFormatError');
+});
+
+test('resolveFailureToastKey:未知原因(含非字串)一律 fallback 到 bgUnexpected', () => {
+  const { resolveFailureToastKey } = loadPostIcon();
+
+  assert.equal(resolveFailureToastKey('no-response'), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey('bridge-exception'), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey('Extension context invalidated'), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey(null), 'bgUnexpected');
+  assert.equal(resolveFailureToastKey(undefined), 'bgUnexpected');
+});
+
+// ---- resolvePostCopyEnabled(使用者變更設定規格:postCopyEnabled 開關，
+// 預設 true，只有明確 false 才關閉) ----
+
+test('resolvePostCopyEnabled:明確 false 才視為關閉', () => {
+  const { resolvePostCopyEnabled } = loadPostIcon();
+
+  assert.equal(resolvePostCopyEnabled(false), false);
+});
+
+test('resolvePostCopyEnabled:true／undefined／未設定過／其他雜訊值一律視為啟用(預設 true)', () => {
+  const { resolvePostCopyEnabled } = loadPostIcon();
+
+  assert.equal(resolvePostCopyEnabled(true), true);
+  assert.equal(resolvePostCopyEnabled(undefined), true);
+  assert.equal(resolvePostCopyEnabled(null), true);
+  assert.equal(resolvePostCopyEnabled('false'), true);
+  assert.equal(resolvePostCopyEnabled(0), true);
+});
+
+// ---- 孤兒偵測退場(擴充功能更新後，既開分頁的舊 content script 仍在跑，
+// 但 chrome.runtime.id 已消失:sendMessage 必失敗、紀錄靜默丟失。判準與
+// 退場行為) ----
+
+test('孤兒偵測:runtime.id 消失即視為情境失效，該實例整個退場——不再掃描注入，並留下 console 訊號', () => {
+  const { isExtensionContextLost } = loadPostIcon();
+
+  // 判準本身:runtime 物件還在、只有 id 消失，正是孤兒 content script 的
+  // 形狀(這也是 sendMessage 會同步丟 Extension context invalidated 的前
+  // 兆)。chrome 或 chrome.runtime 整個缺席同樣視為失效(訊息本來就送不出
+  // 去，行為等價)。
+  assert.equal(isExtensionContextLost({ runtime: { id: 'abcdefghijklmnop' } }), false, '正常 content script');
+  assert.equal(isExtensionContextLost({ runtime: { id: undefined } }), true, '孤兒:id 消失');
+  assert.equal(isExtensionContextLost({ runtime: { id: '' } }), true);
+  assert.equal(isExtensionContextLost({}), true);
+  assert.equal(isExtensionContextLost(null), true);
+  assert.equal(isExtensionContextLost(undefined), true);
+
+  // 退場行為:孤兒實例載入(或既有實例的下一輪掃描)必須整個短路，不得再
+  // 去掃貼文容器——否則它會繼續注入「點了會複製、但不會記錄」的假 icon，
+  // 還會跟自癒重注入的新實例搶同一個容器(冪等檢查先到先贏)。
+  const doc = createFakeDocument(0);
+  const { warnings } = loadPostIconInFakeDom(doc, { runtime: {} });
+
+  assert.equal(
+    doc.selectors.includes(CONTAINER_SELECTOR),
+    false,
+    '孤兒實例不得再掃描貼文容器(掃描前的 runtime 自檢必須先短路)'
+  );
+  assert.equal(
+    warnings.some((line) => line.includes('擴充功能情境已失效')),
+    true,
+    '孤兒退場必須留下 console.warn，不得像修正前那樣完全無聲'
+  );
+});
+
+// ---- 自癒重注入的清場(background.js 的 reinjectIntoOpenTabs 會在擴充功能
+// 更新後把本腳本重新注入既開分頁) ----
+
+test('自癒重注入:新實例啟動時先清掉舊孤兒殘留的 .tcl-copy-icon 節點，冪等檢查才不會誤判「已注入」而整頁跳過', () => {
+  const doc = createFakeDocument(2);
+  const { api } = loadPostIconInFakeDom(doc, { runtime: { id: 'abcdefghijklmnop' } });
+
+  // 這就是坑本身:hasExistingIcon 只看得到「有沒有 .tcl-copy-icon 節點」，
+  // 分不出那顆是誰注入的。清場沒做的話，重注入的新腳本會在每個容器上都
+  // 判定「已經注入過」，頁面就只剩一排點了不會記錄的假 icon。
+  assert.equal(api.hasExistingIcon({ querySelector: () => ({}) }), true, '冪等檢查確實只認節點在不在');
+
+  assert.deepEqual(doc.currentIcons(), [], '舊實例殘留的 icon 節點必須在啟動時全數移除');
+  assert.deepEqual(doc.removedIndexes, [0, 1], '兩顆殘留 icon 都要從各自的父節點上摘掉(逐一移除，不漏刪)');
+  assert.equal(
+    doc.selectors.includes(CONTAINER_SELECTOR),
+    true,
+    '清場之後要照常掃描注入(情境有效的新實例不該被自己的孤兒自檢擋下)'
+  );
 });
 
 // ============================================================

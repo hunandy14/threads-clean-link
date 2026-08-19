@@ -21,25 +21,24 @@
       bgFormatError: '轉址結果不是貼文網址，短連結可能已失效或 Threads 網址格式已變動。',
       bgNoTab: '已解析出乾淨網址，但找不到可寫入剪貼簿的分頁:{url}',
       bgClipboardError: '目前分頁無法寫入剪貼簿(可能是瀏覽器限制頁面)，乾淨網址為:{url}',
-      bgSuccess: '已複製乾淨網址:{url}',
-      bgAutoSuccess: '已自動淨化並複製乾淨網址:{url}',
-      // kind:'icon'(貼文互動列複製按鈕，見 post-icon.js)本來就只複製貼文
-      // 原始連結，沒有解析短碼或剪除追蹤參數這類「淨化」動作，沿用
-      // bgAutoSuccess 的「已自動淨化」文案會謊稱做了淨化，故獨立一顆 key。
-      bgIconSuccess: '已複製原始連結:{url}',
       bgUnexpected: '發生未預期的錯誤，請稍後再試一次。',
 
       // ---- popup ----
       ppAutoClean: '自動淨化分享按鈕',
-      ppNotify: '成功時顯示通知',
+      // 開關只影響「複製到剪貼簿的內容乾不乾淨」，不影響「會不會解析並
+      // 記錄」——popup 與 options 兩處共用同一份語意，文字內容一致。
+      ppAutoCleanDesc: '複製時自動換成乾淨網址；關閉仍照常寫入紀錄。',
+      popPostCopyLabel: '貼文複製按鈕',
       ppHistorySettings: '紀錄與設定',
       ppFooter: '盡力而為，處理失敗不影響原功能。',
 
       // ---- options:頁首與統計 ----
-      opSub: '脆連結清潔工 · 設定與淨化紀錄',
+      opSub: '脆連結清潔工 · 設定與紀錄',
       opThemeTitle: '切換主題',
       opLangTitle: '語言 / Language',
-      opTileTotal: '累計淨化',
+      // 此磚統計的是 stats.total(entries.length，所有 kind 都算，不只
+      // 淨化類的 share/strip)。
+      opTileTotal: '累計紀錄',
       opSince: '自 {d} 以來',
       opTileWeek: '本週',
       opVsLastWeek: '較上週',
@@ -48,23 +47,25 @@
       opShareOfTotal: '佔 {p}%',
 
       // ---- options:活動圖 ----
-      opChartTitle: '近 14 天淨化活動',
+      opChartTitle: '近 14 天活動',
       opChartUnit: '單位:次',
-      opChartDesc: '近 14 天每日淨化次數',
+      opChartDesc: '近 14 天每日活動次數',
       opToday: '今天',
       opTimes: '{n} 次',
 
       // ---- options:設定 ----
       opSettingsTitle: '設定',
       opAutoCleanName: '自動淨化分享按鈕',
-      opAutoCleanDesc: '攔截官方「複製連結」，解析短碼、剪除追蹤參數',
-      opNotifyName: '成功時顯示通知',
-      opNotifyDesc: '失敗通知不受影響，一律顯示',
-      opSaveName: '保存淨化紀錄',
-      opSaveDesc: '僅存於本機，上限 1,000 筆，自動汰舊',
+      opAutoCleanDesc: '複製時自動換成乾淨網址；關閉仍照常寫入紀錄。',
+      opSaveName: '保存紀錄',
+      opSaveDesc: '僅存於本機',
+      // 與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關說明(popup
+      // 只留精簡標籤)。
+      opPostCopyName: '貼文複製按鈕',
+      opPostCopyDesc: '在貼文互動列顯示複製連結按鈕',
 
       // ---- options:紀錄清單 ----
-      opHistoryTitle: '淨化紀錄',
+      opHistoryTitle: '紀錄',
       opMoreTitle: '更多動作',
       opFilterTitle: '依來源篩選',
       opExportJson: '匯出 JSON',
@@ -86,6 +87,27 @@
       opDeviceNote: '紀錄僅保存於這台裝置',
       opCopyTitle: '複製乾淨網址',
       opDeleteTitle: '刪除這筆',
+      opOpenTitle: '開啟貼文',
+      // 卡片高亮態(hover/focus-within)右上浮出的兩顆快捷鈕之一;另一顆
+      // (開啟貼文)沿用上面既有的 opOpenTitle。
+      opQuickCopyTitle: '複製連結',
+
+      // ---- options:卡片詳細視窗 ----
+      // sr-only 標題，螢幕閱讀器用;視覺上詳細視窗直接從卡頭(徽章/時間)
+      // 開始，不另外畫一條可見標題列。
+      opDetailTitle: '紀錄詳細資訊',
+      opExpandFull: '展開全文',
+      opRecordedTime: '記錄時間',
+      opUrlLabel: '淨化後連結',
+      // 「原始連結」「追蹤參數 {name}」兩列缺席容忍——沒資料就不畫，不是
+      // 恆常顯示。
+      opOriginalLabel: '原始連結',
+      opTrackingParamLabel: '追蹤參數 {name}',
+      opCopyShort: '複製',
+      // 「時間軸」觸發鈕純文字不帶次數——次數改到子層視窗的標題
+      // (opTimelineCount)。
+      opTimelineBtn: '時間軸',
+      opTimelineCount: '解析時間軸(共 {n} 次)',
 
       // ---- options:匯入對話框與 toast ----
       opImportTitle: '匯入紀錄',
@@ -113,6 +135,11 @@
       // ---- post-icon:貼文互動列注入的複製連結 icon ----
       iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
+
+      // 擴充功能更新時，service worker 的舊連線會失效(context invalidated);
+      // 頁面端呼叫 chrome.* API 失敗時顯示此提示，請使用者重新整理頁面
+      // (post-icon.js 的失敗 toast 使用)。
+      favContextLost: '擴充功能已更新，請重新整理頁面',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -122,20 +149,18 @@
       bgFormatError: 'The redirect did not lead to a post URL; the link may be dead or the URL format changed.',
       bgNoTab: 'Resolved the clean URL, but no tab is available for the clipboard write: {url}',
       bgClipboardError: 'This tab cannot accept clipboard writes (possibly a restricted page). Clean URL: {url}',
-      bgSuccess: 'Clean URL copied: {url}',
-      bgAutoSuccess: 'Auto-cleaned and copied: {url}',
-      bgIconSuccess: 'Original link copied: {url}',
       bgUnexpected: 'Unexpected error. Please try again later.',
 
       ppAutoClean: 'Auto-clean the share button',
-      ppNotify: 'Notify on success',
+      ppAutoCleanDesc: 'Cleans copied links automatically; recording continues either way.',
+      popPostCopyLabel: 'Post copy button',
       ppHistorySettings: 'History & settings',
       ppFooter: 'Best-effort — failures never break the original copy feature.',
 
       opSub: 'Threads Clean Link · Settings & history',
       opThemeTitle: 'Toggle theme',
       opLangTitle: 'Language / 語言',
-      opTileTotal: 'Total cleaned',
+      opTileTotal: 'Total records',
       opSince: 'Since {d}',
       opTileWeek: 'This week',
       opVsLastWeek: 'vs last week',
@@ -144,20 +169,20 @@
       opShareOfTotal: '{p}% of total',
 
       opChartTitle: 'Activity, last 14 days',
-      opChartUnit: 'unit: cleanings',
-      opChartDesc: 'Daily cleanings over the last 14 days',
+      opChartUnit: 'unit: entries',
+      opChartDesc: 'Daily activity over the last 14 days',
       opToday: 'Today',
       opTimes: '{n}×',
 
       opSettingsTitle: 'Settings',
       opAutoCleanName: 'Auto-clean the share button',
-      opAutoCleanDesc: 'Intercepts the official “Copy link”, resolves short codes and strips tracking params',
-      opNotifyName: 'Notify on success',
-      opNotifyDesc: 'Failure notifications always show regardless',
-      opSaveName: 'Keep cleaning history',
-      opSaveDesc: 'Local only, capped at 1,000 entries (oldest pruned)',
+      opAutoCleanDesc: 'Cleans copied links automatically; recording continues either way.',
+      opSaveName: 'Keep history',
+      opSaveDesc: 'Local only',
+      opPostCopyName: 'Post copy button',
+      opPostCopyDesc: 'Show a copy-link button on posts’ action row',
 
-      opHistoryTitle: 'Cleaning history',
+      opHistoryTitle: 'History',
       opMoreTitle: 'More actions',
       opFilterTitle: 'Filter by source',
       opExportJson: 'Export JSON',
@@ -179,6 +204,18 @@
       opDeviceNote: 'History never leaves this device',
       opCopyTitle: 'Copy clean URL',
       opDeleteTitle: 'Delete entry',
+      opOpenTitle: 'Open post',
+      opQuickCopyTitle: 'Copy link',
+
+      opDetailTitle: 'Record details',
+      opExpandFull: 'Show full text',
+      opRecordedTime: 'Recorded at',
+      opUrlLabel: 'Cleaned link',
+      opOriginalLabel: 'Original link',
+      opTrackingParamLabel: 'Tracking param {name}',
+      opCopyShort: 'Copy',
+      opTimelineBtn: 'Timeline',
+      opTimelineCount: 'Timeline ({n})',
 
       opImportTitle: 'Import history',
       opImportDesc: 'Pick a previously exported .json file or paste its content; merged with existing entries, deduped by URL.',
@@ -203,6 +240,8 @@
 
       iconTooltip: 'Copy original link',
       iconCopied: 'Original link copied',
+
+      favContextLost: 'Extension updated — please refresh the page',
     },
   };
 

@@ -7,49 +7,156 @@
 (function (root) {
   'use strict';
 
-  // 三顆開關的預設值。autoClean/notifySuccess 與 popup.js、background.js、
-  // bridge.js 一致;saveHistory 與 background.js 一致(guard/bridge 不下放)。
+  // 三顆開關的預設值，跨檔鏡像義務:autoClean 與 popup.js/background.js/
+  // bridge.js 一致;saveHistory 與 background.js 一致(guard/bridge 不下放);
+  // postCopyEnabled 與 popup.js 鏡像(貼文互動列複製按鈕，見 post-icon.js)。
   var OPTIONS_DEFAULT_SETTINGS = {
-    autoClean: true,
-    notifySuccess: false,
+    autoClean: false,
     saveHistory: true,
+    postCopyEnabled: true,
   };
-  var SETTING_IDS = ['autoClean', 'notifySuccess', 'saveHistory'];
+  var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   var HISTORY_KEY = 'history';
-  var HISTORY_LIMIT = 1000;
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
 
-  // 匯入資料的驗證樣式:與 background.js 的 NOTICE_CLEAN_URL_PATTERN 同一套
-  // 白名單字元類——匯入檔是外部輸入,信任等級與頁面訊息相同,整串完全
-  // 吻合才收。
-  var POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,60}\/post\/[A-Za-z0-9_-]{1,60}$/i;
+  // 淨化紀錄欄位長度上限;author/handle/excerpt 由 background.js 落盤，
+  // options.js 讀取/匯入時再做一次防禦性截斷(縱深防禦，不依賴寫入端)。
+  var ENTRY_AUTHOR_MAX = 100;
+  var ENTRY_EXCERPT_MAX = 2000;
 
+  // 貼文網址驗證/正規化樣式:全 repo 對「合法貼文網址長什麼樣」的單一
+  // 權威定義——白名單字元類(handle:英數/底線/句點;post id:英數/連字號/
+  // 底線)，各自 1-80 字元，容忍尾隨斜線／查詢字串／hash(匯入檔或頁面
+  // DOM 擷取的 href 常帶這些，不應因此整筆拒收)。group 1 = 正規化後的
+  // 乾淨網址。background.js 的 menu 寫入路徑須維持同一組上限，否則本頁
+  // 讀取/整形寫回時會把合法紀錄當「形狀不對」濾掉。
+  var POST_URL_PATTERN =
+    /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}))\/?(?:[?#].*)?$/i;
+
+  // badge 渲染(buildEntryCard/openEntryDetail/buildTimelineRow)只用 .key
+  // 查 i18n 文案，純文字 pill，KINDS 不需要 icon 欄位。
   var KINDS = {
-    share: { key: 'opKindShare', icon: '#i-link' },
-    strip: { key: 'opKindStrip', icon: '#i-scissors' },
-    menu: { key: 'opKindMenu', icon: '#i-mouse' },
-    // 貼文互動列複製 icon(post-icon.js)寫入剪貼簿成功後的路徑，沿用既有
-    // #i-copy 符號(options.html 已定義，opCopyTitle 那顆複製鈕也用它)，
-    // 不必為此另刻一顆 SVG。
-    icon: { key: 'opKindIcon', icon: '#i-copy' },
+    share: { key: 'opKindShare' },
+    strip: { key: 'opKindStrip' },
+    menu: { key: 'opKindMenu' },
+    // 貼文互動列複製 icon(post-icon.js)寫入剪貼簿成功後的路徑。
+    icon: { key: 'opKindIcon' },
   };
 
   // ---- 純函式 ----
 
-  // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉形狀不對的項目。
+  // 選填欄位截斷:非字串或空字串一律回傳 undefined(呼叫端據此整欄不寫
+  // 入)，字串則截斷至長度上限。author/handle/excerpt 共用同一份規則，
+  // 與 background.js 的 sanitizeHistoryField 對齊(獨立信任邊界，不假設
+  // 寫入端沒漏)。
+  function sanitizeTextField(value, max) {
+    if (typeof value !== 'string' || value.length === 0) return undefined;
+    return value.slice(0, max);
+  }
+
+  // seen[] 是「先前已經落盤的資料」，讀取(sanitizeEntries)與匯入
+  // (mergeImportedEntries)都是獨立信任邊界，各自逐筆 sanitize——at 需為
+  // 有限數字，不符就整筆丟棄(容忍陣列裡部分項目壞掉，不因此整個陣列
+  // 作廢)。kind 缺席須視為合法(background.js 合併既有條目缺 seen 時，會
+  // 照手機版語意補種一筆不帶 kind 的起始紀錄，`existing.seen ??
+  // [{ at: existing.receivedAt }]`)，不能當成損毀資料丟掉;kind 若有出現
+  // 則需在 KINDS 白名單內(與 background.js 的 SEEN_KIND_WHITELIST 同一組
+  // 合法值)。裁到 SEEN_MAX 上限，與 background.js 寫入時的裁切對齊。
+  var SEEN_MAX = 50;
+  function sanitizeSeenList(seenList) {
+    if (!Array.isArray(seenList)) return [];
+    var out = [];
+    for (var i = 0; i < seenList.length; i++) {
+      var record = seenList[i];
+      if (!record || typeof record !== 'object') continue;
+      if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
+      if (record.kind === undefined) {
+        out.push({ at: record.at });
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(KINDS, record.kind)) continue;
+      out.push({ at: record.at, kind: record.kind });
+    }
+    return out.slice(-SEEN_MAX);
+  }
+
+  // original 選填欄位，規則同 sanitizeTextField，額外多一條:與該筆條目
+  // 自己的 url 完全相同就整欄丟棄(手機版語意是「取與 cleaned 不同者」，
+  // 相同代表沒有額外資訊)。與 background.js 的 sanitizeOriginalField
+  // 規則一致。
+  var ENTRY_ORIGINAL_MAX = 2048;
+  function sanitizeOriginalField(value, url) {
+    if (typeof value !== 'string' || value.length === 0) return undefined;
+    if (value === url) return undefined;
+    return value.slice(0, ENTRY_ORIGINAL_MAX);
+  }
+
+  // removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value }，
+  // 與 background.js 的 sanitizeRemovedParams 同一組門檻)。上限
+  // REMOVED_PARAMS_MAX 筆，每筆 key 需為非空字串且 ≤ REMOVED_PARAM_KEY_MAX、
+  // value 需為字串(可為空字串)且 ≤ REMOVED_PARAM_VALUE_MAX，任一不符就整
+  // 筆丟棄(容忍陣列裡部分項目壞掉，寫法對齊 sanitizeSeenList)。輸入非
+  // 陣列，或 sanitize 後一筆不剩，回傳 undefined。
+  var REMOVED_PARAMS_MAX = 20;
+  var REMOVED_PARAM_KEY_MAX = 64;
+  var REMOVED_PARAM_VALUE_MAX = 512;
+  function sanitizeRemovedParams(value) {
+    if (!Array.isArray(value)) return undefined;
+    var out = [];
+    for (var i = 0; i < value.length; i++) {
+      if (out.length >= REMOVED_PARAMS_MAX) break;
+      var item = value[i];
+      if (!item || typeof item !== 'object') continue;
+      if (typeof item.key !== 'string' || item.key.length === 0 || item.key.length > REMOVED_PARAM_KEY_MAX) continue;
+      if (typeof item.value !== 'string' || item.value.length > REMOVED_PARAM_VALUE_MAX) continue;
+      out.push({ key: item.key, value: item.value });
+    }
+    return out.length > 0 ? out : undefined;
+  }
+
+  // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
+  // 項目——url 除了型別是字串，還要通過 POST_URL_PATTERN 的形狀驗證才收。
+  // 渲染層 buildEntryCard 的 openLink.href = e.url、剪貼簿複製都是 url
+  // sink，不該仰賴「寫入端永遠沒漏」這個假設，讀取階段就該把形狀不對的
+  // url 整筆擋掉。選填欄位(author/handle/excerpt)型別不是字串就整欄
+  // 丟棄、字串則截斷至長度上限，entry 本身仍保留(與核心欄位的「整筆
+  // 丟棄」規則不同，見下方 map)。
   function sanitizeEntries(list) {
     if (!Array.isArray(list)) return [];
-    return list.filter(function (e) {
-      return (
-        e &&
-        typeof e.url === 'string' &&
-        typeof e.at === 'number' &&
-        isFinite(e.at) &&
-        Object.prototype.hasOwnProperty.call(KINDS, e.kind)
-      );
-    });
+    return list
+      .filter(function (e) {
+        return (
+          e &&
+          typeof e.url === 'string' &&
+          POST_URL_PATTERN.test(e.url) &&
+          typeof e.at === 'number' &&
+          isFinite(e.at) &&
+          Object.prototype.hasOwnProperty.call(KINDS, e.kind)
+        );
+      })
+      .map(function (e) {
+        var out = { url: e.url, kind: e.kind, at: e.at };
+        var author = sanitizeTextField(e.author, ENTRY_AUTHOR_MAX);
+        if (author !== undefined) out.author = author;
+        var handle = sanitizeTextField(e.handle, ENTRY_AUTHOR_MAX);
+        if (handle !== undefined) out.handle = handle;
+        var excerpt = sanitizeTextField(e.excerpt, ENTRY_EXCERPT_MAX);
+        if (excerpt !== undefined) out.excerpt = excerpt;
+        // seen[] 比照 author/handle/excerpt 的「缺席不落空值」慣例。這一行
+        // 同時承擔驗證與保留兩職——少了它，即使 storage 真的有 seen，渲染
+        // 端也永遠讀不到，詳細視窗的「時間軸」鈕會變成永遠打不開的死功能。
+        var seenList = sanitizeSeenList(e.seen);
+        if (seenList.length > 0) out.seen = seenList;
+        // original/removedParams 比照同一套「缺席不落空值」慣例。original
+        // 的相同判斷用這筆條目自己的 url(out.url，此時已通過形狀驗證)。
+        var original = sanitizeOriginalField(e.original, out.url);
+        if (original !== undefined) out.original = original;
+        var removedParams = sanitizeRemovedParams(e.removedParams);
+        if (removedParams !== undefined) out.removedParams = removedParams;
+        return out;
+      });
   }
 
   // kind 過濾('all' 不過濾)+ 關鍵字過濾(比對整條網址,不分大小寫)。
@@ -62,13 +169,24 @@
     });
   }
 
+  // 匯出 entries 含所有選填欄位(author/handle/excerpt/seen/original/
+  // removedParams)，沿用「非字串/缺席就整欄不寫」的慣例;漏掉任一欄，
+  // 使用者換裝置/瀏覽器匯入回來時該欄資料會無聲消失。值直接沿用 entry
+  // 已經 sanitize 過的形狀，不必在這裡重新驗證。
   function buildExportPayload(entries, exportedAt) {
     return {
       app: 'threads-clean-link',
       version: 1,
       exportedAt: exportedAt,
       entries: entries.map(function (e) {
-        return { url: e.url, kind: e.kind, at: e.at };
+        var out = { url: e.url, kind: e.kind, at: e.at };
+        if (typeof e.author === 'string') out.author = e.author;
+        if (typeof e.handle === 'string') out.handle = e.handle;
+        if (typeof e.excerpt === 'string') out.excerpt = e.excerpt;
+        if (Array.isArray(e.seen) && e.seen.length > 0) out.seen = e.seen;
+        if (typeof e.original === 'string') out.original = e.original;
+        if (Array.isArray(e.removedParams) && e.removedParams.length > 0) out.removedParams = e.removedParams;
+        return out;
       }),
     };
   }
@@ -88,8 +206,11 @@
     return { ok: true, entries: parsed.entries };
   }
 
-  // 匯入合併:url 過錨定白名單、與現有以 url 去重;kind 非白名單→'share',
-  // at 非有限數字→now。合併後新到舊排序、裁到上限。
+  // 匯入合併:url 過 POST_URL_PATTERN 白名單並正規化(容忍尾隨斜線/query/
+  // hash)、以正規化後的 url 與現有去重;kind 非白名單→'share',at 非有限
+  // 數字→now;author/handle/excerpt 逐條 sanitize(型別+截斷，規則同
+  // sanitizeEntries)。合併後新到舊排序，結果不裁切(紀錄不設上限，匯入
+  // 多少留多少)。
   function mergeImportedEntries(existing, imported, now) {
     var seen = {};
     existing.forEach(function (e) {
@@ -99,27 +220,169 @@
     var added = 0;
     var skipped = 0;
     imported.forEach(function (raw) {
-      var url = raw && typeof raw.url === 'string' ? raw.url.trim() : '';
-      if (!POST_URL_PATTERN.test(url) || seen[url]) {
+      var rawUrl = raw && typeof raw.url === 'string' ? raw.url.trim() : '';
+      var match = POST_URL_PATTERN.exec(rawUrl);
+      if (!match || seen[match[1]]) {
         skipped++;
         return;
       }
+      var url = match[1];
       seen[url] = true;
-      merged.push({
+      var entry = {
         url: url,
         kind: raw && Object.prototype.hasOwnProperty.call(KINDS, raw.kind) ? raw.kind : 'share',
         at: raw && typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : now,
-      });
+      };
+      var author = sanitizeTextField(raw && raw.author, ENTRY_AUTHOR_MAX);
+      if (author !== undefined) entry.author = author;
+      var handle = sanitizeTextField(raw && raw.handle, ENTRY_AUTHOR_MAX);
+      if (handle !== undefined) entry.handle = handle;
+      var excerpt = sanitizeTextField(raw && raw.excerpt, ENTRY_EXCERPT_MAX);
+      if (excerpt !== undefined) entry.excerpt = excerpt;
+      // 匯入檔的 seen[]/original/removedParams 皆屬外部輸入，同樣要逐筆
+      // sanitize，防止偽造/損毀資料混進來。original 的相同判斷用正規化
+      // 後的 url(match[1])，不是匯入檔裡未正規化的原始 url 字串。
+      var seenList = sanitizeSeenList(raw && raw.seen);
+      if (seenList.length > 0) entry.seen = seenList;
+      var original = sanitizeOriginalField(raw && raw.original, url);
+      if (original !== undefined) entry.original = original;
+      var removedParams = sanitizeRemovedParams(raw && raw.removedParams);
+      if (removedParams !== undefined) entry.removedParams = removedParams;
+      merged.push(entry);
       added++;
     });
     merged.sort(function (a, b) {
       return b.at - a.at;
     });
-    return { merged: merged.slice(0, HISTORY_LIMIT), added: added, skipped: skipped };
+    return { merged: merged, added: added, skipped: skipped };
+  }
+
+  // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊
+  // (author 或 excerpt 任一存在即算有預覽);純邏輯獨立成函式方便直接測，
+  // 也供 buildEntryCard 判斷要渲染預覽區塊還是降級網址列。
+  function hasCardPreview(entry) {
+    return (
+      (typeof entry.author === 'string' && entry.author !== '') ||
+      (typeof entry.excerpt === 'string' && entry.excerpt !== '')
+    );
+  }
+
+  // 卡片詳細視窗長文判定，與手機版 history-detail-dialog.tsx 的
+  // isLongExcerpt 對齊(EXCERPT_DIALOG_LINES=15):行數或字元量任一超標就
+  // 顯示「展開全文」。字元量門檻沿用手機版估算(每行約 22 字，15*22=330)。
+  var EXCERPT_DIALOG_LINES = 15;
+  function isLongExcerpt(excerpt) {
+    if (typeof excerpt !== 'string' || excerpt === '') return false;
+    var lines = excerpt.split('\n').length;
+    return lines > EXCERPT_DIALOG_LINES || Array.from(excerpt).length > EXCERPT_DIALOG_LINES * 22;
+  }
+
+  // 對齊手機版:摘要內的 http(s) 連結渲染成可點的 <a>。摘要是頁面來源的
+  // 不可信文字，這裡只做純 DOM 組裝(textContent + createElement)，href 由
+  // 正則保證以 http(s):// 開頭，javascript: 等協定進不來;含省略號「…」的
+  // 是 Threads 顯示層截斷的殘缺網址，維持純文字不做成連結。
+  function renderExcerptWithLinks(doc, el, text) {
+    // doc 由呼叫端傳入(controller 的注入 document),不碰全域。
+    if (typeof text !== 'string' || text === '' || !/https?:\/\//.test(text)) {
+      // 快速路徑:沒有連結的內文(多數情況)直接整段賦值。
+      el.textContent = typeof text === 'string' ? text : '';
+      return;
+    }
+    el.textContent = '';
+    var parts = text.split(/(https?:\/\/[^\s]+)/);
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (part === '') continue;
+      if (i % 2 === 1 && part.indexOf('…') === -1) {
+        // 尾端黏著的標點不算連結本體，切回文字段
+        var m = part.match(/[),.;:!?、。」』]+$/);
+        var url = m ? part.slice(0, part.length - m[0].length) : part;
+        var a = doc.createElement('a');
+        a.className = 'excerpt-link';
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = url;
+        el.appendChild(a);
+        if (m) el.appendChild(doc.createTextNode(m[0]));
+      } else {
+        el.appendChild(doc.createTextNode(part));
+      }
+    }
+  }
+
+  // 對齊手機版 lib/format-display-url.ts，把完整網址轉成適合顯示的精簡
+  // 路徑(去 scheme + 網域，只留 path+query+hash，去掉開頭斜線)。用於
+  // 詳細視窗的「淨化後連結」與「原始連結」兩列的顯示值(複製仍用完整
+  // 原始網址，只影響顯示)。解析失敗 fail-open 回傳原字串。
+  function formatDisplayUrl(url) {
+    if (typeof url !== 'string') return '';
+    var parsed;
+    try {
+      parsed = new URL(url);
+    } catch (e) {
+      return url;
+    }
+    var path = parsed.pathname + parsed.search + parsed.hash;
+    var trimmed = path.replace(/^\/+/, '');
+    return trimmed || url;
+  }
+
+  // 對齊手機版 CopyRow 的「原始連結」「追蹤參數 {name}」兩類列。
+  // removedParams 元素的欄位名是 { key, value }(手機版 link-cleaner.ts:171
+  // 與 background.js 的 sanitizeRemovedParams 皆同);回傳物件用 name 是
+  // 顯示層/i18n 樣板插值命名(見下面 tf('opTrackingParamLabel', { name:
+  // row.name })那行)，跟資料層的 key 是兩回事，不要混淆。entry.original
+  // 缺席/非字串/與 cleaned 相同、entry.removedParams 缺席/非陣列/項目
+  // 缺 key 或 value 皆不產生該列，逐筆容錯不因單筆壞掉波及整組。
+  function buildDetailExtraRows(entry) {
+    var rows = [];
+    if (!entry) return rows;
+    if (typeof entry.original === 'string' && entry.original !== '' && entry.original !== entry.url) {
+      rows.push({ type: 'original', display: formatDisplayUrl(entry.original), copyValue: entry.original });
+    }
+    var params = Array.isArray(entry.removedParams) ? entry.removedParams : [];
+    params.forEach(function (p) {
+      if (!p || typeof p.key !== 'string' || p.key === '' || typeof p.value !== 'string') return;
+      rows.push({ type: 'param', name: p.key, display: p.value, copyValue: p.value });
+    });
+    return rows;
+  }
+
+  // 詳細視窗的「記錄時間」用絕對時間(YYYY-MM-DD HH:mm)，與卡頭的相對時間
+  // (relTime)分開顯示，對齊手機版 formatResolvedTime。
+  function formatAbsoluteTime(ts) {
+    var d = new Date(ts);
+    var pad = function (n) {
+      return n < 10 ? '0' + n : String(n);
+    };
+    return (
+      d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+    );
+  }
+
+  // 「時間軸」顯示邏輯，對齊手機版 history-detail-dialog.tsx——
+  // seen.length > 1 才顯示時間軸(單筆時卡頭的相對時間已經夠用)，新到舊
+  // 排序。防禦寫法:entry.seen 缺席、非陣列，或陣列內項目形狀不對(缺
+  // at/at 非有限數字)一律當作不存在，回傳 null。來源標籤用既有 KINDS
+  // 文案，不是手機版的 share/clipboard 二分。
+  function buildSeenTimeline(entry) {
+    var seen = entry && Array.isArray(entry.seen) ? entry.seen : [];
+    var valid = seen.filter(function (r) {
+      return r && typeof r.at === 'number' && isFinite(r.at);
+    });
+    if (valid.length <= 1) return null;
+    return valid.slice().sort(function (a, b) {
+      return b.at - a.at;
+    });
   }
 
   // 統計聚合:總數、各來源數、本週/上週(滾動 7 天)、近 14 天逐「日曆日」
-  // 次數(索引 13 = 今天)、最舊一筆時間戳。
+  // 次數(索引 13 = 今天)、最舊一筆時間戳。counts 算了 share/strip/menu/
+  // icon 四個 kind，但統計磚版面(options.html 的 .stats)只給短碼解析/
+  // 剪除參數/貼文按鈕三個各開一格——menu(右鍵還原)是刻意不佔版面的低頻
+  // 手動路徑，counts.menu 仍照算是為了四個 kind 算法一致，不特殊處理。
   function aggregateStats(entries, nowTs) {
     var todayStart = new Date(nowTs);
     todayStart.setHours(0, 0, 0, 0);
@@ -171,6 +434,8 @@
     var activeKind = 'all';
     var query = '';
     var pageSize = PAGE_SIZE_DEFAULT;
+    // 目前詳細視窗顯示中的條目(複製/刪除按鈕靠它找到要操作的 entry)。
+    var detailEntry = null;
 
     // 注意:此模組內不得宣告名為 t 的區域變數,以免遮蔽翻譯函式
     // (demo 階段真踩過:var t = createElement(...) 讓整頁渲染炸掉)。
@@ -469,17 +734,447 @@
       });
     }
 
-    function iconBtn(href, title, extraCls, onClick) {
-      var b = document.createElement('button');
-      b.className = 'icon-btn' + (extraCls ? ' ' + extraCls : '');
-      b.title = title;
-      b.appendChild(svgUse(href));
-      b.addEventListener('click', onClick);
-      return b;
+    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
+    // 網址內容源頭是頁面可控管道，禁 innerHTML。紀錄卡片降級顯示(無
+    // author/excerpt 時)靠這份拆解邏輯。
+    function buildUrlNode(url, cls) {
+      var urlEl = document.createElement('div');
+      urlEl.className = cls || 'url';
+      // TLD(com/net)一併捕獲並如實顯示:網址本來就可能來自 threads.net
+      // (POST_URL_PATTERN 同時允許 com 與 net)，不可硬寫死 'threads.com/'。
+      var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(url);
+      if (handleMatch) {
+        urlEl.appendChild(document.createTextNode('threads.' + handleMatch[1] + '/'));
+        var handleEl = document.createElement('b');
+        handleEl.textContent = handleMatch[2];
+        urlEl.appendChild(handleEl);
+        urlEl.appendChild(document.createTextNode('/' + handleMatch[3]));
+      } else {
+        urlEl.textContent = url;
+      }
+      return urlEl;
     }
 
-    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
-    // 紀錄內容源頭是頁面可控管道,禁 innerHTML。
+    // 複製是卡片高亮態快捷鈕/詳細視窗/original-removedParams 附加列共用的
+    // 動作，獨立成通用的「複製任意文字」函式(copyText)，copyEntryUrl 是
+    // 針對 entry.url 的特化版本，避免每個呼叫端各自組 try/catch。
+    // 「開啟」是原生 <a target=_blank>，不需要 JS 邏輯。
+    function copyText(value) {
+      var p;
+      try {
+        p = navigator.clipboard.writeText(value);
+      } catch (err) {
+        p = Promise.reject(err);
+      }
+      Promise.resolve(p).then(
+        function () {
+          toast(tt('opToastCopied'));
+        },
+        function () {
+          toast(tt('opToastCopyFailed'));
+        }
+      );
+    }
+
+    function copyEntryUrl(e) {
+      copyText(e.url);
+    }
+
+    // 刪除只在詳細視窗做(照手機版 DialogActions 的位置，卡片層級沒有
+    // 刪除入口)。沿用既有慣例等級:直接改 storage + toast，不另開確認框
+    // (「清除全部」這種一次清光的破壞性動作才走確認框)。以 url 比對
+    // (不疊 at，紀錄以 url 去重後同一個 url 只會有一筆);沒有真的命中
+    // (例如已被別的分頁/storage 同步事件先刪掉)就不寫入、不動視窗、也
+    // 不發「已刪除」成功 toast，避免對使用者謊報一個沒發生的動作。
+    function deleteEntry(e) {
+      var hit = false;
+      var next = entries.filter(function (x) {
+        if (x.url === e.url) {
+          hit = true;
+          return false;
+        }
+        return true;
+      });
+      if (!hit) return;
+      persistHistory(next);
+      if (detailEntry && detailEntry.url === e.url) closeEntryDetail();
+      renderAll();
+      toast(tt('opToastDeleted'));
+    }
+
+    // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
+    // 相對時間)→ hasCardPreview 為真時顯示作者列(author 粗體 + @handle
+    // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址。
+    // 無縮圖(刻意，og:image 會過期)。互動照手機版的「選中態」:
+    // hover/press 時邊框轉主色、右上浮出複製/分享兩顆快捷 icon，web 用
+    // :hover 與 :focus-within 模擬(見 options.html 的 .entry-card 註解);
+    // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。卡片層級
+    // 沒有刪除入口。
+    function buildEntryCard(e) {
+      var card = document.createElement('div');
+      card.className = 'entry-card';
+      // 鍵盤可聚焦，讓 :focus-within 高亮態也能靠 Tab 觸發(不只滑鼠
+      // hover);role="button" + Enter/Space 觸發，補上瀏覽器對原生
+      // button/a 才有的鍵盤啟動行為(div 預設沒有)。
+      card.setAttribute('tabindex', '0');
+      card.setAttribute('role', 'button');
+
+      var header = document.createElement('div');
+      header.className = 'entry-header';
+      var meta = document.createElement('div');
+      meta.className = 'entry-meta';
+      var badge = document.createElement('span');
+      badge.className = 'entry-badge';
+      badge.textContent = tt(KINDS[e.kind].key);
+      var headTime = document.createElement('span');
+      headTime.className = 'entry-time';
+      headTime.textContent = relTime(e.at);
+      meta.appendChild(badge);
+      meta.appendChild(headTime);
+      header.appendChild(meta);
+      card.appendChild(header);
+
+      if (hasCardPreview(e)) {
+        var hasAuthor = typeof e.author === 'string' && e.author !== '';
+        var hasHandle = typeof e.handle === 'string' && e.handle !== '';
+        // author 或 handle 任一存在就顯示作者列——author===handle 時入庫端
+        // 會把重複的 author 丟棄(只剩 handle),列不能因此整個消失。
+        if (hasAuthor || hasHandle) {
+          var authorRow = document.createElement('div');
+          authorRow.className = 'entry-author-row';
+          if (hasAuthor) {
+            var nameEl = document.createElement('span');
+            nameEl.className = 'entry-author-name';
+            nameEl.textContent = e.author;
+            authorRow.appendChild(nameEl);
+          }
+          if (hasHandle) {
+            var handleEl = document.createElement('span');
+            handleEl.className = 'entry-handle';
+            handleEl.textContent = e.handle;
+            authorRow.appendChild(handleEl);
+          }
+          card.appendChild(authorRow);
+        }
+        if (typeof e.excerpt === 'string' && e.excerpt !== '') {
+          var excerptEl = document.createElement('div');
+          excerptEl.className = 'entry-excerpt';
+          excerptEl.textContent = e.excerpt;
+          card.appendChild(excerptEl);
+        }
+      } else {
+        card.appendChild(buildUrlNode(e.url, 'entry-url'));
+      }
+
+      // 高亮態右上浮出的兩顆快捷鈕:複製連結(對應手機 Copy)、開啟貼文
+      // (對應手機 Share2——web 沒有原生分享)。注意這跟詳細視窗底部動作列
+      // 的「分享→複製」映射是兩件事，不強行統一。平時態靠 CSS
+      // display:none 隱藏，兩顆按鈕都要 stopPropagation，否則點下去會被
+      // 卡片自己的 click 冒泡到，順手把詳細視窗也開了。
+      var quickWrap = document.createElement('div');
+      quickWrap.className = 'entry-quick';
+
+      var quickCopyBtn = document.createElement('button');
+      quickCopyBtn.type = 'button';
+      quickCopyBtn.className = 'entry-quick-btn';
+      quickCopyBtn.title = tt('opQuickCopyTitle');
+      quickCopyBtn.setAttribute('aria-label', tt('opQuickCopyTitle'));
+      quickCopyBtn.appendChild(svgUse('#i-copy'));
+      quickCopyBtn.addEventListener('click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        copyEntryUrl(e);
+      });
+      quickWrap.appendChild(quickCopyBtn);
+
+      var quickOpenBtn = document.createElement('a');
+      quickOpenBtn.className = 'entry-quick-btn';
+      quickOpenBtn.href = e.url;
+      quickOpenBtn.target = '_blank';
+      quickOpenBtn.rel = 'noopener';
+      quickOpenBtn.title = tt('opOpenTitle');
+      quickOpenBtn.setAttribute('aria-label', tt('opOpenTitle'));
+      quickOpenBtn.appendChild(svgUse('#i-external-link'));
+      quickOpenBtn.addEventListener('click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        // 開啟交給瀏覽器原生 <a> 行為，這裡只需要擋掉冒泡。
+      });
+      quickWrap.appendChild(quickOpenBtn);
+
+      card.appendChild(quickWrap);
+
+      // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。
+      card.addEventListener('click', function (ev) {
+        var target = ev && ev.target;
+        if (target && target.closest && target.closest('.entry-quick')) return;
+        openEntryDetail(e);
+      });
+      card.addEventListener('keydown', function (ev) {
+        if (!ev || (ev.key !== 'Enter' && ev.key !== ' ')) return;
+        var target = ev.target;
+        if (target && target.closest && target.closest('.entry-quick')) return;
+        ev.preventDefault();
+        openEntryDetail(e);
+      });
+
+      return card;
+    }
+
+    // ---- 詳細視窗:結構/間距/字級/圓角/按鈕樣式一律照手機版
+    // history-detail-dialog.tsx + dialog-shell.tsx 的字面 token 值 ----
+    //
+    // 版面:✕ 關閉鈕 → 卡頭(徽章+相對時間)→ 作者列(16px/600 + 14px/500)
+    // → excerpt(15 行截斷，對齊 EXCERPT_DIALOG_LINES)+ 超長時「展開全文」
+    // → 淨化後連結 kv(accent 強調，值為 formatDisplayUrl 後的正規路徑)
+    // → 原始連結/追蹤參數 kv(有資料才畫，見 buildDetailExtraRows)→
+    // 記錄時間 kv(seen 有多筆時多一顆「時間軸」鈕，開子層視窗)→ 底部
+    // 等寬動作列(複製/開啟/刪除，destructive 只變文字色)。
+    //
+    // 「展開全文」用原地展開(移除 line-clamp)取代手機版的巢狀第二層
+    // Modal——手機版那樣做是為了繞過 RN 在 iOS 不支援兄弟層 Modal 並開的
+    // 限制，web 沒有這個問題。「時間軸」則是巢狀子層視窗(timelineOverlay)，
+    // 對齊手機版時間軸本來就是巢狀 Modal 的做法。
+    function openEntryDetail(e) {
+      detailEntry = e;
+      var overlay = byId('detailOverlay');
+      if (!overlay) return;
+
+      // 每次開啟(含切換到別的條目)都把子層時間軸視窗收合，避免上一筆
+      // 的展開態殘留到這一筆。
+      closeTimelineOverlay();
+
+      var badge = byId('detailBadge');
+      if (badge) badge.textContent = tt(KINDS[e.kind].key);
+      var timeEl = byId('detailTime');
+      if (timeEl) timeEl.textContent = relTime(e.at);
+
+      var authorRow = byId('detailAuthorRow');
+      var authorName = byId('detailAuthorName');
+      var handleEl = byId('detailHandle');
+      var excerptEl = byId('detailExcerpt');
+      var expandBtn = byId('detailExpandBtn');
+      var urlFallback = byId('detailUrlFallback');
+
+      var hasAuthor = typeof e.author === 'string' && e.author !== '';
+      var hasHandle = typeof e.handle === 'string' && e.handle !== '';
+      var hasExcerpt = typeof e.excerpt === 'string' && e.excerpt !== '';
+
+      if (hasCardPreview(e)) {
+        // 同卡片端:author 被去重丟棄、只剩 handle 時,列仍要顯示。
+        if (authorRow) authorRow.hidden = !(hasAuthor || hasHandle);
+        if (authorName) authorName.textContent = hasAuthor ? e.author : '';
+        if (handleEl) {
+          handleEl.hidden = !hasHandle;
+          handleEl.textContent = hasHandle ? e.handle : '';
+        }
+        if (excerptEl) {
+          excerptEl.hidden = !hasExcerpt;
+          renderExcerptWithLinks(document, excerptEl, hasExcerpt ? e.excerpt : '');
+          excerptEl.classList.remove('expanded');
+        }
+        if (expandBtn) expandBtn.hidden = !(hasExcerpt && isLongExcerpt(e.excerpt));
+        if (urlFallback) {
+          urlFallback.hidden = true;
+          urlFallback.textContent = '';
+        }
+      } else {
+        // 比照上面有預覽分支，四欄都要清空(不是只設 hidden)，否則上一筆
+        // 的殘留文字會在 hidden 失效或未來改版時露出，或被螢幕閱讀器讀到。
+        if (authorRow) authorRow.hidden = true;
+        if (authorName) authorName.textContent = '';
+        if (handleEl) {
+          handleEl.hidden = true;
+          handleEl.textContent = '';
+        }
+        if (excerptEl) {
+          excerptEl.hidden = true;
+          excerptEl.textContent = '';
+          excerptEl.classList.remove('expanded');
+        }
+        if (expandBtn) expandBtn.hidden = true;
+        if (urlFallback) {
+          urlFallback.hidden = false;
+          urlFallback.textContent = '';
+          urlFallback.appendChild(buildUrlNode(e.url, 'entry-url'));
+        }
+      }
+
+      // 淨化後連結 kv:值顯示正規路徑(formatDisplayUrl)，不是完整網址;
+      // 複製仍用完整原始網址(detailUrlCopyBtn 的 handler 用 e.url)。
+      var urlValueEl = byId('detailUrlValue');
+      if (urlValueEl) urlValueEl.textContent = formatDisplayUrl(e.url);
+
+      // 原始連結/追蹤參數列:有資料才畫，見 buildDetailExtraRows。
+      var extraRowsEl = byId('detailExtraRows');
+      if (extraRowsEl) {
+        extraRowsEl.textContent = '';
+        buildDetailExtraRows(e).forEach(function (row) {
+          extraRowsEl.appendChild(buildExtraRowEl(row));
+        });
+      }
+
+      var recordedTimeEl = byId('detailRecordedTime');
+      if (recordedTimeEl) recordedTimeEl.textContent = formatAbsoluteTime(e.at);
+
+      // 時間軸鈕:buildSeenTimeline 對缺席/單筆資料回傳 null 時不顯示，
+      // 主畫面的記錄時間(=at)已經夠用。鈕文字固定不隨資料變動(次數改
+      // 顯示在子層視窗標題)，仍在 JS 端顯式賦值——最小 DOM stub 的
+      // querySelectorAll('[data-i18n]') 恆回傳空陣列，只有顯式賦值的
+      // 文字才測得到。
+      var timelineBtn = byId('detailTimelineBtn');
+      if (timelineBtn) {
+        timelineBtn.hidden = buildSeenTimeline(e) === null;
+        timelineBtn.textContent = tt('opTimelineBtn');
+      }
+
+      var openLink = byId('detailOpenLink');
+      if (openLink) openLink.href = e.url;
+
+      overlay.hidden = false;
+    }
+
+    function closeEntryDetail() {
+      var overlay = byId('detailOverlay');
+      if (overlay) overlay.hidden = true;
+      closeTimelineOverlay();
+      detailEntry = null;
+    }
+
+    // original/removedParams 附加列:與淨化後連結列同一套 kv/linkrow/
+    // copy-btn 結構(照手機版同一個 CopyRow 元件)，差別只在標籤文案與
+    // 沒有 accent 強調。複製鈕直接複製該列的原始值(copyValue)，不是
+    // formatDisplayUrl 過的顯示值。
+    function buildExtraRowEl(row) {
+      var wrap = document.createElement('div');
+      wrap.className = 'detail-kv';
+      var keyEl = document.createElement('span');
+      keyEl.className = 'detail-key';
+      keyEl.textContent = row.type === 'original' ? tt('opOriginalLabel') : tf('opTrackingParamLabel', { name: row.name });
+      wrap.appendChild(keyEl);
+      var linkRow = document.createElement('div');
+      linkRow.className = 'detail-linkrow';
+      var valueEl = document.createElement('span');
+      valueEl.className = 'detail-value ellipsis';
+      valueEl.textContent = row.display;
+      linkRow.appendChild(valueEl);
+      var copyBtn = document.createElement('button');
+      copyBtn.className = 'copy-btn';
+      copyBtn.textContent = tt('opCopyShort');
+      copyBtn.addEventListener('click', function () {
+        copyText(row.copyValue);
+      });
+      linkRow.appendChild(copyBtn);
+      wrap.appendChild(linkRow);
+      return wrap;
+    }
+
+    // 時間軸每一列:軌道+圓點(最新一筆實心主色，其餘空心)+ 時間(絕對
+    // 時間，最新一筆用一般文字色，其餘 textSecondary)+「 · 」+ 來源標籤
+    // (沿用既有 KINDS 文案;kind 不在白名單內就不附標籤，只顯示時間)。
+    // isFirst/isLast 決定圓點是否填色、要不要接續軌道線。
+    function buildTimelineRow(record, isFirst, isLast) {
+      var row = document.createElement('div');
+      row.className = 'timeline-row';
+
+      var rail = document.createElement('div');
+      rail.className = 'timeline-rail';
+      var dot = document.createElement('div');
+      dot.className = 'timeline-dot' + (isFirst ? ' filled' : '');
+      rail.appendChild(dot);
+      if (!isLast) {
+        var line = document.createElement('div');
+        line.className = 'timeline-line';
+        rail.appendChild(line);
+      }
+      row.appendChild(rail);
+
+      // 時間/來源標籤各自用獨立 span 直接賦值 textContent(不是拼接單一
+      // 字串塞給 textEl)，比照本檔一貫寫法(見 buildEntryCard 的 badge/
+      // headTime 等)——controller smoke 測試組的最小 DOM stub，.textContent
+      // 的 getter 只讀直接賦值過的內部字串，不會遞迴聚合子節點內容，得
+      // 靠這個結構才驗證得到。
+      var textEl = document.createElement('div');
+      textEl.className = 'timeline-text' + (isFirst ? '' : ' secondary');
+      var timeSpan = document.createElement('span');
+      timeSpan.textContent = formatAbsoluteTime(record.at);
+      textEl.appendChild(timeSpan);
+      if (Object.prototype.hasOwnProperty.call(KINDS, record.kind)) {
+        var kindSpan = document.createElement('span');
+        kindSpan.className = 'timeline-kind';
+        kindSpan.textContent = '　· ' + tt(KINDS[record.kind].key);
+        textEl.appendChild(kindSpan);
+      }
+      row.appendChild(textEl);
+      return row;
+    }
+
+    // 時間軸子層視窗:收合(重置內容並隱藏)。openEntryDetail 切換條目時、
+    // closeEntryDetail 關閉詳細視窗時都要呼叫，避免殘留上一筆的展開態。
+    function closeTimelineOverlay() {
+      var timelineOverlay = byId('timelineOverlay');
+      if (timelineOverlay) timelineOverlay.hidden = true;
+    }
+
+    function bindDetailDialog() {
+      on('detailClose', 'click', closeEntryDetail);
+      on('detailOverlay', 'click', function (ev) {
+        var overlay = byId('detailOverlay');
+        if (overlay && ev.target === overlay) closeEntryDetail();
+      });
+      on('detailExpandBtn', 'click', function () {
+        var excerptEl = byId('detailExcerpt');
+        var expandBtn = byId('detailExpandBtn');
+        if (excerptEl) excerptEl.classList.add('expanded');
+        if (expandBtn) expandBtn.hidden = true;
+      });
+      on('detailUrlCopyBtn', 'click', function () {
+        if (detailEntry) copyEntryUrl(detailEntry);
+      });
+      // 時間軸鈕開子層視窗(照手機版巢狀 Modal 的 showSeenHistory 分支)，
+      // 標題帶次數(opTimelineCount)，逐列新到舊渲染。
+      on('detailTimelineBtn', 'click', function () {
+        if (!detailEntry) return;
+        var timeline = buildSeenTimeline(detailEntry) || [];
+        var titleEl = byId('timelineTitle');
+        if (titleEl) titleEl.textContent = tf('opTimelineCount', { n: timeline.length });
+        var timelineSection = byId('detailTimeline');
+        if (timelineSection) {
+          timelineSection.textContent = '';
+          timeline.forEach(function (record, i) {
+            timelineSection.appendChild(buildTimelineRow(record, i === 0, i === timeline.length - 1));
+          });
+        }
+        var timelineOverlay = byId('timelineOverlay');
+        if (timelineOverlay) timelineOverlay.hidden = false;
+      });
+      on('timelineClose', 'click', closeTimelineOverlay);
+      on('timelineOverlay', 'click', function (ev) {
+        var timelineOverlay = byId('timelineOverlay');
+        if (timelineOverlay && ev.target === timelineOverlay) closeTimelineOverlay();
+      });
+      on('detailCopyBtn', 'click', function () {
+        if (detailEntry) copyEntryUrl(detailEntry);
+      });
+      on('detailDeleteBtn', 'click', function () {
+        if (detailEntry) deleteEntry(detailEntry);
+      });
+      // Esc 關閉:兩個權威來源皆支援(手機版 DialogShell 用 Modal 的
+      // onRequestClose,web 沒有對應原生事件，這裡用 keydown 補上同義
+      // 行為)。時間軸子層視窗開著時 Esc 只關時間軸(比照手機版巢狀
+      // Modal 逐層關閉的直覺)，沒開才輪到關詳細視窗本身。
+      if (typeof document.addEventListener === 'function') {
+        document.addEventListener('keydown', function (ev) {
+          if (!ev || ev.key !== 'Escape') return;
+          var timelineOverlay = byId('timelineOverlay');
+          if (timelineOverlay && !timelineOverlay.hidden) {
+            closeTimelineOverlay();
+            return;
+          }
+          var overlay = byId('detailOverlay');
+          if (overlay && !overlay.hidden) closeEntryDetail();
+        });
+      }
+    }
+
     function renderList() {
       var rowsEl = byId('rows');
       var emptyEl = byId('empty');
@@ -491,82 +1186,7 @@
       var visible = matched.slice(0, pageSize);
 
       visible.forEach(function (e) {
-        var li = document.createElement('li');
-        li.className = 'row';
-
-        var kindEl = document.createElement('span');
-        kindEl.className = 'kind';
-        kindEl.title = tt(KINDS[e.kind].key);
-        kindEl.appendChild(svgUse(KINDS[e.kind].icon));
-
-        var main = document.createElement('div');
-        main.className = 'main';
-        var urlEl = document.createElement('div');
-        urlEl.className = 'url';
-        // TLD(com/net)一併捕獲並如實顯示:紀錄本來就可能來自 threads.net
-        // (POST_URL_PATTERN／KINDS 兩邊都同時允許 com 與 net)，先前這裡
-        // 硬寫死 'threads.com/'，.net 的紀錄會被顯示成錯誤的網域。
-        var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(e.url);
-        if (handleMatch) {
-          urlEl.appendChild(document.createTextNode('threads.' + handleMatch[1] + '/'));
-          var handleEl = document.createElement('b');
-          handleEl.textContent = handleMatch[2];
-          urlEl.appendChild(handleEl);
-          urlEl.appendChild(document.createTextNode('/' + handleMatch[3]));
-        } else {
-          urlEl.textContent = e.url;
-        }
-
-        var meta = document.createElement('div');
-        meta.className = 'meta';
-        var timeEl = document.createElement('span');
-        timeEl.textContent = relTime(e.at);
-        var dot = document.createElement('span');
-        dot.className = 'dot';
-        var src = document.createElement('span');
-        src.className = 'src-label';
-        src.textContent = tt(KINDS[e.kind].key);
-        meta.appendChild(timeEl);
-        meta.appendChild(dot);
-        meta.appendChild(src);
-        main.appendChild(urlEl);
-        main.appendChild(meta);
-
-        var actions = document.createElement('div');
-        actions.className = 'row-actions';
-        actions.appendChild(
-          iconBtn('#i-copy', tt('opCopyTitle'), '', function () {
-            var p;
-            try {
-              p = navigator.clipboard.writeText(e.url);
-            } catch (err) {
-              p = Promise.reject(err);
-            }
-            Promise.resolve(p).then(
-              function () {
-                toast(tt('opToastCopied'));
-              },
-              function () {
-                toast(tt('opToastCopyFailed'));
-              }
-            );
-          })
-        );
-        actions.appendChild(
-          iconBtn('#i-trash', tt('opDeleteTitle'), 'del', function () {
-            var next = entries.filter(function (x) {
-              return !(x.url === e.url && x.at === e.at);
-            });
-            persistHistory(next);
-            renderAll();
-            toast(tt('opToastDeleted'));
-          })
-        );
-
-        li.appendChild(kindEl);
-        li.appendChild(main);
-        li.appendChild(actions);
-        rowsEl.appendChild(li);
+        rowsEl.appendChild(buildEntryCard(e));
       });
 
       if (emptyEl) emptyEl.hidden = visible.length > 0;
@@ -772,7 +1392,8 @@
       var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [] }));
       return Promise.all([readSync, readLocal]).then(function (results) {
         var settings = results[0] || {};
-        entries = sanitizeEntries(results[1] ? results[1][HISTORY_KEY] : []);
+        var localData = results[1] || {};
+        entries = sanitizeEntries(localData[HISTORY_KEY]);
 
         langPref = settings.langPref === 'zh' || settings.langPref === 'en' ? settings.langPref : null;
         locale = i18n.resolveLocale(langPref);
@@ -789,24 +1410,74 @@
         bindSettings();
         bindTopbar();
         bindToolbar();
+        bindDetailDialog();
         bindChartTooltip();
         renderAll();
       });
     }
 
     // storage.onChanged(local 區)時由接線層呼叫,讓 background 新寫入的
-    // 紀錄即時出現在開著的頁面上。
+    // 紀錄即時出現在開著的頁面上。詳細視窗開著時以 url 重新定位
+    // detailEntry:找得到就用新資料刷新視窗內容，找不到(已被刪除/清除)
+    // 就關閉詳細視窗，不留著顯示一筆已經不存在的紀錄。
     function setHistory(list) {
       entries = sanitizeEntries(list);
+      if (detailEntry) {
+        var match = null;
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].url === detailEntry.url) {
+            match = entries[i];
+            break;
+          }
+        }
+        if (match) openEntryDetail(match);
+        else closeEntryDetail();
+      }
       renderAll();
     }
 
-    return { init: init, setHistory: setHistory };
+    // storage.onChanged(sync 區)時由接線層呼叫:popup 或另一個開著的
+    // options 分頁改了設定(開關/語言/主題)，讓常開的本頁同步反映，不顯示
+    // 過期狀態。直接設定 checkbox.checked(不觸發 change 事件)，不會迴圈
+    // 寫回 storage;同一次變更是自己這頁寫的也會走到這裡，重複設同一個值
+    // 是無害的 no-op。
+    function setSyncSettings(changes) {
+      if (!changes) return;
+      SETTING_IDS.forEach(function (id) {
+        if (!Object.prototype.hasOwnProperty.call(changes, id)) return;
+        var el = byId(id);
+        if (!el) return;
+        var newValue = changes[id] && changes[id].newValue;
+        el.checked = typeof newValue === 'boolean' ? newValue : OPTIONS_DEFAULT_SETTINGS[id];
+      });
+      var needsRender = false;
+      if (Object.prototype.hasOwnProperty.call(changes, 'langPref')) {
+        var newLangPref = changes.langPref && changes.langPref.newValue;
+        langPref = newLangPref === 'zh' || newLangPref === 'en' ? newLangPref : null;
+        locale = i18n.resolveLocale(langPref);
+        needsRender = true;
+      }
+      if (Object.prototype.hasOwnProperty.call(changes, 'themePref')) {
+        var newThemePref = changes.themePref && changes.themePref.newValue;
+        themePref = THEME_ORDER.indexOf(newThemePref) !== -1 ? newThemePref : 'auto';
+        applyTheme();
+      }
+      if (needsRender) renderAll();
+    }
+
+    // 常開分頁的相對時間標籤刷新(回到分頁時，見 visibilitychange 接線)。
+    // 直接重用 renderAll:entries 沒變，只是卡片重畫一次讓 relTime() 用
+    // 當下時間重算;開銷小，visibilitychange 觸發頻率也低，不需要另外
+    // 寫一條只更新時間文字的精簡路徑。
+    function refresh() {
+      renderAll();
+    }
+
+    return { init: init, setHistory: setHistory, setSyncSettings: setSyncSettings, refresh: refresh };
   }
 
   var api = {
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
-    HISTORY_LIMIT: HISTORY_LIMIT,
     POST_URL_PATTERN: POST_URL_PATTERN,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,
@@ -814,6 +1485,11 @@
     parseImportText: parseImportText,
     mergeImportedEntries: mergeImportedEntries,
     aggregateStats: aggregateStats,
+    hasCardPreview: hasCardPreview,
+    isLongExcerpt: isLongExcerpt,
+    buildSeenTimeline: buildSeenTimeline,
+    formatDisplayUrl: formatDisplayUrl,
+    buildDetailExtraRows: buildDetailExtraRows,
     createOptionsController: createOptionsController,
   };
 

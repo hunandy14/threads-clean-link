@@ -33,11 +33,32 @@ document.addEventListener('DOMContentLoaded', function () {
 
   controller.init();
 
-  // background 在頁面開著時寫入新紀錄 → 即時刷新清單與統計。
+  // 常開頁面的即時性:
+  //   - local 區:background 在頁面開著時寫入新紀錄 → 即時刷新卡片牆與
+  //     統計(既有接線)。
+  //   - sync 區:popup 或另一個開著的 options 分頁改了設定(開關/語言/
+  //     主題)→ 本頁同步反映，不留過期狀態。
   if (chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener(function (changes, areaName) {
-      if (areaName !== 'local' || !changes || !changes.history) return;
-      controller.setHistory(changes.history.newValue || []);
+      if (!changes) return;
+      if (areaName === 'local' && changes.history) {
+        controller.setHistory(changes.history.newValue || []);
+      } else if (areaName === 'sync') {
+        controller.setSyncSettings(changes);
+      }
     });
+  }
+
+  // 相對時間標籤刷新，比照 GitHub <relative-time> 的通行做法:
+  //   - 單一共享 ticker(60 秒,對齊「x 分鐘前」的最小粒度)重算所有標籤,
+  //     分頁隱藏時跳過,不做無人看見的重繪;
+  //   - visibilitychange 切回分頁時立刻補刷一次,消除背景期間的凍結感。
+  if (typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') controller.refresh();
+    });
+    setInterval(function () {
+      if (document.visibilityState === 'visible') controller.refresh();
+    }, 60 * 1000);
   }
 });

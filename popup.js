@@ -4,17 +4,17 @@
 (function (root) {
   'use strict';
 
-  // R1-1 併開關：resolveShortcode 徹底移除，短碼解析與 ?xmt 剪參都收在
-  // autoClean 這一顆之下。兩個設定鍵：autoClean 預設開啟，notifySuccess
-  // 預設關閉，避免安裝後立刻被成功通知洗版。
-  // (saveHistory 是 options 頁的事,popup 不放開關,故不在此預設值內。)
+  // 短碼解析與 ?xmt 剪參都收在 autoClean 這一顆之下。autoClean 預設值
+  // false，需與 background.js 同步;失敗通知(Threads 頁內 toast + 右鍵
+  // 選單系統通知)不受任何開關影響，一律顯示。postCopyEnabled 是貼文複製
+  // 按鈕(post-icon.js 的複製按鈕注入開關)，預設 true。
   var DEFAULT_SETTINGS = {
-    autoClean: true,
-    notifySuccess: false,
+    autoClean: false,
+    postCopyEnabled: true,
   };
 
   // checkbox 的 id 與 chrome.storage.sync 的鍵同名。
-  var SETTING_IDS = ['autoClean', 'notifySuccess'];
+  var SETTING_IDS = ['autoClean', 'postCopyEnabled'];
 
   function createPopupController(deps) {
     var document = deps.document;

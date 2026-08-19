@@ -13,8 +13,12 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'bridge.js'), 'utf8');
 // 載入 bridge.js 到一個帶假 chrome.runtime 的 sandbox，回傳
 // { win, sentMessages, dispatch }，讓測試可以送出 TCL_RESOLVE_REQ
 // 並攔截它經 postMessage 送回的 TCL_RESOLVE_RES。
-function loadBridge({ sendMessage }) {
+// tclPostIcon(選填):模擬 post-icon.js 掛在 window 上的 TCLPostIcon
+// API，測試方案甲(歷史即收藏)的擷取補欄位與失敗 toast 觸發邏輯用；不傳
+// 就等同 post-icon.js 尚未載入/舊版沒有這個 API 的情境。
+function loadBridge({ sendMessage, tclPostIcon }) {
   const win = createWindow();
+  if (tclPostIcon) win.TCLPostIcon = tclPostIcon;
   const sentMessages = [];
   const chrome = {
     runtime: {
@@ -104,6 +108,192 @@ test('chrome.runtime.lastError 視為解析失敗，不視為致命錯誤', asyn
   assert.equal(typeof result.reason, 'string');
 });
 
+// 使用者變更設定規格:share/strip 解析在 Threads 頁面內失敗時，改用頁內
+// toast 提示(取代原本完全靜默的 fail-open)。真正的渲染邏輯在
+// post-icon.js，bridge 只負責在偵測到失敗時、透過執行期守衛呼叫
+// window.TCLPostIcon.showResolveFailureToast(reason)。
+
+test('resolveShare 失敗(ok:false)時，若 TCLPostIcon 存在就呼叫 showResolveFailureToast(reason)', async () => {
+  const calls = [];
+  const { dispatch } = loadBridge({
+    sendMessage: (message, callback) => callback({ ok: false, reason: 'format-error' }),
+    tclPostIcon: { showResolveFailureToast: (reason) => calls.push(reason) },
+  });
+
+  await dispatch({
+    type: 'TCL_RESOLVE_REQ',
+    requestId: 'req-toast-1',
+    url: 'https://www.threads.com/share/BAD',
+  });
+
+  assert.deepEqual(calls, ['format-error']);
+});
+
+test('resolveShare 成功時，不呼叫 showResolveFailureToast', async () => {
+  const calls = [];
+  const { dispatch } = loadBridge({
+    sendMessage: (message, callback) => callback({ ok: true, cleanUrl: 'https://www.threads.com/@x/post/y' }),
+    tclPostIcon: { showResolveFailureToast: (reason) => calls.push(reason) },
+  });
+
+  await dispatch({
+    type: 'TCL_RESOLVE_REQ',
+    requestId: 'req-toast-2',
+    url: 'https://www.threads.com/share/OK',
+  });
+
+  assert.deepEqual(calls, []);
+});
+
+// 規格演進(code review #4):lastError 屬「連線層」失敗(SW 剛好冷啟/訊
+// 息通道已關閉等)，不是「解析層」真失敗——複製動作本身通常已經成功，
+// 只是這次沒能順道解析／記錄。lastError 的原始錯誤訊息字串不在
+// post-icon.js 已知的三個解析失敗原因白名單內，沿用舊行為會落到
+// bgUnexpected(「未預期的錯誤」)這個嚇人但失真的文案。原斷言「必觸發
+// toast」屬規格翻轉，改驗「不觸發 toast、改用 console.warn」，是此次
+// 派工明列的第 4 條修正項目，非零散變更。
+test('chrome.runtime.lastError 情境不觸發 showResolveFailureToast，改用 console.warn(連線層失敗，非解析層真失敗)', async () => {
+  const calls = [];
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    const { dispatch } = loadBridge({
+      sendMessage: (message, callback, runtime) => {
+        runtime.lastError = { message: 'context invalidated' };
+        callback(undefined);
+      },
+      tclPostIcon: { showResolveFailureToast: (reason) => calls.push(reason) },
+    });
+
+    await dispatch({
+      type: 'TCL_RESOLVE_REQ',
+      requestId: 'req-toast-3',
+      url: 'https://www.threads.com/share/X',
+    });
+
+    assert.deepEqual(calls, [], 'lastError 屬連線層失敗，不得跳頁內 toast');
+    assert.ok(warnCalls.length >= 1, '應留 console.warn 供除錯');
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+// code review #4:no-response(SW 沒有正常回應，response 缺失或形狀不
+// 對)與 lastError 同屬連線層失敗，理由相同，一併不得跳 toast。
+test('resolveShare 未收到有效回應(no-response)時不觸發 showResolveFailureToast，改用 console.warn', async () => {
+  const calls = [];
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    const { dispatch } = loadBridge({
+      sendMessage: (message, callback) => callback(undefined),
+      tclPostIcon: { showResolveFailureToast: (reason) => calls.push(reason) },
+    });
+
+    await dispatch({
+      type: 'TCL_RESOLVE_REQ',
+      requestId: 'req-toast-no-response',
+      url: 'https://www.threads.com/share/X',
+    });
+
+    assert.deepEqual(calls, [], 'no-response 屬連線層失敗，不得跳頁內 toast');
+    assert.ok(warnCalls.length >= 1, '應留 console.warn 供除錯');
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+// 修正規格(記錄與淨化脫鉤):autoClean=false 時 clipboard-guard.js 仍會送
+// 出解析請求以便記錄，但這次失敗不該用頁內 toast 嚇使用者(複製動作本身
+// 沒壞)，改成 console.warn 就好。recordOnly 這個旗標由請求本身帶著。
+
+test('recordOnly:true 時，resolveShare 失敗(ok:false)改用 console.warn，不呼叫 showResolveFailureToast', async () => {
+  const toastCalls = [];
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    const { dispatch } = loadBridge({
+      sendMessage: (message, callback) => callback({ ok: false, reason: 'network-error' }),
+      tclPostIcon: { showResolveFailureToast: (reason) => toastCalls.push(reason) },
+    });
+
+    await dispatch({
+      type: 'TCL_RESOLVE_REQ',
+      requestId: 'req-record-only-1',
+      url: 'https://www.threads.com/share/BAD',
+      recordOnly: true,
+    });
+
+    assert.deepEqual(toastCalls, [], 'recordOnly 情境不得跳頁內 toast');
+    assert.ok(warnCalls.length >= 1, 'recordOnly 情境應留 console.warn 供除錯');
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('recordOnly:true 時，chrome.runtime.lastError 情境同樣改用 console.warn，不呼叫 showResolveFailureToast', async () => {
+  const toastCalls = [];
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    const { dispatch } = loadBridge({
+      sendMessage: (message, callback, runtime) => {
+        runtime.lastError = { message: 'context invalidated' };
+        callback(undefined);
+      },
+      tclPostIcon: { showResolveFailureToast: (reason) => toastCalls.push(reason) },
+    });
+
+    await dispatch({
+      type: 'TCL_RESOLVE_REQ',
+      requestId: 'req-record-only-2',
+      url: 'https://www.threads.com/share/X',
+      recordOnly: true,
+    });
+
+    assert.deepEqual(toastCalls, []);
+    assert.ok(warnCalls.length >= 1);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('recordOnly:false(或缺席)時，失敗仍照常呼叫 showResolveFailureToast，行為與修正前一致', async () => {
+  const toastCalls = [];
+  const { dispatch } = loadBridge({
+    sendMessage: (message, callback) => callback({ ok: false, reason: 'format-error' }),
+    tclPostIcon: { showResolveFailureToast: (reason) => toastCalls.push(reason) },
+  });
+
+  await dispatch({
+    type: 'TCL_RESOLVE_REQ',
+    requestId: 'req-record-only-3',
+    url: 'https://www.threads.com/share/BAD',
+    recordOnly: false,
+  });
+
+  assert.deepEqual(toastCalls, ['format-error']);
+});
+
+test('resolveShare 失敗但 TCLPostIcon 不存在(舊版擴充功能／尚未載入)時，不丟例外，仍正常回應 MAIN world', async () => {
+  const { dispatch } = loadBridge({
+    sendMessage: (message, callback) => callback({ ok: false, reason: 'network-error' }),
+  });
+
+  const result = await dispatch({
+    type: 'TCL_RESOLVE_REQ',
+    requestId: 'req-toast-4',
+    url: 'https://www.threads.com/share/BAD',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'network-error');
+});
+
 test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.sendMessage', async () => {
   const { win, sentMessages } = loadBridge({
     sendMessage: () => {},
@@ -126,16 +316,25 @@ test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.
 // chrome.storage.onChanged 觸發時再次推播。
 //
 // 【協定約定】推播訊息形狀:
-//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, notifySuccess } }
+//   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean, saveHistory } }
 //
-// 【R1-1 開關合併】設定鍵砍為兩顆，resolveShortcode 徹底移除。
+// 【使用者變更設定規格】notifySuccess 整組移除，不再下放給 MAIN world
+// (clipboard-guard.js 從未依它分支邏輯)；autoClean 預設值改為 false。
+// postCopyEnabled(貼文複製按鈕開關)只影響 ISOLATED world 的
+// post-icon.js 是否注入 icon，直接在該檔讀 chrome.storage.sync，不經過
+// 這條 MAIN world 專用的推播管道。
+//
+// code review #2(UX 修正:autoClean 關閉時剪貼簿寫入不得被解析壓後)新增
+// saveHistory:clipboard-guard.js 的 recordOnly 流程改成「先原生寫入、
+// 事後 fire-and-forget 補發解析請求」，若 saveHistory 也關閉就直接省掉
+// 整個解析請求，guard 需要這顆設定值才能判斷，因此下放給 MAIN world。
 //
 // 【時序紀律】storage mock 的 get 與 onChanged 一律延遲一個 tick 才結算
 // (見 support/helpers.js)，postMessage 亦為 setTimeout(0) 排程，不允許同 tick
 // 直接結算的假綠燈。
 // ============================================================
 
-const DEFAULT_SETTINGS = { autoClean: true, notifySuccess: false };
+const DEFAULT_SETTINGS = { autoClean: false, saveHistory: true };
 
 function settle(ms = 30) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -169,17 +368,20 @@ function loadBridgeWithStorage(initialSettings = {}) {
   return { win, storage, pushes, sentMessages };
 }
 
+// 規格演進(code review #2):settings 形狀新增 saveHistory，initialSettings
+// 只給了 autoClean，saveHistory 查無此鍵時比照 chrome.storage 既定語意
+// 補上 SETTINGS_DEFAULTS 的預設值(true)。
 test('S6:bridge 載入後讀取 chrome.storage.sync，並以 TCL_SETTINGS_PUSH 把設定下放至 MAIN world', async () => {
-  const bridge = loadBridgeWithStorage({ autoClean: false, notifySuccess: true });
+  const bridge = loadBridgeWithStorage({ autoClean: true });
 
   await settle();
 
   assert.equal(bridge.pushes.length, 1);
-  assert.deepEqual(bridge.pushes[0].settings, { autoClean: false, notifySuccess: true });
+  assert.deepEqual(bridge.pushes[0].settings, { autoClean: true, saveHistory: true });
   assert.ok(bridge.storage.calls.get.length >= 1, 'bridge 應向 chrome.storage.sync 讀取設定');
 });
 
-test('S6:chrome.storage.sync 為空時，bridge 推播兩個預設值', async () => {
+test('S6:chrome.storage.sync 為空時，bridge 推播預設值(autoClean=false)', async () => {
   const bridge = loadBridgeWithStorage({});
 
   await settle();
@@ -188,11 +390,8 @@ test('S6:chrome.storage.sync 為空時，bridge 推播兩個預設值', async ()
   assert.deepEqual(bridge.pushes[0].settings, DEFAULT_SETTINGS);
 });
 
-// R1 審查回饋:初值 notifySuccess 刻意設為 true(非預設值)。若初值取預設值
-// false，一個「onChanged 時把設定洗回預設」的錯誤實作也會照樣通過，這條測試
-// 就失去鑑別力;用非預設初值才能確認未變更的鍵是原值延續而非重置。
 test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變更後的新值', async () => {
-  const bridge = loadBridgeWithStorage({ autoClean: true, notifySuccess: true });
+  const bridge = loadBridgeWithStorage({ autoClean: true });
   await settle();
   const pushCountBeforeChange = bridge.pushes.length;
   assert.ok(
@@ -206,7 +405,6 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
   assert.equal(bridge.pushes.length, pushCountBeforeChange + 1);
   const latest = bridge.pushes[bridge.pushes.length - 1];
   assert.equal(latest.settings.autoClean, false);
-  assert.equal(latest.settings.notifySuccess, true);
 });
 
 // ============================================================
@@ -214,10 +412,13 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
 // TCL_CLEANED_NOTICE 轉為 chrome.runtime.sendMessage 交給 service worker。
 //
 // 【協定約定】
-//   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl, kind }
-//   bridge → background : { type: 'cleanedNotice', cleanUrl, kind }
+//   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl, kind, original?, removedParams? }
+//   bridge → background : { type: 'cleanedNotice', cleanUrl, kind, original?, removedParams? }
 // kind 為淨化來源('share' | 'strip'),bridge 只做型別與長度把關(≤16 字元
 // 的非空字串),白名單驗證由 background 負責;形狀不對整則丟棄。
+// original/removedParams(F 案，紀錄資料層補齊，對齊手機 ShareHistoryItem)
+// 選填，bridge 純透傳、不做任何驗證，規則與下面的 author/handle/excerpt
+// 透傳一致，真正的 sanitize 交給 background。
 //
 // 【來源驗證(規格明文，比照 S8 等級)】驗證不過的通知必須完全忽略、不得
 // 轉發，否則頁面腳本可以自行 postMessage 偽造「淨化成功」灌出假通知。
@@ -228,11 +429,12 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
 const CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 const CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
 
-function loadBridgeForNotice() {
+function loadBridgeForNotice(tclPostIcon) {
   return loadBridge({
     sendMessage: (message, callback) => {
       if (typeof callback === 'function') callback(undefined);
     },
+    tclPostIcon,
   });
 }
 
@@ -246,6 +448,183 @@ test('R1-2:合法來源的 TCL_CLEANED_NOTICE 轉發為一次 cleanedNotice 訊�
   assert.equal(notices.length, 1);
   assert.equal(notices[0].cleanUrl, CLEAN_URL);
   assert.equal(notices[0].kind, 'share', 'kind 應原樣轉發給 service worker');
+});
+
+// 方案甲(歷史即收藏):轉發 TCL_CLEANED_NOTICE 前，若 post-icon.js 已把
+// TCLPostIcon 掛上 window，就用 findContainerByCleanUrl + extractPostInfo
+// 就地補 author/handle/excerpt 進 payload。
+
+test('R1-2:TCLPostIcon 存在且找得到容器時，轉發前補上 author/handle/excerpt', async () => {
+  const fakeContainer = { marker: 'fake-container' };
+  const { win, sentMessages } = loadBridgeForNotice({
+    findContainerByCleanUrl: (url) => (url === CLEAN_URL ? fakeContainer : null),
+    extractPostInfo: (container) =>
+      container === fakeContainer ? { author: 'Alice', handle: '@alice', excerpt: 'hi there' } : {},
+  });
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].author, 'Alice');
+  assert.equal(notices[0].handle, '@alice');
+  assert.equal(notices[0].excerpt, 'hi there');
+});
+
+test('R1-2:找不到對應容器時，靜默省略欄位，仍照常轉發最小形狀', async () => {
+  const { win, sentMessages } = loadBridgeForNotice({
+    findContainerByCleanUrl: () => null,
+    extractPostInfo: () => ({ author: '不該被呼叫到' }),
+  });
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'strip' });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].author, undefined);
+  assert.equal(notices[0].handle, undefined);
+  assert.equal(notices[0].excerpt, undefined);
+});
+
+// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+// bridge 純透傳 guard 已經算好的 original/removedParams，規則與上面的
+// author/handle/excerpt 透傳一致——不做任何型別/長度驗證，真正的
+// sanitize 交給 background.js(信任邊界)。
+
+test('F 案:MAIN world 送來的 original/removedParams 原樣透傳給 service worker', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+  const removedParams = [{ key: 'xmt', value: 'AQGabc' }];
+
+  win.postMessage({
+    type: CLEANED_NOTICE_TYPE,
+    cleanUrl: CLEAN_URL,
+    kind: 'strip',
+    original: `${CLEAN_URL}?xmt=AQGabc`,
+    removedParams,
+  });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].original, `${CLEAN_URL}?xmt=AQGabc`);
+  assert.equal(notices[0].removedParams, removedParams, '純透傳同一個陣列參照，不重建');
+});
+
+test('F 案:MAIN world 沒帶 original/removedParams 時，轉發的訊息也不含這兩個欄位', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].original, undefined);
+  assert.equal(notices[0].removedParams, undefined);
+});
+
+// code review #1(bridge 透傳補界限):original 比照既有的 MAX_CLEAN_URL_LENGTH
+// 做型別+長度檢查、removedParams 檢查 Array.isArray + 筆數上限，超限就
+// 整欄丟棄，不讓垃圾 payload 越過 content script → service worker 的程
+// 序邊界。
+
+test('code review #1:original 超過 MAX_CLEAN_URL_LENGTH(2048)或型別不是字串時整欄丟棄，不轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({
+    type: CLEANED_NOTICE_TYPE,
+    cleanUrl: CLEAN_URL,
+    kind: 'strip',
+    original: 'https://x.example/' + 'a'.repeat(2048),
+  });
+  await settle();
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices[0].original, undefined, '超長 original 應整欄丟棄');
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'strip', original: 12345 });
+  await settle();
+  const notices2 = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices2.length, 2);
+  assert.equal(notices2[1].original, undefined, '非字串 original 應整欄丟棄');
+});
+
+test('code review #1:removedParams 型別不是陣列時整欄丟棄，不轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({
+    type: CLEANED_NOTICE_TYPE,
+    cleanUrl: CLEAN_URL,
+    kind: 'strip',
+    removedParams: 'not-an-array',
+  });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].removedParams, undefined);
+});
+
+test('code review #1:removedParams 陣列筆數超過上限(20)時整欄丟棄，不逐筆截斷', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+  const oversized = Array.from({ length: 21 }, (_, i) => ({ key: `p${i}`, value: `v${i}` }));
+
+  win.postMessage({
+    type: CLEANED_NOTICE_TYPE,
+    cleanUrl: CLEAN_URL,
+    kind: 'strip',
+    removedParams: oversized,
+  });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].removedParams, undefined, '超過上限應整欄丟棄，不是截斷成 20 筆');
+});
+
+test('code review #1:removedParams 陣列筆數恰為上限(20)時仍照樣透傳(邊界不誤殺)', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+  const atLimit = Array.from({ length: 20 }, (_, i) => ({ key: `p${i}`, value: `v${i}` }));
+
+  win.postMessage({
+    type: CLEANED_NOTICE_TYPE,
+    cleanUrl: CLEAN_URL,
+    kind: 'strip',
+    removedParams: atLimit,
+  });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].removedParams, atLimit, '恰為上限(20)不誤殺，仍原樣透傳同一個陣列參照');
+});
+
+test('R1-2:TCLPostIcon 不存在(post-icon.js 尚未載入或舊版)時，照常轉發最小形狀，不丟例外', async () => {
+  const { win, sentMessages } = loadBridgeForNotice();
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].author, undefined);
+  assert.equal(notices[0].handle, undefined);
+  assert.equal(notices[0].excerpt, undefined);
+});
+
+test('R1-2:findContainerByCleanUrl／extractPostInfo 本身丟例外時，靜默省略欄位，仍照常轉發', async () => {
+  const { win, sentMessages } = loadBridgeForNotice({
+    findContainerByCleanUrl: () => {
+      throw new Error('boom');
+    },
+  });
+
+  win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
+  await settle();
+
+  const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].author, undefined);
 });
 
 test('R1-2:event.source 非本視窗的 TCL_CLEANED_NOTICE 完全忽略，不得轉發', async () => {
@@ -337,4 +716,76 @@ test('R1-2:kind 缺失、非字串或超長的 TCL_CLEANED_NOTICE 不得轉發',
   const notices = sentMessages.filter((m) => m && m.type === 'cleanedNotice');
   assert.equal(notices.length, 1);
   assert.equal(notices[0].kind, 'strip');
+});
+
+// ============================================================
+// 孤兒 content script:轉發失敗不得靜默吞掉
+// ------------------------------------------------------------
+// 擴充功能更新／重載後，既開分頁裡的舊 bridge.js 仍在跑，但 chrome.runtime
+// 這條線已斷，sendMessage 會同步丟出「Extension context invalidated」。修正
+// 前這兩處 catch 完全靜默:使用者的複製照做、紀錄卻靜默丟失，連除錯時都
+// 找不到任何線索。現在一律留下可查的 console.warn，且孤兒情境要明講「請重
+// 新整理頁面」(唯一的復原方式)。
+// ============================================================
+
+function loadBridgeWithConsole(sendMessageImpl) {
+  const win = createWindow();
+  const warnings = [];
+  const chrome = {
+    runtime: {
+      lastError: undefined,
+      sendMessage: sendMessageImpl,
+    },
+  };
+  runInSandbox(SRC, {
+    window: win,
+    chrome,
+    setTimeout,
+    console: {
+      warn: (...args) => warnings.push(args.map(String).join(' ')),
+      error: () => {},
+      log: () => {},
+    },
+  });
+  return { win, warnings };
+}
+
+test('孤兒情境:sendMessage 同步丟 Extension context invalidated 時，兩條轉發路徑都要留下 console.warn，不再靜默吞掉', async () => {
+  const throwOrphan = () => {
+    throw new Error('Extension context invalidated.');
+  };
+
+  // 路徑一:淨化通知轉發(修正前這個 catch 完全無聲，紀錄就是在這裡靜默丟失的)。
+  const notice = loadBridgeWithConsole(throwOrphan);
+  notice.win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
+  await settle();
+
+  assert.equal(
+    notice.warnings.some((line) => line.includes('cleanedNotice') && line.includes('請重新整理頁面')),
+    true,
+    '轉發淨化通知失敗必須留下孤兒警告，並指出重新整理才能復原'
+  );
+
+  // 路徑二:短碼解析請求轉發。原本就會 reply fail-open(維持不變，避免
+  // MAIN world 空等 2.5 秒逾時)，但同樣要補上 console 訊號。
+  const resolve = loadBridgeWithConsole(throwOrphan);
+  const replied = new Promise((done) => {
+    resolve.win.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'TCL_RESOLVE_RES') done(event.data);
+    });
+  });
+  resolve.win.postMessage({
+    type: 'TCL_RESOLVE_REQ',
+    requestId: 'req-orphan-1',
+    url: 'https://www.threads.com/share/ABC',
+  });
+  const result = await replied;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'bridge-exception', 'fail-open 行為維持不變');
+  assert.equal(
+    resolve.warnings.some((line) => line.includes('resolveShare') && line.includes('請重新整理頁面')),
+    true,
+    '轉發解析請求失敗同樣要留下孤兒警告'
+  );
 });
