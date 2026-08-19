@@ -92,7 +92,12 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
     fetchCalls.push(url);
     fetchInits.push(init);
     if (url === shareUrl) return fetchResult(finalUrl, html);
-    throw new Error('unexpected fetch: ' + url);
+    // R2-a 統一後,share 路徑的 cleanedNotice 也走 fetchOgFieldsForLocalKind
+    // ——快取命中(resolveShare 已寫入)時不會走到這裡;快取未命中(如
+    // NO_OG_HTML 落負快取後 TTL 內短路,或對從未 resolveShare 的其他貼文
+    // 頁)才會 fetch 貼文頁本身,一律回傳無 og 的最小 HTML,不再拋 unexpected
+    // fetch 噪音(og 空 → DOM 版維持)。
+    return fetchResult(url, NO_OG_HTML);
   };
   // OG 案(本地路徑補強):fetchOgFieldsForLocalKind 內部用 setTimeout 做
   // 逾時競速，vm sandbox 預設不含這個全域，這裡明確注入。
@@ -135,6 +140,14 @@ function makeFetch(calls) {
     }
     if (url === SHARE_URL_WEIRD_HANDLE) {
       return fetchResult(WEIRD_HANDLE_FINAL_URL);
+    }
+    // R2-a 統一後,share/strip/icon 三條 kind 的 cleanedNotice 一律經
+    // fetchOgFieldsForLocalKind 對「貼文頁本身」補一次 og fetch。此 mock
+    // 對任何貼文頁(/post/ 形狀,涵蓋 www／無 www、.com／.net 各變體)回傳無
+    // og 的最小 HTML(og 空 → 負快取 → 落盤沿用 DOM 版欄位),行為等同修正
+    // 前 fetch 拋錯被內部吞掉的結果，但不再噴 console.error 噪音。
+    if (/\/post\//.test(url)) {
+      return fetchResult(url);
     }
     throw new Error('unexpected fetch: ' + url);
   };
@@ -367,10 +380,27 @@ function settle(ms = 150) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 凍結 Date:讓 background.js 的 Date.now() 回傳固定值,供去重視窗邊界測試
+// 釘死 `<=` 運算子(見 W1 弱釘),避免測試端 now 與 recordHistory 內
+// Date.now() 的毫秒級偏移讓 now-300000 這種貼邊案例變得不確定。函式體內
+// 的 Date 是測試檔的原生 Date(非凍結),不會遞迴。
+function makeFrozenDate(fixed) {
+  function FrozenDate(...args) {
+    return args.length ? new Date(...args) : new Date(fixed);
+  }
+  FrozenDate.now = () => fixed;
+  FrozenDate.parse = Date.parse;
+  FrozenDate.UTC = Date.UTC;
+  FrozenDate.prototype = Date.prototype;
+  return FrozenDate;
+}
+
 // 載入 background.js，並以指定設定填入 chrome.storage.sync;同時側錄
 // contextMenus.onClicked 監聽器、notifications.create 與 scripting.executeScript。
 // opts.clipboardOk 可在測試中途翻轉，模擬「先失敗、後成功」的兩次點擊。
 // opts.localHistory 可預填 storage.local 的 history(測紀錄上限用)。
+// opts.now(選填):注入凍結的 Date,讓 recordHistory 的 Date.now() 回傳此值
+// (去重視窗邊界測試用)。
 function loadBackgroundWithSettings(initialSettings, opts = {}) {
   const storage = createChromeStorage(
     initialSettings,
@@ -412,7 +442,9 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   // buildMenuHistoryExtra → diffRemovedParams)這條路徑經這個 loader 進
   // 入，同樣需要注入 URL/URLSearchParams。OG 案(本地路徑補強):
   // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入。
-  runInSandbox(SRC, { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout });
+  const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout };
+  if (opts.now !== undefined) sandbox.Date = makeFrozenDate(opts.now);
+  runInSandbox(SRC, sandbox);
 
   return {
     storage,
@@ -2156,4 +2188,255 @@ test('解析保底:乾淨的 fallback(粉專等無帳號形狀的 og:title)仍�
   const history = bg.storage.localSnapshot().history;
   assert.equal(history[0].author, 'Some Page', '沒有帳號殘片的 fallback 應維持既有行為');
   assert.equal('handle' in history[0], false);
+});
+
+// ============================================================
+// W1 弱釘(順手補):去重視窗貼邊(DEDUP_WINDOW_MS = 5 分鐘 = 300000ms)。釘
+// 死邊界運算子 `now - at <= DEDUP_WINDOW_MS`:at 恰為 now-300000 應合併(邊
+// 界含),at 為 now-300001 應新增。用凍結 Date 消除「測試端 now」與
+// 「recordHistory 內 Date.now()」的毫秒級偏移,否則 now-300000 這種貼邊案
+// 例會因偏移而變得不確定。
+// ============================================================
+
+const W1_FIXED_NOW = 1700000000000;
+
+test('W1 去重視窗貼邊:at 恰為 now-300000(邊界含)應合併為一筆', async () => {
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: W1_FIXED_NOW - 300000,
+    seen: [{ at: W1_FIXED_NOW - 300000, kind: 'share' }],
+  };
+  const bg = loadBackgroundWithSettings(
+    { saveHistory: true },
+    { localHistory: [existing], now: W1_FIXED_NOW }
+  );
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, 'now-300000 落在去重視窗邊界內(<=),應合併不新增');
+  assert.equal(history[0].kind, 'icon', '合併後 kind 更新為本次');
+  assert.equal(history[0].seen.length, 2, 'seen[] 在既有一筆上追加本次一筆');
+});
+
+test('W1 去重視窗貼邊:at 為 now-300001(邊界外)應新增一筆', async () => {
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: W1_FIXED_NOW - 300001,
+    seen: [{ at: W1_FIXED_NOW - 300001, kind: 'share' }],
+  };
+  const bg = loadBackgroundWithSettings(
+    { saveHistory: true },
+    { localHistory: [existing], now: W1_FIXED_NOW }
+  );
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 2, 'now-300001 超出去重視窗(>),應新增不合併');
+  assert.equal(history[0].kind, 'icon', '新條目在最前');
+  assert.equal(history[0].seen.length, 1, '新條目 seen[] 只有自己這筆起始紀錄');
+});
+
+// ============================================================
+// cr中1 saveHistory 省請求:handleCleanedNotice 進 fetch 之前先 await
+// getSettings(),saveHistory 為 false 直接 return——連 og 補強 fetch 都不
+// 發、連 recordHistory 都不呼叫。對齊 guard 端 share 路徑已有的省請求閘。
+// ============================================================
+
+test('cr中1:saveHistory=false 時,cleanedNotice 進 fetch 前就 return——不發 og 補強 fetch、不記錄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: false });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  assert.equal(bg.fetchCalls.length, 0, 'saveHistory 關閉時,連 og 補強 fetch 都不該發(省請求閘在 fetch 之前)');
+  assert.equal(bg.storage.localSnapshot().history, undefined, 'saveHistory 關閉時不記錄');
+});
+
+test('cr中1 對照組:saveHistory=true 時,cleanedNotice 照常補 og fetch 並記錄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  assert.equal(bg.fetchCalls.length, 1, 'saveHistory 開啟時應照常對貼文頁補一次 og fetch');
+  assert.equal(bg.storage.localSnapshot().history.length, 1, '照常記錄一筆');
+});
+
+// ============================================================
+// R5 儲存上限(位元組軟預算 8MB + 筆數硬保險 10000),兩者取先觸發者,一律
+// 從尾端(最舊)裁,本次最新一筆永遠保留。
+// ============================================================
+
+test('R5 筆數硬保險:總筆數超過 HISTORY_MAX_ENTRIES(10000)時從尾端(最舊)裁回 10000', async () => {
+  const now = Date.now();
+  const existing = Array.from({ length: 10000 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/P${i}`,
+    kind: 'icon',
+    at: now - 1000 - i,
+    seen: [{ at: now - 1000 - i, kind: 'icon' }],
+  }));
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: existing });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle(600);
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 10000, '總筆數(10001)應被硬保險裁回 10000');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '本次最新一筆在最前,不被裁掉');
+  assert.equal(
+    history[history.length - 1].url,
+    'https://www.threads.com/@u/post/P9998',
+    '最舊一筆(P9999)被從尾端裁掉'
+  );
+});
+
+test('R5 位元組軟預算:序列化超過 8MB 時從尾端(最舊)裁到預算內,最新一筆保留', async () => {
+  const now = Date.now();
+  const bigExcerpt = 'x'.repeat(50000); // 約 50KB/筆
+  const existing = Array.from({ length: 200 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/Q${i}`,
+    kind: 'icon',
+    at: now - 1000 - i,
+    excerpt: bigExcerpt,
+    seen: [{ at: now - 1000 - i, kind: 'icon' }],
+  }));
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: existing });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle(600);
+
+  const history = bg.storage.localSnapshot().history;
+  const bytes = JSON.stringify(history).length;
+  assert.ok(bytes <= 8 * 1024 * 1024, `序列化位元組(${bytes})應被裁到軟預算 8MB 內`);
+  assert.ok(history.length < 201, '軟預算超標時應從尾端裁掉最舊的若干筆(不是原封不動)');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '本次最新一筆永遠保留,不被位元組裁切吃掉');
+});
+
+// ============================================================
+// F3 og 快取加固:(1) in-flight 去重;(2) 空結果負快取(短 TTL);(3) 真 LRU
+// (set 前先 delete)。
+// ============================================================
+
+test('F3 負快取:og 抓不到(空結果)時入負快取,短 TTL 內第二次事件不再 fetch', async () => {
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html: NO_OG_HTML });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  await settle();
+  assert.equal(bg.fetchCalls.length, 1, '第一次事件 og 抓不到,發一次 fetch');
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  await settle();
+  assert.equal(bg.fetchCalls.length, 1, 'og 空結果已入負快取,短 TTL 內第二次事件不再重跑 fetch');
+});
+
+test('F3 in-flight 去重:同一 cleanUrl 兩次事件在 fetch 未完成前併發,只發一次 fetch', async () => {
+  const html = '<meta property="og:title" content="大福 (@dafucoding) on Threads" />';
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html, delayMs: 100 });
+
+  // 兩次事件同步併發:第二次進來時,第一次的 fetch 仍在 in-flight(尚未寫回
+  // 快取),第二次應接同一個 in-flight promise,不重複發 fetch。
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  await settle(400);
+
+  assert.equal(bg.fetchCalls.length, 1, '併發事件共用同一個 in-flight fetch,不重複發');
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '同一 cleanUrl 去重視窗內合併為一筆');
+  assert.equal(history[0].author, '大福', 'in-flight 共用的 fetch 結果照樣補強顯示名稱');
+});
+
+// og 快取多路由 loader:share 短碼 /share/S{i} 解析到 /@u{i}/post/P{i}(帶
+// 各自 og);貼文頁本身(cleanedNotice 補強路徑)回無 og。供 LRU 溢位測試
+// 灌入超過 OG_CACHE_MAX(20)個不同 cleanUrl。
+function loadBackgroundOgMulti() {
+  const chrome = makeChrome();
+  const storage = createChromeStorage({ saveHistory: true });
+  const onMessageListeners = [];
+  chrome.runtime.onMessage.addListener = (fn) => onMessageListeners.push(fn);
+  chrome.scripting = { executeScript: async () => [{ result: { ok: true } }] };
+  chrome.storage = storage.api;
+  const fetchCalls = [];
+  const fetchImpl = async (url) => {
+    fetchCalls.push(url);
+    const m = /\/share\/S(\d+)$/.exec(url);
+    if (m) {
+      const i = m[1];
+      return fetchResult(
+        `https://www.threads.com/@u${i}/post/P${i}`,
+        `<meta property="og:title" content="Author${i} (@u${i}) on Threads" />`
+      );
+    }
+    if (/\/post\//.test(url)) return fetchResult(url, NO_OG_HTML);
+    throw new Error('unexpected fetch: ' + url);
+  };
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  return {
+    storage,
+    fetchCalls,
+    resolve(i) {
+      return new Promise((resolve) => {
+        onMessageListeners
+          .slice()
+          .forEach((fn) => fn({ type: 'resolveShare', url: `https://www.threads.com/share/S${i}` }, {}, resolve));
+      });
+    },
+    notice(finalUrl) {
+      onMessageListeners
+        .slice()
+        .forEach((fn) => fn({ type: 'cleanedNotice', cleanUrl: finalUrl, kind: 'share' }, {}, () => {}));
+    },
+  };
+}
+
+test('F3 淘汰改真 LRU:重新被解析的 og 刷新到最新,溢位淘汰時得以存活(非最久未用被誤淘)', async () => {
+  const bg = loadBackgroundOgMulti();
+
+  // 填滿快取(OG_CACHE_MAX = 20):解析 S1..S20。
+  for (let i = 1; i <= 20; i++) await bg.resolve(i);
+  // 重新解析 S1 → cacheOgFields 的 set 前先 delete,把 f1 移到迭代序最新。
+  await bg.resolve(1);
+  // 再解析 S21 → 溢位,淘汰迭代序最舊者(真 LRU 下應為 f2,而非剛刷新的 f1)。
+  await bg.resolve(21);
+
+  const before = bg.fetchCalls.length;
+  // f1 最近才被重新解析,真 LRU 下仍在快取:cleanedNotice peek 命中,不再 fetch。
+  bg.notice('https://www.threads.com/@u1/post/P1');
+  await settle();
+  assert.equal(bg.fetchCalls.length, before, 'f1 最近才刷新,真 LRU 下應存活,cleanedNotice 不需再 fetch');
+
+  const mid = bg.fetchCalls.length;
+  // f2 是最久未用,已在 S21 溢位時被淘汰:peek miss → 需補一次 fetch。
+  bg.notice('https://www.threads.com/@u2/post/P2');
+  await settle();
+  assert.equal(bg.fetchCalls.length, mid + 1, 'f2 最久未用已被淘汰,cleanedNotice 需補一次 fetch');
 });

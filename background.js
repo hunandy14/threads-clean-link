@@ -48,10 +48,10 @@ const DEFAULT_SETTINGS = {
 };
 
 // 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
-// 紀錄量），新到舊排列，不設上限——chrome.storage.local 沒有
-// unlimitedStorage 權限時仍有總容量配額，寫入超限時走優雅降級(見
-// recordHistory 的 isQuotaExceededError 分支)，不重試、不丟例外，只
-// console.warn，不影響複製/淨化等主功能。
+// 紀錄量），新到舊排列。上限由 R5 的位元組軟預算 + 筆數硬保險把關(見
+// capHistoryForStorage / STORAGE_SOFT_BUDGET / HISTORY_MAX_ENTRIES)，平時
+// 就不長到撞配額;萬一仍寫入超限,再走 recordHistory 的 isQuotaExceededError
+// 優雅降級(不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能)。
 const HISTORY_KEY = 'history';
 
 // 紀錄條目上，author/handle/excerpt 為選填欄位，由複製 icon
@@ -295,44 +295,32 @@ async function handleShareLinkClick(info, tab) {
   // 只有實際寫入剪貼簿成功才留紀錄，與自動路徑的「寫入成功才記錄」語意
   // 一致;saveHistory 的把關在 recordHistory 內。右鍵路徑不經 guard/
   // bridge，original(shareUrl)與 removedParams(finalUrl 與 cleanUrl 的
-  // 差集)background 自己手上就有，見 buildMenuHistoryExtra。
+  // 差集)background 自己手上就有。
   //
   // 寫入前用全 repo 單一權威的 POST_URL_PATTERN 錨定驗一次(見上方註解:
   // extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆，寬鬆匹配
   // 到的內容不該不經檢查就流進 history);不符合就只略過記錄
   // (console.warn)，不影響已經完成的剪貼簿複製。
   if (POST_URL_PATTERN.test(cleanUrl)) {
-    await recordHistory(cleanUrl, 'menu', buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl, ogFields));
+    // R2-b 四路徑落盤收斂:menu 路徑把手上的 original(使用者右鍵點擊的短
+    // 碼)與 removedParams(finalUrl 淨化前後的查詢參數差集)組成與
+    // cleanedNotice 同形的訊息物件，連同 resolveFinalUrl 同一 response 順手
+    // 擷取到的 ogFields，一起餵給共用的組裝函式 extractHistoryExtraFields
+    // ——share/strip/icon/menu 四條路徑收斂成「一個組裝函式 +一個
+    // recordHistory 入口」。menu 不經 guard/bridge，沒有 DOM 擷取的
+    // author/handle/excerpt，那三個鍵在訊息裡缺席，og 是這條路徑唯一的
+    // 人名/摘要來源(merge 規則等同「og 有什麼就收下什麼」)。
+    const menuMessage = {
+      original: shareUrl,
+      removedParams: diffRemovedParams(finalUrl, cleanUrl),
+    };
+    await recordHistory(cleanUrl, 'menu', extractHistoryExtraFields(menuMessage, cleanUrl, ogFields));
   } else {
     console.warn(
       '[threads-clean-link] 右鍵路徑解析出的網址不符嚴格白名單樣式，略過記錄(不影響已複製到剪貼簿的內容)',
       cleanUrl
     );
   }
-}
-
-// 右鍵路徑(menu)專用的 extra 建構:不經 guard/bridge，original(使用者
-// 右鍵點擊的短碼連結)與 removedParams(finalUrl 淨化前後的查詢參數差
-// 集)background 自身就有，sanitize 規則與 extractHistoryExtraFields
-// (自動路徑)共用同一組函式(sanitizeOriginalField/sanitizeRemovedParams)。
-// author/handle/excerpt:右鍵路徑不經 guard/bridge，沒有任何 DOM 擷取
-// 來源可用，og 資訊(resolveFinalUrl 同一個 response 順手擷取)是這條路
-// 徑的唯一來源——existing 傳空物件，merge 規則等同「og 有什麼就收下什
-// 麼」(見 mergeOgIntoFields 註解)。
-function buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl, ogFields) {
-  const extra = {};
-  const original = sanitizeOriginalField(shareUrl, HISTORY_ORIGINAL_MAX, cleanUrl);
-  if (original !== undefined) extra.original = original;
-  const removedParams = sanitizeRemovedParams(diffRemovedParams(finalUrl, cleanUrl));
-  if (removedParams !== undefined) extra.removedParams = removedParams;
-
-  // code review 修正(FAIL 打回):理由同 extractHistoryExtraFields，見
-  // sanitizeOgFields 註解。
-  const merged = sanitizeOgFields(mergeOgIntoFields({}, ogFields));
-  if (merged.author !== undefined) extra.author = merged.author;
-  if (merged.handle !== undefined) extra.handle = merged.handle;
-  if (merged.excerpt !== undefined) extra.excerpt = merged.excerpt;
-  return extra;
 }
 
 // 讀取使用者設定。刻意放在點擊流程「內」呼叫，不在模組頂層同步觸碰
@@ -362,14 +350,16 @@ async function getSettings() {
 // 不透過本訊息通道，避免頁面腳本偽造 kind:'menu' 混充右鍵來源。收到合法
 // notice 就無條件記錄一筆，author/handle/excerpt 為選填欄位一併寫入。
 //
-// 本地路徑(icon/strip)og 補強(使用者確認要人名):這兩條 kind 不像
-// share/menu 那樣本來就會 fetch 貼文頁，這裡額外補一次(見
-// fetchOgFieldsForLocalKind，含節流/逾時/失敗回退)。剪貼簿/複製體感
-// 完全不受影響，那是 content script 端(clipboard-guard.js／
-// post-icon.js)早就完成的事，這裡只是延後「記錄」這個步驟——刻意不做
-// 「先落盤、og 到了再補寫」:二次寫入會落在同一個去重視窗內，
-// mergeHistoryEntry 會多長一筆假的 seen 事件(同一次複製動作被算成兩次
-// 解析)，污染時間軸。寧可讓記錄晚最多 2.5 秒落盤，也不要污染資料。
+// og 取得統一(R2-a，刪雙策略):所有 kind 一律走 fetchOgFieldsForLocalKind
+// ——它先 peek 快取。share 路徑會命中 handleResolveShareMessage 解析短碼時
+// 剛寫入的快取(零額外 fetch);strip/icon 這兩條 kind 不像 share 那樣本來
+// 就會 fetch 貼文頁，快取未命中時才真的補一次 fetch(見
+// fetchOgFieldsForLocalKind，含節流/逾時/失敗回退)。剪貼簿/複製體感完全
+// 不受影響，那是 content script 端(clipboard-guard.js／post-icon.js)早就
+// 完成的事，這裡只是延後「記錄」這個步驟——刻意不做「先落盤、og 到了再補
+// 寫」:二次寫入會落在同一個去重視窗內，mergeHistoryEntry 會多長一筆假的
+// seen 事件(同一次複製動作被算成兩次解析)，污染時間軸。寧可讓記錄晚最多
+// 2.5 秒落盤，也不要污染資料。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
   if (typeof cleanUrl !== 'string' || !POST_URL_PATTERN.test(cleanUrl)) {
@@ -383,13 +373,27 @@ async function handleCleanedNotice(message) {
     return;
   }
 
-  if (kind === 'icon' || kind === 'strip') {
-    const ogFields = await fetchOgFieldsForLocalKind(cleanUrl);
-    recordHistory(cleanUrl, kind, extractHistoryExtraFields(message, cleanUrl, ogFields));
+  // cr中1 省請求閘:進 fetch 之前先讀一次設定,saveHistory 關閉時直接
+  // return——連 recordHistory 都不呼叫,更不觸發 fetchOgFieldsForLocalKind
+  // 那次為了補 og 而發的網路請求(解析結果反正會被 recordHistory 內部的
+  // saveHistory 把關丟棄,先擋在這裡就省掉整個 fetch)。對齊 guard 端 share
+  // 路徑已有的省請求閘(bridge.js 下放 saveHistory 讓 clipboard-guard.js 在
+  // saveHistory 關閉時連 resolveShare 都不發)。recordHistory 內部仍保留各
+  // 自的 saveHistory 權威把關(menu 路徑沒有這道前置閘,靠內部那道),此處
+  // 純粹是為了省掉 og 補強的 fetch。
+  const settings = await getSettings();
+  if (!settings.saveHistory) {
     return;
   }
 
-  recordHistory(cleanUrl, kind, extractHistoryExtraFields(message, cleanUrl));
+  // R2-a og 取得統一(刪雙策略):所有 kind 一律走 fetchOgFieldsForLocalKind
+  // ——它先 peek 快取,share 路徑會命中 handleResolveShareMessage 剛寫入的
+  // 快取(零額外 fetch);strip/icon 快取未命中才真的 fetch 貼文頁。快取一
+  // 律 peek+TTL(見 peekOgFields),不再有「share 走 takeOgFields、local 走
+  // preloadedOgFields」的雙策略。share 複製後超過 TTL 才觸發 notice 的極端
+  // 情況,從「不補 og」變成「補一次 fetch」(變好)。
+  const ogFields = await fetchOgFieldsForLocalKind(cleanUrl);
+  recordHistory(cleanUrl, kind, extractHistoryExtraFields(message, cleanUrl, ogFields));
 }
 
 // author/handle/excerpt/original/removedParams 皆為選填欄位，同屬頁面
@@ -398,24 +402,19 @@ async function handleCleanedNotice(message) {
 // 丟棄(不寫進回傳物件，而非寫入 undefined/空字串)，字串則截斷至各自長
 // 度上限。回傳值直接可以 Object.assign 進 history 條目(見 recordHistory)。
 // url 參數是本次寫入的乾淨網址，供 sanitizeOriginalField 判斷 original
-// 是否與 cleaned 相同(相同就不存)，也用來查 og 快取(見下方)。
-// preloadedOgFields(選填):icon/strip 路徑呼叫前已經自行 await
-// fetchOgFieldsForLocalKind 取得(可能是 null，代表逾時/失敗/沒收
-// 穫)，這裡改用呼叫端提供的結果，不再向 takeOgFields 查詢——share 路
-// 徑不傳這個參數(維持原本查 og 快取的行為，兩者互斥:share 從不會有
-// preloadedOgFields，icon/strip 從不會命中 takeOgFields，因為那個快取
-// 只在 resolveShare 時才寫入)。
-function extractHistoryExtraFields(message, url, preloadedOgFields) {
+// 是否與 cleaned 相同(相同就不存)。
+// ogFields(R2-a 統一後的第三參數):og 一律由呼叫端先取好再傳進來，這裡
+// 不自己查快取(takeOgFields 已隨雙策略一併刪除)。四條落盤路徑的 og 來
+// 源各異但形狀一致——share 路徑來自快取 peek、strip/icon 來自貼文頁
+// fetch(兩者都經 fetchOgFieldsForLocalKind，見 handleCleanedNotice)、menu
+// 來自 resolveFinalUrl 同一 response(見 handleShareLinkClick)——統一從這
+// 個參數進來(可能是 null/空物件，代表逾時/失敗/沒收穫，merge 端會容錯)。
+function extractHistoryExtraFields(message, url, ogFields) {
   const extra = {};
   const domAuthor = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
   const domHandle = sanitizeHistoryField(message && message.handle, HISTORY_AUTHOR_MAX);
   const domExcerpt = sanitizeHistoryField(message && message.excerpt, HISTORY_EXCERPT_MAX);
 
-  // share 路徑若剛好有 resolveShare 階段快取到的 og 資訊(見
-  // handleResolveShareMessage／cacheOgFields)，在這裡撈出來合併；
-  // strip/icon 兩條 kind 改用呼叫端傳入的 preloadedOgFields(見
-  // handleCleanedNotice)，不查 takeOgFields。
-  const ogFields = preloadedOgFields !== undefined ? preloadedOgFields : takeOgFields(url);
   // code review 修正(FAIL 打回):merge 結果不能直接信任，統一再過一次
   // sanitizeOgFields(見該函式註解)，才寫進 extra。
   const merged = sanitizeOgFields(
@@ -665,8 +664,8 @@ function extractOgFields(html) {
 //      過長度上限直通入庫)：mergeOgIntoFields 只負責「挑值 + 去重比
 //      對」，不保證輸出仍在長度上限內——它的兩個輸入理論上都已經各自
 //      sanitize 過，但函式本身沒有自我保證，屬於「相信呼叫端」的隱性
-//      假設，任何一處疏漏都會讓超長字串直通入庫。extractHistoryExtraFields
-//      與 buildMenuHistoryExtra 呼叫 mergeOgIntoFields 後，統一再把結
+//      假設，任何一處疏漏都會讓超長字串直通入庫。四條落盤路徑共用的
+//      extractHistoryExtraFields 呼叫 mergeOgIntoFields 後，統一再把結
 //      果丟回這裡過一次同一把尺——順序是「先在 mergeOgIntoFields 內完
 //      成 author===handle 去重比對，這裡才截斷」，避免截斷影響去重判
 //      斷的正確性。
@@ -718,48 +717,68 @@ function mergeOgIntoFields(existing, ogFields) {
 // og 資料橋接快取(share 路徑專用):resolveShare(handleResolveShareMessage)
 // 解析短碼時已經拿到 og 資訊，但 share 路徑實際的 recordHistory 要等
 // guard 之後另外送來的 cleanedNotice(見 handleCleanedNotice)才會發生
-// ——兩者是不同時間點的訊息，用一個以 cleanUrl 為 key 的小快取橋接。用
-// 過即丟(同一 cleanUrl 短時間內只消費一次，避免累積後被不相關的後續記
-// 錄事件誤用);上限與 TTL 防止使用者複製後遲遲不觸發 cleanedNotice 時
-// 無限累積或用到過期資料。menu 路徑不經這個快取，resolveFinalUrl 的回
-// 傳值直接同步使用。
+// ——兩者是不同時間點的訊息，用一個以 cleanUrl 為 key 的小快取橋接。取用
+// 一律走 peekOgFields(窺視不刪，見下方，R2-a 統一為 peek+TTL 後不再有
+// takeOgFields 那種取用即刪的路徑);上限與 TTL 防止使用者複製後遲遲不觸
+// 發 cleanedNotice 時無限累積或用到過期資料。menu 路徑不經這個快取，
+// resolveFinalUrl 的回傳值直接同步使用。
 const OG_CACHE_MAX = 20;
 const OG_CACHE_TTL_MS = 60 * 1000;
+// F3 負快取短 TTL:og 抓不到(空結果)存負快取,避免同一貼文每次事件都重跑
+// 一次 2.5s fetch;但比正快取短很多,讓「站方稍後補上 og」或「暫時性抓取
+// 失敗」有機會在不久後重試,不被卡滿整個 60 秒。
+const OG_NEGATIVE_TTL_MS = 10 * 1000;
+// F3 負快取標記:空結果不是「沒有這筆快取」,而是「查過了,確實沒有 og」。
+// 用一個獨一無二的 sentinel 與正常 og 物件區分,peek 到它時呼叫端一律當
+// 作 null(沒收穫)處理,但不會因此再發一次 fetch。
+const OG_NEGATIVE = { __tclNegativeOg: true };
 const ogFieldsCache = new Map();
+// F3 in-flight 去重:同一 cleanUrl 正在跑的 fetch promise,連點 icon 時第二
+// 次事件直接接同一個 promise,不重複發 fetch。完成後(finally)就地移除。
+const ogInflight = new Map();
 
-function cacheOgFields(cleanUrl, ogFields) {
-  if (
+// 空結果判定:三個 og 欄位全缺席即視為空(呼叫端據此落負快取)。
+function isEmptyOgFields(ogFields) {
+  return (
     !ogFields ||
     (ogFields.excerpt === undefined && ogFields.author === undefined && ogFields.handle === undefined)
-  ) {
-    return;
-  }
-  ogFieldsCache.set(cleanUrl, { at: Date.now(), ogFields });
+  );
+}
+
+function cacheOgFields(cleanUrl, ogFields) {
+  const empty = isEmptyOgFields(ogFields);
+  // 真 LRU:set 前先 delete,讓「重新被碰到」的 key 移到 Map 迭代序尾端
+  // (最新),size 超限時淘汰的 keys().next()(最舊)才是真正最久沒用到的
+  // 那筆,而不是最早插入但可能剛被讀取過的那筆。
+  ogFieldsCache.delete(cleanUrl);
+  ogFieldsCache.set(cleanUrl, {
+    at: Date.now(),
+    ogFields: empty ? OG_NEGATIVE : ogFields,
+    ttl: empty ? OG_NEGATIVE_TTL_MS : OG_CACHE_TTL_MS,
+  });
   if (ogFieldsCache.size > OG_CACHE_MAX) {
     const oldestKey = ogFieldsCache.keys().next().value;
     ogFieldsCache.delete(oldestKey);
   }
 }
 
-function takeOgFields(cleanUrl) {
-  const entry = ogFieldsCache.get(cleanUrl);
-  if (!entry) return null;
-  ogFieldsCache.delete(cleanUrl);
-  if (Date.now() - entry.at > OG_CACHE_TTL_MS) return null;
-  return entry.ogFields;
-}
-
-// 本地路徑(icon/strip)og 補強(使用者確認要人名)：窺視快取但不刪
-// ——與 takeOgFields(share 路徑的「取用即刪」橋接)不同，這裡要讓同一個
-// cleanUrl 在 OG_CACHE_TTL_MS 視窗內的多次 icon/strip 事件都能重用同一
-// 份快取(見下方 fetchOgFieldsForLocalKind 的節流)，不能第一次讀到就把
-// 快取清空。若之後剛好有 share 路徑對同一 cleanUrl 觸發 resolveShare，
-// 仍會透過 takeOgFields 拿到(並消費掉)這裡留下的快取，省一次 fetch。
+// 窺視快取但不刪(R2-a 統一後,share/strip/icon 全部經由
+// fetchOgFieldsForLocalKind 走這個 peek 入口):同一個 cleanUrl 在
+// OG_CACHE_TTL_MS 視窗內的多次事件都能重用同一份快取(見下方
+// fetchOgFieldsForLocalKind 的節流)，不能第一次讀到就把快取清空。share
+// 路徑的 cleanedNotice 命中的正是 resolveShare 剛寫入的這份快取——peek
+// 到就零額外 fetch。負快取(空結果,見 fetchOgFieldsForLocalKind 的
+// NEGATIVE_OG 標記)也一律先由這裡撈出,呼叫端據此判斷是否短路。
 function peekOgFields(cleanUrl) {
   const entry = ogFieldsCache.get(cleanUrl);
   if (!entry) return null;
-  if (Date.now() - entry.at > OG_CACHE_TTL_MS) return null;
-  return entry.ogFields;
+  const ttl = typeof entry.ttl === 'number' ? entry.ttl : OG_CACHE_TTL_MS;
+  if (Date.now() - entry.at > ttl) {
+    // 過期就地清掉,不留給 LRU 慢慢淘汰,順手讓快取只保有有效項目。
+    ogFieldsCache.delete(cleanUrl);
+    return null;
+  }
+  return entry.ogFields; // 正常 og 物件,或 OG_NEGATIVE(負快取 sentinel)
 }
 
 // 本地路徑(icon/strip)專用的 og 補強逾時:貼文按鈕複製與 ?xmt 剪參都是
@@ -774,39 +793,56 @@ const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
 // 可能吸到讚數等雜訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
 // 重用既有的 extractOgFields／sanitizeOgFields 全鏈(長度雙層防線不變)。
 //
-// 節流:同一 cleanUrl 在 OG_CACHE_TTL_MS(60 秒)內先查快取(peekOgFields，
-// 窺視不刪)，命中就直接回傳、不重複 fetch，避免連點 icon 連環觸發請
-// 求。逾時(OG_LOCAL_FETCH_TIMEOUT_MS)或 fetch 本身失敗一律回傳
-// null，呼叫端 fail-open 退回 DOM 版欄位，離線也不影響紀錄照常落盤——
-// 逾時之後 fetch 仍在背景跑完的話，結果照樣存回快取供下一次事件重用
-// (這次事件用不到，但沒有浪費)。
+// 節流(三層,F3 加固):
+//   1. 快取命中(peekOgFields，窺視不刪):同一 cleanUrl 在 TTL 內的正快取
+//      直接回傳、不重複 fetch;負快取(OG_NEGATIVE)命中則回傳 null 但同樣
+//      不 fetch——og 抓不到的貼文在短 TTL 內不再每次重跑 2.5s fetch。
+//   2. in-flight 去重(ogInflight):同一 cleanUrl 已有 fetch 在跑,連點 icon
+//      的第二次事件直接接同一個 promise,不發第二次 fetch;完成後就地換成
+//      結果(靠快取)並從 ogInflight 移除。
+//   3. 每次呼叫各自的逾時競速:即使接了別人的 in-flight promise,自己這次
+//      事件仍最多等 OG_LOCAL_FETCH_TIMEOUT_MS 就 fail-open 回 null。
+// 逾時或 fetch 失敗一律回傳 null，呼叫端 fail-open 退回 DOM 版欄位，離線也
+// 不影響紀錄照常落盤——逾時之後 fetch 仍在背景跑完的話，結果照樣存回快取
+// (正或負)供下一次事件重用(這次事件用不到，但沒有浪費)。
 async function fetchOgFieldsForLocalKind(cleanUrl) {
   const cached = peekOgFields(cleanUrl);
-  if (cached) return cached;
+  // 正快取回傳結果;負快取(sentinel)回傳 null(沒收穫但不再 fetch)。
+  if (cached !== null) return cached === OG_NEGATIVE ? null : cached;
+
+  // in-flight 去重:已有同 cleanUrl 的 fetch 在跑就共用,否則起一個新的並
+  // 登記到 ogInflight。fetch 完成後把結果寫回快取(正或負),供後續事件經
+  // 第 1 層命中;無論成敗都在 finally 從 ogInflight 移除。
+  let fetchOnce = ogInflight.get(cleanUrl);
+  if (!fetchOnce) {
+    fetchOnce = (async () => {
+      try {
+        const response = await fetch(cleanUrl, {
+          method: 'GET',
+          credentials: 'omit',
+          redirect: 'follow',
+          // og:title 的語系鎖定，見 OG_FETCH_HEADERS。
+          headers: OG_FETCH_HEADERS,
+        });
+        const text = await response.text();
+        const ogFields = sanitizeOgFields(extractOgFields(text));
+        // 空結果會被 cacheOgFields 收成負快取(短 TTL);非空則正快取。
+        cacheOgFields(cleanUrl, ogFields);
+        return isEmptyOgFields(ogFields) ? null : ogFields;
+      } catch (err) {
+        console.error('[threads-clean-link] 本地路徑(icon/strip)補強 og 資訊失敗', err);
+        return null;
+      } finally {
+        ogInflight.delete(cleanUrl);
+      }
+    })();
+    ogInflight.set(cleanUrl, fetchOnce);
+  }
 
   let timeoutId = null;
   const timeout = new Promise((resolve) => {
     timeoutId = setTimeout(() => resolve(null), OG_LOCAL_FETCH_TIMEOUT_MS);
   });
-
-  const fetchOnce = (async () => {
-    try {
-      const response = await fetch(cleanUrl, {
-        method: 'GET',
-        credentials: 'omit',
-        redirect: 'follow',
-        // og:title 的語系鎖定，見 OG_FETCH_HEADERS。
-        headers: OG_FETCH_HEADERS,
-      });
-      const text = await response.text();
-      const ogFields = sanitizeOgFields(extractOgFields(text));
-      cacheOgFields(cleanUrl, ogFields);
-      return ogFields;
-    } catch (err) {
-      console.error('[threads-clean-link] 本地路徑(icon/strip)補強 og 資訊失敗', err);
-      return null;
-    }
-  })();
 
   try {
     return await Promise.race([fetchOnce, timeout]);
@@ -921,14 +957,50 @@ function hasStorageLocal() {
   );
 }
 
+// ---- R5 儲存上限(PM 代決方案):位元組軟預算 + 筆數硬保險 ----
+//
+// chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
+// (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算,刻意留約 2MB 餘裕給 sync
+// 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload,不把配額
+// 用滿到邊界。既有的 isQuotaExceededError 降級(見下方 set 的 catch)保留當
+// 最後一道防線——軟預算是「平時就不長到那麼大」,配額降級是「萬一還是爆了
+// 也不炸」。
+const STORAGE_SOFT_BUDGET = 8 * 1024 * 1024;
+// 筆數硬保險:即使每筆都很小、位元組遠不到軟預算,也不讓陣列無限長(渲染/
+// 去重掃描都是 O(n))。10000 筆是「正常使用永遠碰不到、異常暴衝才會撞上」
+// 的量級。軟預算與硬保險兩者取先觸發者:capHistoryForStorage 先砍筆數上
+// 限、再用軟預算裁位元組,最終陣列同時滿足兩個約束。
+const HISTORY_MAX_ENTRIES = 10000;
+
+// 把待寫入的紀錄陣列(新到舊排列,index 0 最新)裁到儲存上限內:筆數超過
+// HISTORY_MAX_ENTRIES 先從尾端(最舊)砍;再從最新往最舊累加估算序列化位元
+// 組,超過 STORAGE_SOFT_BUDGET 就不再收更舊的條目(同樣等於從尾端裁)。位
+// 元組以 JSON.stringify(...).length 近似(ASCII 相符;多位元組字元會低估,由
+// 2MB 餘裕吸收)。永遠至少保留最新一筆,不會把本次剛寫入的紀錄也裁掉。
+function capHistoryForStorage(list) {
+  const capped = list.length > HISTORY_MAX_ENTRIES ? list.slice(0, HISTORY_MAX_ENTRIES) : list;
+
+  // 單次 O(n) 前向累加,避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
+  const budgeted = [];
+  let bytes = 2; // '[]' 外框
+  for (let i = 0; i < capped.length; i++) {
+    const itemBytes = JSON.stringify(capped[i]).length + 1; // +1 近似分隔逗號
+    if (budgeted.length > 0 && bytes + itemBytes > STORAGE_SOFT_BUDGET) break;
+    bytes += itemBytes;
+    budgeted.push(capped[i]);
+  }
+  // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置)。
+  return budgeted.length === list.length ? list : budgeted;
+}
+
 // 同一個 SW 內的 append 以 promise chain 序列化,避免兩筆同時 read-modify-write
 // 互相覆蓋。options 頁的清除/刪除/匯入直接寫 storage.local,與這裡的競態只
 // 發生在「清除的同時恰好完成一次淨化」,極罕見且後果僅是多留一筆,接受。
 let historyWriteChain = Promise.resolve();
 
 // extra(選填):author/handle/excerpt/original/removedParams，只有實際
-// 擷取到的鍵才會出現(自動路徑見 extractHistoryExtraFields，右鍵路徑見
-// buildMenuHistoryExtra)，Object.assign 進條目時不會覆蓋 url/kind/at/seen。
+// 擷取到的鍵才會出現(自動路徑見 extractHistoryExtraFields，右鍵路徑組同形
+// 訊息後同樣走它)，Object.assign 進條目時不會覆蓋 url/kind/at/seen。
 function recordHistory(url, kind, extra) {
   historyWriteChain = historyWriteChain
     .then(async () => {
@@ -949,13 +1021,17 @@ function recordHistory(url, kind, extra) {
         next = [mergedEntry].concat(list.slice(0, dedupIndex), list.slice(dedupIndex + 1));
       } else {
         // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新
-        // 陣列，不裁切(紀錄不設上限)。extra 放在前面、核心欄位放在後面
-        // 覆蓋:即使日後呼叫端不慎把 url/kind/at/seen 也塞進 extra 物件，
-        // 核心欄位仍會覆蓋回正確值(防未來的加固)。新條目的 seen[] 由本次
-        // 呼叫自行構造(信任來源，不需要再過 sanitizeSeenList)。
+        // 陣列。extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎
+        // 把 url/kind/at/seen 也塞進 extra 物件，核心欄位仍會覆蓋回正確值
+        // (防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任來源，
+        // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 capHistoryForStorage
+        // 處理(R5)。
         const entry = Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] });
         next = [entry].concat(list);
       }
+      // R5 儲存上限:寫入前把陣列裁到位元組軟預算 + 筆數硬保險內(從尾端/
+      // 最舊裁,本次剛寫入的最新一筆永遠保留)。
+      next = capHistoryForStorage(next);
       try {
         await chrome.storage.local.set({ [HISTORY_KEY]: next });
       } catch (err) {
@@ -1014,8 +1090,9 @@ async function handleResolveShareMessage(message) {
   }
 
   // og 資訊透過快取橋接到之後才會抵達的 cleanedNotice(見
-  // handleCleanedNotice／takeOgFields)，這條訊息通道的回應形狀不變，不
-  // 需要多帶欄位、也不需要改動 guard/bridge 的訊息協定。
+  // handleCleanedNotice → fetchOgFieldsForLocalKind → peekOgFields)，這條
+  // 訊息通道的回應形狀不變，不需要多帶欄位、也不需要改動 guard/bridge 的
+  // 訊息協定。
   cacheOgFields(cleanUrl, ogFields);
 
   return { ok: true, cleanUrl };
@@ -1025,8 +1102,9 @@ async function handleResolveShareMessage(message) {
 // 用 GET 而非 HEAD:匿名 HEAD 常不回傳 302、或會先跳驗證頁，
 // GET + redirect:'follow' 較穩定。share 與右鍵路徑共用同一個 resolver，
 // 回傳值除了 finalUrl，也附上這次順手從同一個 response 擷取到的 og 資
-// 訊(見上方 og 擷取區塊)，兩條呼叫路徑各自決定怎麼用(見
-// buildMenuHistoryExtra／handleResolveShareMessage)。
+// 訊(見上方 og 擷取區塊)，兩條呼叫路徑各自決定怎麼用(menu 路徑直接把
+// ogFields 餵給 extractHistoryExtraFields;share 路徑經
+// handleResolveShareMessage 寫入 og 快取橋接)。
 async function resolveFinalUrl(shareUrl) {
   const response = await fetch(shareUrl, {
     method: 'GET',
