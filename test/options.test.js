@@ -884,6 +884,30 @@ test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important}
   );
 });
 
+// ---- 【審查 FAIL 修正】#confirmOverlay 的 z-index(PM 打回，審查 CDP 已驗) ----
+//
+// 確認框(#confirmOverlay)在 options.html 的 DOM 順序寫在詳細視窗
+// (#detailOverlay)前面，兩者同吃 .overlay 的 z-index:10 時，後出現的
+// detail 依繪製順序蓋上來——「從詳細視窗按刪除這筆」開的確認框整個被
+// 遮住:畫面看似沒反應、焦點靜默落在看不見的 #confirmCancel、點遮罩
+// 關到的是 detail(留下孤兒 confirm)。#timelineOverlay 早就為同一類
+// 疊層情境拉過 z-index:11，這次 confirm-over-detail 是新情境。
+//
+// 純 CSS 修正，最小 DOM stub 不解析真實 CSS，測不出繪製層級，只能做
+// 靜態原文檢查(照上面 [hidden] 的既有慣例)。正則以 ^ 行首錨定 + m
+// 旗標，只認真正的 CSS 規則行——不加錨定的話，本檔/HTML 註解散文裡
+// 只要提到 #confirmOverlay 與 z-index 就會誤命中，變成鎖不住東西的
+// 假釘(前輪教訓)。
+test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊在詳細視窗之上)', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(
+    html,
+    /^\s*#confirmOverlay\s*\{[^}]*z-index[^}]*\}/m,
+    '#confirmOverlay 需自帶 z-index，否則與 #detailOverlay 同層時會被 DOM 順序在後的 detail 蓋住'
+  );
+});
+
 // ---- controller smoke(最小 DOM stub) ----
 
 function makeNode(tag) {

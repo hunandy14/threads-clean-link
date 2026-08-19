@@ -821,6 +821,11 @@
      取高一階，DOM 順序本身其實已經夠(接在 detailOverlay 後面)，這裡明寫
      出來避免日後調順序時踩到。 */
   #timelineOverlay { z-index: 11; }
+  /* 確認框可疊在詳細視窗之上(詳細視窗的「刪除這筆」會開這個框)，z-index
+     再高一階。少了這條就會撞上 DOM 順序:#confirmOverlay 寫在
+     #detailOverlay 前面，同為 z-index:10 時後者贏，確認框整個被遮住——
+     畫面看似沒反應、焦點靜默落在看不見的取消鈕、點遮罩還關錯視窗。 */
+  #confirmOverlay { z-index: 12; }
   .modal {
     background: var(--surface);
     border: 1px solid var(--border);
