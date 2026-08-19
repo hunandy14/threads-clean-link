@@ -946,7 +946,7 @@
   </header>
 
   <!-- 統計磚:數值由 options.js 從紀錄本地聚合,不另存統計資料。 -->
-  <section class="stats" aria-label="stats">
+  <section class="stats" data-i18n-aria="opStatsAria" aria-label="統計摘要">
     <div class="tile">
       <div class="label"><svg class="icon"><use href="#i-sparkles"/></svg><span data-i18n="opTileTotal">累計紀錄</span></div>
       <div class="value" id="statTotal">0</div>
@@ -1109,7 +1109,7 @@
 <!-- 清除全部:確認對話框 -->
 <div class="overlay" id="confirmOverlay" hidden>
   <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmDesc">
-    <h3 id="confirmTitle"><svg class="icon danger-ink"><use href="#i-trash"/></svg><span data-i18n="opClearAll">清除全部紀錄</span></h3>
+    <h3 id="confirmTitle"><svg class="icon danger-ink"><use href="#i-trash"/></svg><span id="confirmTitleText" data-i18n="opClearAll">清除全部紀錄</span></h3>
     <div class="desc" id="confirmDesc"></div>
     <div class="modal-actions">
       <button class="btn" id="confirmCancel" data-i18n="opCancel">取消</button>
@@ -1128,7 +1128,7 @@
   <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
     <h3 id="detailTitle" class="sr-only" data-i18n="opDetailTitle">紀錄詳細資訊</h3>
     <!-- ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton。 -->
-    <button class="detail-close" id="detailClose" data-i18n-title="opClose" title="關閉" aria-label="關閉">✕</button>
+    <button class="detail-close" id="detailClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <div class="detail-head">
       <div class="entry-meta">
         <span class="entry-badge" id="detailBadge"></span>
@@ -1192,7 +1192,7 @@
      平台限制要迴避，故照抄巢狀結構，不用原地展開。 -->
 <div class="overlay" id="timelineOverlay" hidden>
   <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="timelineTitle">
-    <button class="detail-close" id="timelineClose" data-i18n-title="opClose" title="關閉" aria-label="關閉">✕</button>
+    <button class="detail-close" id="timelineClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <h3 id="timelineTitle" class="detail-author-name"></h3>
     <div id="detailTimeline"></div>
   </div>

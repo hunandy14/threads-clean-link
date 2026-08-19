@@ -1313,7 +1313,9 @@ test('controller smoke:長內文顯示「展開全文」，點擊後移除截斷
 });
 
 // 詳細視窗底部的複製/刪除按鈕操作目前顯示中的 entry(見 detailEntry)。
-test('controller smoke:詳細視窗的刪除按鈕刪除目前顯示的條目並收合視窗', async () => {
+// 【R4-新 使用者 2026-08-19 要求】刪除先跳一道確認框(複用清除全部那套
+// confirmOverlay)，文案是「確定刪除這筆紀錄?」/確認鈕「刪除」，確認後才刪。
+test('controller smoke:詳細視窗刪除鈕先跳確認框，確認後刪除目前條目並收合視窗', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
   const doc = makeDocumentStub();
@@ -1331,17 +1333,58 @@ test('controller smoke:詳細視窗的刪除按鈕刪除目前顯示的條目並
   doc.ids.rows.children[0].fire('click');
   assert.equal(doc.ids.detailOverlay.hidden, false);
 
+  // 點刪除鈕:不直接刪，先開確認框，且套的是刪除文案(不是清除全部)。
   doc.ids.detailDeleteBtn.fire('click');
+  assert.equal(doc.ids.confirmOverlay.hidden, false, '刪除鈕應先開確認框，不直接刪');
+  assert.equal(doc.ids.rows.children.length, 1, '尚未確認，紀錄仍在');
+  assert.equal(doc.ids.confirmDesc.textContent, i18n.t('zh', 'opDeleteConfirmDesc'));
+  assert.equal(doc.ids.confirmOk.textContent, i18n.t('zh', 'opDeleteConfirmDo'), '確認鈕文案應為「刪除」，不是「確定清除」');
 
-  assert.equal(doc.ids.rows.children.length, 0, '刪除後卡片牆應重新渲染為空');
+  // 確認後才真的刪:卡片牆重畫為空、詳細視窗收合。
+  doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(doc.ids.rows.children.length, 0, '確認後卡片牆應重新渲染為空');
   assert.equal(doc.ids.detailOverlay.hidden, true, '刪除目前顯示中的條目應順手關閉詳細視窗');
+  assert.equal(doc.ids.confirmOverlay.hidden, true, '確認框關閉');
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastDeleted'), '寫入成功才發已刪除 toast');
 });
 
-// 【審查修正】deleteEntry 改以 url 比對(不再疊 at)——這裡刻意讓 entries
-// 裡出現兩筆相同 url、不同 at 的資料(正常流程去重合併後不該發生，但要
-// 證明比對邏輯真的只看 url，不是巧合地兩者都符合)，刪除其中一筆應該把
-// 同 url 的另一筆也一併清掉。
-test('controller smoke:刪除以 url 比對，同 url 不同 at 的條目會一併清掉(不再疊 at 精準比對)', async () => {
+// 確認框「取消」不刪:點刪除鈕開框後按取消，紀錄應原封不動、確認框收合。
+test('controller smoke:刪除確認框按取消不刪除紀錄', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  doc.ids.detailDeleteBtn.fire('click');
+  assert.equal(doc.ids.confirmOverlay.hidden, false);
+
+  doc.ids.confirmCancel.fire('click');
+  await settle();
+
+  assert.equal(doc.ids.confirmOverlay.hidden, true, '取消後確認框收合');
+  assert.equal(doc.ids.rows.children.length, 1, '取消不刪，紀錄仍在');
+  assert.equal(doc.ids.detailOverlay.hidden, false, '取消後詳細視窗仍開著');
+});
+
+// 【R4-a 回歸釘 使用者/PM 覆核】deleteEntry 改回 url+at 精準命中(撤銷
+// PM 第五輪 9e7353f 只比 url 的未預期副作用)。刻意讓 entries 裡出現兩筆
+// 相同 url、不同 at 的資料(同一貼文在 5 分鐘視窗外各自獨立成筆的真實
+// 情境)，刪其中一筆時「只該刪中被點的那一筆」，同 url 的另一筆必須留著。
+// 這條就是那個誤刪 bug 的直接回歸釘:一旦 deleteEntry 退回只比 url，這裡
+// 會變成兩筆都被刪、斷言立刻紅。
+test('controller smoke:刪除以 url+at 精準命中，同 url 不同 at 兩筆只刪中被點的那一筆', async () => {
   const history = [
     { url: CARD_URL_A, kind: 'share', at: 3000 },
     { url: CARD_URL_A, kind: 'strip', at: 1000 },
@@ -1362,12 +1405,19 @@ test('controller smoke:刪除以 url 比對，同 url 不同 at 的條目會一�
 
   assert.equal(doc.ids.rows.children.length, 3);
   doc.ids.rows.children[0].fire('click'); // 開第一筆(CARD_URL_A, at:3000)的詳細視窗
-  doc.ids.detailDeleteBtn.fire('click');
+  doc.ids.detailDeleteBtn.fire('click'); // 開刪除確認框
+  doc.ids.confirmOk.fire('click'); // 確認刪除
   await settle(); // storage mock 的 set() 用 setTimeout(0) 延遲落地，要等一輪才能查快照。
 
-  assert.equal(doc.ids.rows.children.length, 1, '兩筆同 url 的條目應一併被刪除，只剩 CARD_URL_B');
-  assert.equal(storage.localSnapshot().history.length, 1);
-  assert.equal(storage.localSnapshot().history[0].url, CARD_URL_B);
+  assert.equal(doc.ids.rows.children.length, 2, '只刪中被點的那一筆(A@3000)，同 url 的 A@1000 與 B 都留著');
+  const snap = storage.localSnapshot().history;
+  assert.equal(snap.length, 2);
+  const remaining = snap.map((e) => `${e.url}|${e.at}`).sort();
+  assert.deepEqual(
+    remaining,
+    [`${CARD_URL_A}|1000`, `${CARD_URL_B}|2000`].sort(),
+    '留下的應是同 url 的另一筆(A@1000)與 B@2000，被刪的只有 A@3000'
+  );
 });
 
 // 【審查修正】deleteEntry 沒命中時不寫入、不動視窗、不發「已刪除」成功
@@ -1393,15 +1443,20 @@ test('controller smoke:詳細視窗開著時若條目已被別處(如清除全�
   doc.ids.rows.children[0].fire('click');
   assert.equal(doc.ids.detailOverlay.hidden, false);
 
-  // 「清除全部」走 confirmOk → persistHistory([]) + renderAll，不經
-  // setHistory 的 detailEntry 重新定位邏輯，detailEntry 變成指向已經不在
-  // entries 裡的舊物件。
+  // 「清除全部」走 clearBtn → 確認框 → confirmOk → persistHistory([]) +
+  // renderAll，不經 setHistory 的 detailEntry 重新定位邏輯，detailEntry
+  // 變成指向已經不在 entries 裡的舊物件。
+  doc.ids.clearBtn.fire('click');
   doc.ids.confirmOk.fire('click');
   await settle();
   assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCleared'));
   const setCallsBefore = storage.localCalls.set.length;
 
+  // 再點刪除鈕 → 開刪除確認框 → 確認:deleteEntry 以 url+at 找，entries
+  // 已空、沒命中 → 不寫入、不發成功 toast。
   doc.ids.detailDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  await settle();
 
   assert.equal(storage.localCalls.set.length, setCallsBefore, '沒命中不該再寫一次 storage');
   assert.equal(
@@ -1462,6 +1517,189 @@ test('controller smoke:詳細視窗開著時 setHistory 帶來的新清單已無
   controller.setHistory([]);
 
   assert.equal(doc.ids.detailOverlay.hidden, true, '找不到對應 url 時應關閉詳細視窗');
+});
+
+// 【R4-b 回歸釘 cr low5 + UI 中2】setHistory 走「只刷新內容、不重置互動態」
+// 的路徑:使用者正開著時間軸子層時，別處(background/另一分頁)寫入一筆
+// 無關的新紀錄，不該把使用者正在看的時間軸子層關掉。修正前 setHistory →
+// openEntryDetail 無條件 closeTimelineOverlay，任何無關寫入都會把子層重置。
+test('controller smoke:別處寫入無關紀錄(setHistory)時，使用者正開著的時間軸子層不被關掉', async () => {
+  const seen = [
+    { at: 1000, kind: 'strip' },
+    { at: 3000, kind: 'share' },
+  ];
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 3000, seen }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click'); // 開詳細視窗
+  doc.ids.detailTimelineBtn.fire('click'); // 開時間軸子層
+  assert.equal(doc.ids.timelineOverlay.hidden, false, '前置:時間軸子層已開');
+
+  // 別處寫入:同 detailEntry 那筆仍在，外加一筆無關的 CARD_URL_B。
+  controller.setHistory([
+    { url: CARD_URL_B, kind: 'share', at: 5000 },
+    { url: CARD_URL_A, kind: 'share', at: 3000, seen },
+  ]);
+
+  assert.equal(doc.ids.detailOverlay.hidden, false, '詳細視窗仍開著');
+  assert.equal(
+    doc.ids.timelineOverlay.hidden,
+    false,
+    '正在看的時間軸子層不應被無關寫入重置關掉(setHistory 走 refreshDetail，不重置互動態)'
+  );
+  // 卡片牆已更新為兩筆(證明 setHistory 確實刷新了清單，不是什麼都沒做)。
+  assert.equal(doc.ids.rows.children.length, 2, '卡片牆應反映新清單的兩筆');
+});
+
+// 【R5 安全F2 + UI 中1】storage 寫入失敗(配額)時:不謊報「已匯入」成功、
+// 發專屬失敗 toast，且 entries 回滾成寫入前的值(記憶體/磁碟不分岔)。
+// 用會 reject 的自訂 localStorage，不走 createChromeStorage(它 set 恆成功)。
+test('R5:匯入寫入失敗(配額)時不發成功 toast、改發失敗 toast，且 entries 回滾', async () => {
+  const doc = makeDocumentStub();
+  const quotaErr = new Error('QUOTA_BYTES quota exceeded');
+  const localStore = {
+    get() {
+      return Promise.resolve({ history: [{ url: CARD_URL_A, kind: 'share', at: 1000 }] });
+    },
+    set() {
+      return Promise.reject(quotaErr);
+    },
+  };
+  const syncStore = {
+    get() {
+      return Promise.resolve({ langPref: 'zh' });
+    },
+    set() {
+      return Promise.resolve();
+    },
+  };
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: syncStore,
+    localStorage: localStore,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+  assert.equal(doc.ids.rows.children.length, 1, '前置:初始一筆');
+
+  // 貼上一筆新 url 的匯入內容，點匯入 → localStore.set 會 reject。
+  // getElementById 懶建立節點(直接用 doc.ids.modalText 時它還沒被建過)。
+  doc.getElementById('modalText').value = JSON.stringify({ entries: [{ url: CARD_URL_B, kind: 'share', at: 2000 }] });
+  doc.getElementById('modalPrimary').fire('click');
+  await settle();
+
+  assert.equal(
+    doc.ids.toast.textContent,
+    i18n.t('zh', 'opToastStorageFull'),
+    '配額失敗應發專屬失敗 toast，不謊報「已匯入」'
+  );
+  assert.notEqual(
+    doc.ids.toast.textContent,
+    i18n.fmt('zh', 'opToastImported', { n: 1 }),
+    '絕不可顯示已匯入成功文案'
+  );
+  assert.equal(doc.ids.rows.children.length, 1, '寫入失敗應回滾，卡片牆維持原本一筆(未把 CARD_URL_B 併進去)');
+});
+
+// 【R5】刪除寫入失敗時同樣不謊報「已刪除」——沿用同一條 persistHistory
+// 失敗路徑，這裡最小驗證失敗 toast 取代成功 toast。
+test('R5:刪除寫入失敗時發失敗 toast、不發已刪除，且回滾', async () => {
+  const doc = makeDocumentStub();
+  const quotaErr = new Error('QUOTA_BYTES_PER_ITEM exceeded');
+  const localStore = {
+    get() {
+      return Promise.resolve({ history: [{ url: CARD_URL_A, kind: 'share', at: 1000 }] });
+    },
+    set() {
+      return Promise.reject(quotaErr);
+    },
+  };
+  const syncStore = {
+    get() {
+      return Promise.resolve({ langPref: 'zh' });
+    },
+    set() {
+      return Promise.resolve();
+    },
+  };
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: syncStore,
+    localStorage: localStore,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  doc.ids.detailDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastStorageFull'), '刪除寫入失敗發失敗 toast');
+  assert.notEqual(doc.ids.toast.textContent, i18n.t('zh', 'opToastDeleted'), '不可謊報已刪除');
+  assert.equal(doc.ids.rows.children.length, 1, '失敗回滾，那一筆仍在');
+});
+
+// 【R7 a11y cr low8 + UI low5】開啟對話框時焦點移入(關閉鈕)。makeNode 預設
+// 沒有 focus 方法(全程 typeof 守衛跳過)，這裡臨時掛上 focus spy 驗證焦點
+// 確實被移進對話框。Tab focus trap 需要真實 querySelectorAll，最小 DOM stub
+// 表達不了，由人工/CDP 驗證(見 options.js trapTabInOverlay 註解)。
+test('R7 a11y:開啟詳細視窗時焦點移入關閉鈕', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  let closeFocused = 0;
+  doc.ids.detailClose.focus = () => {
+    closeFocused++;
+  };
+
+  doc.ids.rows.children[0].fire('click');
+  assert.equal(closeFocused, 1, '開啟詳細視窗時焦點應移到關閉鈕');
+});
+
+// 【R7 a11y】硬編中文 aria-label 改走 i18n:options.html 用 data-i18n-aria，
+// applyI18nDom 有對應通道，i18n 有新 key(zh/en)。DOM stub 的 querySelectorAll
+// 回空陣列測不到 applyI18nDom 的實際套用，改用靜態原文 + 字典檢查(照本檔
+// [hidden] 那條既有慣例)。
+test('R7 a11y:關閉鈕/統計磚的 aria-label 改走 data-i18n-aria(不再硬編中文)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(html, /id="detailClose"[^>]*data-i18n-aria="opClose"/, '詳細視窗關閉鈕改掛 data-i18n-aria');
+  assert.match(html, /id="timelineClose"[^>]*data-i18n-aria="opClose"/, '時間軸關閉鈕改掛 data-i18n-aria');
+  assert.match(html, /class="stats"[^>]*data-i18n-aria="opStatsAria"/, '統計磚區塊改掛 data-i18n-aria');
+
+  const js = fs.readFileSync(path.join(__dirname, '..', 'options.js'), 'utf8');
+  assert.match(js, /\[data-i18n-aria\]/, 'applyI18nDom 應處理 data-i18n-aria 通道');
+
+  assert.equal(i18n.t('zh', 'opStatsAria'), '統計摘要');
+  assert.equal(i18n.t('en', 'opStatsAria'), 'Statistics');
 });
 
 // 詳細視窗照手機版:淨化後連結列——不論有沒有 author/excerpt 預覽都固定
@@ -1731,28 +1969,63 @@ test('setSyncSettings:langPref 變更時同步語言並重新渲染卡片文案;
   assert.equal(doc.documentElement.dataset.theme, 'dark', '別處把主題改成 dark，本頁應套用');
 });
 
-// 常開分頁背景時不即時跳動，回到分頁(visibilitychange → visible)才重算
-// 一次相對時間標籤——這裡直接測 controller.refresh() 這個由接線層呼叫的
-// 進入點，驗證它會重新渲染卡片牆(entries 不變，只是重新產生 DOM)。
-test('refresh:重新渲染卡片牆(視覺上等同重算相對時間標籤)，不改變 entries 內容', async () => {
+// 【R6 併發中3 + cr low6 + UI 效能建議a】60s ticker / visibilitychange 回
+// 分頁時走的 refresh() 改成輕量路徑:只逐一改已登錄時間節點的 textContent，
+// 不呼叫 renderAll 整面重建卡片(全量重建會偷走鍵盤焦點與文字選取)。
+// 這裡驗證兩件事:(1) 卡片 DOM 原地保留(不是重建的新節點);(2) 相對時間
+// 文字有隨當下時間更新。now 用可變 closure 模擬時間前進。
+test('refresh:輕量刷新——原地保留卡片節點，只更新相對時間文字，不重建卡片牆', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
   const doc = makeDocumentStub();
+  let clock = 1000 + 61 * 1000; // at 之後 61 秒 → 「1 分鐘前」
   const controller = options.createOptionsController({
     document: doc,
     syncStorage: storage.sync,
     localStorage: storage.local,
     i18n,
-    now: () => 100000,
+    now: () => clock,
   });
 
   await controller.init();
   await settle();
 
   const beforeCard = doc.ids.rows.children[0];
-  controller.refresh();
-  const afterCard = doc.ids.rows.children[0];
+  const timeEl = beforeCard.children[0].children[0].children[1]; // header > meta > [badge, headTime]
+  assert.equal(timeEl.textContent, i18n.fmt('zh', 'opRelMin', { n: 1 }));
 
-  assert.equal(doc.ids.rows.children.length, 1, 'entries 沒變，卡片數量應維持一致');
-  assert.notStrictEqual(beforeCard, afterCard, 'refresh 應重新建構卡片 DOM(非原地保留舊節點)');
+  clock = 1000 + 3 * 60 * 1000 + 61 * 1000; // 再往前推，約 4 分鐘前
+  controller.refresh();
+
+  const afterCard = doc.ids.rows.children[0];
+  assert.strictEqual(beforeCard, afterCard, 'refresh 應原地保留舊卡片節點(不重建)，才不會偷走焦點');
+  assert.equal(doc.ids.rows.children.length, 1, 'entries 沒變，卡片數量維持');
+  assert.equal(timeEl.textContent, i18n.fmt('zh', 'opRelMin', { n: 4 }), '相對時間文字應原地更新到當下');
+});
+
+// R6 附帶(UI 低8):詳細視窗開著時，ticker 也刷新視窗內的相對時間
+// (detailTime)。
+test('refresh:詳細視窗開著時一併刷新視窗內相對時間(detailTime)', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  let clock = 1000 + 61 * 1000;
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => clock,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.rows.children[0].fire('click');
+  assert.equal(doc.ids.detailTime.textContent, i18n.fmt('zh', 'opRelMin', { n: 1 }));
+
+  clock = 1000 + 9 * 60 * 1000 + 61 * 1000; // 約 10 分鐘前
+  controller.refresh();
+
+  assert.equal(doc.ids.detailTime.textContent, i18n.fmt('zh', 'opRelMin', { n: 10 }), '視窗內相對時間應一併刷新');
 });
