@@ -82,6 +82,12 @@ chrome.runtime.onInstalled.addListener(() => {
   createContextMenu().catch((err) => {
     console.error('[threads-clean-link] 建立右鍵選單失敗', err);
   });
+  // 重注入不分安裝原因(install/update/chrome_update)一律執行:首裝情境下
+  // 既開的 threads 分頁本來就沒有任何 content script，這一次重注入等同
+  // 「首次注入」，讓 icon/strip 兩條路徑不必重整就能用。唯一補不回來的是
+  // share 攔截——clipboard-guard.js 走 MAIN world 且刻意不重注入(理由見
+  // 下方註解)，老分頁的複製攔截仍需使用者自行重整才生效。行為與更新情境
+  // 完全相同，不需要依 details.reason 分流。
   reinjectIntoOpenTabs().catch((err) => {
     console.warn('[threads-clean-link] 既開分頁的自癒重注入失敗', err);
   });
@@ -505,6 +511,24 @@ function diffRemovedParams(before, after) {
 // 很近)，避免對整份頁面(可能數百 KB)全文跑正則。
 const OG_SCAN_LIMIT = 65536;
 
+// 【語系鎖定】Threads 貼文頁的 og:title 會跟著 Accept-Language 換格式:
+// 英文是「かえで (@kaede.hong) on Threads」(半形括號、帳號在名稱後)，
+// 中文則是「Threads 上的かえで（@kaede.hong）」(全形括號、多一個前綴)。
+// 解析規則(parseOgTitle)照抄手機版 post-meta.ts，只認半形括號那一式，
+// 中文格式會整串被當成顯示名稱塞進 author。
+//
+// 與其讓解析器去追各語系的措辭變化(站方隨時可改，且語系數量無上限)，
+// 不如把來源鎖成固定的一種:兩個抓貼文頁的 fetch 點一律帶
+// Accept-Language: 'en'，og:title 恆為英文格式，解析規則不必變。SW 的
+// fetch 不受使用者瀏覽器語系影響，這個 header 只影響我們自己這兩次背景
+// 請求，不會改變使用者在 threads 頁面上看到的語言。
+//
+// 抓貼文頁的 fetch 點就這兩處(全庫已確認無第三處)，兩處共用本常數:
+//   1. resolveFinalUrl —— share 自動路徑與右鍵選單路徑共用的短碼解析器
+//      (右鍵路徑經 handleShareLinkClick 呼叫，不另開 fetch)。
+//   2. fetchOgFieldsForLocalKind —— icon/strip 兩條本地路徑的 og 補強。
+const OG_FETCH_HEADERS = { 'Accept-Language': 'en' };
+
 function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -563,20 +587,55 @@ function decodeHtmlEntities(value) {
 // 開頭的 @，對齊本檔既有的 handle 儲存格式——手機版儲存不含 @，於渲染
 // 層補上，本檔案渲染層直接吃已含 @ 的 handle，見 options.js)，皆缺席時
 // 回傳 null。
+//
+// 【第二式:全形括號保底】兩個 fetch 點已鎖 Accept-Language: 'en'(見
+// OG_FETCH_HEADERS)，正常情況 og:title 恆為英文格式，走不到這一式。它
+// 存在是為了 header 失效的情境:站方改版忽略 Accept-Language、企業代理
+// 改寫 header、或未來新增的呼叫點忘了帶。中文語系的樣式是「Threads 上
+// 的かえで（@kaede.hong）」——全形括號，且顯示名稱前多一個「Threads 上
+// 的」前綴。主式(半形)不成立時才試這一式，主式行為零改動。
+//
+// 【第三式:fallback 的髒字串防線】兩式都不成立時，沿用原本「整串當顯
+// 示名稱、只剝掉英文尾綴」的手機版邏輯(涵蓋粉專等 og:title 本來就沒有
+// 帳號形狀的情況);但結果若仍夾帶「(@」或「（@」殘片，代表這是某種我們
+// 沒認得的帳號形狀樣式(例如又一種語系的新措辭)，整串塞進 author 只會產
+// 生「Threads 上的某某（@someone）」這類髒資料——寧缺勿錯，整欄放棄，讓
+// author 缺席即可(卡片自然只顯示 @handle)。
+const OG_TITLE_FULLWIDTH_HANDLE = /^(.*?)\s*（@([^）]+)）/;
+const OG_TITLE_LOCALE_PREFIX = /^Threads\s*上的\s*/;
+const OG_TITLE_EN_SUFFIX = /\s+on Threads$/i;
+const OG_TITLE_HANDLE_RESIDUE = /[(（]@/;
+
 function parseOgTitle(ogTitle) {
   if (typeof ogTitle !== 'string' || !ogTitle) return null;
   const trimmed = ogTitle.trim();
   const match = /^(.*?)\s*\(@([^)]+)\)/.exec(trimmed);
   if (match) {
-    const author = match[1].trim();
-    const handle = match[2].trim();
-    const result = {};
-    if (author) result.author = author;
-    if (handle) result.handle = '@' + handle;
-    return result.author || result.handle ? result : null;
+    return buildOgTitleResult(match[1], match[2]);
   }
-  const fallbackAuthor = trimmed.replace(/\s+on Threads$/i, '').trim();
-  return fallbackAuthor ? { author: fallbackAuthor } : null;
+
+  const fullwidth = OG_TITLE_FULLWIDTH_HANDLE.exec(trimmed);
+  if (fullwidth) {
+    // 括號前段才是顯示名稱的所在;再剝掉中文語系前綴，以及(理論上不會
+    // 與全形樣式同時出現、但剝了無害的)英文尾綴。
+    const name = fullwidth[1].replace(OG_TITLE_LOCALE_PREFIX, '').replace(OG_TITLE_EN_SUFFIX, '');
+    return buildOgTitleResult(name, fullwidth[2]);
+  }
+
+  const fallbackAuthor = trimmed.replace(OG_TITLE_EN_SUFFIX, '').trim();
+  if (!fallbackAuthor || OG_TITLE_HANDLE_RESIDUE.test(fallbackAuthor)) return null;
+  return { author: fallbackAuthor };
+}
+
+// 前兩式共用的收尾:各自 trim、handle 補回開頭的 @，兩者皆空則回傳
+// null(行為與修改前的主式內嵌寫法完全一致)。
+function buildOgTitleResult(rawAuthor, rawHandle) {
+  const author = rawAuthor.trim();
+  const handle = rawHandle.trim();
+  const result = {};
+  if (author) result.author = author;
+  if (handle) result.handle = '@' + handle;
+  return result.author || result.handle ? result : null;
 }
 
 // 從貼文頁 HTML 一次擷取 og:description(excerpt)與 og:title(拆
@@ -736,6 +795,8 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
         method: 'GET',
         credentials: 'omit',
         redirect: 'follow',
+        // og:title 的語系鎖定，見 OG_FETCH_HEADERS。
+        headers: OG_FETCH_HEADERS,
       });
       const text = await response.text();
       const ogFields = sanitizeOgFields(extractOgFields(text));
@@ -971,6 +1032,9 @@ async function resolveFinalUrl(shareUrl) {
     method: 'GET',
     credentials: 'omit',
     redirect: 'follow',
+    // og:title 的語系鎖定，見 OG_FETCH_HEADERS。只影響本次背景請求擷取到
+    // 的 og 內容，轉址跟隨(finalUrl)的行為不受影響。
+    headers: OG_FETCH_HEADERS,
   });
   const finalUrl = response.url;
 
