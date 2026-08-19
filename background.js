@@ -3,16 +3,16 @@
 'use strict';
 
 // 共用 i18n 模組:SW 環境用 importScripts 載入;測試 sandbox 由測試端先把
-// i18n.js 原始碼載進同一個 sandbox(TCLI18N 已存在),此條件式便不執行。
+// i18n.js 原始碼載進同一個 sandbox(TCLI18N 已存在)，此條件式便不執行。
 if (typeof TCLI18N === 'undefined' && typeof importScripts === 'function') {
   importScripts('i18n.js');
 }
 
 // 共用核心 lib(網址樣式、欄位消毒、常數):SW 環境用 importScripts 載入;
 // 測試 sandbox 由測試端先把 tcl-core.js 原始碼載進同一個 sandbox(TCLCore
-// 已存在),此條件式便不執行。SHARE_URL_PATTERN、乾淨貼文網址的權威判定
-// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore,不再
-// 於本檔養一份鏡像(原本 background 與 options 各養一份,漂移一處即分裂)。
+// 已存在)，此條件式便不執行。SHARE_URL_PATTERN、乾淨貼文網址的權威判定
+// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore，不再
+// 於本檔養一份鏡像(原本 background 與 options 各養一份，漂移一處即分裂)。
 if (typeof TCLCore === 'undefined' && typeof importScripts === 'function') {
   importScripts('tcl-core.js');
 }
@@ -39,7 +39,7 @@ const NOTIFICATION_ICON = 'icons/icon128.png';
 // 與 popup.js／bridge.js／clipboard-guard.js 同步。
 // 預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威),background 只挑
 // 自己把關的兩顆(autoClean/saveHistory;postCopyEnabled 是 popup/post-icon 的
-// 事,background 不讀)。
+// 事，background 不讀)。
 const DEFAULT_SETTINGS = {
   autoClean: TCLCore.DEFAULT_SETTINGS.autoClean,
   saveHistory: TCLCore.DEFAULT_SETTINGS.saveHistory,
@@ -48,12 +48,12 @@ const DEFAULT_SETTINGS = {
 // 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
 // 紀錄量），新到舊排列。上限由位元組軟預算 + 筆數硬保險把關(見
 // capHistoryForStorage / STORAGE_SOFT_BUDGET / HISTORY_MAX_ENTRIES)，平時
-// 就不長到撞配額;萬一仍寫入超限,再走 recordHistory 的 isQuotaExceededError
+// 就不長到撞配額;萬一仍寫入超限，再走 recordHistory 的 isQuotaExceededError
 // 優雅降級(不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能)。
 const HISTORY_KEY = 'history';
 
 // 選填欄位長度上限(author/handle/excerpt/original)、removedParams 筆數與
-// 單筆 key/value 上限、seen[] 上限,一律走 TCLCore.LIMITS(單一權威,與 options
+// 單筆 key/value 上限、seen[] 上限，一律走 TCLCore.LIMITS(單一權威，與 options
 // 讀取端共用同一組值)。
 // author/handle 共用 AUTHOR_MAX;excerpt 對齊手機版 post-meta EXCERPT_MAX_CHARS;
 // original 對齊 bridge.js MAX_CLEAN_URL_LENGTH;removedParams 型別對齊手機版
@@ -181,7 +181,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // 使用者在 options 頁切換語言時，同步右鍵選單標題(選單標題在建立時就
-// 固定了,不會自己跟著語言變)。監聽器掛最外層,SW 喚醒時重新掛回。
+// 固定了，不會自己跟著語言變)。監聽器掛最外層，SW 喚醒時重新掛回。
 if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChanged.addListener === 'function') {
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'sync' || !changes || !changes.langPref) return;
@@ -323,9 +323,9 @@ async function getSettings() {
 // 處理 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
 // POST_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
 // 任何紀錄;紀錄只用驗證通過的字串，不夾帶原文的任何其餘部分。
-// kind 同屬頁面可控輸入,白名單驗證(自動路徑只可能是 share/strip/icon),
-// 非法即整則忽略——guard 與 background 同版本出貨,沒有相容性負擔,
-// 形狀不對就是偽造或損毀,fail-safe 丟棄。'menu' 刻意不在此白名單內:
+// kind 同屬頁面可控輸入，白名單驗證(自動路徑只可能是 share/strip/icon),
+// 非法即整則忽略——guard 與 background 同版本出貨，沒有相容性負擔，
+// 形狀不對就是偽造或損毀，fail-safe 丟棄。'menu' 刻意不在此白名單內:
 // 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
 // 不透過本訊息通道，避免頁面腳本偽造 kind:'menu' 混充右鍵來源。收到合法
 // notice 就無條件記錄一筆，author/handle/excerpt 為選填欄位一併寫入。
@@ -350,13 +350,13 @@ async function handleCleanedNotice(message) {
     return;
   }
 
-  // 省請求閘:進 fetch 之前先讀一次設定,saveHistory 關閉時直接
-  // return——連 recordHistory 都不呼叫,更不觸發 fetchOgFieldsForLocalKind
+  // 省請求閘:進 fetch 之前先讀一次設定，saveHistory 關閉時直接
+  // return——連 recordHistory 都不呼叫，更不觸發 fetchOgFieldsForLocalKind
   // 那次為了補 og 而發的網路請求(解析結果反正會被 recordHistory 內部的
-  // saveHistory 把關丟棄,先擋在這裡就省掉整個 fetch)。對齊 guard 端 share
+  // saveHistory 把關丟棄，先擋在這裡就省掉整個 fetch)。對齊 guard 端 share
   // 路徑已有的省請求閘(bridge.js 下放 saveHistory 讓 clipboard-guard.js 在
   // saveHistory 關閉時連 resolveShare 都不發)。recordHistory 內部仍保留各
-  // 自的 saveHistory 權威把關(menu 路徑沒有這道前置閘,靠內部那道),此處
+  // 自的 saveHistory 權威把關(menu 路徑沒有這道前置閘，靠內部那道)，此處
   // 純粹是為了省掉 og 補強的 fetch。
   const settings = await getSettings();
   if (!settings.saveHistory) {
@@ -397,8 +397,8 @@ function extractHistoryExtraFields(message, url, ogFields) {
   if (merged.handle !== undefined) extra.handle = merged.handle;
   if (merged.excerpt !== undefined) extra.excerpt = merged.excerpt;
 
-  // original 除了截斷/去重,還要吻合 SHARE 或容尾 POST 白名單、超長整欄丟棄
-  // (不截半),偽造/畸形殘 URL 不入庫(見 TCLCore.sanitizeOriginal)。
+  // original 除了截斷/去重，還要吻合 SHARE 或容尾 POST 白名單、超長整欄丟棄
+  // (不截半)，偽造/畸形殘 URL 不入庫(見 TCLCore.sanitizeOriginal)。
   const original = TCLCore.sanitizeOriginal(message && message.original, url);
   if (original !== undefined) extra.original = original;
   const removedParams = TCLCore.sanitizeRemovedParams(message && message.removedParams);
@@ -644,17 +644,17 @@ function mergeOgIntoFields(existing, ogFields) {
 // resolveFinalUrl 的回傳值直接同步使用。
 const OG_CACHE_MAX = 20;
 const OG_CACHE_TTL_MS = 60 * 1000;
-// 負快取短 TTL:og 抓不到(空結果)存負快取,避免同一貼文每次事件都重跑
-// 一次 2.5s fetch;但比正快取短很多,讓「站方稍後補上 og」或「暫時性抓取
-// 失敗」有機會在不久後重試,不被卡滿整個 60 秒。
+// 負快取短 TTL:og 抓不到(空結果)存負快取，避免同一貼文每次事件都重跑
+// 一次 2.5s fetch;但比正快取短很多，讓「站方稍後補上 og」或「暫時性抓取
+// 失敗」有機會在不久後重試，不被卡滿整個 60 秒。
 const OG_NEGATIVE_TTL_MS = 10 * 1000;
-// 負快取標記:空結果不是「沒有這筆快取」,而是「查過了,確實沒有 og」。
-// 用一個獨一無二的 sentinel 與正常 og 物件區分,peek 到它時呼叫端一律當
-// 作 null(沒收穫)處理,但不會因此再發一次 fetch。
+// 負快取標記:空結果不是「沒有這筆快取」，而是「查過了，確實沒有 og」。
+// 用一個獨一無二的 sentinel 與正常 og 物件區分，peek 到它時呼叫端一律當
+// 作 null(沒收穫)處理，但不會因此再發一次 fetch。
 const OG_NEGATIVE = { __tclNegativeOg: true };
 const ogFieldsCache = new Map();
-// in-flight 去重:同一 cleanUrl 正在跑的 fetch promise,連點 icon 時第二
-// 次事件直接接同一個 promise,不重複發 fetch。完成後(finally)就地移除。
+// in-flight 去重:同一 cleanUrl 正在跑的 fetch promise，連點 icon 時第二
+// 次事件直接接同一個 promise，不重複發 fetch。完成後(finally)就地移除。
 const ogInflight = new Map();
 
 // 空結果判定:三個 og 欄位全缺席即視為空(呼叫端據此落負快取)。
@@ -667,9 +667,9 @@ function isEmptyOgFields(ogFields) {
 
 function cacheOgFields(cleanUrl, ogFields) {
   const empty = isEmptyOgFields(ogFields);
-  // 真 LRU:set 前先 delete,讓「重新被碰到」的 key 移到 Map 迭代序尾端
+  // 真 LRU:set 前先 delete，讓「重新被碰到」的 key 移到 Map 迭代序尾端
   // (最新),size 超限時淘汰的 keys().next()(最舊)才是真正最久沒用到的
-  // 那筆,而不是最早插入但可能剛被讀取過的那筆。
+  // 那筆，而不是最早插入但可能剛被讀取過的那筆。
   ogFieldsCache.delete(cleanUrl);
   ogFieldsCache.set(cleanUrl, {
     at: Date.now(),
@@ -686,18 +686,18 @@ function cacheOgFields(cleanUrl, ogFields) {
 // 重用同一份快取(見下方 fetchOgFieldsForLocalKind 的節流)，不能第一次讀到
 // 就把快取清空。share
 // 路徑的 cleanedNotice 命中的正是 resolveShare 剛寫入的這份快取——peek
-// 到就零額外 fetch。負快取(空結果,見 fetchOgFieldsForLocalKind 的
-// NEGATIVE_OG 標記)也一律先由這裡撈出,呼叫端據此判斷是否短路。
+// 到就零額外 fetch。負快取(空結果，見 fetchOgFieldsForLocalKind 的
+// NEGATIVE_OG 標記)也一律先由這裡撈出，呼叫端據此判斷是否短路。
 function peekOgFields(cleanUrl) {
   const entry = ogFieldsCache.get(cleanUrl);
   if (!entry) return null;
   const ttl = typeof entry.ttl === 'number' ? entry.ttl : OG_CACHE_TTL_MS;
   if (Date.now() - entry.at > ttl) {
-    // 過期就地清掉,不留給 LRU 慢慢淘汰,順手讓快取只保有有效項目。
+    // 過期就地清掉，不留給 LRU 慢慢淘汰，順手讓快取只保有有效項目。
     ogFieldsCache.delete(cleanUrl);
     return null;
   }
-  return entry.ogFields; // 正常 og 物件,或 OG_NEGATIVE(負快取 sentinel)
+  return entry.ogFields; // 正常 og 物件，或 OG_NEGATIVE(負快取 sentinel)
 }
 
 // 本地路徑(icon/strip)專用的 og 補強逾時:貼文按鈕複製與 ?xmt 剪參都是
@@ -716,10 +716,10 @@ const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
 //   1. 快取命中(peekOgFields，窺視不刪):同一 cleanUrl 在 TTL 內的正快取
 //      直接回傳、不重複 fetch;負快取(OG_NEGATIVE)命中則回傳 null 但同樣
 //      不 fetch——og 抓不到的貼文在短 TTL 內不再每次重跑 2.5s fetch。
-//   2. in-flight 去重(ogInflight):同一 cleanUrl 已有 fetch 在跑,連點 icon
-//      的第二次事件直接接同一個 promise,不發第二次 fetch;完成後就地換成
+//   2. in-flight 去重(ogInflight):同一 cleanUrl 已有 fetch 在跑，連點 icon
+//      的第二次事件直接接同一個 promise，不發第二次 fetch;完成後就地換成
 //      結果(靠快取)並從 ogInflight 移除。
-//   3. 每次呼叫各自的逾時競速:即使接了別人的 in-flight promise,自己這次
+//   3. 每次呼叫各自的逾時競速:即使接了別人的 in-flight promise，自己這次
 //      事件仍最多等 OG_LOCAL_FETCH_TIMEOUT_MS 就 fail-open 回 null。
 // 逾時或 fetch 失敗一律回傳 null，呼叫端 fail-open 退回 DOM 版欄位，離線也
 // 不影響紀錄照常落盤——逾時之後 fetch 仍在背景跑完的話，結果照樣存回快取
@@ -729,8 +729,8 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
   // 正快取回傳結果;負快取(sentinel)回傳 null(沒收穫但不再 fetch)。
   if (cached !== null) return cached === OG_NEGATIVE ? null : cached;
 
-  // in-flight 去重:已有同 cleanUrl 的 fetch 在跑就共用,否則起一個新的並
-  // 登記到 ogInflight。fetch 完成後把結果寫回快取(正或負),供後續事件經
+  // in-flight 去重:已有同 cleanUrl 的 fetch 在跑就共用，否則起一個新的並
+  // 登記到 ogInflight。fetch 完成後把結果寫回快取(正或負)，供後續事件經
   // 第 1 層命中;無論成敗都在 finally 從 ogInflight 移除。
   let fetchOnce = ogInflight.get(cleanUrl);
   if (!fetchOnce) {
@@ -780,9 +780,9 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
 // 次分享。
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
 
-// seen[] 上限(TCLCore.LIMITS.SEEN_MAX)與 kind 白名單(TCLCore.KIND_LIST,含
+// seen[] 上限(TCLCore.LIMITS.SEEN_MAX)與 kind 白名單(TCLCore.KIND_LIST，含
 // 'menu')一律走 TCLCore;seen[] 逐筆消毒改用 TCLCore.sanitizeSeenList(與
-// options 讀取/匯入端共用同一份,連 slice(-SEEN_MAX) 都在函式內完成)。
+// options 讀取/匯入端共用同一份，連 slice(-SEEN_MAX) 都在函式內完成)。
 
 // 純函式:在既有清單中找出「同一個 url 且在去重視窗內」的條目 index，
 // 找不到回傳 -1。與手機版 mergeDuplicateItem 內的 findIndex 對齊(手機版
@@ -801,8 +801,8 @@ function findDedupIndex(list, url, now) {
 
 // seen[] 逐筆消毒走 TCLCore.sanitizeSeenList(見該檔註解:at 需為有限數字、
 // kind 缺席保留、kind 有值需在 KIND_LIST 白名單內、裁到 SEEN_MAX)，與 options
-// 讀取/匯入端共用同一份。唯一差異是 slice 位置——TCLCore 版在函式內就裁,對
-// merge 端無行為差(concat 本次一筆後照樣再裁,見下方)。
+// 讀取/匯入端共用同一份。唯一差異是 slice 位置——TCLCore 版在函式內就裁，對
+// merge 端無行為差(concat 本次一筆後照樣再裁，見下方)。
 
 // 純函式:把本次的 kind/extra 併入既有條目 existing，回傳全新的條目物件
 // (不改動 existing，也不假設 existing 形狀完全乾淨——只挑用得到的欄
@@ -854,27 +854,27 @@ function hasStorageLocal() {
 // ---- 儲存上限:位元組軟預算 + 筆數硬保險 ----
 //
 // chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
-// (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算,刻意留約 2MB 餘裕給 sync
-// 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload,不把配額
+// (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算，刻意留約 2MB 餘裕給 sync
+// 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload，不把配額
 // 用滿到邊界。既有的 isQuotaExceededError 降級(見下方 set 的 catch)保留當
-// 最後一道防線——軟預算是「平時就不長到那麼大」,配額降級是「萬一還是爆了
+// 最後一道防線——軟預算是「平時就不長到那麼大」，配額降級是「萬一還是爆了
 // 也不炸」。
 const STORAGE_SOFT_BUDGET = 8 * 1024 * 1024;
-// 筆數硬保險:即使每筆都很小、位元組遠不到軟預算,也不讓陣列無限長(渲染/
+// 筆數硬保險:即使每筆都很小、位元組遠不到軟預算，也不讓陣列無限長(渲染/
 // 去重掃描都是 O(n))。10000 筆是「正常使用永遠碰不到、異常暴衝才會撞上」
 // 的量級。軟預算與硬保險兩者取先觸發者:capHistoryForStorage 先砍筆數上
-// 限、再用軟預算裁位元組,最終陣列同時滿足兩個約束。
+// 限、再用軟預算裁位元組，最終陣列同時滿足兩個約束。
 const HISTORY_MAX_ENTRIES = 10000;
 
-// 把待寫入的紀錄陣列(新到舊排列,index 0 最新)裁到儲存上限內:筆數超過
+// 把待寫入的紀錄陣列(新到舊排列，index 0 最新)裁到儲存上限內:筆數超過
 // HISTORY_MAX_ENTRIES 先從尾端(最舊)砍;再從最新往最舊累加估算序列化位元
-// 組,超過 STORAGE_SOFT_BUDGET 就不再收更舊的條目(同樣等於從尾端裁)。位
-// 元組以 JSON.stringify(...).length 近似(ASCII 相符;多位元組字元會低估,由
-// 2MB 餘裕吸收)。永遠至少保留最新一筆,不會把本次剛寫入的紀錄也裁掉。
+// 組，超過 STORAGE_SOFT_BUDGET 就不再收更舊的條目(同樣等於從尾端裁)。位
+// 元組以 JSON.stringify(...).length 近似(ASCII 相符;多位元組字元會低估，由
+// 2MB 餘裕吸收)。永遠至少保留最新一筆，不會把本次剛寫入的紀錄也裁掉。
 function capHistoryForStorage(list) {
   const capped = list.length > HISTORY_MAX_ENTRIES ? list.slice(0, HISTORY_MAX_ENTRIES) : list;
 
-  // 單次 O(n) 前向累加,避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
+  // 單次 O(n) 前向累加，避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
   const budgeted = [];
   let bytes = 2; // '[]' 外框
   for (let i = 0; i < capped.length; i++) {
@@ -887,9 +887,9 @@ function capHistoryForStorage(list) {
   return budgeted.length === list.length ? list : budgeted;
 }
 
-// 同一個 SW 內的 append 以 promise chain 序列化,避免兩筆同時 read-modify-write
-// 互相覆蓋。options 頁的清除/刪除/匯入直接寫 storage.local,與這裡的競態只
-// 發生在「清除的同時恰好完成一次淨化」,極罕見且後果僅是多留一筆,接受。
+// 同一個 SW 內的 append 以 promise chain 序列化，避免兩筆同時 read-modify-write
+// 互相覆蓋。options 頁的清除/刪除/匯入直接寫 storage.local，與這裡的競態只
+// 發生在「清除的同時恰好完成一次淨化」，極罕見且後果僅是多留一筆，接受。
 let historyWriteChain = Promise.resolve();
 
 // extra(選填):author/handle/excerpt/original/removedParams，只有實際
@@ -924,7 +924,7 @@ function recordHistory(url, kind, extra) {
         next = [entry].concat(list);
       }
       // 儲存上限:寫入前把陣列裁到位元組軟預算 + 筆數硬保險內(從尾端/
-      // 最舊裁,本次剛寫入的最新一筆永遠保留)。
+      // 最舊裁，本次剛寫入的最新一筆永遠保留)。
       next = capHistoryForStorage(next);
       try {
         await chrome.storage.local.set({ [HISTORY_KEY]: next });
@@ -1070,8 +1070,8 @@ async function getLocale() {
   }
 }
 
-// 以字典 key 發通知:每次事件重新解析語言(SW 會休眠,不快取),組好字串
-// 再交給 safeNotify。整段盡力而為,語言解析失敗只記錄、不影響呼叫端。
+// 以字典 key 發通知:每次事件重新解析語言(SW 會休眠，不快取)，組好字串
+// 再交給 safeNotify。整段盡力而為，語言解析失敗只記錄、不影響呼叫端。
 function notifyByKey(id, key, vars) {
   getLocale()
     .then((locale) => {

@@ -25,7 +25,7 @@
   // background 寫進紀錄，收到就無條件記錄，沒有「要不要顯示」的把關。
   var CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
 
-  // kind 標示淨化來源('share' 短碼解析 / 'strip' 剪除追蹤參數),供
+  // kind 標示淨化來源('share' 短碼解析 / 'strip' 剪除追蹤參數)，供
   // background 寫入紀錄時分類;白名單驗證在 background(信任邊界)。
   // original(選填)是使用者實際複製到/觸發時的原始連結(share 短碼原文，
   // 或 strip 剝參前的原網址)；removedParams(選填，僅 strip 分支算得出)

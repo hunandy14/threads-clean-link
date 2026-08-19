@@ -1,9 +1,9 @@
 // options.js — options 頁(設定與淨化紀錄)的邏輯層。比照 popup.js 的模式:
-// 可注入 document/storage/i18n 的純函式模組,不直接碰全域 chrome,離線可測;
+// 可注入 document/storage/i18n 的純函式模組，不直接碰全域 chrome，離線可測;
 // options-init.js 負責接上真的 chrome.*(見 options-init.js)。
 //
 // 純函式(filterEntries/mergeImportedEntries/buildExportPayload/aggregateStats)
-// 獨立匯出,測試直接打;DOM 佈線集中在 createOptionsController。
+// 獨立匯出，測試直接打;DOM 佈線集中在 createOptionsController。
 (function (root) {
   'use strict';
 
@@ -28,12 +28,12 @@
   var PAGE_SIZE_DEFAULT = 20;
 
   // 貼文網址驗證/正規化走 TCLCore.normalizePostUrl(容尾正規化:白名單字元類 +
-  // 長度上限,容忍尾隨斜線/查詢字串/hash,回傳正規化後的乾淨網址或 null)。
-  // 長度上限與字元類與 background 寫入側共用同一份,漂移風險已由 TCLCore 收斂。
+  // 長度上限，容忍尾隨斜線/查詢字串/hash，回傳正規化後的乾淨網址或 null)。
+  // 長度上限與字元類與 background 寫入側共用同一份，漂移風險已由 TCLCore 收斂。
 
   // badge 渲染(buildEntryCard/openEntryDetail/buildTimelineRow)只用 .key
-  // 查 i18n 文案,純文字 pill,KINDS 不需要 icon 欄位。KINDS 是 UI 關注點(kind→
-  // i18n 顯示 key 的映射),留在 options;seen[].kind 白名單改用 TCLCore.KIND_LIST
+  // 查 i18n 文案，純文字 pill,KINDS 不需要 icon 欄位。KINDS 是 UI 關注點(kind→
+  // i18n 顯示 key 的映射)，留在 options;seen[].kind 白名單改用 TCLCore.KIND_LIST
   // (兩者鍵集合一致:share/strip/menu/icon)。
   var KINDS = {
     share: { key: 'opKindShare' },
@@ -47,7 +47,7 @@
 
   // sanitize 各函式(文字截斷、seen[]、original、removedParams)一律走 TCLCore
   // (見 tcl-core.js):讀取(sanitizeEntries)與匯入(mergeImportedEntries)都是
-  // 獨立信任邊界,縱深防禦不依賴寫入端沒漏——與 background 寫入側共用同一份
+  // 獨立信任邊界，縱深防禦不依賴寫入端沒漏——與 background 寫入側共用同一份
   // 邏輯。original 白名單/控制字元剝除在讀取/匯入時一併追溯生效:既有庫存含
   // bidi/不合白名單 original 的欄位，讀取時做欄位級剝除/丟棄，整筆保留。
 
@@ -94,7 +94,7 @@
       });
   }
 
-  // kind 過濾('all' 不過濾)+ 關鍵字過濾(比對整條網址,不分大小寫)。
+  // kind 過濾('all' 不過濾)+ 關鍵字過濾(比對整條網址，不分大小寫)。
   function filterEntries(entries, kind, query) {
     var q = String(query || '').trim().toLowerCase();
     return entries.filter(function (e) {
@@ -216,7 +216,7 @@
   // 正則保證以 http(s):// 開頭，javascript: 等協定進不來;含省略號「…」的
   // 是 Threads 顯示層截斷的殘缺網址，維持純文字不做成連結。
   function renderExcerptWithLinks(doc, el, text) {
-    // doc 由呼叫端傳入(controller 的注入 document),不碰全域。
+    // doc 由呼叫端傳入(controller 的注入 document)，不碰全域。
     if (typeof text !== 'string' || text === '' || !/https?:\/\//.test(text)) {
       // 快速路徑:沒有連結的內文(多數情況)直接整段賦值。
       el.textContent = typeof text === 'string' ? text : '';
@@ -363,7 +363,7 @@
 
     var entries = [];
     var locale = 'zh';
-    var langPref = null; // null = 未設定,跟隨瀏覽器
+    var langPref = null; // null = 未設定，跟隨瀏覽器
     var themePref = 'auto';
     var activeKind = 'all';
     var query = '';
@@ -544,7 +544,7 @@
       var padB = 24;
       var plotW = W - padL - padR;
       var plotH = H - padT - padB;
-      // 無資料時 maxV 取 1,基線與格線仍可畫,不做除以零。
+      // 無資料時 maxV 取 1，基線與格線仍可畫，不做除以零。
       var maxV = Math.max(1, Math.max.apply(null, chartCounts));
       var band = plotW / chartCounts.length;
       var barW = Math.min(24, band - 14);
@@ -582,7 +582,7 @@
         var top = y(v);
         var r = Math.min(4, h);
 
-        // 命中帶:整欄高度,比 mark 本身大,滑鼠好命中。
+        // 命中帶:整欄高度，比 mark 本身大，滑鼠好命中。
         chart.appendChild(
           svgEl('rect', {
             x: padL + band * i,
@@ -917,7 +917,7 @@
         var hasAuthor = typeof e.author === 'string' && e.author !== '';
         var hasHandle = typeof e.handle === 'string' && e.handle !== '';
         // author 或 handle 任一存在就顯示作者列——author===handle 時入庫端
-        // 會把重複的 author 丟棄(只剩 handle),列不能因此整個消失。
+        // 會把重複的 author 丟棄(只剩 handle)，列不能因此整個消失。
         if (hasAuthor || hasHandle) {
           var authorRow = document.createElement('div');
           authorRow.className = 'entry-author-row';
@@ -1033,7 +1033,7 @@
       var hasExcerpt = typeof e.excerpt === 'string' && e.excerpt !== '';
 
       if (hasCardPreview(e)) {
-        // 同卡片端:author 被去重丟棄、只剩 handle 時,列仍要顯示。
+        // 同卡片端:author 被去重丟棄、只剩 handle 時，列仍要顯示。
         if (authorRow) authorRow.hidden = !(hasAuthor || hasHandle);
         if (authorName) authorName.textContent = hasAuthor ? e.author : '';
         if (handleEl) {
@@ -1578,7 +1578,7 @@
       });
     }
 
-    // storage.onChanged(local 區)時由接線層呼叫,讓 background 新寫入的
+    // storage.onChanged(local 區)時由接線層呼叫，讓 background 新寫入的
     // 紀錄即時出現在開著的頁面上。詳細視窗開著時以 url 重新定位
     // detailEntry:找得到就「只刷新內容」(refreshDetail，不重置使用者正在
     // 看的時間軸子層/展開全文——別處寫入無關紀錄不該打斷正在閱讀的人)，

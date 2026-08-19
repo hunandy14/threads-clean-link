@@ -1,13 +1,13 @@
 // i18n.js — 共用雙語字典與語言解析。三種載入環境:
 //   - service worker:background.js 以 importScripts('i18n.js') 載入(全域 self)
 //   - 擴充功能頁面:popup.html / options.html 以 <script src> 載入(全域 window)
-//   - Node 測試:CommonJS require,或 vm sandbox 直接執行原始碼(全域 this)
-// 函式一律帶明確 locale 參數、不留全域狀態——SW 會被終止再喚醒,任何
-// 快取的語言值都可能過期,每次事件重新解析才是唯一正確來源。
+//   - Node 測試:CommonJS require，或 vm sandbox 直接執行原始碼(全域 this)
+// 函式一律帶明確 locale 參數、不留全域狀態——SW 會被終止再喚醒，任何
+// 快取的語言值都可能過期，每次事件重新解析才是唯一正確來源。
 //
-// Chrome 官方 _locales 機制只跟瀏覽器 UI 語言、無法讓使用者在頁面上切換,
-// 因此僅保留給 manifest 的 extName/extDesc;其餘文案全部走本字典,語言偏好
-// 存 chrome.storage.sync 的 langPref('zh' | 'en',未設定 = 依環境偵測)。
+// Chrome 官方 _locales 機制只跟瀏覽器 UI 語言、無法讓使用者在頁面上切換，
+// 因此僅保留給 manifest 的 extName/extDesc;其餘文案全部走本字典，語言偏好
+// 存 chrome.storage.sync 的 langPref('zh' | 'en'，未設定 = 依環境偵測)。
 (function (root) {
   'use strict';
 
@@ -256,15 +256,15 @@
     },
   };
 
-  // 任何非 zh 開頭(或無法辨識)的語言一律歸 en:目前只維護兩份字典,
+  // 任何非 zh 開頭(或無法辨識)的語言一律歸 en:目前只維護兩份字典，
   // en 是對外的安全預設。
   function normalizeLocale(raw) {
     return /^zh/i.test(String(raw || '')) ? 'zh' : 'en';
   }
 
-  // pref 為使用者保存的明確偏好('zh' | 'en'),其餘值視為未設定,依環境
+  // pref 為使用者保存的明確偏好('zh' | 'en')，其餘值視為未設定，依環境
   // 偵測:chrome.i18n.getUILanguage(瀏覽器 UI 語言) → navigator.language。
-  // fallbackLanguage 供測試注入,避免測試綁死於執行環境的語言。
+  // fallbackLanguage 供測試注入，避免測試綁死於執行環境的語言。
   function resolveLocale(pref, fallbackLanguage) {
     if (pref === 'zh' || pref === 'en') return pref;
     var raw = fallbackLanguage;
@@ -283,7 +283,7 @@
     return normalizeLocale(raw);
   }
 
-  // 查無 key 時退回 zh 字典,再退回 key 本身:寧可顯示原文/鍵名,不丟例外
+  // 查無 key 時退回 zh 字典，再退回 key 本身:寧可顯示原文/鍵名，不丟例外
   // 中斷通知或頁面渲染。
   function t(locale, key) {
     var dict = STRINGS[locale] || STRINGS.zh;
@@ -292,7 +292,7 @@
     return key;
   }
 
-  // 樣板插值:{name} 逐一以 vars[name] 取代;缺對應值時保留原樣,便於除錯。
+  // 樣板插值:{name} 逐一以 vars[name] 取代;缺對應值時保留原樣，便於除錯。
   function fmt(locale, key, vars) {
     return t(locale, key).replace(/\{(\w+)\}/g, function (match, name) {
       return vars && vars[name] !== undefined ? String(vars[name]) : match;

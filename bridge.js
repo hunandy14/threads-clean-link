@@ -34,7 +34,7 @@
   var MAX_REMOVED_PARAM_VALUE_LENGTH = 512;
 
   // 本實例是否已下線(孤兒自檢通過、或被新實例交棒收掉)。下線後 listener
-  // 一律短路、且已 removeEventListener,不再對頁面產生任何副作用。
+  // 一律短路、且已 removeEventListener，不再對頁面產生任何副作用。
   var disposed = false;
 
   // MAIN world(clipboard-guard.js)實際把淨化後內容寫入剪貼簿後，會送一
@@ -80,9 +80,9 @@
     }
   }
 
-  // 自我下線:斷開 message listener 並永久短路。冪等,重複呼叫安全。孤兒自
+  // 自我下線:斷開 message listener 並永久短路。冪等，重複呼叫安全。孤兒自
   // 檢通過時、sendMessage 擲 context invalidated 時、或被新實例交棒時呼
-  // 叫,把場子讓給重注入的新實例。
+  // 叫，把場子讓給重注入的新實例。
   function disposeBridge() {
     if (disposed) return;
     disposed = true;
@@ -125,7 +125,7 @@
   // 除了「筆數 ≤ MAX_REMOVED_PARAMS」外，再確認沒有任一筆的 key/value 字串
   // 超過長度上限——擋住「筆數不多但單筆超長」的巨量 payload 越過 content
   // script → service worker 的程序邊界。任一筆超長就回傳 false(整欄不轉
-  // 發,對齊筆數超限時「整欄丟棄」的粗粒度風格);細部型別/白名單/逐筆截斷
+  // 發，對齊筆數超限時「整欄丟棄」的粗粒度風格);細部型別/白名單/逐筆截斷
   // 仍交給 background.js 的 sanitizeRemovedParams。
   function removedParamsWithinBounds(arr) {
     for (var i = 0; i < arr.length; i++) {
@@ -144,11 +144,11 @@
 
     // 孤兒自檢:擴充功能情境已失效就直接下線、不 reply、不 handleFailure，
     // 把場子讓給重注入的新實例(guard 端 2.5s 逾時或新實例正確回應接手)。
-    // 放在 listener 最開頭:孤兒實例收到任何訊息都不再搶答,以免毒化自癒後
+    // 放在 listener 最開頭:孤兒實例收到任何訊息都不再搶答，以免毒化自癒後
     // 的解析。
     if (isContextLost()) {
-      // 留一則降級 console.warn(不再硬叫「請重新整理頁面」,自癒重注入會接
-      // 手),孤兒退場才有跡可循;disposed 旗標保證只會 warn 這一次。
+      // 留一則降級 console.warn(不再硬叫「請重新整理頁面」，自癒重注入會接
+      // 手)，孤兒退場才有跡可循;disposed 旗標保證只會 warn 這一次。
       console.warn(
         '[threads-clean-link] 橋接偵測到擴充功能情境已失效(擴充功能剛更新或重載)，本實例已下線，交由自癒重注入的新實例接手'
       );
@@ -240,7 +240,7 @@
         // 為。仍留一則 console.warn，孤兒情境才有跡可循。
         warnSendFailure('轉發淨化通知(cleanedNotice)', e);
         // cleanedNotice 轉發時 sendMessage 擲 context invalidated(孤兒競態)
-        // 也自我下線,不再讓這個死實例處理後續訊息。
+        // 也自我下線，不再讓這個死實例處理後續訊息。
         if (isContextInvalidated(e)) disposeBridge();
       }
       return;
@@ -318,10 +318,10 @@
       });
     } catch (e) {
       // sendMessage 同步丟例外。分兩種:
-      //   - context invalidated(孤兒競態:listener 開頭自檢時 id 尚在,呼叫
+      //   - context invalidated(孤兒競態:listener 開頭自檢時 id 尚在，呼叫
       //     瞬間才失效):不 reply、不 handleFailure——與開頭的孤兒自檢一致，
       //     不搶答毒化自癒後的解析，改為自我下線(sendMessage 擲 context
-      //     invalidated 後永久短路並 removeEventListener),讓場子留給重注入
+      //     invalidated 後永久短路並 removeEventListener)，讓場子留給重注入
       //     的新實例。
       //   - 其餘同步例外:維持既有 fail-open，直接回報失敗讓 MAIN world 立
       //     刻不必空等 2.5 秒逾時，並留 console 訊號。
@@ -339,7 +339,7 @@
   window.addEventListener('message', onBridgeMessage);
 
   // 交棒握把:曝露自我下線函式給「下一個載入的新實例」呼叫(見檔頭的冪等
-  // 交棒)。掛在 window 上,同一 ISOLATED world 的後續實例讀得到。
+  // 交棒)。掛在 window 上，同一 ISOLATED world 的後續實例讀得到。
   if (typeof window !== 'undefined') {
     window.__tclBridgeDispose = disposeBridge;
   }
@@ -436,11 +436,11 @@
       var mutated = false;
       SETTINGS_KEYS.forEach(function (key) {
         if (changes && Object.prototype.hasOwnProperty.call(changes, key)) {
-          // 設定型別鏡像:增量推播也要正規化型別,對齊 pushSettings 的
+          // 設定型別鏡像:增量推播也要正規化型別，對齊 pushSettings 的
           // `typeof settings[key] !== 'boolean'` 守衛——changes 的 newValue 可能
-          // 是損毀/偽造的非布林值(或刪鍵時的 undefined),不能原封往 MAIN world
-          // 推,非布林一律退回 SETTINGS_DEFAULTS。bridge 是 content script,範圍
-          // 外,不改用 TCLCore,守衛用它自己的 SETTINGS_DEFAULTS。
+          // 是損毀/偽造的非布林值(或刪鍵時的 undefined)，不能原封往 MAIN world
+          // 推，非布林一律退回 SETTINGS_DEFAULTS。bridge 是 content script，範圍
+          // 外，不改用 TCLCore，守衛用它自己的 SETTINGS_DEFAULTS。
           var newValue = changes[key].newValue;
           next[key] = typeof newValue === 'boolean' ? newValue : SETTINGS_DEFAULTS[key];
           mutated = true;

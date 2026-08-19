@@ -3,15 +3,15 @@
 // tcl-core.js 是 background(寫入側)與 options(讀取/匯入側)原本各養一份
 // sanitize/網址樣式鏡像的收斂單一權威。此檔專測 lib 本體:
 //   - 網址判定:isCleanPostUrl(嚴格錨定)、normalizePostUrl(容尾正規化)
-//   - F5:stripControlChars(控制/bidi 剝除,**含 emoji ZWJ 保留**)
+//   - F5:stripControlChars(控制/bidi 剝除，**含 emoji ZWJ 保留**)
 //   - F1:sanitizeOriginal(白名單三合法來源全通過、偽造擋下、超長整欄丟棄)
 //   - sanitizeText / sanitizeRemovedParams / sanitizeSeenList
 //   - 常數:LIMITS / KIND_LIST / NOTICE_KIND_LIST / DEFAULT_SETTINGS
 //   - 三 context 可載入煙霧測試(SW self / 擴充頁 window / Node this-fallback)
 //
 // 【紀律】測試裡的控制/bidi/零寬字元一律用 cp()(String.fromCodePoint)由碼位
-// 組出,原始碼全 ASCII、不放裸不可見字元——裸控制字元在原始碼裡不可見、會被
-// 編輯器/工具正規化掉,是已知的踩雷來源。
+// 組出，原始碼全 ASCII、不放裸不可見字元——裸控制字元在原始碼裡不可見、會被
+// 編輯器/工具正規化掉，是已知的踩雷來源。
 'use strict';
 
 const test = require('node:test');
@@ -22,7 +22,7 @@ const vm = require('node:vm');
 
 const C = require(path.join(__dirname, '..', 'tcl-core.js'));
 
-// 由碼位組字串,原始碼保持全 ASCII。
+// 由碼位組字串，原始碼保持全 ASCII。
 const cp = (...codes) => String.fromCodePoint(...codes);
 // 具名的控制/bidi/零寬字元。
 const NUL1 = cp(0x0001); // C0(非 tab/newline)
@@ -44,20 +44,20 @@ const SHARE_URL = 'https://www.threads.com/share/AbCdEfGhI';
 
 // ---- 網址判定 ----
 
-test('isCleanPostUrl:嚴格錨定——乾淨貼文網址通過,帶 query/尾隨內容/非字串一律 false', () => {
+test('isCleanPostUrl:嚴格錨定——乾淨貼文網址通過，帶 query/尾隨內容/非字串一律 false', () => {
   assert.equal(C.isCleanPostUrl(CLEAN_URL), true);
   assert.equal(C.isCleanPostUrl('https://threads.net/@user_c/post/GhI789'), true);
   // 錨定收尾:帶 query/hash/尾隨內容都不算「乾淨」(那是 normalizePostUrl 的事)。
   assert.equal(C.isCleanPostUrl(CLEAN_URL + '?xmt=abc'), false);
   assert.equal(C.isCleanPostUrl(CLEAN_URL + '/'), false);
-  // 中文釣魚句(白名單字元類擋下,不需要空白也擋得住)。
+  // 中文釣魚句(白名單字元類擋下，不需要空白也擋得住)。
   assert.equal(C.isCleanPostUrl('https://www.threads.com/@u/post/ID' + cp(0x5e10) + 'evil'), false);
   assert.equal(C.isCleanPostUrl(SHARE_URL), false);
   assert.equal(C.isCleanPostUrl(12345), false);
   assert.equal(C.isCleanPostUrl(null), false);
 });
 
-test('normalizePostUrl:容尾正規化——回傳去 query/hash/尾斜線後的乾淨網址,不合則 null', () => {
+test('normalizePostUrl:容尾正規化——回傳去 query/hash/尾斜線後的乾淨網址，不合則 null', () => {
   assert.equal(C.normalizePostUrl(CLEAN_URL), CLEAN_URL);
   assert.equal(C.normalizePostUrl(CLEAN_URL + '?xmt=abc'), CLEAN_URL);
   assert.equal(C.normalizePostUrl(CLEAN_URL + '/'), CLEAN_URL);
@@ -74,7 +74,7 @@ test('normalizePostUrl:容尾正規化——回傳去 query/hash/尾斜線後的
 // ---- F5:stripControlChars ----
 
 test('F5 stripControlChars:剝除 C0(保留 tab/newline)、C1、bidi', () => {
-  // C0:剝 U+0001,保留 \t(U+0009)與 \n(U+000A)。
+  // C0:剝 U+0001，保留 \t(U+0009)與 \n(U+000A)。
   assert.equal(C.stripControlChars('a' + NUL1 + 'bc'), 'abc');
   assert.equal(JSON.stringify(C.stripControlChars('a\tb\nc')), JSON.stringify('a\tb\nc'));
   // \r(U+000D)不在保留名單 → 剝除。
@@ -91,7 +91,7 @@ test('F5 stripControlChars:剝除 C0(保留 tab/newline)、C1、bidi', () => {
 });
 
 test('F5 stripControlChars:**保留** emoji ZWJ 序列(家庭 emoji 不散架)、ZWNJ、FEFF', () => {
-  // 男+ZWJ+女+ZWJ+女孩(U+200D 連接),剝了會散成三個獨立的人。
+  // 男+ZWJ+女+ZWJ+女孩(U+200D 連接)，剝了會散成三個獨立的人。
   const family = cp(0x1f468) + ZWJ + cp(0x1f469) + ZWJ + cp(0x1f467);
   assert.equal(C.stripControlChars(family), family);
   // ZWNJ(U+200C)不剝。
@@ -118,7 +118,7 @@ test('sanitizeText:非字串→undefined;先剝後截;剝完成空→undefined',
 test('F1 sanitizeOriginal:三合法來源(share/strip 帶 query/menu=share)全通過', () => {
   // share:短碼分享網址(吻合 SHARE_URL_PATTERN)。
   assert.equal(C.sanitizeOriginal(SHARE_URL, CLEAN_URL), SHARE_URL);
-  // strip:剝參前貼文網址(帶追蹤 query,吻合容尾 POST 樣式),原樣保留含 query。
+  // strip:剝參前貼文網址(帶追蹤 query，吻合容尾 POST 樣式)，原樣保留含 query。
   const stripOriginal = CLEAN_URL + '?xmt=AQGabc&igsh=xyz';
   assert.equal(C.sanitizeOriginal(stripOriginal, CLEAN_URL), stripOriginal);
   // menu:shareUrl(另一個網域也算合法 share)。
@@ -128,22 +128,22 @@ test('F1 sanitizeOriginal:三合法來源(share/strip 帶 query/menu=share)全�
   );
 });
 
-test('F1 sanitizeOriginal:偽造/畸形殘 URL 擋下,非字串/空/===cleanUrl/超長丟棄', () => {
+test('F1 sanitizeOriginal:偽造/畸形殘 URL 擋下，非字串/空/===cleanUrl/超長丟棄', () => {
   // 偽造網域。
   assert.equal(C.sanitizeOriginal('https://evil.example/@u/post/ID', CLEAN_URL), undefined);
-  // 合法前綴 + 空白尾隨釣魚句(空白不屬 [?#].* 的起手,整串不吻合)。
+  // 合法前綴 + 空白尾隨釣魚句(空白不屬 [?#].* 的起手，整串不吻合)。
   assert.equal(C.sanitizeOriginal('https://www.threads.com/@u/post/ID ' + cp(0x5e33) + 'x', CLEAN_URL), undefined);
   // 非字串/空。
   assert.equal(C.sanitizeOriginal(12345, CLEAN_URL), undefined);
   assert.equal(C.sanitizeOriginal('', CLEAN_URL), undefined);
   // 與 cleaned url 相同(沒有額外資訊)。
   assert.equal(C.sanitizeOriginal(CLEAN_URL, CLEAN_URL), undefined);
-  // 超長:整欄丟棄,不截斷(即便前綴合法)。
+  // 超長:整欄丟棄，不截斷(即便前綴合法)。
   assert.equal(C.sanitizeOriginal(CLEAN_URL + '?' + 'a'.repeat(2100), CLEAN_URL), undefined);
 });
 
-test('F1 sanitizeOriginal:先剝 F5 控制字元,剝後仍須吻合白名單', () => {
-  // 網址中夾 bidi(U+202E),剝除後吻合 SHARE_URL_PATTERN → 保留剝除後的乾淨字串。
+test('F1 sanitizeOriginal:先剝 F5 控制字元，剝後仍須吻合白名單', () => {
+  // 網址中夾 bidi(U+202E)，剝除後吻合 SHARE_URL_PATTERN → 保留剝除後的乾淨字串。
   assert.equal(
     C.sanitizeOriginal('https://www.threads.com/share/AB' + RLO + 'CD', CLEAN_URL),
     'https://www.threads.com/share/ABCD'
@@ -154,15 +154,15 @@ test('F1 sanitizeOriginal:先剝 F5 控制字元,剝後仍須吻合白名單', (
 
 // ---- sanitizeRemovedParams ----
 
-test('sanitizeRemovedParams:掃描封頂前 20 筆(取嚴),超過的合法項目不再收', () => {
-  // 前 20 筆全畸形,第 21 筆才合法 → 掃描封頂使其收不到,回 undefined。
+test('sanitizeRemovedParams:掃描封頂前 20 筆(取嚴)，超過的合法項目不再收', () => {
+  // 前 20 筆全畸形，第 21 筆才合法 → 掃描封頂使其收不到，回 undefined。
   const arr = [];
   for (let i = 0; i < 20; i++) arr.push({ key: '', value: 'x' }); // 畸形(空 key)
   arr.push({ key: 'late', value: 'ok' }); // 第 21 筆合法但掃描已封頂
   assert.equal(C.sanitizeRemovedParams(arr), undefined);
 });
 
-test('sanitizeRemovedParams:key/value 過 F5 剝除 + 長度上限,畸形逐筆丟棄', () => {
+test('sanitizeRemovedParams:key/value 過 F5 剝除 + 長度上限，畸形逐筆丟棄', () => {
   const out = C.sanitizeRemovedParams([
     { key: 'xmt' + RLO, value: 'a' + RLM + 'b' }, // bidi 剝除後 {xmt, ab}
     { key: '', value: 'x' }, // 空 key → 丟
@@ -247,7 +247,7 @@ test('三 context 載入:擴充頁(window 全域)——TCLCore 掛上全域', ()
   assert.equal(typeof sandbox.TCLCore.sanitizeText, 'function');
 });
 
-test('三 context 載入:Node(this fallback,無 self/window/module)——TCLCore 掛上全域物件', () => {
+test('三 context 載入:Node(this fallback，無 self/window/module)——TCLCore 掛上全域物件', () => {
   const sandbox = {}; // 無 self、無 window、無 module → 走 this 分支
   loadIn(sandbox);
   assert.equal(typeof sandbox.TCLCore, 'object');

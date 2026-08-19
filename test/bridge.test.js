@@ -406,7 +406,7 @@ test('S6:chrome.storage.onChanged 觸發時，bridge 再次推播，內容為變
 //   MAIN world → bridge : { type: 'TCL_CLEANED_NOTICE', cleanUrl, kind, original?, removedParams? }
 //   bridge → background : { type: 'cleanedNotice', cleanUrl, kind, original?, removedParams? }
 // kind 為淨化來源('share' | 'strip'),bridge 只做型別與長度把關(≤16 字元
-// 的非空字串),白名單驗證由 background 負責;形狀不對整則丟棄。
+// 的非空字串)，白名單驗證由 background 負責;形狀不對整則丟棄。
 // original/removedParams(紀錄資料層補齊，對齊手機 ShareHistoryItem)選填，
 // bridge 純透傳、不做任何驗證，規則與下面的 author/handle/excerpt 透傳一
 // 致，真正的 sanitize 交給 background。
@@ -710,11 +710,11 @@ test('R1-2:kind 缺失、非字串或超長的 TCL_CLEANED_NOTICE 不得轉發',
 // ============================================================
 // 孤兒 bridge 退場:擴充功能更新／重載後，既開分頁裡的舊 bridge.js 仍在跑
 // 但 chrome.runtime 已斷。修法比照 post-icon 的 retireOrphanInstance:
-//   (a) listener 開頭以 chrome.runtime.id 自檢,孤兒時直接 return——不轉
-//       發、不 reply、不 handleFailure,把場子讓給重注入的新實例(否則孤兒
-//       仍 reply({ok:false,reason:'bridge-exception'}) 搶答,會毒化自癒後
+//   (a) listener 開頭以 chrome.runtime.id 自檢，孤兒時直接 return——不轉
+//       發、不 reply、不 handleFailure，把場子讓給重注入的新實例(否則孤兒
+//       仍 reply({ok:false,reason:'bridge-exception'}) 搶答，會毒化自癒後
 //       的 share 解析);
-//   (b) disposed 旗標:第一次偵測到孤兒(自檢通過,或 sendMessage 擲 context
+//   (b) disposed 旗標:第一次偵測到孤兒(自檢通過，或 sendMessage 擲 context
 //       invalidated)後永久短路並 removeEventListener 自我下線;
 //   (c) 「請重新整理頁面」warn 降級(重注入已接手時是誤導)。
 // ============================================================
@@ -745,7 +745,7 @@ function loadBridgeWithConsole(sendMessageImpl, opts = {}) {
 
 test('R3 孤兒(runtime.id 已消失):listener 收到訊息一律短路——不轉發、不回應、自我下線並留降級 warn', async () => {
   let sendCount = 0;
-  // id 尚在時載入(正常註冊 listener),載入後把 id 抹成 undefined 模擬孤兒化。
+  // id 尚在時載入(正常註冊 listener)，載入後把 id 抹成 undefined 模擬孤兒化。
   const bridge = loadBridge({
     sendMessage: () => {
       sendCount += 1;
@@ -784,8 +784,8 @@ test('R3 孤兒(runtime.id 尚在但 sendMessage 同步丟 context invalidated �
   const bridge = loadBridgeWithConsole(throwOrphan);
 
   // listener 數量基線:bridge 自己註冊了 1 個(onBridgeMessage)。加上本測試
-  // 這個偵測回覆的 listener 後應為 2;孤兒自我下線後 bridge 那個被移除,只
-  // 剩本測試這個,回到基線 1。
+  // 這個偵測回覆的 listener 後應為 2;孤兒自我下線後 bridge 那個被移除，只
+  // 剩本測試這個，回到基線 1。
   const baseCount = bridge.win.getMessageListenerCount();
   let replied = false;
   bridge.win.addEventListener('message', (event) => {
@@ -828,10 +828,10 @@ test('R3 孤兒:cleanedNotice 轉發時 sendMessage 丟 context invalidated 同�
 
 // ============================================================
 // 冪等交棒:同一 ISOLATED world 若雙注入(手動 F5 × 自癒重注入的毫秒級競
-// 態,或更新後的重注入),第二個實例先讓第一個交棒下線再接手,消除「雙
+// 態，或更新後的重注入)，第二個實例先讓第一個交棒下線再接手，消除「雙
 // listener → 雙轉發 cleanedNotice → 時間軸假事件」。刻意用交棒式(dispose
 // 舊的、註冊新的)而非永久旗標 return:後者會讓更新後的重注入因旗標仍在而
-// 不註冊、舊孤兒又已自檢下線,share 解析就此無人接手。
+// 不註冊、舊孤兒又已自檢下線，share 解析就此無人接手。
 // ============================================================
 
 test('冪等交棒:同一 window 二次載入 bridge，舊實例交棒下線，只剩一個 listener 處理訊息(不雙轉發)', async () => {

@@ -99,7 +99,7 @@
     try {
       var url = new URL(href, origin);
       // Threads permalink 現皆同源相對路徑;若日後出現跨子網域/跨 TLD 絕
-      // 對連結,此檢查會靜默擋下,屆時需放寬為 host 白名單。
+      // 對連結，此檢查會靜默擋下，屆時需放寬為 host 白名單。
       if (url.origin !== new URL(origin).origin) return null;
       url.search = '';
       url.hash = '';
@@ -944,9 +944,9 @@
       // 讓 icon 維持原本的 color:inherit，不丟例外。
       function applyNativeColor(icon, row) {
         try {
-          // 取「最後一顆」原生 icon(分享小飛機)當色樣,不取第一顆——
-          // 第一顆是愛心,按過讚會變紅,取樣到紅色整顆 icon 會跟著紅。
-          // 本函式在插入我們的 icon 之前呼叫,此時列尾必為原生按鈕。
+          // 取「最後一顆」原生 icon(分享小飛機)當色樣，不取第一顆——
+          // 第一顆是愛心，按過讚會變紅，取樣到紅色整顆 icon 會跟著紅。
+          // 本函式在插入我們的 icon 之前呼叫，此時列尾必為原生按鈕。
           var svgs = row.querySelectorAll('svg[aria-label]');
           if (!svgs.length) return;
           var nativeSvg = svgs[svgs.length - 1];
@@ -1284,12 +1284,12 @@
 
       function init() {
         // 冪等交棒(必須排在最前):同一 ISOLATED world 若已有本腳本的舊實例
-        // (手動 F5 × 自癒重注入的毫秒級競態,或更新後的重注入),先透過
+        // (手動 F5 × 自癒重注入的毫秒級競態，或更新後的重注入)，先透過
         // root.__tclPostIconDispose 讓舊實例退場(斷 observer、清掉它那批帶
-        // 舊 OWNER_ATTR 的 icon、後續掃描短路),再由本新實例接手。消除「雙
+        // 舊 OWNER_ATTR 的 icon、後續掃描短路)，再由本新實例接手。消除「雙
         // MutationObserver → 雙落盤 → 時間軸假事件」。post-icon 因為有 DOM
-        // 狀態(icon 節點、observer)要乾淨交接,用 retireOrphanInstance 做這
-        // 件事。首次載入時 hook 尚未存在,等同 no-op。
+        // 狀態(icon 節點、observer)要乾淨交接，用 retireOrphanInstance 做這
+        // 件事。首次載入時 hook 尚未存在，等同 no-op。
         if (typeof root.__tclPostIconDispose === 'function') {
           try {
             root.__tclPostIconDispose();

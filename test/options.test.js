@@ -1,7 +1,7 @@
 // test/options.test.js — options 頁邏輯層(options.js)的行為契約。
 // 純函式(過濾/匯入合併/匯出形狀/統計聚合)直接打;controller 以最小 DOM
 // stub 做一條 smoke(整條 init 渲染跑得完、清單筆數與計數正確)，堵「區域
-// 變數遮蔽翻譯函式、整頁渲染炸掉但語法全綠」這類執行期炸彈,不逐一測版面。
+// 變數遮蔽翻譯函式、整頁渲染炸掉但語法全綠」這類執行期炸彈，不逐一測版面。
 'use strict';
 
 const test = require('node:test');
@@ -42,8 +42,8 @@ test('filterEntries:kind 過濾與關鍵字過濾(不分大小寫)可併用', ()
   assert.equal(options.filterEntries(entries, 'share', 'user_c').length, 0);
 });
 
-// 篩選 chip(options.html 的 #chips)與 filterEntries 共用同一份純函式,
-// 這裡直接驗證 kind 過濾對 icon(貼文互動列複製按鈕)一樣生效,不用另外
+// 篩選 chip(options.html 的 #chips)與 filterEntries 共用同一份純函式，
+// 這裡直接驗證 kind 過濾對 icon(貼文互動列複製按鈕)一樣生效，不用另外
 // 搭 DOM 才能測。
 test('filterEntries:kind 為 icon 時可單獨篩出貼文按鈕來源的紀錄', () => {
   const entries = [
@@ -59,7 +59,7 @@ test('filterEntries:kind 為 icon 時可單獨篩出貼文按鈕來源的紀錄'
   assert.equal(options.filterEntries(entries, 'all', '').length, 3);
 });
 
-test('parseImportText:非 JSON 與缺 entries 陣列各回報對應錯誤,合法時回傳 entries', () => {
+test('parseImportText:非 JSON 與缺 entries 陣列各回報對應錯誤，合法時回傳 entries', () => {
   assert.deepEqual(options.parseImportText('not json'), { ok: false, error: 'badJson' });
   assert.deepEqual(options.parseImportText('{"app":"x"}'), { ok: false, error: 'noEntries' });
 
@@ -68,7 +68,7 @@ test('parseImportText:非 JSON 與缺 entries 陣列各回報對應錯誤,合法
   assert.equal(parsed.entries.length, 1);
 });
 
-test('mergeImportedEntries:錨定驗證 url、以 url 去重、kind/at 非法時套預設,結果新到舊', () => {
+test('mergeImportedEntries:錨定驗證 url、以 url 去重、kind/at 非法時套預設，結果新到舊', () => {
   const NOW = 1000000;
   const existing = [{ url: URL_A, kind: 'share', at: 500 }];
   const imported = [
@@ -116,7 +116,7 @@ test('mergeImportedEntries:合併結果不裁切，超過舊版上限(1000)也�
   assert.equal(options.HISTORY_LIMIT, undefined, 'HISTORY_LIMIT 常數已隨上限移除一併撤除');
 });
 
-test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀,entries 只留三欄', () => {
+test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀，entries 只留三欄', () => {
   const payload = options.buildExportPayload(
     [{ url: URL_A, kind: 'share', at: 123, extra: 'junk' }],
     '2026-08-16T00:00:00.000Z'
@@ -341,7 +341,7 @@ test('mergeImportedEntries:匯入條目帶偽造 removedParams(key 缺席/超長
 
 test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日分桶、最舊時間戳', () => {
   const DAY = 86400000;
-  const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime(); // 中午,避開日界線
+  const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime(); // 中午，避開日界線
   const t0 = new Date(2026, 7, 10, 0, 0, 0).getTime();
   const entries = [
     { url: URL_A, kind: 'share', at: nowTs - 3600e3 }, // 今天
@@ -402,7 +402,7 @@ test('sanitizeEntries:非陣列→空;形狀不對的項目逐筆丟棄', () => 
 
 // sanitizeEntries 的白名單(靠 Object.prototype.hasOwnProperty.call(KINDS,
 // e.kind))應收下 kind:'icon'，不當成未知 kind 丟棄。
-test('sanitizeEntries:kind 為 icon(貼文按鈕)的項目應保留,不再被白名單丟棄', () => {
+test('sanitizeEntries:kind 為 icon(貼文按鈕)的項目應保留，不再被白名單丟棄', () => {
   const cleaned = options.sanitizeEntries([
     { url: URL_A, kind: 'icon', at: 1 },
     { url: URL_B, kind: 'nope', at: 1 },
@@ -414,7 +414,7 @@ test('sanitizeEntries:kind 為 icon(貼文按鈕)的項目應保留,不再被白
 });
 
 // 縱深防禦:url 額外過 POST_URL_PATTERN 形狀驗證——渲染層 buildEntryCard 的
-// openLink.href = e.url、複製到剪貼簿都是 url sink,讀取階段就該擋掉形狀
+// openLink.href = e.url、複製到剪貼簿都是 url sink，讀取階段就該擋掉形狀
 // 不對的 url，不依賴「寫入端永遠沒漏」的假設。
 test('sanitizeEntries:url 形狀不對(非 threads 網域、缺 /post/ 區段、夾帶非法字元等)的條目整筆丟棄', () => {
   const cleaned = options.sanitizeEntries([
@@ -555,18 +555,18 @@ test('buildSeenTimeline:多筆有效紀錄回傳新到舊排序的陣列，形�
 test('renderExcerptWithLinks:javascript: 協定不成連結、含省略號的截斷網址維持純文字，只有 http(s) 進 a.href', () => {
   const doc = makeDocumentStub();
 
-  // javascript: 沒有 http(s):// 前綴,走快速路徑整段當純文字,不產生任何子節點。
+  // javascript: 沒有 http(s):// 前綴，走快速路徑整段當純文字，不產生任何子節點。
   const el1 = makeNode('div');
   options.renderExcerptWithLinks(doc, el1, 'javascript:alert(1) 點我');
   assert.equal(el1.children.filter((c) => c.tag === 'a').length, 0, 'javascript: 不得成為連結');
   assert.equal(el1.textContent, 'javascript:alert(1) 點我', '整段維持純文字');
 
-  // 含「…」的截斷網址:即便有 https:// 前綴,也維持純文字不做成 a。
+  // 含「…」的截斷網址:即便有 https:// 前綴，也維持純文字不做成 a。
   const el2 = makeNode('div');
   options.renderExcerptWithLinks(doc, el2, 'https://www.threads.com/@u/post/AbCd…');
   assert.equal(el2.children.filter((c) => c.tag === 'a').length, 0, '含…的殘缺網址不做成連結');
 
-  // 對照組:乾淨 http(s) 連結才做成 a,且 href 必以 http(s):// 開頭。
+  // 對照組:乾淨 http(s) 連結才做成 a，且 href 必以 http(s):// 開頭。
   const el3 = makeNode('div');
   options.renderExcerptWithLinks(doc, el3, '看 https://example.com/x 這裡');
   const anchors = el3.children.filter((c) => c.tag === 'a');
@@ -689,7 +689,7 @@ const CROSS_LAYER_FIELD_CASES = [
     expect: { excerpt: 'E'.repeat(2000) },
   },
   {
-    // original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結,兩層都保留。
+    // original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結，兩層都保留。
     field: 'original',
     label: '與 cleaned url 不同且吻合白名單(share 短連結)時應保留',
     message: { original: 'https://www.threads.com/share/abc' },
@@ -936,7 +936,7 @@ function makeDocumentStub() {
   };
 }
 
-test('controller smoke:init 讀兩區 storage、整條渲染跑完,清單與計數正確', async () => {
+test('controller smoke:init 讀兩區 storage、整條渲染跑完，清單與計數正確', async () => {
   const storage = createChromeStorage(
     { langPref: 'zh' },
     {
@@ -977,7 +977,7 @@ test('controller smoke:init 讀兩區 storage、整條渲染跑完,清單與計�
 // (POST_URL_PATTERN／KINDS 都同時允許 com 與 net)不得顯示成 .com。這裡
 // 直接檢查渲染出來的三段文字節點(網域段／帳號段(<b>)／其餘路徑段)，
 // 網域段須如實為 'threads.net/'。
-test('renderList:threads.net 的紀錄如實顯示 .net,不誤植為 .com', async () => {
+test('renderList:threads.net 的紀錄如實顯示 .net，不誤植為 .com', async () => {
   const NET_URL = 'https://www.threads.net/@user_net/post/AbC123';
   const storage = createChromeStorage(
     { langPref: 'zh' },
