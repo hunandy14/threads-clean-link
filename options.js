@@ -836,14 +836,19 @@
 
       if (hasCardPreview(e)) {
         var hasAuthor = typeof e.author === 'string' && e.author !== '';
-        if (hasAuthor) {
+        var hasHandle = typeof e.handle === 'string' && e.handle !== '';
+        // author 或 handle 任一存在就顯示作者列——author===handle 時入庫端
+        // 會把重複的 author 丟棄(只剩 handle),列不能因此整個消失。
+        if (hasAuthor || hasHandle) {
           var authorRow = document.createElement('div');
           authorRow.className = 'entry-author-row';
-          var nameEl = document.createElement('span');
-          nameEl.className = 'entry-author-name';
-          nameEl.textContent = e.author;
-          authorRow.appendChild(nameEl);
-          if (typeof e.handle === 'string' && e.handle !== '') {
+          if (hasAuthor) {
+            var nameEl = document.createElement('span');
+            nameEl.className = 'entry-author-name';
+            nameEl.textContent = e.author;
+            authorRow.appendChild(nameEl);
+          }
+          if (hasHandle) {
             var handleEl = document.createElement('span');
             handleEl.className = 'entry-handle';
             handleEl.textContent = e.handle;
@@ -954,7 +959,8 @@
       var hasExcerpt = typeof e.excerpt === 'string' && e.excerpt !== '';
 
       if (hasCardPreview(e)) {
-        if (authorRow) authorRow.hidden = !hasAuthor;
+        // 同卡片端:author 被去重丟棄、只剩 handle 時,列仍要顯示。
+        if (authorRow) authorRow.hidden = !(hasAuthor || hasHandle);
         if (authorName) authorName.textContent = hasAuthor ? e.author : '';
         if (handleEl) {
           handleEl.hidden = !hasHandle;
