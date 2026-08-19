@@ -2,15 +2,10 @@
 // 並在此固定設定鍵的預設值)。
 //
 // ============================================================
-// 【R1-1 開關合併】設定鍵砍為兩顆:autoClean、notifySuccess。resolveShortcode
-// 徹底移除(設定形狀、popup 控件、縮排子項一併移除)，短碼解析與 ?xmt 剪參
-// 都收在 autoClean 這一顆之下。原本 resolveShortcode 的禁用連動測試隨之刪除。
-//
-// 【0.5.0 方案甲，使用者拍板三條設定變更】notifySuccess 開關整組移除
-// (底層設定鍵仍在 background.js 使用，只是不再放 popup 快捷開關，完整設定
-// 收在 options 頁);新增 postCopyEnabled(貼文複製按鈕，預設 true);
-// autoClean 預設值改 false(配合 background.js 同步調整的新預設)。兩個
-// 設定鍵維持不變的只有「兩顆」這個數量，鍵名與預設值都跟著換。
+// popup 只有兩顆設定鍵:autoClean(預設 false)與 postCopyEnabled(貼文複製
+// 按鈕，預設 true)。短碼解析與 ?xmt 剪參都收在 autoClean 之下。notifySuccess
+// 的底層設定鍵仍在 background.js 使用，只是不放 popup 快捷開關，完整設定
+// 收在 options 頁。
 //
 // 【設計約定(S7 明文允許)】
 // 本專案測試環境是 Node 內建 test runner，沒有 DOM harness(無 jsdom、
@@ -43,8 +38,8 @@ const { createChromeStorage, createCheckboxDocument } = require('./support/helpe
 
 const IDS = ['autoClean', 'postCopyEnabled'];
 
-// 尚未實作 popup.js 時 require 會丟 MODULE_NOT_FOUND:刻意延遲到各測試內部
-// 才載入，讓紅燈落在個別測試上，而不是整個測試檔在載入階段就崩掉。
+// require 刻意延遲到各測試內部才載入(而非檔案頂層):載入失敗(如
+// MODULE_NOT_FOUND)時紅燈落在個別測試上，而不是整個測試檔在載入階段就崩掉。
 function loadPopup() {
   return require(path.join(__dirname, '..', 'popup.js'));
 }
@@ -61,10 +56,7 @@ function setup(initial = {}) {
   return { popup, storage, doc, controller };
 }
 
-// ---- S7 / R1-1:兩個設定鍵與預設值 ----
-//
-// 0.5.0 方案甲(規格變更，授權更新):autoClean 預設改 false、notifySuccess
-// 換成 postCopyEnabled(預設 true)。
+// ---- S7:兩個設定鍵與預設值 ----
 
 test('S7:DEFAULT_SETTINGS 只有兩顆鍵，autoClean:false、postCopyEnabled:true', () => {
   const popup = loadPopup();
@@ -100,8 +92,6 @@ test('S7:storage 為空時，init() 以兩個預設值呈現兩個開關', async
 
 // ---- S7:兩開關寫 chrome.storage.sync ----
 
-// 【精簡】兩顆開關各一條併為一條多案例:同一個不變量(切換即寫回
-// chrome.storage.sync)，只差是哪一顆鍵與翻成哪個值。
 test('S7:切換任一開關，新值寫回 chrome.storage.sync', async () => {
   const cases = [
     { key: 'postCopyEnabled', next: false },
@@ -144,7 +134,7 @@ test('MV3 CSP:popup.html 內所有 <script> 都必須帶 src，不得使用內�
 });
 
 // ============================================================
-// R1-3 popup 改版:兩列開關 + 現代滑動 switch。
+// popup.html 版面靜態把關:兩列開關 + 現代滑動 switch。
 //
 // 邏輯層測試照不到版面與外觀，這裡改讀 popup.html 原文做靜態把關:
 //   - 兩列開關(autoClean、notifySuccess)，id 不變，縮排子項整列移除
@@ -168,7 +158,6 @@ function readPopupStyle() {
   return match ? match[1] : '';
 }
 
-// 0.5.0 方案甲(規格變更，授權更新):notifySuccess 換成 postCopyEnabled。
 test('R1-3:popup.html 只有兩個開關控件，id 為 autoClean 與 postCopyEnabled', () => {
   const html = readPopupHtml();
 
@@ -239,12 +228,12 @@ test('R1-3:footer 文案不變', () => {
 
 // ============================================================
 // 紀錄與設定導航列(options 頁入口):第三列是 button 不是開關(上面的
-// 「只有兩個 checkbox」測試同時把關了這一點),點擊呼叫注入的
-// openOptionsPage。openOptionsPage 與 i18n 都是選配 dep,未注入時
-// controller 照常運作(向下相容,本檔既有測試即為證明)。
+// 「只有兩個 checkbox」測試同時把關了這一點)，點擊呼叫注入的
+// openOptionsPage。openOptionsPage 與 i18n 都是選配 dep，未注入時
+// controller 照常運作(向下相容，本檔既有測試即為證明)。
 // ============================================================
 
-test('導航列:popup.html 有 button#openOptions,點擊呼叫 openOptionsPage', async () => {
+test('導航列:popup.html 有 button#openOptions，點擊呼叫 openOptionsPage', async () => {
   const fs = require('node:fs');
   const html = fs.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
   assert.ok(
@@ -271,9 +260,8 @@ test('導航列:popup.html 有 button#openOptions,點擊呼叫 openOptionsPage',
   assert.equal(opened, 1, '點擊導航列應呼叫 openOptionsPage 一次');
 });
 
-// 0.5.0(使用者指定,後改版):導航列箭頭定案為 Lucide arrow-up-right
-// inline SVG(↗,「開新分頁」語意),取代先前的 chevron-right;靜態讀
-// popup.html 原文把關,避免日後退回純文字符號或舊 chevron。
+// 導航列箭頭定案為 Lucide arrow-up-right inline SVG(↗，「開新分頁」語意)，
+// 靜態讀 popup.html 原文把關，避免日後退回純文字符號或舊 chevron。
 test('導航列:nav-chev 為 Lucide arrow-up-right inline SVG(↗ 開新分頁語意)', () => {
   const html = readPopupHtml();
 

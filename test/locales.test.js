@@ -1,4 +1,4 @@
-// test/locales.test.js — _locales/ 雙語門面的靜態防回歸測試(車道 B)。
+// test/locales.test.js — _locales/ 雙語門面的靜態防回歸測試。
 //
 // 只做靜態檢查，不啟動瀏覽器、不驗證 Chrome 實際挑語系的行為:
 //   1. en / zh_TW 兩份 messages.json 皆可被 JSON.parse(順帶驗證無 BOM，
@@ -35,7 +35,6 @@ function parseMessages(filePath) {
 
 // ---- 1. 兩份 messages.json 皆可被 JSON.parse(順帶驗證無 BOM) ----
 
-// 【精簡】en 與 zh_TW 兩條併為一條多案例:同一個不變量、只差檔案。
 test('locales:兩份 messages.json 皆可被 JSON.parse', () => {
   for (const filePath of [EN_PATH, ZH_TW_PATH]) {
     assert.doesNotThrow(() => parseMessages(filePath), `${filePath} 應為合法 JSON`);

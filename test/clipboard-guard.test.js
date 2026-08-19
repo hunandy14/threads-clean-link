@@ -52,9 +52,9 @@ function loadGuard(clipboard, win) {
     setTimeout,
     clearTimeout,
     console,
-    // F 案(紀錄資料層補齊 original/removedParams):parseRemovedParams 需要
-    // URLSearchParams，vm sandbox 預設不含這個全域，這裡明確注入，讓
-    // clipboard-guard.js 的行為與真實頁面(MAIN world 原生就有)一致。
+    // parseRemovedParams 需要 URLSearchParams，vm sandbox 預設不含這個全域，
+    // 這裡明確注入，讓 clipboard-guard.js 的行為與真實頁面(MAIN world 原生
+    // 就有)一致。
     URLSearchParams,
   });
 }
@@ -114,13 +114,8 @@ function recordingWriteRaw(recorder) {
 
 // ---- 短碼分支:writeText ----
 
-// 【精簡】原本「帶尾斜線」「threads.net 無 www」「前後帶空白且附 query」
-// 三條各自一測，驗的是同一個不變量:形態合法的短碼一律經橋接解析後寫入
-// 乾淨貼文網址。併為一條多案例測試，三種形態逐一跑過。
-// 使用者變更設定規格:autoClean 預設值改為 false，這裡測的是短碼解析本
-// 身的行為(與預設值問題無關)，載入後先明確推播 autoClean:true 開啟，
-// 讓測試繼續驗證同一件事——不因預設值翻轉而失去這批測試的鑑別力。預設
-// 值本身的測試移到下方 S6 專區。
+// 這裡測的是短碼解析本身的行為(與預設值無關)，載入後先明確推播
+// autoClean:true 開啟，讓測試不受預設值影響仍能驗證同一件事。
 test('短碼經橋接成功解析後寫入乾淨貼文網址(尾斜線／無 www 的 threads.net／前後空白加 query)', async () => {
   const cases = [
     ['https://www.threads.com/share/DHuf91XTf/', '帶尾斜線'],
@@ -156,15 +151,14 @@ test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async 
   assert.equal(recorder[0], shareUrl);
 });
 
-// 修正規格(記錄與淨化脫鉤):autoClean=false(recordOnly)時解析失敗，
-// clipboard-guard.js 自己這端(不只是 bridge.js)也該留一句 console.warn
-// 供除錯，且完全不影響剪貼簿內容(原樣放行使用者複製的內容)。
+// autoClean=false(recordOnly)時解析失敗，clipboard-guard.js 自己這端(不
+// 只是 bridge.js)也該留一句 console.warn 供除錯，且完全不影響剪貼簿內容
+// (原樣放行使用者複製的內容)。
 //
-// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求改成原生
-// 寫入完成後才發的 fire-and-forget，不再被 writeText() 的回傳值等待
-// ——console.warn 現在發生在 await 之外，這裡補一輪等待讓請求/回應
-// (bridge 模擬器 5ms 延遲)確實跑完。多節點的非同步鏈路在 Windows 計時
-// 器顆粒(~15ms)下 30ms 預設值偶發等不完，放寬到 150ms。
+// recordOnly 情境下解析請求是原生寫入完成後才發的 fire-and-forget，不再被
+// writeText() 的回傳值等待——console.warn 發生在 await 之外，這裡補一輪等
+// 待讓請求/回應(bridge 模擬器 5ms 延遲)確實跑完。多節點的非同步鏈路在
+// Windows 計時器顆粒(~15ms)下 30ms 預設值偶發等不完，放寬到 150ms。
 test('recordOnly(autoClean=false)情境解析失敗時，console.warn 留痕跡且剪貼簿不受影響', async () => {
   const recorder = [];
   const win = createWindow();
@@ -256,10 +250,6 @@ test('帶 ?xmt 追蹤參數的貼文網址，同步去除 query 後放行', asyn
   assert.equal(recorder[0], 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7');
 });
 
-// 【精簡】「已乾淨的貼文網址」「非網址字串」「非字串輸入」「貼文網址後接
-// 空白與其他文字」四條驗的是同一個不變量:沒有東西可淨化的輸入一律原樣
-// 放行、不改寫。併為一條多案例測試。非 threads 網域的 /share/ 屬網域驗證，
-// 仍單獨保留一條(見下)。
 test('沒有東西可淨化的輸入一律原樣放行(已乾淨網址／非網址字串／非字串／網址後接文字)', async () => {
   const cases = [
     ['https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7', '已乾淨的貼文網址'],
@@ -292,10 +282,6 @@ test('非 threads 網域的 /share/ 路徑不觸發短碼解析，原樣放行',
 
   assert.equal(recorder[0], url);
 });
-
-// 【精簡】原本此處另有一條「write() 多格式 item 原樣放行，不嘗試改寫」，
-// 與後面「以參照相等原樣放行，不重建新陣列」那條是同一個案例的弱化版
-// (後者連陣列參照都比對，嚴格涵蓋前者)，故刪除弱版、只留嚴格版。
 
 // ---- 原生寫入被拒時:只呼叫一次，rejection 原樣傳回呼叫端 ----
 
@@ -390,13 +376,11 @@ test('write() 橋接回傳非貼文格式的 cleanUrl 時，視同解析失敗�
 
 // ---- 競態:逾時後才送達的回應，不得觸發第二次原生寫入 ----
 
-// 規格演進(code review #2，UX 修正):此測試預設未推播任何設定，走
-// recordOnly(autoClean=false)路徑——原生寫入現在立刻執行，不再等橋接逾
-// 時，writeText() 本身幾乎立即 resolve;解析請求改成寫入完成後才發的
-// fire-and-forget，2500ms 逾時與 2600ms 遲到回應都發生在這次 await 之
-// 外。測試改成等到遲到回應確實送達之後再檢查，不再靠「writeText 本身
-// 要等滿 2500ms」這個已經不成立的舊時序假設，但要驗的不變量不變:遲到
-// 回應不得觸發第二次原生寫入。
+// 此測試預設未推播任何設定，走 recordOnly(autoClean=false)路徑——原生寫入
+// 立刻執行，不等橋接逾時，writeText() 本身幾乎立即 resolve;解析請求是寫入
+// 完成後才發的 fire-and-forget，2500ms 逾時與 2600ms 遲到回應都發生在這次
+// await 之外。測試等到遲到回應確實送達之後再檢查，驗的不變量:遲到回應不得
+// 觸發第二次原生寫入。
 test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫一次(fail-open 原值)，遲到回應不再觸發第二次寫入', async () => {
   const recorder = [];
   const win = createWindow();
@@ -479,9 +463,9 @@ test('guard 端:event.source 非本視窗的回應不被採信，落入逾時 fa
   assert.ok(elapsed >= 2500, `非本視窗來源應被忽略、落入逾時路徑，實際 ${elapsed}ms`);
 });
 
-// 修正:onMessage(TCL_RESOLVE_RES)先前只驗 event.source，未驗 event.origin，
-// 與 bridge.js:29-30 的同款驗證不對稱。這裡比照上一條 event.source 測試，
-// 改用 dispatchRawMessageEvent 偽造一個 source 正確但 origin 錯誤的回應。
+// onMessage(TCL_RESOLVE_RES)須同時驗 event.source 與 event.origin(與
+// bridge.js:29-30 的同款驗證對稱)。這裡比照上一條 event.source 測試，改用
+// dispatchRawMessageEvent 偽造一個 source 正確但 origin 錯誤的回應。
 test('guard 端:event.origin 與本頁不符的回應不被採信，落入逾時 fail-open', async () => {
   const recorder = [];
   const win = createWindow();
@@ -517,16 +501,14 @@ test('guard 端:event.origin 與本頁不符的回應不被採信，落入逾時
 
 // ---- 解析流程結束後，每次請求的 message 監聽器須正確移除，不累積洩漏 ----
 //
-// 【PM 裁決:S6 期望值調整】原斷言為「解析後回到基準」。v1.1 規格 S6 要求 guard
-// 常駐一支 message 監聽器接收 TCL_SETTINGS_PUSH，因此基準值改為「基準 +1」:
-// 常駐的設定監聽器是 S6 的設計，每次解析請求自己那支則仍須用完即移除。
-// 防洩漏的原始意圖以「多輪解析後數量不再增長」保留。
+// guard 常駐一支 message 監聽器接收 TCL_SETTINGS_PUSH(S6 設計)，因此監聽器
+// 基準值為「基準 +1」:常駐的設定監聽器一直在，每次解析請求自己那支則須用
+// 完即移除。防洩漏以「多輪解析後數量不再增長」把關。
 //
-// 規格演進(code review #2，UX 修正):此測試未推播任何設定，走 recordOnly
-// (autoClean=false)路徑，解析請求改成寫入完成後才發的 fire-and-forget，
-// 不再被 writeText() 的回傳值等待——每次呼叫後補一輪等待，讓對應的請
-// 求/回應跑完、監聽器確實移除，不然會在「回應還沒送達」的瞬間量到多一
-// 支暫時性監聽器。
+// 此測試未推播任何設定，走 recordOnly(autoClean=false)路徑，解析請求是寫
+// 入完成後才發的 fire-and-forget，不再被 writeText() 的回傳值等待——每次
+// 呼叫後補一輪等待，讓對應的請求/回應跑完、監聽器確實移除，不然會在「回應
+// 還沒送達」的瞬間量到多一支暫時性監聽器。
 
 test('guard 端:短碼解析成功後，只剩常駐的設定監聽器(基準+1)，多輪解析不再增長', async () => {
   const recorder = [];
@@ -552,9 +534,6 @@ test('guard 端:短碼解析成功後，只剩常駐的設定監聽器(基準+1)
 
 // ---- write():不符合單一 text/plain 條件的 items，以參照相等原樣放行 ----
 
-// 【精簡】「多格式 item」與「單一 image/png」是同一個不變量(不符合單一
-// text/plain 條件者一律以參照相等原樣放行、不重建新陣列)的兩個資料變體，
-// 併為一條多案例測試。
 test('write():不符單一 text/plain 條件的 items 以參照相等原樣放行，不重建新陣列', async () => {
   const cases = [
     [
@@ -580,16 +559,9 @@ test('write():不符單一 text/plain 條件的 items 以參照相等原樣放�
 });
 
 // ============================================================
-// v1.1 設定規格:S3(autoClean 關閉)、S5(autoClean 開啟時行為不變)、
-// S6(設定經 TCL_SETTINGS_PUSH 下放與即時生效)
-//
-// 【R1-1 開關合併】resolveShortcode 徹底移除——Threads 的複製連結只會吐
-// share 短連結，「攔截但不解析」是幾乎無作用的組合。原 S4
-// (resolveShortcode 關閉)整段隨之刪除;短碼解析與 ?xmt 剪參一律收在
-// autoClean 這一顆之下。
-//
-// 【使用者變更設定規格】notifySuccess 整組移除，settings 只剩 autoClean
-// 一顆鍵；autoClean 預設值改為 false。
+// 設定規格:S3(autoClean 關閉)、S5(autoClean 開啟時行為不變)、
+// S6(設定經 TCL_SETTINGS_PUSH 下放與即時生效)。短碼解析與 ?xmt 剪參一律
+// 收在 autoClean 這一顆之下。
 //
 // 【協定約定】bridge(ISOLATED world)以 postMessage 下放設定，訊息形狀為
 //   { type: 'TCL_SETTINGS_PUSH', settings: { autoClean } }
@@ -639,18 +611,16 @@ async function pushSettings(win, settings) {
   await settle();
 }
 
-// 使用者變更設定規格:notifySuccess 整組移除，settings 只剩 autoClean 一
-// 顆鍵下放給 MAIN world。
+// settings 只有 autoClean 一顆鍵下放給 MAIN world。
 function settings(overrides) {
   return Object.assign({ autoClean: true }, overrides);
 }
 
-// ---- S3(規格翻轉:記錄與淨化脫鉤):autoClean=false 時剪貼簿一律不被
-// 改寫，但偵測／解析管線照跑、記錄照發 ----
+// ---- S3(記錄與淨化脫鉤):autoClean=false 時剪貼簿一律不被改寫，但偵測／
+// 解析管線照跑、記錄照發 ----
 //
-// PM 修正規格:autoClean 只管「剪貼簿要不要被改寫」，不再管「要不要記
-// 錄」——歷史即收藏的語意下，複製就該記錄，不因 autoClean 關閉而整段
-// 早退。新的不變量:
+// autoClean 只管「剪貼簿要不要被改寫」，不管「要不要記錄」——複製就該記
+// 錄，不因 autoClean 關閉而整段早退。不變量:
 //   - 剪貼簿一律寫回使用者原本複製的內容(不被改寫成乾淨網址)。
 //   - ?xmt 分支(同步、不需橋接)照樣送出 TCL_CLEANED_NOTICE。
 //   - /share/ 分支照樣送出 TCL_RESOLVE_REQ(帶 recordOnly:true，供
@@ -676,10 +646,10 @@ test('S3:autoClean=false 時，writeText 對 ?xmt 與 /share/ 皆原樣放行剪
   }
 
   // /share/ 分支:需要橋接解析，請求應帶 recordOnly:true；解析成功後才發
-  // notice。規格演進(code review #2，UX 修正):解析請求改成原生寫入完成
-  // 後才發的 fire-and-forget，不再被 writeText() 的回傳值等待，這裡的
-  // settle() 得涵蓋「送出請求→bridge 模擬器回應→notifyCleaned 送出」
-  // 這條多節點鏈路，在 Windows 計時器顆粒(~15ms)下放寬到 150ms。
+  // notice。解析請求是原生寫入完成後才發的 fire-and-forget，不再被
+  // writeText() 的回傳值等待，這裡的 settle() 得涵蓋「送出請求→bridge 模擬
+  // 器回應→notifyCleaned 送出」這條多節點鏈路，在 Windows 計時器顆粒
+  // (~15ms)下放寬到 150ms。
   {
     const recorder = [];
     const win = createWindow();
@@ -721,8 +691,7 @@ test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等�
     assert.equal(notices[0].kind, 'strip');
   }
 
-  // /share/ 分支。規格演進(code review #2，UX 修正):理由同上方 writeText
-  // 的 /share/ 分支，settle() 放寬到 150ms。
+  // /share/ 分支。理由同上方 writeText 的 /share/ 分支，settle() 放寬到 150ms。
   {
     const recorder = [];
     const win = createWindow();
@@ -746,32 +715,17 @@ test('S3:autoClean=false 時，write() 對 ?xmt 與 /share/ 皆以參照相等�
   }
 });
 
-// ---- S5:autoClean=true 時，現行淨化行為(短碼解析與 ?xmt 剪參)完全不變 ----
-//
-// 【精簡:整節刪除】S5 原有三條，形式都是「先推播關閉確認放行、再推播開啟
-// 確認行為與現行一致」——後半段與既有的成功流程測試完全重疊，屬於典型的
-// 「錯誤/關閉路徑後再跑一次成功流程」。逐條對應到仍在的覆蓋:
-//   - writeText 短碼解析     → 上方短碼多案例測試(預設 true)
-//                              + S6「連續推播(開→關→開)」(明示推播 true)
-//   - ?xmt 剪除與非網址放行  → 上方 ?xmt 測試與「原樣放行」多案例測試
-//                              + S6「首次推播前用預設值」
-//   - write() 短碼解析       → 上方 write() 短碼成功測試(預設 true);
-//                              autoClean 這道閘是兩條路徑共用的同一個判斷，
-//                              關閉側由 S3 的 write() 測試覆蓋。
-// 前半段「關閉確實生效」的可鑑別性由 S3 與 S6 各自保留，不因此節刪除而失守。
-
 // ---- S6(MAIN world 端):首次推播前用預設值，收到推播後即時採用新值 ----
 
-// 使用者變更設定規格:autoClean 預設值改為 false。原斷言方向「預設開
-// 啟，推播關閉後改變行為」整個倒過來:預設關閉，推播開啟後才改變行為。
-// PM 修正規格(記錄與淨化脫鉤):autoClean=false 不再讓 /share/ 整段早
-// 退——剪貼簿不被改寫，但解析請求(recordOnly:true)仍照樣送出供記錄。
+// autoClean 預設值為 false:預設關閉，推播開啟後才改變行為。autoClean=false
+// 不讓 /share/ 整段早退——剪貼簿不被改寫，但解析請求(recordOnly:true)仍照
+// 樣送出供記錄。
 //
-// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求改成原生
-// 寫入完成後才發的 fire-and-forget，不再被 writeText() 的回傳值等待
-// ——recorder(剪貼簿實際寫入內容)仍可在 await 後立即讀到(原生寫入本
-// 身沒有被延後)，但 requests(fire-and-forget 送出的解析請求)需要多等
-// 一輪才會確實送達 trackResolveRequests 的監聽器，這裡補上 settle()。
+// recordOnly 情境下解析請求是原生寫入完成後才發的 fire-and-forget，不再被
+// writeText() 的回傳值等待——recorder(剪貼簿實際寫入內容)仍可在 await 後
+// 立即讀到(原生寫入本身沒有被延後)，但 requests(fire-and-forget 送出的解
+// 析請求)需要多等一輪才會確實送達 trackResolveRequests 的監聽器，這裡補上
+// settle()。
 test('S6:guard 在收到第一次 TCL_SETTINGS_PUSH 前，以預設值(autoClean=false)運作', async () => {
   const recorder = [];
   const win = createWindow();
@@ -811,9 +765,9 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
   await pushSettings(win, settings({ autoClean: false }));
   await sandbox.navigator.clipboard.writeText(SHARE_URL);
   assert.equal(recorder[1], SHARE_URL, 'autoClean=false 時剪貼簿不被改寫');
-  // 規格演進(code review #2，UX 修正):recordOnly 情境的解析請求是
-  // fire-and-forget，這裡多等一輪讓請求確實送達，也順便讓這輪的請求/
-  // 回應在進入下一個 autoClean:true 區塊前跑完，避免跨區塊時序汙染。
+  // recordOnly 情境的解析請求是 fire-and-forget，這裡多等一輪讓請求確實
+  // 送達，也順便讓這輪的請求／回應在進入下一個 autoClean:true 區塊前跑
+  // 完，避免跨區塊時序汙染。
   await settle(150);
   assert.equal(requests.length, 2, 'autoClean=false 仍照樣送出解析請求供記錄，不再整段早退');
   assert.equal(requests[1].recordOnly, true);
@@ -825,7 +779,7 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
   assert.equal(requests[2].recordOnly, false);
 });
 
-// ---- S8:TCL_SETTINGS_PUSH 的來源驗證(PM 裁決採納，與 TCL_RESOLVE_RES 同等級) ----
+// ---- S8:TCL_SETTINGS_PUSH 的來源驗證(與 TCL_RESOLVE_RES 同等級) ----
 //
 // guard 對 TCL_RESOLVE_RES 已要求 event.source 必須是本視窗;設定推播是同一條
 // postMessage 管道，必須做同等級的來源驗證。驗證不過的推播要「完全忽略」——
@@ -833,9 +787,9 @@ test('S6:連續推播(開→關→開)時，guard 每次都即時採用最新設
 // 每支測試都附上「同樣內容改由合法管道下放必須生效」的對照組，避免實作用
 // 「一律忽略所有推播」的假動作通過。
 
-// 使用者變更設定規格:autoClean 預設值改為 false，偽造推播若想製造「可
-// 觀察到的差異」必須改成嘗試把它打開(true)，否則跟 ambient 預設值本來
-// 就相同、驗不出偽造是否真的被忽略。
+// autoClean 預設值為 false，偽造推播若想製造「可觀察到的差異」必須改成嘗
+// 試把它打開(true)，否則跟 ambient 預設值本來就相同、驗不出偽造是否真的
+// 被忽略。
 test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設定不得生效', async () => {
   const recorder = [];
   const win = createWindow();
@@ -861,11 +815,9 @@ test('S8:event.source 非本視窗的 TCL_SETTINGS_PUSH 必須完全忽略，設
   assert.equal(requests.length, 0);
 });
 
-// PM 修正規格(記錄與淨化脫鉤):autoClean=false 時 /share/ 剪貼簿不被改
-// 寫，但仍照樣送出解析請求供記錄，requests.length 不再是 0。
-//
-// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求是
-// fire-and-forget，settle(150) 讓每次的請求確實送達再檢查數量。
+// autoClean=false 時 /share/ 剪貼簿不被改寫，但仍照樣送出解析請求供記錄，
+// requests.length 不再是 0。recordOnly 情境下解析請求是 fire-and-forget，
+// settle(150) 讓每次的請求確實送達再檢查數量。
 test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   const recorder = [];
   const win = createWindow();
@@ -894,9 +846,9 @@ test('S8:偽造來源的推播不得覆蓋既有的合法設定', async () => {
   assert.equal(requests.length, 2, '設定仍維持 autoClean=false，第二次複製一樣照樣送出解析請求');
 });
 
-// 修正:TCL_SETTINGS_PUSH 的監聽器先前只驗 event.source，未驗 event.origin，
-// 與 bridge.js:29-30、以及本檔上方 TCL_RESOLVE_RES 的同款驗證不對稱。
-// 比照上兩條 S8 測試的形狀，改偽造一個 source 正確但 origin 錯誤的推播。
+// TCL_SETTINGS_PUSH 的監聽器須同時驗 event.source 與 event.origin(與
+// bridge.js:29-30、本檔上方 TCL_RESOLVE_RES 的同款驗證對稱)。比照上兩條
+// S8 測試的形狀，改偽造一個 source 正確但 origin 錯誤的推播。
 
 test('S8:origin 與本頁不符的 TCL_SETTINGS_PUSH 必須完全忽略，設定不得生效', async () => {
   const recorder = [];
@@ -922,11 +874,9 @@ test('S8:origin 與本頁不符的 TCL_SETTINGS_PUSH 必須完全忽略，設定
   assert.equal(requests.length, 0);
 });
 
-// PM 修正規格(記錄與淨化脫鉤):autoClean=false 時 /share/ 剪貼簿不被改
-// 寫，但仍照樣送出解析請求供記錄，requests.length 不再是 0。
-//
-// 規格演進(code review #2，UX 修正):recordOnly 情境下解析請求是
-// fire-and-forget，settle(150) 讓每次的請求確實送達再檢查數量。
+// autoClean=false 時 /share/ 剪貼簿不被改寫，但仍照樣送出解析請求供記錄，
+// requests.length 不再是 0。recordOnly 情境下解析請求是 fire-and-forget，
+// settle(150) 讓每次的請求確實送達再檢查數量。
 test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', async () => {
   const recorder = [];
   const win = createWindow();
@@ -955,7 +905,7 @@ test('S8:origin 與本頁不符的推播不得覆蓋既有的合法設定', asyn
 });
 
 // ============================================================
-// code review #2(UX 修正):autoClean 關閉(新預設)時剪貼簿寫入不得被解
+// autoClean 關閉(新預設)時剪貼簿寫入不得被解
 // 析壓後。S3/S6/S8 已經覆蓋「recordOnly 情境解析成功/失敗後仍照樣記
 // 錄」的最終結果，這裡專門補「時序特性本身」與 saveHistory 交叉的兩個
 // 象限:
@@ -1069,15 +1019,14 @@ test('code review #2:recordOnly 情境下原生寫入被拒時，不再浪費一
 });
 
 // ============================================================
-// R1-2 通知涵蓋自動路徑(MAIN world 端):自動淨化成功時，guard 要往
-// bridge 送出一則通知，轉發給 background 寫入淨化紀錄(方案甲:歷史即
-// 收藏，唯一資料集)。
+// 通知涵蓋自動路徑(MAIN world 端):自動淨化成功時，guard 要往 bridge 送出
+// 一則通知，轉發給 background 寫入淨化紀錄(唯一資料集)。
 //
 // 【協定約定】guard → bridge 的訊息形狀:
 //   { type: 'TCL_CLEANED_NOTICE', cleanUrl: <實際寫入剪貼簿的淨化後字串>,
 //     kind, original?, removedParams? }
-// original/removedParams(F 案，紀錄資料層補齊，對齊手機 ShareHistoryItem)
-// 選填:original 是使用者實際複製到/觸發時的原始連結(share 短碼原文，
+// original/removedParams(紀錄資料層補齊，對齊手機 ShareHistoryItem)選填:
+// original 是使用者實際複製到/觸發時的原始連結(share 短碼原文，
 // 或 strip 剝參前的原網址)，與 cleanUrl 相同就不夾帶;removedParams 是
 // strip 分支剝除的查詢參數清單({key, value}[])，share 分支拿不到(伺服
 // 器端重新導向前的網址帶了哪些參數，guard 這層無從得知)，恆缺席。
@@ -1087,9 +1036,8 @@ test('code review #2:recordOnly 情境下原生寫入被拒時，不再浪費一
 //   - fail-open 放行原文(解析失敗／autoClean 關閉／內容本來就乾淨)不算成功
 //   - 原生寫入被拒(rejection)代表根本沒寫進去，也不算成功
 //
-// 使用者變更設定規格:notifySuccess(成功類通知的顯示與否)已整組移除，
-// 這裡的 notice 不再有「要不要顯示」的把關，background 收到就無條件記
-// 錄一筆——本節純測 guard 該不該送出 notice 這個判定基準本身。
+// notice 沒有「要不要顯示」的把關，background 收到就無條件記錄一筆——本節
+// 純測 guard 該不該送出 notice 這個判定基準本身。
 // ============================================================
 
 const CLEANED_NOTICE_TYPE = 'TCL_CLEANED_NOTICE';
@@ -1104,10 +1052,6 @@ function trackCleanedNotices(win) {
   return notices;
 }
 
-// 【精簡】三條淨化成功送 notice 的測試(writeText 短碼／writeText ?xmt／
-// write() 短碼)驗的是同一個不變量:實際寫入淨化後內容就送出一則 notice，
-// 且 notice 的 cleanUrl 等於實際寫入的內容。併為一條三案例測試，三條路徑
-// 都仍各跑一次。
 test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，cleanUrl 等於寫入內容', async () => {
   const cases = [
     {
@@ -1161,7 +1105,7 @@ test('R1-2:淨化成功實際寫入後，guard 送出 TCL_CLEANED_NOTICE，clean
 });
 
 // ============================================================
-// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
+// 紀錄資料層補齊 original/removedParams(對齊手機 ShareHistoryItem):
 // notifyCleaned 夾帶的 original/removedParams。share 分支只有 original
 // (短碼原文)，沒有 removedParams(伺服器端重新導向前的網址帶了哪些查詢
 // 參數，guard 這層無從得知，不硬造);strip 分支兩者都有。
@@ -1256,9 +1200,8 @@ test('F 案:多個查詢參數時，removedParams 逐一列出(不只抓第一�
   assert.equal(notices[0].removedParams[1].value, 'ig');
 });
 
-// code review #3(fragment 誤判修正):hash 片段內容本身合法含有 '?' 字元
-// 時(例如前端路由常見的 '#x?y=1')，不得被誤判為查詢字串——修正前
-// parseRemovedParams 對整段 tail 直接 indexOf('?')，會把 hash 裡的
+// hash 片段內容本身合法含有 '?' 字元時(例如前端路由常見的 '#x?y=1')，不
+// 得被誤判為查詢字串——若對整段 tail 直接 indexOf('?')，會把 hash 裡的
 // '?y=1' 誤判出一筆根本不存在的假參數 {key:'y', value:'1'}。
 test('code review #3:hash 片段內容含 "?" 時(如 "#x?y=1")不得誤判出假查詢參數', async () => {
   const urlWithTrickyHash = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7#x?y=1';
@@ -1329,9 +1272,8 @@ test('R1-2:橋接解析失敗而 fail-open 寫入原文時，不得送出通知'
   assert.equal(notices.length, 0);
 });
 
-// PM 修正規格(記錄與淨化脫鉤):autoClean=false 不再讓記錄整段早退——
-// 剪貼簿原樣放行(不被改寫)，但解析／剪參成功仍照樣送出 TCL_CLEANED_NOTICE
-// 供記錄(歷史即收藏的語意下，複製就該記錄，不受 autoClean 影響)。
+// autoClean=false 時剪貼簿原樣放行(不被改寫)，但解析／剪參成功仍照樣送出
+// TCL_CLEANED_NOTICE 供記錄(複製就該記錄，不受 autoClean 影響)。
 test('R1-2:autoClean=false 時剪貼簿原樣放行，但仍照樣送出 TCL_CLEANED_NOTICE 供記錄', async () => {
   const recorder = [];
   const win = createWindow();
