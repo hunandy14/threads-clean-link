@@ -2,7 +2,8 @@
 //
 // tcl-core.js 是 background(寫入側)與 options(讀取/匯入側)原本各養一份
 // sanitize/網址樣式鏡像的收斂單一權威。此檔專測 lib 本體:
-//   - 網址判定:isCleanPostUrl(嚴格錨定)、normalizePostUrl(容尾正規化)
+//   - 網址判定:isCleanPostUrl(嚴格錨定)、normalizePostUrl(容尾正規化)、
+//     extractPostId(永久合併的主鍵來源)
 //   - F5:stripControlChars(控制/bidi 剝除，**含 emoji ZWJ 保留**)
 //   - F1:sanitizeOriginal(白名單三合法來源全通過、偽造擋下、超長整欄丟棄)
 //   - sanitizeText / sanitizeRemovedParams / sanitizeSeenList
@@ -69,6 +70,37 @@ test('normalizePostUrl:容尾正規化——回傳去 query/hash/尾斜線後的
   assert.equal(C.normalizePostUrl(SHARE_URL), null);
   assert.equal(C.normalizePostUrl('https://evil.example/@u/post/ID'), null);
   assert.equal(C.normalizePostUrl(12345), null);
+});
+
+// extractPostId 是紀錄永久合併的主鍵來源(見 background.js 的紀錄合併區
+// 塊):handle 可改名、post ID 終身不變，改名前後的網址靠它認出是同一篇。三
+// 案分別釘住:合法貼文網址抽得出 ID(且與 handle 無關)、分享短碼抽不出
+// (短碼只有 Meta 伺服器能對應)、畸形/帶尾隨內容一律 null(呼叫端據此退回整
+// 條 url 當 fallback key，寧可多分一張卡也不要把兩篇算成同一篇)。
+test('extractPostId:合法貼文網址抽出 ID，與 handle 無關', () => {
+  assert.equal(C.extractPostId(CLEAN_URL), 'DbezfB0gYvP');
+  // 同一個 post ID、不同 handle(改名前後)必須抽出同一個值——永久合併成立
+  // 的前提。
+  assert.equal(
+    C.extractPostId('https://threads.net/@renamed.user/post/DbezfB0gYvP'),
+    C.extractPostId(CLEAN_URL)
+  );
+  assert.equal(C.extractPostId('https://threads.com/@u/post/Dbez-fB0_gYvP'), 'Dbez-fB0_gYvP');
+});
+
+test('extractPostId:分享短碼沒有貼文 ID，一律 null', () => {
+  assert.equal(C.extractPostId(SHARE_URL), null);
+  assert.equal(C.extractPostId('https://www.threads.com/share/AbCdEfGhI/?x=1'), null);
+});
+
+test('extractPostId:畸形/尾隨內容/非字串一律 null(不放行寬鬆匹配)', () => {
+  assert.equal(C.extractPostId(CLEAN_URL + '?xmt=abc'), null);
+  assert.equal(C.extractPostId(CLEAN_URL + '/'), null);
+  assert.equal(C.extractPostId(CLEAN_URL + cp(0x5e10) + 'evil'), null);
+  assert.equal(C.extractPostId('https://evil.example/@u/post/ID'), null);
+  assert.equal(C.extractPostId('https://www.threads.com/@u/post/'), null);
+  assert.equal(C.extractPostId(12345), null);
+  assert.equal(C.extractPostId(null), null);
 });
 
 // ---- F5:stripControlChars ----
