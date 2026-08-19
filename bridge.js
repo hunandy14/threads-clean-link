@@ -4,8 +4,38 @@
 (function () {
   'use strict';
 
+  // ---- 冪等 + 舊實例交棒(併發線中2)----
+  // 同一個 ISOLATED world 若已經有本腳本的舊實例在跑(擴充功能更新後的自
+  // 癒重注入，或「使用者手動 F5 × 自癒重注入」的毫秒級競態造成同頁雙注
+  // 入)，先讓舊實例的 message listener 下線，再由這個新實例接手，消除「雙
+  // listener → 雙轉發 cleanedNotice → 時間軸多一筆假事件」。
+  //
+  // 刻意不用「if (window.__tclBridgeLoaded) return」這種永久旗標:那會讓
+  // 擴充功能更新後的自癒重注入(background.js reinjectIntoOpenTabs)因旗標
+  // 仍在而整支 return、不註冊新 listener，而舊的孤兒 listener 又會在下方
+  // 自檢後自我下線，share 解析就此無人接手。交棒式(先 dispose 舊的、再註
+  // 冊新的)兩種情境都正確:純雙注入淨剩一個 listener;更新重注入則由帶有
+  // 效 chrome.runtime 的新實例接手。
+  if (typeof window !== 'undefined' && typeof window.__tclBridgeDispose === 'function') {
+    try {
+      window.__tclBridgeDispose();
+    } catch (e) {
+      // 舊實例下線失敗不影響新實例接手。
+    }
+  }
+
   var REQ_TYPE = 'TCL_RESOLVE_REQ';
   var RES_TYPE = 'TCL_RESOLVE_RES';
+
+  // F4 removedParams 單筆長度上限(對齊 background.js 的
+  // REMOVED_PARAM_KEY_MAX／REMOVED_PARAM_VALUE_MAX，兩份常數各自獨立維
+  // 護，本檔無建置系統可共用單一來源)。見下方 removedParamsWithinBounds。
+  var MAX_REMOVED_PARAM_KEY_LENGTH = 64;
+  var MAX_REMOVED_PARAM_VALUE_LENGTH = 512;
+
+  // 本實例是否已下線(孤兒自檢通過、或被新實例交棒收掉)。下線後 listener
+  // 一律短路、且已 removeEventListener,不再對頁面產生任何副作用。
+  var disposed = false;
 
   // MAIN world(clipboard-guard.js)實際把淨化後內容寫入剪貼簿後，會送一
   // 則 TCL_CLEANED_NOTICE 過來，這裡原樣轉發成
@@ -48,16 +78,44 @@
     return /extension context invalidated/i.test(msg);
   }
 
+  // R3 孤兒偵測(同步判準):擴充功能更新／重載後，既開分頁裡的舊 content
+  // script 仍在跑，但 chrome.runtime.id 變成 undefined。以 runtime.id 當
+  // 唯一判準——它是同步、無副作用、不必真的送出一則訊息就問得到的信號，
+  // 可在 listener 一進來就先問一次。chrome 整個缺席也視為失效(訊息本來就
+  // 送不出去，保守方向一致)。
+  function isContextLost() {
+    try {
+      return !(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // R3 自我下線:斷開 message listener 並永久短路。冪等,重複呼叫安全。孤
+  // 兒自檢通過時、sendMessage 擲 context invalidated 時、或被新實例交棒
+  // 時呼叫,把場子讓給重注入的新實例。
+  function disposeBridge() {
+    if (disposed) return;
+    disposed = true;
+    try {
+      if (typeof window !== 'undefined') window.removeEventListener('message', onBridgeMessage);
+    } catch (e) {
+      // 斷不開就算了，disposed 旗標本身已足以讓 listener 短路。
+    }
+  }
+
   // 送 background 失敗時一律留下 console 訊號:這兩個 catch 原本是完全靜默
   // 的，孤兒情境下(擴充功能剛更新)使用者的複製照做、勾勾照亮、紀錄卻靜
-  // 默丟失，連除錯時都找不到任何線索。孤兒與一般失敗分開措辭，孤兒明講
-  // 「請重新整理頁面」——這是唯一的復原方式(不動作的話，background 的自
-  // 癒重注入也會補上新的 content script，見 background.js 的
-  // reinjectIntoOpenTabs)。
+  // 默丟失，連除錯時都找不到任何線索。孤兒與一般失敗分開措辭:孤兒說明自
+  // 癒重注入(background.js 的 reinjectIntoOpenTabs)會補上新的 content
+  // script 接手，不再硬叫使用者重新整理(R3 文案降級)。
   function warnSendFailure(scope, err) {
     if (isContextInvalidated(err)) {
+      // R3 文案降級:原本硬性叫使用者「請重新整理頁面」，但自癒重注入
+      // (background.js reinjectIntoOpenTabs)通常已經補上帶有效 chrome.runtime
+      // 的新 content script 接手，此時叫使用者重新整理是誤導。改成中性說明。
       console.warn(
-        '[threads-clean-link] ' + scope + ':擴充功能情境已失效(擴充功能剛更新或重載)，這次沒有送達 background，請重新整理頁面',
+        '[threads-clean-link] ' + scope + ':擴充功能情境已失效(擴充功能剛更新或重載)，這次沒有送達 background;自癒重注入會補上新的 content script 接手，一般不需手動處理',
         err
       );
     } else {
@@ -75,7 +133,42 @@
     }
   }
 
-  window.addEventListener('message', function (event) {
+  // F4 單筆封頂:removedParams 這條 postMessage 管道內容由頁面腳本自由指
+  // 定，除了既有的「筆數 ≤ MAX_REMOVED_PARAMS」外，再確認沒有任一筆的
+  // key/value 字串超過長度上限——擋住「筆數不多但單筆超長」的巨量 payload
+  // 越過 content script → service worker 的程序邊界(補齊下方註解宣稱、但
+  // 原本只做了筆數檢查的防線)。任一筆超長就回傳 false(整欄不轉發,對齊
+  // 筆數超限時「整欄丟棄」的既有粗粒度風格);細部型別/白名單/逐筆截斷仍
+  // 交給 background.js 的 sanitizeRemovedParams。
+  function removedParamsWithinBounds(arr) {
+    for (var i = 0; i < arr.length; i++) {
+      var item = arr[i];
+      if (item && typeof item === 'object') {
+        if (typeof item.key === 'string' && item.key.length > MAX_REMOVED_PARAM_KEY_LENGTH) return false;
+        if (typeof item.value === 'string' && item.value.length > MAX_REMOVED_PARAM_VALUE_LENGTH) return false;
+      }
+    }
+    return true;
+  }
+
+  function onBridgeMessage(event) {
+    // 本實例已下線(孤兒自檢通過或被新實例交棒)就一律短路。
+    if (disposed) return;
+
+    // R3 孤兒自檢:擴充功能情境已失效就直接下線、不 reply、不 handleFailure，
+    // 把場子讓給重注入的新實例(guard 端 2.5s 逾時或新實例正確回應接手)。
+    // 放在 listener 最開頭:孤兒實例收到任何訊息都不再搶答毒化自癒後的解
+    // 析(舊 bug:孤兒仍 reply({ok:false,reason:'bridge-exception'}) 搶在新實
+    // 例前回覆)。
+    if (isContextLost()) {
+      // 留一則降級 console.warn(不再硬叫「請重新整理頁面」,自癒重注入會接
+      // 手),孤兒退場才有跡可循;disposed 旗標保證只會 warn 這一次。
+      console.warn(
+        '[threads-clean-link] 橋接偵測到擴充功能情境已失效(擴充功能剛更新或重載)，本實例已下線，交由自癒重注入的新實例接手'
+      );
+      disposeBridge();
+      return;
+    }
     // 只信任「本頁面自己發給自己」的訊息：
     // - source 必須是同一個 window（排除子 iframe / 其他視窗轉發過來的訊息）
     // - origin 必須等於目前頁面的 origin
@@ -115,7 +208,11 @@
         ) {
           payload.original = data.original;
         }
-        if (Array.isArray(data.removedParams) && data.removedParams.length <= MAX_REMOVED_PARAMS) {
+        if (
+          Array.isArray(data.removedParams) &&
+          data.removedParams.length <= MAX_REMOVED_PARAMS &&
+          removedParamsWithinBounds(data.removedParams)
+        ) {
           payload.removedParams = data.removedParams;
         }
         // share/strip 這兩條自動路徑(clipboard-guard.js 經這裡轉發)原本
@@ -156,6 +253,9 @@
         // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而
         // 為。但不再靜默吞掉——留一則 console.warn，孤兒情境才有跡可循。
         warnSendFailure('轉發淨化通知(cleanedNotice)', e);
+        // R3 第二道:cleanedNotice 轉發時 sendMessage 擲 context invalidated
+        // (孤兒競態)也自我下線,不再讓這個死實例處理後續訊息。
+        if (isContextInvalidated(e)) disposeBridge();
       }
       return;
     }
@@ -231,14 +331,32 @@
         }
       });
     } catch (e) {
-      // sendMessage 同步丟例外（例如擴充功能情境已失效）：直接回報失敗，
-      // 讓 MAIN world 立刻 fail-open(不必空等 2.5 秒逾時)，並留下 console
-      // 訊號說明這次為什麼沒解析／沒記錄。
+      // sendMessage 同步丟例外。分兩種:
+      //   - context invalidated(孤兒競態:listener 開頭自檢時 id 尚在,呼叫
+      //     瞬間才失效):不 reply、不 handleFailure——與開頭的孤兒自檢一致，
+      //     不搶答毒化自癒後的解析，改為自我下線(R3 第二道:sendMessage 擲
+      //     context invalidated 後永久短路並 removeEventListener),讓場子留
+      //     給重注入的新實例。
+      //   - 其餘同步例外:維持既有 fail-open，直接回報失敗讓 MAIN world 立
+      //     刻不必空等 2.5 秒逾時，並留 console 訊號。
+      if (isContextInvalidated(e)) {
+        warnSendFailure('轉發短碼解析請求(resolveShare)', e);
+        disposeBridge();
+        return;
+      }
       reply({ ok: false, reason: 'bridge-exception' });
       warnSendFailure('轉發短碼解析請求(resolveShare)', e);
       handleFailure('bridge-exception');
     }
-  });
+  }
+
+  window.addEventListener('message', onBridgeMessage);
+
+  // 交棒握把:曝露自我下線函式給「下一個載入的新實例」呼叫(見檔頭的冪等
+  // 交棒)。掛在 window 上,同一 ISOLATED world 的後續實例讀得到。
+  if (typeof window !== 'undefined') {
+    window.__tclBridgeDispose = disposeBridge;
+  }
 
   // ------------------------------------------------------------
   // v1.1 設定規格 S6：載入時讀一次 chrome.storage.sync，把設定經

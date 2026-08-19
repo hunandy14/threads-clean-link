@@ -583,6 +583,67 @@ test('自癒重注入:新實例啟動時先清掉舊孤兒殘留的 .tcl-copy-ic
 });
 
 // ============================================================
+// 冪等交棒(併發線中2):同一 ISOLATED world 雙注入(手動 F5 × 自癒重注入
+// 的毫秒級競態,或更新後的重注入)時,第二個實例先讓第一個退場(斷
+// MutationObserver、清它那批 icon)再接手,消除「雙 observer → 雙落盤 →
+// 時間軸假事件」。用可觀測的假 MutationObserver 驗證舊 observer 被
+// disconnect、新 observer 仍活著。
+// ============================================================
+
+// 在同一個假 DOM／window 上把 post-icon.js 連載兩次,回傳建立過的所有假
+// MutationObserver(依建立序),供斷言「舊的被 disconnect、新的仍活著」。
+function loadPostIconTwiceInFakeDom() {
+  const doc = createFakeDocument(0);
+  const observers = [];
+  function FakeMutationObserver(cb) {
+    this.cb = cb;
+    this.disconnected = false;
+    this.observed = false;
+    observers.push(this);
+  }
+  FakeMutationObserver.prototype.observe = function () {
+    this.observed = true;
+  };
+  FakeMutationObserver.prototype.disconnect = function () {
+    this.disconnected = true;
+  };
+  const win = {
+    location: { origin: 'https://www.threads.com' },
+    navigator: {},
+    getComputedStyle: () => ({ color: '' }),
+  };
+  const sandbox = {
+    window: win,
+    document: doc,
+    console: { warn() {}, error() {}, log() {} },
+    setTimeout,
+    clearTimeout,
+    URL,
+    MutationObserver: FakeMutationObserver,
+    // 帶有效 runtime.id:情境有效,兩次載入都不因孤兒自檢而提早退場,單純
+    // 驗冪等交棒本身。
+    chrome: { runtime: { id: 'tcl-test-ext' } },
+  };
+  runInSandbox(SRC, sandbox); // 實例 A
+  runInSandbox(SRC, sandbox); // 實例 B:init 開頭透過 __tclPostIconDispose 讓 A 退場
+  return { observers, window: win };
+}
+
+test('冪等交棒:同一 window 二次載入 post-icon，舊實例的 MutationObserver 被 disconnect，新實例的仍在運作', () => {
+  const { observers, window: win } = loadPostIconTwiceInFakeDom();
+
+  assert.equal(observers.length, 2, '兩次載入應各自建立一個 MutationObserver');
+  assert.equal(observers[0].disconnected, true, '舊實例(A)的 observer 應在交棒時被 disconnect');
+  assert.equal(observers[1].disconnected, false, '新實例(B)的 observer 應仍在運作,未被誤斷');
+  assert.equal(observers[1].observed, true, '新實例(B)應照常 observe 接手掃描');
+  assert.equal(
+    typeof win.__tclPostIconDispose,
+    'function',
+    '交棒握把應留在 window 上,供再下一個實例接手'
+  );
+});
+
+// ============================================================
 // i18n.js 新增 key:iconTooltip(圖示滑鼠提示)、iconCopied(複製成功提示)。
 // zh/en 兩份字典都要有這兩個 key 且非空字串；既有的 zh/en key 集合對齊
 // 測試在 test/i18n.test.js(不動它)，等實作補上這兩個 key 後會一併通過。
