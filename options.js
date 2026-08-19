@@ -1698,6 +1698,7 @@
     hasCardPreview: hasCardPreview,
     isLongExcerpt: isLongExcerpt,
     buildSeenTimeline: buildSeenTimeline,
+    renderExcerptWithLinks: renderExcerptWithLinks,
     formatDisplayUrl: formatDisplayUrl,
     buildDetailExtraRows: buildDetailExtraRows,
     createOptionsController: createOptionsController,

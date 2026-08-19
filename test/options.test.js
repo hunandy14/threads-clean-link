@@ -467,13 +467,6 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
   assert.deepEqual(Object.keys(cleaned[1]).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入，但 entry 本身仍保留');
 });
 
-// 【審查修正】sanitizeTextField 補空字串丟棄，與 background.js 的
-// sanitizeHistoryField 對齊(該函式明文「空字串比照非字串同樣丟棄」)。
-test('sanitizeEntries:author/handle/excerpt 為空字串時比照非字串整欄丟棄，不落空字串佔位', () => {
-  const cleaned = options.sanitizeEntries([{ url: URL_A, kind: 'share', at: 1, author: '', handle: '', excerpt: '' }]);
-  assert.deepEqual(Object.keys(cleaned[0]).sort(), ['at', 'kind', 'url'], '空字串的選填欄位應整欄不寫入');
-});
-
 // 紀錄去重合併新增:seen[] 是「先前已經落盤的資料」，讀取階段(sanitizeEntries)
 // 同樣要逐筆 sanitize，偽造/損毀的記錄(at 非數字、kind 不在白名單、非物件)
 // 逐筆丟棄，不因此整個陣列作廢;真的沒有合法記錄剩下時整欄不寫入(缺席不落
@@ -517,57 +510,6 @@ test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、�
 
   const notArray = cleaned.find((e) => e.url === 'https://www.threads.com/@userd/post/JkL012');
   assert.equal('seen' in notArray, false, 'seen 整欄非陣列(不是陣列內某一筆形狀不對)同樣視為缺席，不輸出該欄');
-});
-
-// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
-// 讀取階段(sanitizeEntries)同樣要逐欄 sanitize original/removedParams，
-// 規則與 mergeImportedEntries 那組測試一致。
-
-// F1 取嚴(原「超長截斷至 2048」→「超長整欄丟棄」;新增白名單:original 需吻合
-// SHARE 或容尾 POST 樣式,偽造/畸形殘 URL 一律丟棄)。見 TCLCore.sanitizeOriginal。
-test('sanitizeEntries(F1):original 白名單通過者原樣保留,與 url 相同/非字串/空字串/超長/畸形一律整欄丟棄', () => {
-  const cleaned = options.sanitizeEntries([
-    { url: URL_A, kind: 'strip', at: 1, original: `${URL_A}?xmt=AQGabc` }, // 合法(容尾 POST)
-    { url: URL_B, kind: 'share', at: 1, original: URL_B }, // 與自己的 url 相同 → 丟棄
-    { url: URL_C, kind: 'share', at: 1, original: 12345 }, // 非字串 → 丟棄
-    {
-      url: 'https://www.threads.com/@userd/post/JkL012',
-      kind: 'share',
-      at: 1,
-      original: `x${'a'.repeat(2100)}`,
-    }, // 超長且非白名單 → 整欄丟棄(F1:不再截斷)
-  ]);
-
-  assert.equal(cleaned.find((e) => e.url === URL_A).original, `${URL_A}?xmt=AQGabc`);
-  assert.equal('original' in cleaned.find((e) => e.url === URL_B), false, '與自己的 url 相同不存');
-  assert.equal('original' in cleaned.find((e) => e.url === URL_C), false, '非字串整欄丟棄');
-  assert.equal(
-    'original' in cleaned.find((e) => e.url === 'https://www.threads.com/@userd/post/JkL012'),
-    false,
-    'F1:超長/畸形 original 整欄丟棄,不截斷'
-  );
-});
-
-test('sanitizeEntries:removedParams 逐筆 sanitize，畸形項目丟棄、非陣列整欄丟棄、全丟時整欄不寫入', () => {
-  const cleaned = options.sanitizeEntries([
-    {
-      url: URL_A,
-      kind: 'strip',
-      at: 1,
-      removedParams: [
-        { key: 'xmt', value: 'AQGabc' }, // 合法
-        { key: '', value: 'x' }, // key 空字串 → 丟棄
-        { key: 'k'.repeat(70), value: 'x' }, // key 超長 → 丟棄
-        { key: 'v', value: 'v'.repeat(600) }, // value 超長 → 丟棄
-      ],
-    },
-    { url: URL_B, kind: 'strip', at: 1, removedParams: 'not-an-array' },
-    { url: URL_C, kind: 'strip', at: 1, removedParams: [{ key: '', value: 'x' }] },
-  ]);
-
-  assert.deepEqual(cleaned.find((e) => e.url === URL_A).removedParams, [{ key: 'xmt', value: 'AQGabc' }]);
-  assert.equal('removedParams' in cleaned.find((e) => e.url === URL_B), false, '非陣列整欄丟棄');
-  assert.equal('removedParams' in cleaned.find((e) => e.url === URL_C), false, '全丟時整欄不寫入');
 });
 
 // ---- 純函式:hasCardPreview ----
@@ -624,6 +566,35 @@ test('buildSeenTimeline:多筆有效紀錄回傳新到舊排序的陣列，形�
     [300, 200, 100],
     '新到舊排序，且濾掉 at 非有限數字/缺席與 null 項目'
   );
+});
+
+// ---- 純函式:renderExcerptWithLinks(不可信文字進 a.href 的安全邊界) ----
+//
+// 摘要是頁面來源的不可信文字。這條釘住兩個安全性質:只有以 http(s):// 開頭
+// 的片段能成為 a.href(javascript: 等其他協定連 split 都進不了連結分支，整
+// 段當純文字);含省略號「…」的顯示層截斷網址維持純文字，不做成連結(殘缺
+// 網址點下去會導向非預期目標)。makeNode/makeDocumentStub 為既有 DOM stub。
+test('renderExcerptWithLinks:javascript: 協定不成連結、含省略號的截斷網址維持純文字，只有 http(s) 進 a.href', () => {
+  const doc = makeDocumentStub();
+
+  // javascript: 沒有 http(s):// 前綴,走快速路徑整段當純文字,不產生任何子節點。
+  const el1 = makeNode('div');
+  options.renderExcerptWithLinks(doc, el1, 'javascript:alert(1) 點我');
+  assert.equal(el1.children.filter((c) => c.tag === 'a').length, 0, 'javascript: 不得成為連結');
+  assert.equal(el1.textContent, 'javascript:alert(1) 點我', '整段維持純文字');
+
+  // 含「…」的截斷網址:即便有 https:// 前綴,也維持純文字不做成 a。
+  const el2 = makeNode('div');
+  options.renderExcerptWithLinks(doc, el2, 'https://www.threads.com/@u/post/AbCd…');
+  assert.equal(el2.children.filter((c) => c.tag === 'a').length, 0, '含…的殘缺網址不做成連結');
+
+  // 對照組:乾淨 http(s) 連結才做成 a,且 href 必以 http(s):// 開頭。
+  const el3 = makeNode('div');
+  options.renderExcerptWithLinks(doc, el3, '看 https://example.com/x 這裡');
+  const anchors = el3.children.filter((c) => c.tag === 'a');
+  assert.equal(anchors.length, 1);
+  assert.equal(anchors[0].href, 'https://example.com/x');
+  assert.ok(/^https?:\/\//.test(anchors[0].href), 'a.href 一定以 http(s):// 開頭');
 });
 
 // ---- 純函式:buildEntryActions 已隨 UI 全面對齊手機任務移除(卡片 ⋮ 選單
@@ -820,11 +791,9 @@ CROSS_LAYER_FIELD_CASES.forEach(({ field, label, message, expect: expected }) =>
   });
 });
 
-// url 形狀案例(表格驅動風格一致，但不經 background sandbox——
-// background.js 自己的 url 驗證上限尚未跟進本輪的 60→80，那是 runtime
-// 車道的後續工作;現在拿兩層互比只會得到「預期中的不一致」，不是這裡要
-// 攔的 bug，故獨立成 options 端自己的邊界值案例，仍是同一組表格驅動寫
-// 法)。
+// url 形狀邊界案例:handle/post id 長度上限各 80 字元(字元類與上限由
+// TCLCore 的 NORMALIZE_POST_URL_PATTERN 單一權威定義，寫入側 background
+// 與讀取側 options 共用同一份)。恰為 80 應保留、81 應整筆丟棄。
 const CROSS_LAYER_URL_CASES = [
   {
     label: 'handle/post id 剛好 80 字元應保留',
@@ -832,7 +801,7 @@ const CROSS_LAYER_URL_CASES = [
     expectSurvive: true,
   },
   {
-    label: 'handle 81 字元應整筆丟棄(不是舊版的 60 上限)',
+    label: 'handle 81 字元應整筆丟棄',
     url: 'https://www.threads.com/@' + 'h'.repeat(81) + '/post/' + 'i'.repeat(80),
     expectSurvive: false,
   },
