@@ -277,6 +277,35 @@
     return lines > EXCERPT_DIALOG_LINES || Array.from(excerpt).length > EXCERPT_DIALOG_LINES * 22;
   }
 
+  // 對齊手機版:摘要內的 http(s) 連結渲染成可點的 <a>。摘要是頁面來源的
+  // 不可信文字，這裡只做純 DOM 組裝(textContent + createElement)，href 由
+  // 正則保證以 http(s):// 開頭，javascript: 等協定進不來;含省略號「…」的
+  // 是 Threads 顯示層截斷的殘缺網址，維持純文字不做成連結。
+  function renderExcerptWithLinks(el, text) {
+    el.textContent = '';
+    if (typeof text !== 'string' || text === '') return;
+    var parts = text.split(/(https?:\/\/[^\s]+)/);
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (part === '') continue;
+      if (i % 2 === 1 && part.indexOf('…') === -1) {
+        // 尾端黏著的標點不算連結本體，切回文字段
+        var m = part.match(/[),.;:!?、。」』]+$/);
+        var url = m ? part.slice(0, part.length - m[0].length) : part;
+        var a = document.createElement('a');
+        a.className = 'excerpt-link';
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = url;
+        el.appendChild(a);
+        if (m) el.appendChild(document.createTextNode(m[0]));
+      } else {
+        el.appendChild(document.createTextNode(part));
+      }
+    }
+  }
+
   // 對齊手機版 lib/format-display-url.ts，把完整網址轉成適合顯示的精簡
   // 路徑(去 scheme + 網域，只留 path+query+hash，去掉開頭斜線)。用於
   // 詳細視窗的「淨化後連結」與「原始連結」兩列的顯示值(複製仍用完整
@@ -928,7 +957,7 @@
         }
         if (excerptEl) {
           excerptEl.hidden = !hasExcerpt;
-          excerptEl.textContent = hasExcerpt ? e.excerpt : '';
+          renderExcerptWithLinks(excerptEl, hasExcerpt ? e.excerpt : '');
           excerptEl.classList.remove('expanded');
         }
         if (expandBtn) expandBtn.hidden = !(hasExcerpt && isLongExcerpt(e.excerpt));
