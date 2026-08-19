@@ -717,3 +717,75 @@ test('R1-2:kind 缺失、非字串或超長的 TCL_CLEANED_NOTICE 不得轉發',
   assert.equal(notices.length, 1);
   assert.equal(notices[0].kind, 'strip');
 });
+
+// ============================================================
+// 孤兒 content script:轉發失敗不得靜默吞掉
+// ------------------------------------------------------------
+// 擴充功能更新／重載後，既開分頁裡的舊 bridge.js 仍在跑，但 chrome.runtime
+// 這條線已斷，sendMessage 會同步丟出「Extension context invalidated」。修正
+// 前這兩處 catch 完全靜默:使用者的複製照做、紀錄卻靜默丟失，連除錯時都
+// 找不到任何線索。現在一律留下可查的 console.warn，且孤兒情境要明講「請重
+// 新整理頁面」(唯一的復原方式)。
+// ============================================================
+
+function loadBridgeWithConsole(sendMessageImpl) {
+  const win = createWindow();
+  const warnings = [];
+  const chrome = {
+    runtime: {
+      lastError: undefined,
+      sendMessage: sendMessageImpl,
+    },
+  };
+  runInSandbox(SRC, {
+    window: win,
+    chrome,
+    setTimeout,
+    console: {
+      warn: (...args) => warnings.push(args.map(String).join(' ')),
+      error: () => {},
+      log: () => {},
+    },
+  });
+  return { win, warnings };
+}
+
+test('孤兒情境:sendMessage 同步丟 Extension context invalidated 時，兩條轉發路徑都要留下 console.warn，不再靜默吞掉', async () => {
+  const throwOrphan = () => {
+    throw new Error('Extension context invalidated.');
+  };
+
+  // 路徑一:淨化通知轉發(修正前這個 catch 完全無聲，紀錄就是在這裡靜默丟失的)。
+  const notice = loadBridgeWithConsole(throwOrphan);
+  notice.win.postMessage({ type: CLEANED_NOTICE_TYPE, cleanUrl: CLEAN_URL, kind: 'share' });
+  await settle();
+
+  assert.equal(
+    notice.warnings.some((line) => line.includes('cleanedNotice') && line.includes('請重新整理頁面')),
+    true,
+    '轉發淨化通知失敗必須留下孤兒警告，並指出重新整理才能復原'
+  );
+
+  // 路徑二:短碼解析請求轉發。原本就會 reply fail-open(維持不變，避免
+  // MAIN world 空等 2.5 秒逾時)，但同樣要補上 console 訊號。
+  const resolve = loadBridgeWithConsole(throwOrphan);
+  const replied = new Promise((done) => {
+    resolve.win.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'TCL_RESOLVE_RES') done(event.data);
+    });
+  });
+  resolve.win.postMessage({
+    type: 'TCL_RESOLVE_REQ',
+    requestId: 'req-orphan-1',
+    url: 'https://www.threads.com/share/ABC',
+  });
+  const result = await replied;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'bridge-exception', 'fail-open 行為維持不變');
+  assert.equal(
+    resolve.warnings.some((line) => line.includes('resolveShare') && line.includes('請重新整理頁面')),
+    true,
+    '轉發解析請求失敗同樣要留下孤兒警告'
+  );
+});
