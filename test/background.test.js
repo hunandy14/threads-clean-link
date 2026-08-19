@@ -1185,6 +1185,39 @@ test('OG 案:掃描長度上限對照組——og meta 標籤在 64KB 範圍內�
   assert.equal(history[0].excerpt, '範圍內的內文');
 });
 
+// code review 修正(FAIL 打回，回歸釘子):mergeOgIntoFields 的合併結果先
+// 前沒有再過 sanitizeHistoryField，og 來源的 excerpt/author 可能繞過
+// HISTORY_EXCERPT_MAX/HISTORY_AUTHOR_MAX 直通入庫(og:content 屬性值本
+// 身沒有長度上限，extractOgMeta 的 [^"]* 會整段吃下來)。這裡的內容長度
+// (超過 2000/100)與 OG_SCAN_LIMIT(64KB 的正則掃描範圍)是兩件不同的
+// 事:內容本身遠小於 64KB，不會落入掃描長度上限那條防線，只有落地前的
+// sanitizeHistoryField 這一關能擋下來。
+
+test('OG 案:og:description 超過 2000 字時截斷至 2000(code review 回歸釘子)', async () => {
+  const longExcerpt = 'あ'.repeat(3000);
+  const html = `<meta property="og:description" content="${longExcerpt}" />`;
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].excerpt.length, 2000, 'og:description 超過長度上限應截斷至 2000 字，不得繞過');
+});
+
+test('OG 案:og:title 解析出的顯示名稱超過 100 字時截斷至 100(code review 回歸釘子)', async () => {
+  const longName = 'a'.repeat(150);
+  const html = `<meta property="og:title" content="${longName} (@short_handle) on Threads" />`;
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author.length, 100, 'og:title 解析出的顯示名稱超過長度上限應截斷至 100 字，不得繞過');
+  assert.equal(history[0].handle, '@short_handle', 'handle 本身不受影響，仍照常寫入');
+});
+
 test('OG 案:沒有任何 og 欄位時，右鍵路徑不寫入 author/handle/excerpt(缺席回退)', async () => {
   const bg = loadBackgroundWithOgHtml(NO_OG_HTML);
 

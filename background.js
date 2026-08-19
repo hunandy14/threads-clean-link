@@ -242,7 +242,9 @@ function buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl, ogFields) {
   const removedParams = sanitizeRemovedParams(diffRemovedParams(finalUrl, cleanUrl));
   if (removedParams !== undefined) extra.removedParams = removedParams;
 
-  const merged = mergeOgIntoFields({}, ogFields);
+  // code review 修正(FAIL 打回):理由同 extractHistoryExtraFields，見
+  // sanitizeOgFields 註解。
+  const merged = sanitizeOgFields(mergeOgIntoFields({}, ogFields));
   if (merged.author !== undefined) extra.author = merged.author;
   if (merged.handle !== undefined) extra.handle = merged.handle;
   if (merged.excerpt !== undefined) extra.excerpt = merged.excerpt;
@@ -310,7 +312,11 @@ function extractHistoryExtraFields(message, url) {
   // 到任何快取條目，takeOgFields 恆回傳 null，merge 結果自然等同「維持
   // DOM 版」，不影響既有行為。
   const ogFields = takeOgFields(url);
-  const merged = mergeOgIntoFields({ author: domAuthor, handle: domHandle, excerpt: domExcerpt }, ogFields);
+  // code review 修正(FAIL 打回):merge 結果不能直接信任，統一再過一次
+  // sanitizeOgFields(見該函式註解)，才寫進 extra。
+  const merged = sanitizeOgFields(
+    mergeOgIntoFields({ author: domAuthor, handle: domHandle, excerpt: domExcerpt }, ogFields)
+  );
   if (merged.author !== undefined) extra.author = merged.author;
   if (merged.handle !== undefined) extra.handle = merged.handle;
   if (merged.excerpt !== undefined) extra.excerpt = merged.excerpt;
@@ -491,10 +497,22 @@ function extractOgFields(html) {
   return result;
 }
 
-// og 擷取結果統一在這裡過長度上限，規則與既有 author/handle/excerpt 完
-// 全一致(沿用 sanitizeHistoryField)，讓兩條呼叫路徑(menu 直接用、share
-// 路徑經 og 快取轉一手)都拿到同一份已經處理過的資料，不必各自重覆寫一
-// 次 sanitize。
+// { author?, handle?, excerpt? } 形狀的三欄統一過長度上限，規則與既有
+// author/handle/excerpt 完全一致(沿用 sanitizeHistoryField)。兩種輸入
+// 都會經過這裡:
+//   1. resolveFinalUrl 擷取到的原始 og 資訊(extractOgFields 的回傳
+//      值)，讓兩條呼叫路徑(menu 直接用、share 路徑經 og 快取轉一手)都
+//      拿到同一份已經處理過的資料，不必各自重覆寫一次 sanitize。
+//   2. code review 修正(FAIL 打回，成因:mergeOgIntoFields 的合併結果
+//      沒有再過 sanitizeHistoryField，og 來源的 excerpt/author 可能繞
+//      過長度上限直通入庫)：mergeOgIntoFields 只負責「挑值 + 去重比
+//      對」，不保證輸出仍在長度上限內——它的兩個輸入理論上都已經各自
+//      sanitize 過，但函式本身沒有自我保證，屬於「相信呼叫端」的隱性
+//      假設，任何一處疏漏都會讓超長字串直通入庫。extractHistoryExtraFields
+//      與 buildMenuHistoryExtra 呼叫 mergeOgIntoFields 後，統一再把結
+//      果丟回這裡過一次同一把尺——順序是「先在 mergeOgIntoFields 內完
+//      成 author===handle 去重比對，這裡才截斷」，避免截斷影響去重判
+//      斷的正確性。
 function sanitizeOgFields(rawOgFields) {
   const out = {};
   const excerpt = sanitizeHistoryField(rawOgFields && rawOgFields.excerpt, HISTORY_EXCERPT_MAX);
