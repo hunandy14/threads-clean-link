@@ -277,6 +277,15 @@ async function getSettings() {
 // 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
 // 不透過本訊息通道，避免頁面腳本偽造 kind:'menu' 混充右鍵來源。收到合法
 // notice 就無條件記錄一筆，author/handle/excerpt 為選填欄位一併寫入。
+//
+// 本地路徑(icon/strip)og 補強(使用者確認要人名):這兩條 kind 不像
+// share/menu 那樣本來就會 fetch 貼文頁，這裡額外補一次(見
+// fetchOgFieldsForLocalKind，含節流/逾時/失敗回退)。剪貼簿/複製體感
+// 完全不受影響，那是 content script 端(clipboard-guard.js／
+// post-icon.js)早就完成的事，這裡只是延後「記錄」這個步驟——刻意不做
+// 「先落盤、og 到了再補寫」:二次寫入會落在同一個去重視窗內，
+// mergeHistoryEntry 會多長一筆假的 seen 事件(同一次複製動作被算成兩次
+// 解析)，污染時間軸。寧可讓記錄晚最多 2.5 秒落盤，也不要污染資料。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
   if (typeof cleanUrl !== 'string' || !POST_URL_PATTERN.test(cleanUrl)) {
@@ -290,6 +299,12 @@ async function handleCleanedNotice(message) {
     return;
   }
 
+  if (kind === 'icon' || kind === 'strip') {
+    const ogFields = await fetchOgFieldsForLocalKind(cleanUrl);
+    recordHistory(cleanUrl, kind, extractHistoryExtraFields(message, cleanUrl, ogFields));
+    return;
+  }
+
   recordHistory(cleanUrl, kind, extractHistoryExtraFields(message, cleanUrl));
 }
 
@@ -300,7 +315,13 @@ async function handleCleanedNotice(message) {
 // 度上限。回傳值直接可以 Object.assign 進 history 條目(見 recordHistory)。
 // url 參數是本次寫入的乾淨網址，供 sanitizeOriginalField 判斷 original
 // 是否與 cleaned 相同(相同就不存)，也用來查 og 快取(見下方)。
-function extractHistoryExtraFields(message, url) {
+// preloadedOgFields(選填):icon/strip 路徑呼叫前已經自行 await
+// fetchOgFieldsForLocalKind 取得(可能是 null，代表逾時/失敗/沒收
+// 穫)，這裡改用呼叫端提供的結果，不再向 takeOgFields 查詢——share 路
+// 徑不傳這個參數(維持原本查 og 快取的行為，兩者互斥:share 從不會有
+// preloadedOgFields，icon/strip 從不會命中 takeOgFields，因為那個快取
+// 只在 resolveShare 時才寫入)。
+function extractHistoryExtraFields(message, url, preloadedOgFields) {
   const extra = {};
   const domAuthor = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
   const domHandle = sanitizeHistoryField(message && message.handle, HISTORY_AUTHOR_MAX);
@@ -308,10 +329,9 @@ function extractHistoryExtraFields(message, url) {
 
   // share 路徑若剛好有 resolveShare 階段快取到的 og 資訊(見
   // handleResolveShareMessage／cacheOgFields)，在這裡撈出來合併；
-  // strip/icon 兩條 kind 從未觸發過 resolveShare，這個 cleanUrl 對應不
-  // 到任何快取條目，takeOgFields 恆回傳 null，merge 結果自然等同「維持
-  // DOM 版」，不影響既有行為。
-  const ogFields = takeOgFields(url);
+  // strip/icon 兩條 kind 改用呼叫端傳入的 preloadedOgFields(見
+  // handleCleanedNotice)，不查 takeOgFields。
+  const ogFields = preloadedOgFields !== undefined ? preloadedOgFields : takeOgFields(url);
   // code review 修正(FAIL 打回):merge 結果不能直接信任，統一再過一次
   // sanitizeOgFields(見該函式註解)，才寫進 extra。
   const merged = sanitizeOgFields(
@@ -590,6 +610,70 @@ function takeOgFields(cleanUrl) {
   ogFieldsCache.delete(cleanUrl);
   if (Date.now() - entry.at > OG_CACHE_TTL_MS) return null;
   return entry.ogFields;
+}
+
+// 本地路徑(icon/strip)og 補強(使用者確認要人名)：窺視快取但不刪
+// ——與 takeOgFields(share 路徑的「取用即刪」橋接)不同，這裡要讓同一個
+// cleanUrl 在 OG_CACHE_TTL_MS 視窗內的多次 icon/strip 事件都能重用同一
+// 份快取(見下方 fetchOgFieldsForLocalKind 的節流)，不能第一次讀到就把
+// 快取清空。若之後剛好有 share 路徑對同一 cleanUrl 觸發 resolveShare，
+// 仍會透過 takeOgFields 拿到(並消費掉)這裡留下的快取，省一次 fetch。
+function peekOgFields(cleanUrl) {
+  const entry = ogFieldsCache.get(cleanUrl);
+  if (!entry) return null;
+  if (Date.now() - entry.at > OG_CACHE_TTL_MS) return null;
+  return entry.ogFields;
+}
+
+// 本地路徑(icon/strip)專用的 og 補強逾時:貼文按鈕複製與 ?xmt 剪參都是
+// 純本地判斷，原本不會觸發任何網路請求;這裡額外補一次 fetch 專門拿 og
+// 資訊，逾時風格沿用 clipboard-guard.js 的 RESOLVE_TIMEOUT_MS(2.5 秒，
+// 本檔案獨立維護同一個數值，兩處環境不同沒有共用單一來源的機制)。
+const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
+
+// 本地路徑(icon/strip)專用:貼文按鈕複製與 ?xmt 剪參的 web 動態牆 DOM
+// 沒有個人顯示名稱(只有 username)，這兩條路徑原本 author 永遠等於
+// handle、被既有的重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還
+// 可能吸到讚數等雜訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
+// 重用既有的 extractOgFields／sanitizeOgFields 全鏈(長度雙層防線不變)。
+//
+// 節流:同一 cleanUrl 在 OG_CACHE_TTL_MS(60 秒)內先查快取(peekOgFields，
+// 窺視不刪)，命中就直接回傳、不重複 fetch，避免連點 icon 連環觸發請
+// 求。逾時(OG_LOCAL_FETCH_TIMEOUT_MS)或 fetch 本身失敗一律回傳
+// null，呼叫端 fail-open 退回 DOM 版欄位，離線也不影響紀錄照常落盤——
+// 逾時之後 fetch 仍在背景跑完的話，結果照樣存回快取供下一次事件重用
+// (這次事件用不到，但沒有浪費)。
+async function fetchOgFieldsForLocalKind(cleanUrl) {
+  const cached = peekOgFields(cleanUrl);
+  if (cached) return cached;
+
+  let timeoutId = null;
+  const timeout = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), OG_LOCAL_FETCH_TIMEOUT_MS);
+  });
+
+  const fetchOnce = (async () => {
+    try {
+      const response = await fetch(cleanUrl, {
+        method: 'GET',
+        credentials: 'omit',
+        redirect: 'follow',
+      });
+      const text = await response.text();
+      const ogFields = sanitizeOgFields(extractOgFields(text));
+      cacheOgFields(cleanUrl, ogFields);
+      return ogFields;
+    } catch (err) {
+      console.error('[threads-clean-link] 本地路徑(icon/strip)補強 og 資訊失敗', err);
+      return null;
+    }
+  })();
+
+  try {
+    return await Promise.race([fetchOnce, timeout]);
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  }
 }
 
 // ---- 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的

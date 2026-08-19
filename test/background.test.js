@@ -91,7 +91,9 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
     if (url === shareUrl) return fetchResult(finalUrl, html);
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams });
+  // OG 案(本地路徑補強):fetchOgFieldsForLocalKind 內部用 setTimeout 做
+  // 逾時競速，vm sandbox 預設不含這個全域，這裡明確注入。
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
 
   return {
     storage,
@@ -142,7 +144,9 @@ function loadBackground() {
   // 路徑用)需要 URL/URLSearchParams，vm sandbox 預設不含這兩個全域(見
   // Node vm 文件)，這裡明確注入，讓 background.js 的行為與真實瀏覽器/
   // Service Worker 環境一致(兩者原生都有 URL/URLSearchParams)。
-  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams });
+  // OG 案(本地路徑補強):fetchOgFieldsForLocalKind 內部用 setTimeout 做
+  // 逾時競速，一併注入。
+  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -228,7 +232,7 @@ function makeAlwaysSucceedFetch(calls) {
 function loadBackgroundAlwaysSucceed() {
   const chrome = makeChrome();
   const calls = [];
-  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console });
+  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -402,8 +406,9 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   const fetchCalls = [];
   // F 案:同上方 loadBackground 的理由，右鍵路徑(handleShareLinkClick →
   // buildMenuHistoryExtra → diffRemovedParams)這條路徑經這個 loader 進
-  // 入，同樣需要注入 URL/URLSearchParams。
-  runInSandbox(SRC, { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams });
+  // 入，同樣需要注入 URL/URLSearchParams。OG 案(本地路徑補強):
+  // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入。
+  runInSandbox(SRC, { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout });
 
   return {
     storage,
@@ -1385,6 +1390,178 @@ test('OG 案:og 快取以 cleanUrl 為鍵，不同網址互不污染', async () 
   assert.equal(otherEntry.handle, '@dom_handle');
 });
 
+// ============================================================
+// OG 案(本地路徑補強):icon/strip 路徑的 web 動態牆 DOM 沒有個人顯示名
+// 稱(只有 username)，author 恆等於 handle 會被重複值防禦丟棄，卡片只
+// 剩 @handle。handleCleanedNotice 對 kind icon/strip 且 cleanUrl 通過
+// POST_URL_PATTERN 者，直接 fetch 該貼文頁補抓 og，紀錄落盤延後至 og
+// 取回(逾時 2.5 秒或 fetch 失敗則直接用 DOM 欄位落盤，不做「先落盤再補
+// 寫」)。與 share 路徑不同:icon/strip 從未呼叫 resolveShare，og 快取無
+// 從橋接，這裡改對 cleanUrl(貼文頁本身)直接發 fetch，不經短碼中繼。
+// ============================================================
+
+// fetch mock 直接對 postUrl(貼文頁本身)開通，可自訂回傳的 html、是否
+// 失敗、是否延遲(逾時測試用)，不透過 loadBackgroundWithOgHtml(該 loader
+// 的 fetch mock 是對 shareUrl 開通，模擬的是 share 路徑的短碼中繼)。
+function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
+  const chrome = makeChrome();
+  const storage = createChromeStorage({ saveHistory: true });
+  const executeScriptCalls = [];
+  const onMessageListeners = [];
+  chrome.runtime.onMessage.addListener = (fn) => onMessageListeners.push(fn);
+  chrome.scripting = {
+    executeScript: async (arg) => {
+      executeScriptCalls.push(arg);
+      return [{ result: { ok: true } }];
+    },
+  };
+  chrome.storage = storage.api;
+  const fetchCalls = [];
+  const fetchImpl = async (url) => {
+    fetchCalls.push(url);
+    if (url === postUrl) {
+      if (opts.fail) {
+        throw new Error('mock fetch failure');
+      }
+      if (opts.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, opts.delayMs));
+      }
+      return fetchResult(postUrl, opts.html !== undefined ? opts.html : NO_OG_HTML);
+    }
+    throw new Error('unexpected fetch: ' + url);
+  };
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  return {
+    storage,
+    executeScriptCalls,
+    fetchCalls,
+    sendCleanedNotice(message) {
+      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+    },
+  };
+}
+
+const LOCAL_OG_POST_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
+
+test('OG 案(本地路徑補強):icon 路徑 fetch 成功時，og 解析出的顯示名稱入庫(不再只剩 @handle)', async () => {
+  const html =
+    '<meta property="og:title" content="大福 (@dafucoding) on Threads" />' +
+    '<meta property="og:description" content="今天天氣真好，適合出門走走。" />';
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding', // web DOM 沒有個人名稱，只有 username
+    handle: '@dafucoding',
+    excerpt: '2.6 萬', // 摘要吸到讚數髒字
+  });
+  await settle();
+
+  assert.equal(bg.fetchCalls.length, 1, 'icon 路徑應對貼文頁本身發一次 fetch');
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author, '大福', 'author 應由 og:title 解析出的顯示名稱補強，不再與 handle 重複');
+  assert.equal(history[0].handle, '@dafucoding');
+  assert.equal(history[0].excerpt, '今天天氣真好，適合出門走走。', 'excerpt 應由 og:description 覆蓋 DOM 版讚數髒字');
+});
+
+test('OG 案(本地路徑補強):icon 路徑 fetch 失敗時，回退 DOM 欄位落盤，紀錄不遺失', async () => {
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { fail: true });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+    excerpt: 'dom excerpt',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, 'fetch 失敗不得遺失紀錄');
+  assert.equal('author' in history[0], false, 'author 與 handle 重複(DOM 版沒有真名)，og 又拿不到，視同缺席');
+  assert.equal(history[0].handle, '@dafucoding');
+  assert.equal(history[0].excerpt, 'dom excerpt', 'og 拿不到時完全維持 DOM 版');
+});
+
+// 逾時測試需要真實等待超過 OG_LOCAL_FETCH_TIMEOUT_MS(2.5 秒)，settle 放
+// 寬到 2700ms(2500 逾時 + Windows 計時器顆粒緩衝)。delayMs 故意設為
+// 3000(略高於逾時值)，確保測試斷言時逾時已先觸發；背景 fetch 之後才
+// resolve，只會呼叫 cacheOgFields 快取起來(供後續節流重用)，不會再次
+// recordHistory，不會污染時間軸(規格明文禁止「先落盤再補寫」)。
+test('OG 案(本地路徑補強):icon 路徑 fetch 逾時(超過 2.5 秒)時，回退 DOM 欄位落盤', async () => {
+  const html = '<meta property="og:title" content="大福 (@dafucoding) on Threads" />';
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html, delayMs: 3000 });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+    excerpt: 'dom excerpt',
+  });
+  await settle(2700);
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '逾時不得遺失紀錄');
+  assert.equal('author' in history[0], false, 'og 逾時前拿不到，DOM 版 author 與 handle 重複，視同缺席');
+  assert.equal(history[0].handle, '@dafucoding');
+  assert.equal(history[0].excerpt, 'dom excerpt', '逾時時完全維持 DOM 版');
+});
+
+test('OG 案(本地路徑補強):同一 cleanUrl 的 icon 節流——60 秒內第二次事件重用快取，不重複 fetch', async () => {
+  const html = '<meta property="og:title" content="大福 (@dafucoding) on Threads" />';
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  await settle();
+  assert.equal(bg.fetchCalls.length, 1, '第一次事件應觸發一次 fetch');
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  await settle();
+
+  assert.equal(bg.fetchCalls.length, 1, '60 秒節流窗口內第二次事件不得再發 fetch，應重用快取');
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '同一 cleanUrl 在去重視窗內合併為一筆，不得多長一筆');
+  assert.equal(history[0].author, '大福', '節流重用的快取仍應正確帶出 og 解析結果');
+});
+
+test('OG 案(本地路徑補強):strip 路徑抽驗——og fetch 成功時同樣補強顯示名稱(與 icon 共用同一段邏輯)', async () => {
+  const html = '<meta property="og:title" content="大福 (@dafucoding) on Threads" />';
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'strip',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  await settle();
+
+  assert.equal(bg.fetchCalls.length, 1, 'strip 路徑同樣應對貼文頁本身發一次 fetch');
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author, '大福', 'strip 路徑應與 icon 路徑共用同一段 og 補強邏輯');
+  assert.equal(history[0].handle, '@dafucoding');
+});
+
 // code review #5(url 樣式統一):extractCleanPostUrl 用的
 // CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字元類、無長度上限)，只用來從
 // 轉址結果「截」出前段乾淨網址;寫入 history 前要再過一次全 repo 單一
@@ -1446,7 +1623,9 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
       if (url === shareUrl) return fetchResult(finalUrl);
       throw new Error('unexpected fetch: ' + url);
     };
-    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams });
+    // OG 案(本地路徑補強):fetchOgFieldsForLocalKind 內部用 setTimeout 做
+    // 逾時競速，一併注入(此測試雖走右鍵路徑不會觸發，維持一致性)。
+    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
 
     onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
     await settle(400);
