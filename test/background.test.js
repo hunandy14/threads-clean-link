@@ -84,10 +84,13 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
   };
   chrome.storage = storage.api;
   const fetchCalls = [];
+  // 語系鎖定案:側錄每次 fetch 的 init 物件，供 Accept-Language header 斷言。
+  const fetchInits = [];
   const finalUrl = opts.finalUrl || OG_FINAL_URL;
   const shareUrl = opts.shareUrl || OG_SHARE_URL;
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init) => {
     fetchCalls.push(url);
+    fetchInits.push(init);
     if (url === shareUrl) return fetchResult(finalUrl, html);
     throw new Error('unexpected fetch: ' + url);
   };
@@ -99,6 +102,7 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
     storage,
     executeScriptCalls,
     fetchCalls,
+    fetchInits,
     click(info, tab) {
       onClickedListeners[0](info, tab);
     },
@@ -1417,8 +1421,11 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
   };
   chrome.storage = storage.api;
   const fetchCalls = [];
-  const fetchImpl = async (url) => {
+  // 語系鎖定案:側錄每次 fetch 的 init 物件，供 Accept-Language header 斷言。
+  const fetchInits = [];
+  const fetchImpl = async (url, init) => {
     fetchCalls.push(url);
+    fetchInits.push(init);
     if (url === postUrl) {
       if (opts.fail) {
         throw new Error('mock fetch failure');
@@ -1435,6 +1442,7 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
     storage,
     executeScriptCalls,
     fetchCalls,
+    fetchInits,
     sendCleanedNotice(message) {
       onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
     },
@@ -1997,4 +2005,155 @@ test('自癒重注入:單一分頁注入失敗(已凍結/不允許注入)不影�
     2,
     '每個失敗的分頁各留一則可查的警告'
   );
+});
+
+// ============================================================
+// 語系鎖定 + 解析保底案:Threads 貼文頁的 og:title 隨 Accept-Language 換
+// 格式(英文「かえで (@kaede.hong) on Threads」/ 中文「Threads 上的かえ
+// で（@kaede.hong）」全形括號 + 前綴)。主修是把兩個抓貼文頁的 fetch 點
+// 一律鎖成英文，解析規則不必追語系;保底是 header 萬一失效時，解析器仍
+// 認得全形樣式，且再退一步的 fallback 遇到帳號殘片就整欄放棄。
+// ============================================================
+
+const OG_CHINESE_TITLE_HTML =
+  '<meta property="og:title" content="Threads 上的かえで（@kaede.hong）" />' +
+  '<meta property="og:description" content="今天的貓很可愛。" />';
+
+test('語系鎖定:share/menu 共用的短碼解析 fetch 帶 Accept-Language: en', async () => {
+  const bg = loadBackgroundWithOgHtml('<meta property="og:title" content="大福 (@dafucoding) on Threads" />');
+
+  await bg.sendResolveShare({ type: 'resolveShare', url: OG_SHARE_URL });
+
+  assert.equal(bg.fetchCalls.length, 1);
+  assert.equal(
+    bg.fetchInits[0] && bg.fetchInits[0].headers && bg.fetchInits[0].headers['Accept-Language'],
+    'en',
+    'resolveFinalUrl 的 fetch 應鎖英文語系，讓 og:title 恆為半形括號格式'
+  );
+  // 既有的 fetch 選項不得被覆寫掉。
+  assert.equal(bg.fetchInits[0].credentials, 'omit', '語系 header 不得動到既有的匿名請求設定');
+  assert.equal(bg.fetchInits[0].redirect, 'follow', '語系 header 不得動到既有的轉址跟隨設定');
+});
+
+test('語系鎖定:右鍵選單路徑走的是同一個短碼解析器，不另開 fetch，同樣帶 Accept-Language: en', async () => {
+  const bg = loadBackgroundWithOgHtml('<meta property="og:title" content="大福 (@dafucoding) on Threads" />');
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  assert.equal(bg.fetchCalls.length, 1, '右鍵路徑不得另開第三個抓貼文頁的 fetch');
+  assert.equal(bg.fetchCalls[0], OG_SHARE_URL);
+  assert.equal(
+    bg.fetchInits[0].headers['Accept-Language'],
+    'en',
+    '右鍵路徑經 handleShareLinkClick → resolveFinalUrl，語系鎖定自動涵蓋'
+  );
+});
+
+test('語系鎖定:icon/strip 本地路徑的 og 補強 fetch 帶 Accept-Language: en', async () => {
+  const html = '<meta property="og:title" content="大福 (@dafucoding) on Threads" />';
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'dafucoding',
+    handle: '@dafucoding',
+  });
+  await settle();
+
+  assert.equal(bg.fetchCalls.length, 1);
+  assert.equal(
+    bg.fetchInits[0] && bg.fetchInits[0].headers && bg.fetchInits[0].headers['Accept-Language'],
+    'en',
+    'fetchOgFieldsForLocalKind 的 fetch 同樣要鎖英文語系'
+  );
+  assert.equal(bg.fetchInits[0].credentials, 'omit');
+  assert.equal(bg.fetchInits[0].redirect, 'follow');
+});
+
+test('解析保底:header 失效模擬——中文格式 og:title(全形括號 + 前綴)仍解出 author/handle', async () => {
+  const bg = loadBackgroundWithOgHtml(OG_CHINESE_TITLE_HTML);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author, 'かえで', '全形括號樣式應剝掉「Threads 上的」前綴，只留顯示名稱');
+  assert.equal(history[0].handle, '@kaede.hong', '全形括號內的帳號應正確解析並補回 @');
+  assert.equal(history[0].excerpt, '今天的貓很可愛。');
+});
+
+test('解析保底:中文格式在 icon 本地路徑同樣解得出來(兩條路徑共用同一個解析器)', async () => {
+  const bg = loadBackgroundWithLocalOgFetch(LOCAL_OG_POST_URL, { html: OG_CHINESE_TITLE_HTML });
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: LOCAL_OG_POST_URL,
+    kind: 'icon',
+    author: 'kaede.hong', // web DOM 只有 username
+    handle: '@kaede.hong',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author, 'かえで', 'icon 路徑也應吃到全形括號保底的解析結果');
+  assert.equal(history[0].handle, '@kaede.hong');
+});
+
+test('解析保底:英文格式維持原行為不受保底影響(既有主式零改動的回歸釘子)', async () => {
+  const bg = loadBackgroundWithOgHtml(
+    '<meta property="og:title" content="かえで (@kaede.hong) on Threads" />'
+  );
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, 'かえで');
+  assert.equal(history[0].handle, '@kaede.hong');
+});
+
+test('解析保底:兩式都不成立且 fallback 結果仍夾帶「（@」殘片時，author 整欄放棄', async () => {
+  // 全形左括號但收尾是半形右括號——兩式都比對不到，fallback 會整串當作
+  // 顯示名稱，但字串裡還有帳號殘片，寧缺勿錯。
+  const bg = loadBackgroundWithOgHtml(
+    '<meta property="og:title" content="Threads 上的かえで（@kaede.hong)" />'
+  );
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '解析放棄不得影響紀錄本身落盤');
+  assert.equal('author' in history[0], false, '髒字串(含「（@」殘片)不得整串塞進 author');
+  assert.equal('handle' in history[0], false, '解析失敗時 handle 也不該憑空生出');
+});
+
+test('解析保底:fallback 結果夾帶半形「(@」殘片同樣整欄放棄', async () => {
+  // 半形左括號但沒有右括號——主式的 [^)]+ 找不到收尾，fallback 接手。
+  const bg = loadBackgroundWithOgHtml(
+    '<meta property="og:title" content="Some Page (@broken on Threads" />'
+  );
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal('author' in history[0], false, '半形殘片與全形殘片一視同仁，整欄放棄');
+});
+
+test('解析保底:乾淨的 fallback(粉專等無帳號形狀的 og:title)仍照常入庫，不被殘片防線誤殺', async () => {
+  const bg = loadBackgroundWithOgHtml('<meta property="og:title" content="Some Page on Threads" />');
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, 'Some Page', '沒有帳號殘片的 fallback 應維持既有行為');
+  assert.equal('handle' in history[0], false);
 });
