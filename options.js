@@ -372,6 +372,16 @@
     var pageSize = PAGE_SIZE_DEFAULT;
     // 目前詳細視窗顯示中的條目(複製/刪除按鈕靠它找到要操作的 entry)。
     var detailEntry = null;
+    // 卡片相對時間節點的登錄簿(node + at):60s ticker 的輕量刷新只逐一
+    // 改 textContent，不重建整面卡片，才不會偷走鍵盤焦點/文字選取(見
+    // refresh)。renderList 每次重建卡片時重置。
+    var timeNodes = [];
+    // 對話框開啟前的 activeElement，關閉時還原焦點(a11y，見 rememberFocus/
+    // restoreFocus)。以對話框 key 分槽，巢狀(詳細→時間軸/刪除確認)各記各的。
+    var overlayPrevFocus = {};
+    // 確認框(confirmOverlay)當前掛的動作:清除全部 / 刪除這筆共用同一個
+    // modal，confirmOk 點擊時執行這顆(見 openConfirm/closeConfirm)。
+    var confirmAction = null;
 
     // 注意:此模組內不得宣告名為 t 的區域變數,以免遮蔽翻譯函式
     // (demo 階段真踩過:var t = createElement(...) 讓整頁渲染炸掉)。
@@ -429,6 +439,12 @@
       });
       document.querySelectorAll('[data-i18n-title]').forEach(function (node) {
         node.setAttribute('title', tt(node.getAttribute('data-i18n-title')));
+      });
+      // aria-label i18n 通道:options.html 原本硬編中文 aria-label(兩顆
+      // 關閉鈕、統計磚區塊)改掛 data-i18n-aria，語言切換時一併更新，不再
+      // 卡在中文。
+      document.querySelectorAll('[data-i18n-aria]').forEach(function (node) {
+        node.setAttribute('aria-label', tt(node.getAttribute('data-i18n-aria')));
       });
       if (document.documentElement) {
         document.documentElement.lang = locale === 'zh' ? 'zh-Hant' : 'en';
@@ -663,11 +679,127 @@
 
     // ---- 紀錄清單 ----
 
+    // 配額超限判斷，沿用 background 寫入側的字串比對(見 background.js 的
+    // isQuotaExceededError):Chrome 對總量(QUOTA_BYTES)與單筆
+    // (QUOTA_BYTES_PER_ITEM)超限，都以開頭含 "QUOTA_BYTES" 的訊息 reject。
+    // 用字串比對而非錯誤類別，避免瀏覽器/版本差異誤判漏接。
+    function isQuotaExceededError(err) {
+      var message = (err && err.message) || String(err || '');
+      return /QUOTA_BYTES/i.test(message);
+    }
+
+    // 回傳 Promise 給呼叫端(成功/失敗都 resolve，不 reject):寫入前先記住
+    // 現值，失敗(常見:storage.local 配額寫爆)時把記憶體 entries 回滾成
+    // 寫入前的值，避免磁碟寫失敗、記憶體卻已經前進造成分岔。呼叫端據
+    // res.ok 決定發成功或失敗 toast——先前「先設 entries 再非同步寫、
+    // rejection 只 console.error 吞掉」會在配額失敗時謊報成功並讓記憶體/
+    // 磁碟分岔。res.quota 供呼叫端挑配額/一般兩種失敗文案。
     function persistHistory(list) {
+      var prev = entries;
       entries = list;
-      return Promise.resolve(localStore.set({ [HISTORY_KEY]: list })).catch(function (err) {
-        if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入紀錄失敗', err);
-      });
+      return Promise.resolve()
+        .then(function () {
+          return localStore.set({ [HISTORY_KEY]: list });
+        })
+        .then(function () {
+          return { ok: true };
+        })
+        .catch(function (err) {
+          entries = prev;
+          if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入紀錄失敗', err);
+          return { ok: false, quota: isQuotaExceededError(err) };
+        });
+    }
+
+    // persistHistory 失敗的統一善後:回滾已在 persistHistory 內完成，這裡
+    // 重繪回滾後的畫面並發專屬失敗 toast(配額/一般兩種文案)。
+    function onPersistFailed(res) {
+      renderAll();
+      toast(tt(res && res.quota ? 'opToastStorageFull' : 'opToastSaveFailed'));
+    }
+
+    // ---- 對話框焦點管理(a11y) ----
+    // 開啟前記住目前焦點，關閉時還原;把焦點移進對話框(關閉鈕或指定的
+    // 首個可聚焦元素)。DOM stub 沒有 activeElement/focus，全程 typeof 守
+    // 衛，測不到的部分由人工/CDP 驗證。
+    function rememberFocus(key) {
+      overlayPrevFocus[key] = (document && document.activeElement) || null;
+    }
+    function restoreFocus(key) {
+      var prev = overlayPrevFocus[key];
+      overlayPrevFocus[key] = null;
+      if (prev && typeof prev.focus === 'function') {
+        try { prev.focus(); } catch (e) {}
+      }
+    }
+    function focusInto(overlayId, focusId) {
+      var el = (focusId && byId(focusId)) || byId(overlayId);
+      if (el && typeof el.focus === 'function') {
+        try { el.focus(); } catch (e) {}
+      }
+    }
+
+    // Tab focus trap:把 Tab/Shift+Tab 的焦點循環鎖在對話框內。真實 DOM
+    // 靠 querySelectorAll 取可聚焦元素;DOM stub 回空陣列時整段 no-op。
+    var FOCUSABLE_SEL = 'a[href],button:not([disabled]),textarea,input:not([disabled]),select,[tabindex]';
+    function trapTabInOverlay(overlayId, ev) {
+      var overlay = byId(overlayId);
+      if (!overlay || overlay.hidden || typeof overlay.querySelectorAll !== 'function') return;
+      var nodes = overlay.querySelectorAll(FOCUSABLE_SEL);
+      var focusables = [];
+      for (var i = 0; i < nodes.length; i++) {
+        if (!nodes[i].hidden) focusables.push(nodes[i]);
+      }
+      if (!focusables.length) return;
+      var first = focusables[0];
+      var last = focusables[focusables.length - 1];
+      var active = document.activeElement;
+      var inside = typeof overlay.contains === 'function' ? overlay.contains(active) : true;
+      if (ev.shiftKey) {
+        if (!inside || active === first) {
+          ev.preventDefault();
+          if (typeof last.focus === 'function') last.focus();
+        }
+      } else if (!inside || active === last) {
+        ev.preventDefault();
+        if (typeof first.focus === 'function') first.focus();
+      }
+    }
+    // 目前疊在最上層、開著的對話框(決定 Tab trap 的作用範圍):時間軸與
+    // 刪除確認會疊在詳細視窗之上，匯入是獨立頂層框，優先序由上而下。
+    function topmostOverlayId() {
+      var order = ['timelineOverlay', 'confirmOverlay', 'overlay', 'detailOverlay'];
+      for (var i = 0; i < order.length; i++) {
+        var el = byId(order[i]);
+        if (el && !el.hidden) return order[i];
+      }
+      return null;
+    }
+
+    // ---- 共用確認框(清除全部 / 刪除這筆)----
+    // 複用同一個 confirmOverlay:opts.titleKey/okKey 是 i18n key，desc 是已
+    // 組好的字串，action 是確認後要跑的函式。標題/確認鈕文案在 JS 端顯式
+    // 覆寫(這兩顆有 data-i18n，renderAll 會重設，但確認框開著時不會觸發
+    // renderAll，故安全)。
+    function openConfirm(opts) {
+      var titleText = byId('confirmTitleText');
+      if (titleText) titleText.textContent = tt(opts.titleKey);
+      var descEl = byId('confirmDesc');
+      if (descEl) descEl.textContent = opts.desc;
+      var okBtn = byId('confirmOk');
+      if (okBtn) okBtn.textContent = tt(opts.okKey);
+      confirmAction = typeof opts.action === 'function' ? opts.action : null;
+      var confirmOverlay = byId('confirmOverlay');
+      if (confirmOverlay) confirmOverlay.hidden = false;
+      rememberFocus('confirm');
+      // 焦點落在「取消」而非破壞性的確認鈕，避免一個 Enter 就誤刪/誤清。
+      focusInto('confirmOverlay', 'confirmCancel');
+    }
+    function closeConfirm() {
+      var confirmOverlay = byId('confirmOverlay');
+      if (confirmOverlay) confirmOverlay.hidden = true;
+      confirmAction = null;
+      restoreFocus('confirm');
     }
 
     // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
@@ -717,25 +849,37 @@
     }
 
     // 刪除只在詳細視窗做(照手機版 DialogActions 的位置，卡片層級沒有
-    // 刪除入口)。沿用既有慣例等級:直接改 storage + toast，不另開確認框
-    // (「清除全部」這種一次清光的破壞性動作才走確認框)。以 url 比對
-    // (不疊 at，紀錄以 url 去重後同一個 url 只會有一筆);沒有真的命中
-    // (例如已被別的分頁/storage 同步事件先刪掉)就不寫入、不動視窗、也
-    // 不發「已刪除」成功 toast，避免對使用者謊報一個沒發生的動作。
+    // 刪除入口)，且經一道確認框(見 bindDetailDialog 的 detailDeleteBtn →
+    // openConfirm)。
+    //
+    // 以 url+at 精準命中(不再只比 url):PM 第五輪為了解「detailEntry 手上
+    // 舊物件 at 過期刪不掉」把比對放寬成只看 url，卻連帶把「同一貼文在
+    // 5 分鐘視窗外各自獨立成筆」的多筆紀錄一起誤刪。現在 setHistory 已把
+    // detailEntry 換成清單裡的新物件(見 refreshDetail)，at 不會過期，精準
+    // 比對本就成立，故改回 url+at——刪一筆只刪中一筆。
+    //
+    // 沒有真的命中(例如已被別的分頁/storage 同步事件、或「清除全部」先
+    // 移除)就不寫入、不動視窗、也不發「已刪除」成功 toast，避免對使用者
+    // 謊報一個沒發生的動作。寫入失敗(配額)走 onPersistFailed 回滾+失敗
+    // toast，不謊報成功。
     function deleteEntry(e) {
       var hit = false;
       var next = entries.filter(function (x) {
-        if (x.url === e.url) {
+        if (!hit && x.url === e.url && x.at === e.at) {
           hit = true;
           return false;
         }
         return true;
       });
       if (!hit) return;
-      persistHistory(next);
-      if (detailEntry && detailEntry.url === e.url) closeEntryDetail();
+      if (detailEntry && detailEntry.url === e.url && detailEntry.at === e.at) closeEntryDetail();
+      // persistHistory 先同步把 entries 換成 next，再 renderAll 才畫到新清單;
+      // 寫入結果非同步回來，成功發「已刪除」，失敗回滾 + 失敗 toast。
+      persistHistory(next).then(function (res) {
+        if (res.ok) toast(tt('opToastDeleted'));
+        else onPersistFailed(res);
+      });
       renderAll();
-      toast(tt('opToastDeleted'));
     }
 
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
@@ -754,6 +898,8 @@
       // button/a 才有的鍵盤啟動行為(div 預設沒有)。
       card.setAttribute('tabindex', '0');
       card.setAttribute('role', 'button');
+      // 條目鍵(url|at):R6 整面重建卡片時據此還原鍵盤焦點到同一條目。
+      card.dataset.entryKey = e.url + '|' + e.at;
 
       var header = document.createElement('div');
       header.className = 'entry-header';
@@ -765,6 +911,10 @@
       var headTime = document.createElement('span');
       headTime.className = 'entry-time';
       headTime.textContent = relTime(e.at);
+      // 掛 data-at 並登錄到 timeNodes:60s ticker 走輕量刷新(refresh)只逐一
+      // 改這些節點的 textContent，不重建卡片，才不會偷走焦點/文字選取。
+      headTime.setAttribute('data-at', String(e.at));
+      timeNodes.push({ node: headTime, at: e.at });
       meta.appendChild(badge);
       meta.appendChild(headTime);
       header.appendChild(meta);
@@ -869,15 +1019,10 @@
     // Modal——手機版那樣做是為了繞過 RN 在 iOS 不支援兄弟層 Modal 並開的
     // 限制，web 沒有這個問題。「時間軸」則是巢狀子層視窗(timelineOverlay)，
     // 對齊手機版時間軸本來就是巢狀 Modal 的做法。
-    function openEntryDetail(e) {
-      detailEntry = e;
-      var overlay = byId('detailOverlay');
-      if (!overlay) return;
-
-      // 每次開啟(含切換到別的條目)都把子層時間軸視窗收合，避免上一筆
-      // 的展開態殘留到這一筆。
-      closeTimelineOverlay();
-
+    // 只更新詳細視窗的「內容」欄位，不碰使用者互動態(時間軸子層開合、
+    // excerpt 展開態)——供 openEntryDetail(完整開啟)與 refreshDetail
+    // (storage 變動時原地刷新)共用。
+    function renderDetailContent(e) {
       var badge = byId('detailBadge');
       if (badge) badge.textContent = tt(KINDS[e.kind].key);
       var timeEl = byId('detailTime');
@@ -905,7 +1050,6 @@
         if (excerptEl) {
           excerptEl.hidden = !hasExcerpt;
           renderExcerptWithLinks(document, excerptEl, hasExcerpt ? e.excerpt : '');
-          excerptEl.classList.remove('expanded');
         }
         if (expandBtn) expandBtn.hidden = !(hasExcerpt && isLongExcerpt(e.excerpt));
         if (urlFallback) {
@@ -924,7 +1068,6 @@
         if (excerptEl) {
           excerptEl.hidden = true;
           excerptEl.textContent = '';
-          excerptEl.classList.remove('expanded');
         }
         if (expandBtn) expandBtn.hidden = true;
         if (urlFallback) {
@@ -964,7 +1107,40 @@
 
       var openLink = byId('detailOpenLink');
       if (openLink) openLink.href = e.url;
+    }
 
+    // 完整開啟(卡片點擊/鍵盤):設 detailEntry、重置互動態(收合時間軸
+    // 子層、清掉 excerpt 展開態)、填內容、顯示，並把焦點移入對話框、記住
+    // 開啟前的焦點來源(a11y，關閉時還原)。
+    function openEntryDetail(e) {
+      detailEntry = e;
+      var overlay = byId('detailOverlay');
+      if (!overlay) return;
+      var alreadyOpen = overlay.hidden === false;
+
+      // 每次完整開啟(含切換到別的條目)都把子層時間軸視窗收合、excerpt
+      // 展開態清掉，避免上一筆的展開態殘留到這一筆。
+      closeTimelineOverlay();
+      var excerptEl = byId('detailExcerpt');
+      if (excerptEl) excerptEl.classList.remove('expanded');
+
+      renderDetailContent(e);
+      overlay.hidden = false;
+      // 只有從關閉態開啟才記住焦點來源(切換條目時保留最初那個)，focus
+      // 一律移到關閉鈕。
+      if (!alreadyOpen) rememberFocus('detail');
+      focusInto('detailOverlay', 'detailClose');
+    }
+
+    // storage 變動(setHistory)時原地刷新:只把 detailEntry 換成清單裡的
+    // 新物件並重畫內容，不重置使用者正在看的時間軸子層/excerpt 展開態
+    // (cr low5 + UI 中2:別處寫入無關紀錄不該把使用者互動態打回原形)。
+    // detailEntry 換成新物件也讓 R4-a 的 url+at 精準刪除拿到不過期的 at。
+    function refreshDetail(e) {
+      detailEntry = e;
+      var overlay = byId('detailOverlay');
+      if (!overlay) return;
+      renderDetailContent(e);
       overlay.hidden = false;
     }
 
@@ -973,6 +1149,7 @@
       if (overlay) overlay.hidden = true;
       closeTimelineOverlay();
       detailEntry = null;
+      restoreFocus('detail');
     }
 
     // original/removedParams 附加列:與淨化後連結列同一套 kv/linkrow/
@@ -1045,9 +1222,15 @@
 
     // 時間軸子層視窗:收合(重置內容並隱藏)。openEntryDetail 切換條目時、
     // closeEntryDetail 關閉詳細視窗時都要呼叫，避免殘留上一筆的展開態。
+    // 這是「純收合」路徑，不動焦點——用於重置情境(開別筆/關詳細視窗)。
     function closeTimelineOverlay() {
       var timelineOverlay = byId('timelineOverlay');
       if (timelineOverlay) timelineOverlay.hidden = true;
+    }
+    // 使用者主動關時間軸(✕/遮罩/Esc):收合並把焦點還回開啟前的元素。
+    function dismissTimelineOverlay() {
+      closeTimelineOverlay();
+      restoreFocus('timeline');
     }
 
     function bindDetailDialog() {
@@ -1080,29 +1263,56 @@
           });
         }
         var timelineOverlay = byId('timelineOverlay');
+        rememberFocus('timeline');
         if (timelineOverlay) timelineOverlay.hidden = false;
+        focusInto('timelineOverlay', 'timelineClose');
       });
-      on('timelineClose', 'click', closeTimelineOverlay);
+      on('timelineClose', 'click', dismissTimelineOverlay);
       on('timelineOverlay', 'click', function (ev) {
         var timelineOverlay = byId('timelineOverlay');
-        if (timelineOverlay && ev.target === timelineOverlay) closeTimelineOverlay();
+        if (timelineOverlay && ev.target === timelineOverlay) dismissTimelineOverlay();
       });
       on('detailCopyBtn', 'click', function () {
         if (detailEntry) copyEntryUrl(detailEntry);
       });
+      // R4-新:刪除先過一道確認框(複用共用 confirmOverlay)，確認後才真的
+      // 刪。捕捉當下的 detailEntry，即使確認期間 detailEntry 被別的路徑改動，
+      // 也是刪使用者當初按下刪除的那一筆。
       on('detailDeleteBtn', 'click', function () {
-        if (detailEntry) deleteEntry(detailEntry);
+        if (!detailEntry) return;
+        var target = detailEntry;
+        openConfirm({
+          titleKey: 'opDeleteTitle',
+          okKey: 'opDeleteConfirmDo',
+          desc: tt('opDeleteConfirmDesc'),
+          action: function () {
+            deleteEntry(target);
+          },
+        });
       });
-      // Esc 關閉:兩個權威來源皆支援(手機版 DialogShell 用 Modal 的
-      // onRequestClose,web 沒有對應原生事件，這裡用 keydown 補上同義
-      // 行為)。時間軸子層視窗開著時 Esc 只關時間軸(比照手機版巢狀
-      // Modal 逐層關閉的直覺)，沒開才輪到關詳細視窗本身。
+      // 對話框鍵盤:
+      //   - Tab/Shift+Tab:把焦點循環鎖在最上層開著的對話框內(focus trap)。
+      //   - Esc:逐層關閉。確認框最上層(刪除確認會疊在詳細視窗上)先關，
+      //     再輪時間軸子層，最後才關詳細視窗本身(比照手機版巢狀 Modal
+      //     逐層關閉的直覺;手機版 DialogShell 走 Modal 的 onRequestClose，
+      //     web 沒有對應原生事件，這裡以 keydown 補同義行為)。
       if (typeof document.addEventListener === 'function') {
         document.addEventListener('keydown', function (ev) {
-          if (!ev || ev.key !== 'Escape') return;
+          if (!ev) return;
+          if (ev.key === 'Tab') {
+            var topId = topmostOverlayId();
+            if (topId) trapTabInOverlay(topId, ev);
+            return;
+          }
+          if (ev.key !== 'Escape') return;
+          var confirmOverlay = byId('confirmOverlay');
+          if (confirmOverlay && !confirmOverlay.hidden) {
+            closeConfirm();
+            return;
+          }
           var timelineOverlay = byId('timelineOverlay');
           if (timelineOverlay && !timelineOverlay.hidden) {
-            closeTimelineOverlay();
+            dismissTimelineOverlay();
             return;
           }
           var overlay = byId('detailOverlay');
@@ -1117,6 +1327,9 @@
       var countHint = byId('countHint');
       if (!rowsEl) return;
 
+      // 卡片整批重建，先清空相對時間節點登錄簿，下面 buildEntryCard 逐一
+      // 重新登錄(見 timeNodes / refresh)。
+      timeNodes = [];
       rowsEl.textContent = '';
       var matched = filterEntries(entries, activeKind, query);
       var visible = matched.slice(0, pageSize);
@@ -1227,17 +1440,21 @@
 
       // 匯入:對話框(選檔或貼上)。
       var overlay = byId('overlay');
+      function closeImport() {
+        if (overlay) overlay.hidden = true;
+        restoreFocus('import');
+      }
       on('importBtn', 'click', function () {
         closeMenu();
         var textEl = byId('modalText');
         if (textEl) textEl.value = '';
+        rememberFocus('import');
         if (overlay) overlay.hidden = false;
+        focusInto('overlay', 'modalText');
       });
-      on('modalClose', 'click', function () {
-        if (overlay) overlay.hidden = true;
-      });
+      on('modalClose', 'click', closeImport);
       on('overlay', 'click', function (ev) {
-        if (overlay && ev.target === overlay) overlay.hidden = true;
+        if (overlay && ev.target === overlay) closeImport();
       });
       on('modalFile', 'click', function () {
         var fileInput = byId('fileInput');
@@ -1263,35 +1480,51 @@
           return;
         }
         var result = mergeImportedEntries(entries, parsed.entries, now());
-        persistHistory(result.merged);
-        renderAll();
-        if (overlay) overlay.hidden = true;
-        toast(
-          result.skipped
-            ? tf('opToastImportedSkip', { n: result.added, m: result.skipped })
-            : tf('opToastImported', { n: result.added })
-        );
+        // R5:成功才發「已匯入」toast 並關框;寫入失敗(配額)走回滾 + 失敗
+        // toast，不謊報成功、也不關框(讓使用者可另存/重試)。
+        persistHistory(result.merged).then(function (res) {
+          if (!res.ok) {
+            onPersistFailed(res);
+            return;
+          }
+          renderAll();
+          closeImport();
+          toast(
+            result.skipped
+              ? tf('opToastImportedSkip', { n: result.added, m: result.skipped })
+              : tf('opToastImported', { n: result.added })
+          );
+        });
       });
 
-      // 清除全部:確認對話框。
-      var confirmOverlay = byId('confirmOverlay');
+      // 清除全部:走共用確認框(openConfirm)，確認後才 persistHistory([])。
       on('clearBtn', 'click', function () {
         closeMenu();
-        var desc = byId('confirmDesc');
-        if (desc) desc.textContent = tf('opClearConfirmDesc', { n: entries.length });
-        if (confirmOverlay) confirmOverlay.hidden = false;
+        openConfirm({
+          titleKey: 'opClearAll',
+          okKey: 'opClearDo',
+          desc: tf('opClearConfirmDesc', { n: entries.length }),
+          action: function () {
+            persistHistory([]).then(function (res) {
+              if (!res.ok) {
+                onPersistFailed(res);
+                return;
+              }
+              renderAll();
+              toast(tt('opToastCleared'));
+            });
+          },
+        });
       });
-      on('confirmCancel', 'click', function () {
-        if (confirmOverlay) confirmOverlay.hidden = true;
-      });
+      on('confirmCancel', 'click', closeConfirm);
       on('confirmOverlay', 'click', function (ev) {
-        if (confirmOverlay && ev.target === confirmOverlay) confirmOverlay.hidden = true;
+        var confirmOverlay = byId('confirmOverlay');
+        if (confirmOverlay && ev.target === confirmOverlay) closeConfirm();
       });
       on('confirmOk', 'click', function () {
-        persistHistory([]);
-        renderAll();
-        if (confirmOverlay) confirmOverlay.hidden = true;
-        toast(tt('opToastCleared'));
+        var act = confirmAction;
+        closeConfirm();
+        if (typeof act === 'function') act();
       });
     }
 
@@ -1354,9 +1587,14 @@
 
     // storage.onChanged(local 區)時由接線層呼叫,讓 background 新寫入的
     // 紀錄即時出現在開著的頁面上。詳細視窗開著時以 url 重新定位
-    // detailEntry:找得到就用新資料刷新視窗內容，找不到(已被刪除/清除)
-    // 就關閉詳細視窗，不留著顯示一筆已經不存在的紀錄。
+    // detailEntry:找得到就「只刷新內容」(refreshDetail，不重置使用者正在
+    // 看的時間軸子層/展開全文——別處寫入無關紀錄不該打斷正在閱讀的人)，
+    // 找不到(已被刪除/清除)就關閉詳細視窗。條目真的換了(url 不同)才走
+    // 完整重置 openEntryDetail;此處以 url 定位，理論上恆為同 url，保留分支
+    // 只為語意清楚與防禦。renderAll 會整面重建卡片，順帶保存/還原鍵盤焦點
+    // 對應的條目(見 captureFocusedEntryKey/restoreFocusedEntry)。
     function setHistory(list) {
+      var focusKey = captureFocusedEntryKey();
       entries = sanitizeEntries(list);
       if (detailEntry) {
         var match = null;
@@ -1366,10 +1604,40 @@
             break;
           }
         }
-        if (match) openEntryDetail(match);
-        else closeEntryDetail();
+        if (match) {
+          if (detailEntry.url !== match.url) openEntryDetail(match);
+          else refreshDetail(match);
+        } else {
+          closeEntryDetail();
+        }
       }
       renderAll();
+      restoreFocusedEntry(focusKey);
+    }
+
+    // R6 焦點保存:整面重建卡片前記下目前鍵盤焦點落在哪一條目(卡片本身
+    // 或其內部快捷鈕)，重建後把焦點還回同一條目的新卡片。DOM stub 沒有
+    // activeElement，回 null → restore 為 no-op;真實環境的效果由人工/CDP
+    // 驗證。以 url|at 當條目鍵(與 buildEntryCard 的 dataset.entryKey 一致)。
+    function captureFocusedEntryKey() {
+      var active = document && document.activeElement;
+      if (!active) return null;
+      var card = null;
+      if (typeof active.closest === 'function') card = active.closest('.entry-card');
+      else if (active.dataset && active.dataset.entryKey) card = active;
+      return card && card.dataset ? card.dataset.entryKey || null : null;
+    }
+    function restoreFocusedEntry(key) {
+      if (!key) return;
+      var rowsEl = byId('rows');
+      if (!rowsEl || !rowsEl.children) return;
+      for (var i = 0; i < rowsEl.children.length; i++) {
+        var c = rowsEl.children[i];
+        if (c && c.dataset && c.dataset.entryKey === key && typeof c.focus === 'function') {
+          try { c.focus(); } catch (e) {}
+          return;
+        }
+      }
     }
 
     // storage.onChanged(sync 區)時由接線層呼叫:popup 或另一個開著的
@@ -1401,12 +1669,19 @@
       if (needsRender) renderAll();
     }
 
-    // 常開分頁的相對時間標籤刷新(回到分頁時，見 visibilitychange 接線)。
-    // 直接重用 renderAll:entries 沒變，只是卡片重畫一次讓 relTime() 用
-    // 當下時間重算;開銷小，visibilitychange 觸發頻率也低，不需要另外
-    // 寫一條只更新時間文字的精簡路徑。
+    // 常開分頁的相對時間標籤刷新(60s ticker 與 visibilitychange 回分頁時
+    // 由接線層呼叫)。走輕量路徑:只逐一改已登錄時間節點的 textContent，
+    // 不呼叫 renderAll 整面重建卡片——全量重建會偷走使用者的鍵盤焦點與
+    // 文字選取(併發中3 + cr low6 + UI 效能建議a)。詳細視窗開著時，視窗內
+    // 的相對時間(detailTime)也一併刷新(UI 低8)。
     function refresh() {
-      renderAll();
+      for (var i = 0; i < timeNodes.length; i++) {
+        timeNodes[i].node.textContent = relTime(timeNodes[i].at);
+      }
+      if (detailEntry) {
+        var timeEl = byId('detailTime');
+        if (timeEl) timeEl.textContent = relTime(detailEntry.at);
+      }
     }
 
     return { init: init, setHistory: setHistory, setSyncSettings: setSyncSettings, refresh: refresh };

@@ -36,6 +36,9 @@
       opSub: '脆連結清潔工 · 設定與紀錄',
       opThemeTitle: '切換主題',
       opLangTitle: '語言 / Language',
+      // 統計磚區塊的 aria-label(硬編中文改走 i18n，見 applyI18nDom 的
+      // data-i18n-aria 通道)。
+      opStatsAria: '統計摘要',
       // 此磚統計的是 stats.total(entries.length，所有 kind 都算，不只
       // 淨化類的 share/strip)。
       opTileTotal: '累計紀錄',
@@ -74,6 +77,9 @@
       opClearDo: '確定清除',
       opCancel: '取消',
       opClearConfirmDesc: '將刪除全部 {n} 筆紀錄，且無法復原。確定要繼續嗎?',
+      // 詳細視窗「刪除這筆」的確認框(複用清除全部/匯入那套 confirm modal)。
+      opDeleteConfirmDesc: '確定刪除這筆紀錄?',
+      opDeleteConfirmDo: '刪除',
       opSearchPh: '搜尋帳號或網址…',
       opChipAll: '全部',
       opKindShare: '短碼解析',
@@ -124,6 +130,10 @@
       opToastImportedSkip: '已匯入 {n} 筆，略過 {m} 筆(重複或格式不符)',
       opToastBadJson: '無法解析:不是有效的 JSON',
       opToastNoEntries: '格式不正確:缺少 entries 陣列',
+      // storage.local 寫入失敗的專屬回報:配額超限(QUOTA_BYTES)與一般
+      // 寫入失敗分開文案，避免對使用者謊報「已匯入/已刪除」成功。
+      opToastStorageFull: '儲存空間不足，變更未儲存',
+      opToastSaveFailed: '儲存失敗，變更未套用',
 
       // ---- options:相對時間 ----
       opRelJust: '剛剛',
@@ -160,6 +170,7 @@
       opSub: 'Threads Clean Link · Settings & history',
       opThemeTitle: 'Toggle theme',
       opLangTitle: 'Language / 語言',
+      opStatsAria: 'Statistics',
       opTileTotal: 'Total records',
       opSince: 'Since {d}',
       opTileWeek: 'This week',
@@ -191,6 +202,8 @@
       opClearDo: 'Clear all',
       opCancel: 'Cancel',
       opClearConfirmDesc: 'This deletes all {n} entries and cannot be undone. Continue?',
+      opDeleteConfirmDesc: 'Delete this record?',
+      opDeleteConfirmDo: 'Delete',
       opSearchPh: 'Search handle or URL…',
       opChipAll: 'All',
       opKindShare: 'Resolved',
@@ -231,6 +244,8 @@
       opToastImportedSkip: 'Imported {n}, skipped {m} (duplicate or invalid)',
       opToastBadJson: 'Not valid JSON',
       opToastNoEntries: 'Invalid format: missing entries array',
+      opToastStorageFull: 'Storage full — changes not saved',
+      opToastSaveFailed: 'Save failed — changes not applied',
 
       opRelJust: 'just now',
       opRelMin: '{n} min ago',

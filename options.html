@@ -120,12 +120,12 @@
     gap: 12px;
     padding: 4px 0 20px;
   }
+  /* 品牌盾牌鏈節(#i-brand)是自帶固定雙色的圖形，不再套橘色底 chip——
+     否則橘盾疊在橘底上會糊掉。改成透明框，讓盾牌自身的橘色直接對比
+     header 底(--plane)，深淺主題都浮得出來。 */
   .logo {
     width: 40px;
     height: 40px;
-    border-radius: 12px;
-    background: var(--accent);
-    color: var(--accent-contrast);
     display: grid;
     place-items: center;
     flex-shrink: 0;
@@ -926,13 +926,25 @@
     <!-- 展開全文的展開圖示(Lucide maximize-2)，手機版原字是「⤢」字元，
          web 改用 SVG 符號延續整頁圖示語彙。 -->
     <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></symbol>
+    <!-- 品牌盾牌鏈節，字面取自 assets/store/icon/app-icon.svg(工具列/商店
+         PNG 的同一顆品牌圖)。刻意是固定雙色(橘盾 #e2925e + 深色鏈節
+         #17181b)，不跟 currentColor 主題色——深淺主題都要維持品牌辨識度，
+         橘盾在深色 header 底上會浮出來，黑鏈節在橘盾上本就高對比。 -->
+    <symbol id="i-brand" viewBox="0 0 32 32">
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" fill="#e2925e" transform="translate(16,16) scale(1.18) translate(-12,-12.1)"/>
+      <g transform="translate(16,15.1) scale(0.55) translate(-12,-12)" stroke="#17181b" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <path d="M9 17H7A5 5 0 0 1 7 7h2"/>
+        <path d="M15 7h2a5 5 0 1 1 0 10h-2"/>
+        <path d="M8 12h8"/>
+      </g>
+    </symbol>
   </defs>
 </svg>
 
 <div class="page">
 
   <header class="topbar">
-    <div class="logo"><svg class="icon"><use href="#i-sparkles"/></svg></div>
+    <div class="logo"><svg class="icon"><use href="#i-brand"/></svg></div>
     <div class="titles">
       <h1>Threads Clean Link</h1>
       <div class="sub"><span data-i18n="opSub">脆連結清潔工 · 設定與紀錄</span> · <span id="version"></span></div>
@@ -946,7 +958,7 @@
   </header>
 
   <!-- 統計磚:數值由 options.js 從紀錄本地聚合,不另存統計資料。 -->
-  <section class="stats" aria-label="stats">
+  <section class="stats" data-i18n-aria="opStatsAria" aria-label="統計摘要">
     <div class="tile">
       <div class="label"><svg class="icon"><use href="#i-sparkles"/></svg><span data-i18n="opTileTotal">累計紀錄</span></div>
       <div class="value" id="statTotal">0</div>
@@ -1109,7 +1121,7 @@
 <!-- 清除全部:確認對話框 -->
 <div class="overlay" id="confirmOverlay" hidden>
   <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmDesc">
-    <h3 id="confirmTitle"><svg class="icon danger-ink"><use href="#i-trash"/></svg><span data-i18n="opClearAll">清除全部紀錄</span></h3>
+    <h3 id="confirmTitle"><svg class="icon danger-ink"><use href="#i-trash"/></svg><span id="confirmTitleText" data-i18n="opClearAll">清除全部紀錄</span></h3>
     <div class="desc" id="confirmDesc"></div>
     <div class="modal-actions">
       <button class="btn" id="confirmCancel" data-i18n="opCancel">取消</button>
@@ -1128,7 +1140,7 @@
   <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
     <h3 id="detailTitle" class="sr-only" data-i18n="opDetailTitle">紀錄詳細資訊</h3>
     <!-- ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton。 -->
-    <button class="detail-close" id="detailClose" data-i18n-title="opClose" title="關閉" aria-label="關閉">✕</button>
+    <button class="detail-close" id="detailClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <div class="detail-head">
       <div class="entry-meta">
         <span class="entry-badge" id="detailBadge"></span>
@@ -1192,7 +1204,7 @@
      平台限制要迴避，故照抄巢狀結構，不用原地展開。 -->
 <div class="overlay" id="timelineOverlay" hidden>
   <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="timelineTitle">
-    <button class="detail-close" id="timelineClose" data-i18n-title="opClose" title="關閉" aria-label="關閉">✕</button>
+    <button class="detail-close" id="timelineClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <h3 id="timelineTitle" class="detail-author-name"></h3>
     <div id="detailTimeline"></div>
   </div>
