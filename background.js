@@ -335,10 +335,10 @@ async function getSettings() {
 // fetch);strip/icon 這兩條 kind 不像 share 那樣本來就會 fetch 貼文頁，快取
 // 未命中時才真的補一次 fetch(見 fetchOgFieldsForLocalKind，含節流/逾時/失敗
 // 回退)。剪貼簿/複製體感完全不受影響，那是 content script 端早就完成的事，
-// 這裡只是延後「記錄」這個步驟——刻意不做「先落盤、og 到了再補寫」:二次寫入
-// 會落在同一個去重視窗內，mergeHistoryEntry 會多長一筆假的 seen 事件(同一次
-// 複製動作被算成兩次解析)，污染時間軸。寧可讓記錄晚最多 2.5 秒落盤，也不要
-// 污染資料。
+// 這裡只是延後「記錄」這個步驟——刻意不做「先落盤、og 到了再補寫」:紀錄是永
+// 久合併的，二次寫入必然命中同一張卡，mergeHistoryEntry 會多長一筆假的 seen
+// 事件(同一次複製動作被算成兩次解析)，污染時間軸。寧可讓記錄晚最多 2.5 秒落
+// 盤，也不要污染資料。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
   if (!TCLCore.isCleanPostUrl(cleanUrl)) {
@@ -770,33 +770,132 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
   }
 }
 
-// ---- 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
-// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem)。
-// 同一次分享常見走多條路徑(右鍵選單／自動偵測／貼文互動列複製 icon)，
-// 以「乾淨網址在時間視窗內重複寫入」合併為一筆，讓使用者看到的歷史永遠
-// 只有一筆，而不是同一篇貼文洗版。----
-
-// 去重視窗:與手機版 DEDUP_WINDOW_MS 對齊，5 分鐘內同一個 url 視為同一
-// 次分享。
-const DEDUP_WINDOW_MS = 5 * 60 * 1000;
+// ---- 紀錄永久合併(合併鍵 = post ID)----
+//
+// 同一篇貼文常見走多條路徑重複淨化(右鍵選單／自動偵測／貼文互動列複製
+// icon)，也常見隔天再複製一次。紀錄一律合併為一張卡，讓使用者看到的歷史
+// 是「一篇貼文一張卡、卡上記著每一次動作」，而不是同一篇貼文洗版。
+//
+// 【與手機版刻意分岔】手機版 hunandy14/meta-link-clearer 的
+// src/lib/share-history-storage.ts 用「cleaned url + DEDUP_WINDOW_MS(5 分
+// 鐘)」去重，視窗外的同一篇貼文會另開一張卡。本擴充改為**永久合併**:不設
+// 任何時間視窗，同一篇貼文永遠合成同一張卡。兩邊的資料模型自此分岔，仍對
+// 齊手機版的只剩合併後的欄位語意(浮頂、欄位新值優先、kind 記最近一次、
+// seen[] 上限 50 裁最舊)。
+//
+// 【主鍵是 post ID，不是整條 url】handle 可以改名，同一篇貼文的乾淨網址會
+// 跟著換樣子(/@old/post/ID → /@new/post/ID);post ID 則終身不變。以 ID 為
+// 主鍵，改名前後的紀錄才仍認得是同一篇。
+//
+// 【合併鍵三層級聯】
+//   1. **post ID 主鍵**(historyDedupKey → TCLCore.extractPostId):吻合嚴格
+//      貼文樣式的 url 一律取 ID 當鍵。
+//   2. **original 收編**(findOriginalAdoptIndex):本次落盤的 original 是短
+//      碼原文時，把「當年解析失敗、以短碼原文入庫」的失敗卡一併收編進同文
+//      卡——短碼在解析成功的那一刻才第一次與貼文對上號，這是唯一能把兩者
+//      接起來的時機。
+//   3. **失敗卡自鍵**:抽不出 post ID 的 url(短碼原文等)退回整條 url 當
+//      fallback key。同一個短碼重複入庫仍合成一張，不同短碼各自獨立。
+// 不同短碼指向同一篇貼文的失敗卡彼此認不出來(短碼只有 Meta 伺服器能對應，
+// 本機無從得知兩個短碼是同一篇)，此為自然極限，不另做補救。
 
 // seen[] 上限(TCLCore.LIMITS.SEEN_MAX)與 kind 白名單(TCLCore.KIND_LIST，含
 // 'menu')一律走 TCLCore;seen[] 逐筆消毒改用 TCLCore.sanitizeSeenList(與
 // options 讀取/匯入端共用同一份，連 slice(-SEEN_MAX) 都在函式內完成)。
 
-// 純函式:在既有清單中找出「同一個 url 且在去重視窗內」的條目 index，
-// 找不到回傳 -1。與手機版 mergeDuplicateItem 內的 findIndex 對齊(手機版
-// 比對 cleaned，這裡的 url 是同一個概念——recordHistory 呼叫端一律已傳
-// 入驗證通過的乾淨網址)。
-function findDedupIndex(list, url, now) {
+// 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合。三處共用同一份清
+// 單:落盤合併(mergeHistoryEntry 逐欄寫開，語意同此)、失敗卡收編
+// (adoptFailureEntry)、一次性遷移(mergeHistoryGroup)。
+const MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
+
+// 純函式:條目的合併鍵。吻合嚴格貼文樣式的 url 取 post ID(handle 改名不影
+// 響);抽不出 ID 的(短碼原文等解析失敗入庫的資料)退回整條 url 當 fallback
+// key。post ID 的字元類不含 ':' 與 '/'，與任何整條 url 形狀的 fallback key
+// 天然不會相撞。
+function historyDedupKey(url) {
+  return TCLCore.extractPostId(url) || url;
+}
+
+// 純函式:在既有清單中找出合併鍵相同的條目 index，找不到回傳 -1。**全表比
+// 對、不設時間視窗**(永久合併)。清單長度由 HISTORY_MAX_ENTRIES 封頂，全表
+// 掃描的成本與原本的視窗掃描同為 O(n)。
+function findDedupIndex(list, url) {
   if (!Array.isArray(list)) return -1;
+  const key = historyDedupKey(url);
   for (let i = 0; i < list.length; i++) {
     const item = list[i];
-    if (item && item.url === url && typeof item.at === 'number' && now - item.at <= DEDUP_WINDOW_MS) {
-      return i;
-    }
+    if (item && typeof item.url === 'string' && historyDedupKey(item.url) === key) return i;
   }
   return -1;
+}
+
+// 純函式:本次的 original 是否有資格觸發失敗卡收編——必須是分享短碼原文。
+//
+// 【只認短碼原文】original 同屬頁面可控輸入(見 extractHistoryExtraFields):
+// 若放行任意 original 值，惡意頁面只要把別篇貼文的乾淨網址當 original 送
+// 進來，就能點名讓那張卡被吞掉。限定 TCLCore.SHARE_URL_PATTERN 之後，可被
+// 收編的對象只剩「url 是短碼」的卡——正常落盤的貼文卡 url 恆為
+// /@handle/post/ID 形狀，永遠不可能是短碼，收編的波及面因此封死在失敗卡這
+// 一類。strip 路徑的 original(貼文網址帶追蹤參數)同樣不觸發收編:那條路
+// 徑從來不會產生以原文入庫的失敗卡。
+function isAdoptableOriginal(original) {
+  return typeof original === 'string' && TCLCore.SHARE_URL_PATTERN.test(original);
+}
+
+// 純函式:找出「當年解析失敗、以短碼原文入庫」的失敗卡 index——它的 url 恰
+// 為本次落盤條目的 original。skipIndex 是本次同文卡自己的 index(上一步已
+// 命中合併)，不得重複收編。找不到回傳 -1。
+function findOriginalAdoptIndex(list, original, skipIndex) {
+  if (!Array.isArray(list) || !isAdoptableOriginal(original)) return -1;
+  for (let i = 0; i < list.length; i++) {
+    if (i === skipIndex) continue;
+    const item = list[i];
+    if (item && item.url === original) return i;
+  }
+  return -1;
+}
+
+// 純函式:取出條目的 seen 事件序列。seen[] 存在就逐筆過
+// TCLCore.sanitizeSeenList;缺席(schema 升級前寫入的舊資料)時照手機版語意
+// (`existing.seen ?? [{ at: existing.receivedAt }]`)以條目自身的 at 補種一
+// 筆起始紀錄，讓時間軸看得到它原本第一次出現的時間;種子紀錄不帶 kind(那
+// 一刻沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)。at 不是有限數字
+// 就連種子都不補(那筆時間本身就不可信)。
+function entrySeenEvents(entry) {
+  if (!entry || typeof entry !== 'object') return [];
+  if (Array.isArray(entry.seen)) return TCLCore.sanitizeSeenList(entry.seen);
+  return typeof entry.at === 'number' && isFinite(entry.at) ? [{ at: entry.at }] : [];
+}
+
+// 純函式:多張卡的 seen 事件聯集——攤平後按 at 升序排列(卡與卡之間的事件
+// 本來就交錯，不能直接接龍)，再裁到最新 SEEN_MAX 筆。at 相同的事件維持原
+// 順序(Array#sort 穩定)。
+function unionSeenEvents(lists) {
+  const all = [];
+  for (let i = 0; i < lists.length; i++) {
+    for (let j = 0; j < lists[i].length; j++) all.push(lists[i][j]);
+  }
+  all.sort((a, b) => a.at - b.at);
+  return all.slice(-TCLCore.LIMITS.SEEN_MAX);
+}
+
+// 純函式:把失敗卡收編進同文卡，回傳全新的條目物件(不改動任一輸入)。
+//   - url/kind/at:一律維持同文卡的值。失敗卡只提供歷史，不改身分也不改
+//     排序位置。
+//   - 選填欄位:同文卡有值就維持，缺席才由失敗卡補位(失敗卡可能帶著當時
+//     DOM 擷取到的 author/handle/excerpt)。
+//   - seen[]:兩張卡的事件聯集(見 unionSeenEvents/entrySeenEvents)，失敗當
+//     下那個時刻因此留在時間軸上。
+function adoptFailureEntry(entry, failed) {
+  const merged = Object.assign({}, entry);
+  for (let i = 0; i < MERGEABLE_FIELDS.length; i++) {
+    const field = MERGEABLE_FIELDS[i];
+    if (merged[field] === undefined && failed && failed[field] !== undefined) {
+      merged[field] = failed[field];
+    }
+  }
+  merged.seen = unionSeenEvents([entrySeenEvents(entry), entrySeenEvents(failed)]);
+  return merged;
 }
 
 // seen[] 逐筆消毒走 TCLCore.sanitizeSeenList(見該檔註解:at 需為有限數字、
@@ -812,13 +911,12 @@ function findDedupIndex(list, url, now) {
 //   - author/handle/excerpt/original/removedParams:本次 extra 有值就用
 //     本次的，本次缺席才沿用 existing 的舊值(新值優先，但不能讓「這次
 //     沒抓到」蓋掉「上次抓到的」)，五個欄位規則一致。
-//   - seen[]:existing.seen 若已存在就照樣過 sanitizeSeenList;existing.seen
-//     缺席(schema 升級前寫入的舊資料)時，照手機版語意
-//     (`existing.seen ?? [{ at: existing.receivedAt }]`)補種一筆起始
-//     紀錄 [{ at: existing.at }]，讓時間軸看得到條目原本第一次出現的
-//     時間;種子記錄不帶 kind(那一刻沒有對應的來源事件，UI 時間軸端已
-//     容忍缺 kind 標籤)，再 append 本次 {at: now, kind}，裁到最新
-//     SEEN_MAX 筆。
+//   - url 更新為本次的乾淨網址:handle 改名後同一個 post ID 會帶來新的
+//     網址，卡片顯示的應是最近一次看到的樣子。
+//   - seen[]:既有事件序列走 entrySeenEvents(seen[] 存在就逐筆 sanitize，
+//     缺席則以 existing.at 補種一筆起始紀錄)，再 append 本次
+//     {at: now, kind}，裁到最新 SEEN_MAX 筆。本次事件必為最新，直接接在
+//     尾端即可，不需要像 unionSeenEvents 那樣重排。
 function mergeHistoryEntry(existing, url, kind, now, extra) {
   const author = extra && extra.author !== undefined ? extra.author : existing.author;
   const handle = extra && extra.handle !== undefined ? extra.handle : existing.handle;
@@ -826,10 +924,9 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   const original = extra && extra.original !== undefined ? extra.original : existing.original;
   const removedParams =
     extra && extra.removedParams !== undefined ? extra.removedParams : existing.removedParams;
-  const priorSeen = Array.isArray(existing.seen)
-    ? TCLCore.sanitizeSeenList(existing.seen)
-    : [{ at: existing.at }];
-  const seen = priorSeen.concat([{ at: now, kind }]).slice(-TCLCore.LIMITS.SEEN_MAX);
+  const seen = entrySeenEvents(existing)
+    .concat([{ at: now, kind }])
+    .slice(-TCLCore.LIMITS.SEEN_MAX);
 
   const merged = { url, kind, at: now, seen };
   if (author !== undefined) merged.author = author;
@@ -905,14 +1002,13 @@ function recordHistory(url, kind, extra) {
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       const now = Date.now();
 
-      // 去重合併(語意對齊手機版，見上方 findDedupIndex/mergeHistoryEntry
-      // 註解):同一個 url 在 DEDUP_WINDOW_MS 內重複寫入，合併為一筆並浮
-      // 到最前;視窗外或找不到同 url 條目才新增一筆。
-      const dedupIndex = findDedupIndex(list, url, now);
-      let next;
+      // 永久合併(見上方紀錄合併區塊的註解):以 post ID 為鍵全表比對，命中
+      // 就合併為一筆並浮到最前(不論相隔多久、不論 handle 是否改名);找不
+      // 到同鍵條目才新增一筆。
+      const dedupIndex = findDedupIndex(list, url);
+      let entry;
       if (dedupIndex !== -1) {
-        const mergedEntry = mergeHistoryEntry(list[dedupIndex], url, kind, now, extra);
-        next = [mergedEntry].concat(list.slice(0, dedupIndex), list.slice(dedupIndex + 1));
+        entry = mergeHistoryEntry(list[dedupIndex], url, kind, now, extra);
       } else {
         // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新
         // 陣列。extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎
@@ -920,9 +1016,22 @@ function recordHistory(url, kind, extra) {
         // (防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任來源，
         // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 capHistoryForStorage
         // 處理。
-        const entry = Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] });
-        next = [entry].concat(list);
+        entry = Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] });
       }
+
+      // 級聯第二步:失敗卡收編。本次的 original 若是短碼原文，且清單裡有一
+      // 張以該短碼原文入庫的失敗卡(當年解析失敗的殘留)，把它併進本次的同
+      // 文卡並就地刪除——短碼在這一刻才第一次與貼文對上號。與上一步的同文
+      // 合併在同一次 historyWriteChain 內完成，只寫一次 storage。
+      const adoptIndex = findOriginalAdoptIndex(list, entry.original, dedupIndex);
+      if (adoptIndex !== -1) {
+        entry = adoptFailureEntry(entry, list[adoptIndex]);
+      }
+
+      // 合併/收編掉的舊條目一律從原位移除(dedupIndex 為 -1 時不會命中任何
+      // index，adoptIndex 同理)，本次的條目統一浮到最前。
+      const rest = list.filter((item, i) => i !== dedupIndex && i !== adoptIndex);
+      let next = [entry].concat(rest);
       // 儲存上限:寫入前把陣列裁到位元組軟預算 + 筆數硬保險內(從尾端/
       // 最舊裁，本次剛寫入的最新一筆永遠保留)。
       next = capHistoryForStorage(next);

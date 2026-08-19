@@ -22,8 +22,12 @@
   // POST_URL_PATTERN——寫入前的權威把關(isCleanPostUrl)。刻意用白名單而非
   // 排除法:中文釣魚句不需要空白，「合法前綴 + 帳號異常，請至 evil.example
   // 重新登入」用排除法照樣整串吻合而過關，白名單收到實際字母表才擋得住。
+  //
+  // group 3 = post ID 段(`/post/` 之後的識別碼)，供 extractPostId 取用;字元
+  // 類與長度上限維持原樣，加上括號純粹是把已經比對到的段落露出來，判定行為
+  // 零改動(isCleanPostUrl 仍只用 test)。
   var STRICT_POST_URL_PATTERN =
-    /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}$/i;
+    /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,80}\/post\/([A-Za-z0-9_-]{1,80})$/i;
 
   // 容尾正規化版:同一組白名單字元類與長度上限，但容忍尾隨斜線/查詢字串/
   // hash(匯入檔或頁面 DOM 擷取的 href 常帶這些),group 1 = 正規化後的乾淨
@@ -103,6 +107,24 @@
     if (typeof url !== 'string') return null;
     var match = NORMALIZE_POST_URL_PATTERN.exec(url);
     return match ? match[1] : null;
+  }
+
+  // 抽出貼文識別碼(`/post/` 之後那一段)，抽不出回傳 null。
+  //
+  // 【用途】紀錄的永久合併以 post ID 為主鍵(見 background.js 的紀錄合併區
+  // 塊):handle 可以改名，同一篇貼文的乾淨網址會跟著換樣子
+  // (/@old/post/ID → /@new/post/ID)，post ID 則終身不變，只有它能讓改名前
+  // 後的紀錄仍認得是同一篇。
+  //
+  // 【只認嚴格樣式】刻意走 STRICT_POST_URL_PATTERN(錨定整串、白名單字元
+  // 類、長度上限)而非容尾版:合併鍵是資料歸屬的依據，寧可對帶 query/尾隨內
+  // 容的網址回 null(呼叫端退回整條 url 當 fallback key，最多分成兩張卡),
+  // 也不要讓寬鬆匹配把兩篇不同貼文算成同一篇。分享短碼(/share/XXXX)本來就
+  // 抽不出 ID——短碼只有 Meta 伺服器能對應，本機無從得知它指向哪一篇。
+  function extractPostId(url) {
+    if (typeof url !== 'string') return null;
+    var match = STRICT_POST_URL_PATTERN.exec(url);
+    return match ? match[3] : null;
   }
 
   // ---- 欄位消毒 ----
@@ -190,6 +212,7 @@
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
     isCleanPostUrl: isCleanPostUrl,
     normalizePostUrl: normalizePostUrl,
+    extractPostId: extractPostId,
     KIND_LIST: KIND_LIST,
     NOTICE_KIND_LIST: NOTICE_KIND_LIST,
     LIMITS: LIMITS,

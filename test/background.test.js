@@ -370,27 +370,10 @@ function settle(ms = 150) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// 凍結 Date:讓 background.js 的 Date.now() 回傳固定值，供去重視窗邊界測試
-// 釘死 `<=` 運算子，避免測試端 now 與 recordHistory 內 Date.now() 的毫秒
-// 級偏移讓 now-300000 這種貼邊案例變得不確定。函式體內的 Date 是測試檔的
-// 原生 Date(非凍結)，不會遞迴。
-function makeFrozenDate(fixed) {
-  function FrozenDate(...args) {
-    return args.length ? new Date(...args) : new Date(fixed);
-  }
-  FrozenDate.now = () => fixed;
-  FrozenDate.parse = Date.parse;
-  FrozenDate.UTC = Date.UTC;
-  FrozenDate.prototype = Date.prototype;
-  return FrozenDate;
-}
-
 // 載入 background.js，並以指定設定填入 chrome.storage.sync;同時側錄
 // contextMenus.onClicked 監聽器、notifications.create 與 scripting.executeScript。
 // opts.clipboardOk 可在測試中途翻轉，模擬「先失敗、後成功」的兩次點擊。
 // opts.localHistory 可預填 storage.local 的 history(測紀錄上限用)。
-// opts.now(選填):注入凍結的 Date，讓 recordHistory 的 Date.now() 回傳此值
-// (去重視窗邊界測試用)。
 function loadBackgroundWithSettings(initialSettings, opts = {}) {
   const storage = createChromeStorage(
     initialSettings,
@@ -433,7 +416,6 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   // 入，同樣需要注入 URL/URLSearchParams。fetchOgFieldsForLocalKind
   // 內部用 setTimeout 做逾時競速，一併注入。
   const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout };
-  if (opts.now !== undefined) sandbox.Date = makeFrozenDate(opts.now);
   runInSandbox(SRC, sandbox);
 
   return {
@@ -554,6 +536,9 @@ test('剪貼簿寫入失敗的錯誤通知照常觸發，其後成功流程不�
 // ============================================================
 
 const CLEANED_NOTICE_CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
+// 對應的分享短碼原文:失敗卡收編(見「失敗卡收編」區塊)以它當 original，
+// 也以它當「當年解析失敗、以原文入庫」那張卡的 url。
+const CLEANED_NOTICE_SHARE_URL = 'https://www.threads.com/share/CleanedNoticeCode';
 
 test('cleanedNotice 從不觸發任何通知(成功類通知已整組移除)，但仍正常寫入紀錄', async () => {
   const bg = loadBackgroundWithSettings({ autoClean: true });
@@ -576,13 +561,12 @@ test('自動路徑的 cleanedNotice 不影響右鍵路徑的錯誤/失敗通知�
   await settle();
 
   assert.deepEqual(bg.notifications, [], '右鍵成功複製同樣不得觸發通知');
-  // 規格演進(本次紀錄去重合併):CLEANED_NOTICE_CLEAN_URL 與 SHARE_URL 解析
-  // 後的 CLEAN_POST_URL 是同一個字串，兩次寫入相距僅一個 settle()，落在
-  // 去重視窗內——依新規格應合併為一筆，原本「兩條路徑各自留一筆」的斷言
-  // 已不成立，改驗合併後的不變量:仍只有一筆、kind 更新為最近一次
-  // (menu)、seen[] 累積兩筆(share→menu)。
+  // 規格演進(紀錄永久合併):CLEANED_NOTICE_CLEAN_URL 與 SHARE_URL 解析後的
+  // CLEAN_POST_URL 是同一篇貼文(同 post ID)——依新規格恆合併為一筆，原本
+  // 「兩條路徑各自留一筆」的斷言已不成立，改驗合併後的不變量:仍只有一
+  // 筆、kind 更新為最近一次(menu)、seen[] 累積兩筆(share→menu)。
   const history = bg.storage.localSnapshot().history;
-  assert.equal(history.length, 1, '同一乾淨網址在去重視窗內應合併為一筆，不再各自留存');
+  assert.equal(history.length, 1, '同一篇貼文應永久合併為一筆，不再各自留存');
   assert.equal(history[0].kind, 'menu', 'kind 應更新為最近一次來源');
   assert.equal(history[0].seen.length, 2, 'seen[] 應累積兩筆(share、menu)');
   assert.equal(history[0].seen[0].kind, 'share', 'seen[] 舊在前');
@@ -669,11 +653,15 @@ test('R2:「合法前綴 + 純英數長串」的 cleanedNotice 不得寫入紀�
   );
 
   // 對照組:四種合法寫法(www／無 www、.com／.net)都必須正常記錄。
+  // 【永久合併規格取代】四筆刻意用**互不相同的 post ID**:紀錄改以 post ID
+  // 為合併鍵之後，同 ID 的不同網址寫法會被合併成一張卡，四筆同 ID 的舊寫法
+  // 只會留下一筆，驗不到「四種網址寫法都不被誤殺」這件事。換成不同 ID 後，
+  // 本測試的原意(樣式白名單不誤殺合法寫法)才仍然成立。
   const legit = [
     'https://www.threads.com/@dafucoding/post/DbezfB0gYvP',
-    'https://threads.com/@dafucoding/post/DbezfB0gYvP',
+    'https://threads.com/@dafucoding/post/DbezfB0gYvQ',
     'https://www.threads.net/@dafu.coding_1/post/Dbez-fB0_gYvP',
-    'https://threads.net/@dafucoding/post/DbezfB0gYvP',
+    'https://threads.net/@dafucoding/post/DbezfB0gYvR',
   ];
   for (const cleanUrl of legit) {
     bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl, kind: 'share' });
@@ -1365,7 +1353,7 @@ test('OG 案(本地路徑補強):同一 cleanUrl 的 icon 節流——60 秒內�
 
   assert.equal(bg.fetchCalls.length, 1, '60 秒節流窗口內第二次事件不得再發 fetch，應重用快取');
   const history = bg.storage.localSnapshot().history;
-  assert.equal(history.length, 1, '同一 cleanUrl 在去重視窗內合併為一筆，不得多長一筆');
+  assert.equal(history.length, 1, '同一 cleanUrl 永久合併為一筆，不得多長一筆');
   assert.equal(history[0].author, '大福', '節流重用的快取仍應正確帶出 og 解析結果');
 });
 
@@ -1468,21 +1456,25 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
 });
 
 // ============================================================
-// 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
-// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem):
-// recordHistory 為合併式寫入，以 url(cleaned)為 key，在既有清單找「同 url
-// 且 now - entry.at <= 5 分鐘」的條目——
-//   - 命中:合併為一筆並浮到最前;at 更新為 now;author/handle/excerpt 新
-//     值優先、新值缺席沿用舊值;kind 更新為本次來源;seen[] append
-//     {at, kind} 並裁到 50 筆(舊在前新在後)。
+// 紀錄永久合併(合併鍵 = post ID)。recordHistory 為合併式寫入，以
+// TCLCore.extractPostId(url) 為 key**全表**比對(不設任何時間視窗)——
+//   - 命中:合併為一筆並浮到最前;at 更新為 now;url 更新為本次(handle 改
+//     名後的新網址);author/handle/excerpt/original/removedParams 新值優
+//     先、新值缺席沿用舊值;kind 更新為本次來源;seen[] append {at, kind}
+//     並裁到 50 筆(舊在前新在後)。
 //   - 未命中:新增一筆，seen 為 [{at, kind}] 起始一筆。
 //   - 舊資料沒有 seen 欄位:合併時照手機版語意補種一筆起始紀錄
 //     [{ at: existing.at }](對齊 existing.seen ?? [{ at:
 //     existing.receivedAt }] 的等效寫法)，種子紀錄不帶 kind，再疊上本
 //     次事件(見 background.js 內 mergeHistoryEntry 註解)。
+//
+// 【永久合併規格取代】原本的 5 分鐘去重視窗(DEDUP_WINDOW_MS)整組拆除:與手
+// 機版的「url + 5 分鐘窗」刻意分岔，同一篇貼文永遠只有一張卡。相關的視窗外
+// 新增、貼邊 300000/300001 兩條邊界測試一併由下方的「跨長時距合併」「handle
+// 改名合併」「不同 ID 不合」取代。
 // ============================================================
 
-test('紀錄去重合併:視窗內命中時合併為一筆——浮到最前、at 更新、author/handle/excerpt 新值優先缺席沿用舊值、kind 更新為最近一次、seen[] 追加', async () => {
+test('紀錄永久合併:同鍵命中時合併為一筆——浮到最前、at 更新、author/handle/excerpt 新值優先缺席沿用舊值、kind 更新為最近一次、seen[] 追加', async () => {
   const now = Date.now();
   const existing = {
     url: CLEANED_NOTICE_CLEAN_URL,
@@ -1521,7 +1513,7 @@ test('紀錄去重合併:視窗內命中時合併為一筆——浮到最前、a
 
 // original/removedParams 合併語意與 author/handle/excerpt 完全一致(新值
 // 優先、本次缺席沿用舊值)，這裡獨立驗證這兩個欄位。
-test('紀錄去重合併:視窗內命中時 original/removedParams 新值優先、本次缺席沿用舊值', async () => {
+test('紀錄永久合併:視窗內命中時 original/removedParams 新值優先、本次缺席沿用舊值', async () => {
   const now = Date.now();
   const existing = {
     url: CLEANED_NOTICE_CLEAN_URL,
@@ -1549,13 +1541,18 @@ test('紀錄去重合併:視窗內命中時 original/removedParams 新值優先�
   assert.equal(history[0].removedParams[0].value, 'old', '沿用的是舊的 removedParams 內容，不是本次的');
 });
 
-test('紀錄去重合併:同一 url 但超出去重視窗(> 5 分鐘)時新增一筆，不合併', async () => {
+// 【永久合併規格取代】原「同一 url 但超出去重視窗(> 5 分鐘)時新增一筆」改
+// 寫為本測試:時間視窗拆除後，相隔多久都必須合併。用「相隔 3 小時」這種遠
+// 超舊視窗的距離，確保通過與否真的取決於視窗已被拆除，而不是碰巧落在某個
+// 容忍值內。
+test('紀錄永久合併:跨長時距(相隔 3 小時)同一篇貼文仍合併為一筆，不再受時間視窗限制', async () => {
   const now = Date.now();
+  const threeHoursAgo = now - 3 * 60 * 60 * 1000;
   const existing = {
     url: CLEANED_NOTICE_CLEAN_URL,
     kind: 'share',
-    at: now - 6 * 60 * 1000, // 6 分鐘前，超出 5 分鐘去重視窗
-    seen: [{ at: now - 6 * 60 * 1000, kind: 'share' }],
+    at: threeHoursAgo,
+    seen: [{ at: threeHoursAgo, kind: 'share' }],
   };
   const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
 
@@ -1563,14 +1560,109 @@ test('紀錄去重合併:同一 url 但超出去重視窗(> 5 分鐘)時新增�
   await settle();
 
   const history = bg.storage.localSnapshot().history;
-  assert.equal(history.length, 2, '超出去重視窗應新增一筆，不與舊條目合併');
-  assert.equal(history[0].kind, 'icon', '新條目在最前');
-  assert.equal(history[0].seen.length, 1, '新條目的 seen[] 只有自己這一筆起始紀錄');
-  assert.equal(history[1].url, CLEANED_NOTICE_CLEAN_URL, '視窗外的舊條目原樣保留，不受影響');
-  assert.equal(history[1].kind, 'share', '舊條目的 kind 不因新條目寫入而改變');
+  assert.equal(history.length, 1, '相隔 3 小時的同一篇貼文仍應合併為一筆');
+  assert.equal(history[0].kind, 'icon', 'kind 更新為最近一次');
+  assert.ok(history[0].at >= now, 'at 更新為本次寫入時間');
+  assert.equal(history[0].seen.length, 2, 'seen[] 保留 3 小時前那次事件並追加本次');
+  assert.equal(history[0].seen[0].at, threeHoursAgo, '時間軸看得到第一次出現的時間');
 });
 
-test('紀錄去重合併:seen[] 累積超過 50 筆時裁到最新 50 筆，捨棄最舊', async () => {
+// handle 可以改名，同一篇貼文的乾淨網址會跟著換樣子;post ID 終身不變，改名
+// 前後必須仍是同一張卡，且 url 更新為改名後的新網址。
+test('紀錄永久合併:handle 改名後網址不同但 post ID 相同，仍合併為一筆且 url 更新為新網址', async () => {
+  const now = Date.now();
+  const oldUrl = 'https://www.threads.com/@old.name/post/DbezfB0gYvP';
+  const existing = {
+    url: oldUrl,
+    kind: 'share',
+    at: now - 24 * 60 * 60 * 1000,
+    author: 'Old Author',
+    seen: [{ at: now - 24 * 60 * 60 * 1000, kind: 'share' }],
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  // CLEANED_NOTICE_CLEAN_URL 的 handle 是 @dafucoding、post ID 與 oldUrl 相同。
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, 'handle 改名不該讓同一篇貼文分裂成兩張卡');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, 'url 更新為改名後的新網址');
+  assert.equal(history[0].author, 'Old Author', '本次缺席的欄位仍沿用舊卡的值');
+  assert.equal(history[0].seen.length, 2, '改名前那次事件保留在時間軸上');
+});
+
+test('紀錄永久合併:post ID 不同的兩篇貼文各自獨立，不因同一個 handle 而互相合併', async () => {
+  const now = Date.now();
+  const otherPost = 'https://www.threads.com/@dafucoding/post/OtherPostId';
+  const existing = { url: otherPost, kind: 'share', at: now - 1000, seen: [{ at: now - 1000, kind: 'share' }] };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 2, '不同 post ID 應各自留一張卡');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '本次的新卡在最前');
+  assert.equal(history[1].url, otherPost, '另一篇貼文的卡原樣保留');
+});
+
+// ------------------------------------------------------------
+// 級聯第二層:失敗卡收編。當年解析失敗、以短碼原文入庫的卡片(url 就是
+// /share/XXXX)，在同一個短碼日後解析成功時被收編進同文卡——短碼在那一刻才
+// 第一次與貼文對上號。收編只認 original 吻合分享短碼樣式的情況(見
+// background.js findOriginalAdoptIndex:original 是頁面可控輸入，放行任意值
+// 等於讓惡意頁面點名吞掉別篇貼文的卡)。
+// ------------------------------------------------------------
+
+test('失敗卡收編:離線失敗卡(url = 短碼原文)在同短碼解析成功時被收編成一張，seen[] 含失敗當下的時刻', async () => {
+  const now = Date.now();
+  const failedAt = now - 2 * 60 * 60 * 1000;
+  // 當年解析失敗、以短碼原文入庫的卡:沒有 seen 欄位(舊 schema)，帶著當時
+  // DOM 擷取到的 handle。
+  const failed = { url: CLEANED_NOTICE_SHARE_URL, kind: 'share', at: failedAt, handle: '@dafucoding' };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [failed] });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    original: CLEANED_NOTICE_SHARE_URL,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '失敗卡應被收編，不與同文卡並存');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '存活的是貼文卡，不是短碼卡');
+  assert.equal(history[0].original, CLEANED_NOTICE_SHARE_URL, '短碼原文照常記在 original');
+  assert.equal(history[0].handle, '@dafucoding', '同文卡缺席的欄位由失敗卡補位');
+  assert.equal(history[0].seen.length, 2, 'seen[] 為兩張卡的事件聯集');
+  assert.equal(history[0].seen[0].at, failedAt, '失敗當下的時刻(以失敗卡的 at 補種)留在時間軸最前');
+  assert.equal(history[0].seen[1].kind, 'share', '本次成功解析的事件在後');
+});
+
+test('失敗卡收編:不同短碼的失敗卡不互併——只收編 original 指名的那一張', async () => {
+  const now = Date.now();
+  const otherShare = 'https://www.threads.com/share/OtherCode';
+  const failedA = { url: CLEANED_NOTICE_SHARE_URL, kind: 'share', at: now - 3000 };
+  const failedB = { url: otherShare, kind: 'share', at: now - 2000 };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [failedB, failedA] });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    original: CLEANED_NOTICE_SHARE_URL,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 2, '只收編 original 指名的那張失敗卡，另一張原樣留著');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '貼文卡浮到最前');
+  assert.equal(history[1].url, otherShare, '不同短碼的失敗卡本機無從得知是否同一篇，維持獨立');
+});
+
+test('紀錄永久合併:seen[] 累積超過 50 筆時裁到最新 50 筆，捨棄最舊', async () => {
   const now = Date.now();
   const seenSeed = Array.from({ length: 50 }, (_, i) => ({ at: now - (50 - i) * 1000, kind: 'share' }));
   const existing = { url: CLEANED_NOTICE_CLEAN_URL, kind: 'share', at: now - 1000, seen: seenSeed };
@@ -1590,7 +1682,7 @@ test('紀錄去重合併:seen[] 累積超過 50 筆時裁到最新 50 筆，捨�
 // existing.receivedAt }]` 的等效寫法)，讓時間軸看得到條目原本第一次出
 // 現的時間;種子紀錄不帶 kind(那一刻沒有對應的來源事件，UI 時間軸端已
 // 容忍缺 kind 標籤)，再疊上本次事件，合併後 seen[] 應有兩筆。
-test('紀錄去重合併:視窗內命中但既有條目沒有 seen 欄位(舊資料)時，照手機語意補種一筆起始紀錄(不帶 kind)，加上本次事件共兩筆', async () => {
+test('紀錄永久合併:視窗內命中但既有條目沒有 seen 欄位(舊資料)時，照手機語意補種一筆起始紀錄(不帶 kind)，加上本次事件共兩筆', async () => {
   const now = Date.now();
   const existingAt = now - 60 * 1000;
   const existing = {
@@ -1613,7 +1705,7 @@ test('紀錄去重合併:視窗內命中但既有條目沒有 seen 欄位(舊資
   assert.equal(seen[1].kind, 'icon', '本次事件仍照常記 kind');
 });
 
-test('紀錄去重合併:既有條目的 seen[] 若含偽造/損毀資料(at 非數字、kind 不在白名單、非物件)，合併時逐筆 sanitize、不整組作廢', async () => {
+test('紀錄永久合併:既有條目的 seen[] 若含偽造/損毀資料(at 非數字、kind 不在白名單、非物件)，合併時逐筆 sanitize、不整組作廢', async () => {
   const now = Date.now();
   const existing = {
     url: CLEANED_NOTICE_CLEAN_URL,
@@ -1975,56 +2067,14 @@ test('解析保底:乾淨的 fallback(粉專等無帳號形狀的 og:title)仍�
 });
 
 // ============================================================
-// 去重視窗貼邊(DEDUP_WINDOW_MS = 5 分鐘 = 300000ms)。釘死邊界運算子
-// `now - at <= DEDUP_WINDOW_MS`:at 恰為 now-300000 應合併(邊界含),at 為
-// now-300001 應新增。用凍結 Date 消除「測試端 now」與「recordHistory 內
-// Date.now()」的毫秒級偏移，否則 now-300000 這種貼邊案例會因偏移而變得不
-// 確定。
+// 【永久合併規格取代】原「去重視窗貼邊(DEDUP_WINDOW_MS = 300000ms)」的兩條
+// 測試(at 恰為 now-300000 應合併、now-300001 應新增)整組移除:時間視窗已
+// 拆除，邊界運算子不復存在，這兩條釘的是一個沒有了的東西。取而代之的覆蓋
+// 見上方「跨長時距(相隔 3 小時)仍合併」「handle 改名後仍合併」「post ID 不
+// 同各自獨立」三條——永久合併規格下，該釘的是「合併鍵是什麼」，不是「視窗
+// 邊界在哪裡」。凍結 Date 的測試輔助(makeFrozenDate/opts.now)只服務這兩條
+// 貼邊測試，一併移除。
 // ============================================================
-
-const W1_FIXED_NOW = 1700000000000;
-
-test('W1 去重視窗貼邊:at 恰為 now-300000(邊界含)應合併為一筆', async () => {
-  const existing = {
-    url: CLEANED_NOTICE_CLEAN_URL,
-    kind: 'share',
-    at: W1_FIXED_NOW - 300000,
-    seen: [{ at: W1_FIXED_NOW - 300000, kind: 'share' }],
-  };
-  const bg = loadBackgroundWithSettings(
-    { saveHistory: true },
-    { localHistory: [existing], now: W1_FIXED_NOW }
-  );
-
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
-  await settle();
-
-  const history = bg.storage.localSnapshot().history;
-  assert.equal(history.length, 1, 'now-300000 落在去重視窗邊界內(<=)，應合併不新增');
-  assert.equal(history[0].kind, 'icon', '合併後 kind 更新為本次');
-  assert.equal(history[0].seen.length, 2, 'seen[] 在既有一筆上追加本次一筆');
-});
-
-test('W1 去重視窗貼邊:at 為 now-300001(邊界外)應新增一筆', async () => {
-  const existing = {
-    url: CLEANED_NOTICE_CLEAN_URL,
-    kind: 'share',
-    at: W1_FIXED_NOW - 300001,
-    seen: [{ at: W1_FIXED_NOW - 300001, kind: 'share' }],
-  };
-  const bg = loadBackgroundWithSettings(
-    { saveHistory: true },
-    { localHistory: [existing], now: W1_FIXED_NOW }
-  );
-
-  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
-  await settle();
-
-  const history = bg.storage.localSnapshot().history;
-  assert.equal(history.length, 2, 'now-300001 超出去重視窗(>)，應新增不合併');
-  assert.equal(history[0].kind, 'icon', '新條目在最前');
-  assert.equal(history[0].seen.length, 1, '新條目 seen[] 只有自己這筆起始紀錄');
-});
 
 // ============================================================
 // saveHistory 省請求:handleCleanedNotice 進 fetch 之前先 await
@@ -2155,7 +2205,7 @@ test('F3 in-flight 去重:同一 cleanUrl 兩次事件在 fetch 未完成前併�
 
   assert.equal(bg.fetchCalls.length, 1, '併發事件共用同一個 in-flight fetch，不重複發');
   const history = bg.storage.localSnapshot().history;
-  assert.equal(history.length, 1, '同一 cleanUrl 去重視窗內合併為一筆');
+  assert.equal(history.length, 1, '同一 cleanUrl 永久合併為一筆');
   assert.equal(history[0].author, '大福', 'in-flight 共用的 fetch 結果照樣補強顯示名稱');
 });
 

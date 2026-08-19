@@ -846,10 +846,11 @@
     // 刪除入口)，且經一道確認框(見 bindDetailDialog 的 detailDeleteBtn →
     // openConfirm)。
     //
-    // 以 url+at 精準命中(不只比 url):只比 url 會把「同一貼文在 5 分鐘視窗
-    // 外各自獨立成筆」的多筆紀錄一起誤刪。setHistory 已把 detailEntry 換成
-    // 清單裡的新物件(見 refreshDetail)，at 不會過期，精準比對成立——刪一筆
-    // 只刪中一筆。
+    // 以 url+at 精準命中(不只比 url):background 已改為永久合併(同一篇貼文
+    // 恆為一張卡，見 background.js 的紀錄合併區塊)，但匯入的資料可能夾帶同
+    // url 的多筆舊紀錄，比 url+at 才保證「刪一筆只刪中一筆」。setHistory 已
+    // 把 detailEntry 換成清單裡的新物件(見 refreshDetail)，at 不會過期，精
+    // 準比對成立。
     //
     // 沒有真的命中(例如已被別的分頁/storage 同步事件、或「清除全部」先
     // 移除)就不寫入、不動視窗、也不發「已刪除」成功 toast，避免對使用者
