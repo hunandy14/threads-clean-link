@@ -2274,3 +2274,202 @@ test('F3 淘汰改真 LRU:重新被解析的 og 刷新到最新，溢位淘汰�
   await settle();
   assert.equal(bg.fetchCalls.length, mid + 1, 'f2 最久未用已被淘汰，cleanedNotice 需補一次 fetch');
 });
+
+// ============================================================
+// 一次性遷移:既有紀錄整平成永久合併形狀(migrateHistoryMerge，掛在
+// chrome.runtime.onInstalled，install 與 update 皆跑)。
+//
+// 舊版以「url + 5 分鐘視窗」去重，同一篇貼文在使用者手上可能已散成好幾張
+// 卡。遷移讀全表 → 依合併鍵(post ID，抽不出則整條 url)分組 → 組內以 at 最
+// 新者為主卡、欄位新值優先、seen[] 取聯集按 at 升序裁到 50 → 再掃一輪失敗
+// 卡收編(文章卡.original === 失敗卡.url)→ 寫回。必須冪等:重跑結果不變，
+// 單卡組原樣保留，已無可合併時連寫回都不做。
+// ============================================================
+
+// 遷移專用 loader:makeChrome 的 onInstalled 是空殼，這裡側錄監聽器並掛上
+// 可預填 history 的 storage，用 fireInstalled() 觸發整條遷移流程。
+function loadBackgroundForMigration(localHistory) {
+  const chrome = makeChrome();
+  const onInstalledListeners = [];
+  chrome.runtime.onInstalled.addListener = (fn) => onInstalledListeners.push(fn);
+  chrome.tabs = { TAB_ID_NONE: -1, query: async () => [] };
+  chrome.scripting = { executeScript: async () => [{}] };
+  const storage = createChromeStorage({ saveHistory: true }, localHistory ? { history: localHistory } : {});
+  chrome.storage = storage.api;
+  runInSandbox(SRC, {
+    chrome,
+    fetch: async () => {
+      throw new Error('unexpected fetch');
+    },
+    console,
+    URL,
+    URLSearchParams,
+    setTimeout,
+    clearTimeout,
+  });
+
+  return {
+    storage,
+    fireInstalled(details) {
+      onInstalledListeners.slice().forEach((fn) => fn(details || { reason: 'update' }));
+    },
+  };
+}
+
+test('遷移:同一篇貼文的三張舊卡合成一張——主卡為最新一筆、欄位新值優先、seen[] 為各卡聯集且按時間排序', async () => {
+  const base = 1700000000000;
+  // 刻意讓 handle 改名(cardNew 的 handle 與另兩張不同)、且中間那張缺 seen
+  // (舊 schema)——三張卡的合併鍵都是同一個 post ID。
+  const cardOld = {
+    url: 'https://www.threads.com/@old.name/post/DbezfB0gYvP',
+    kind: 'share',
+    at: base - 3000,
+    author: 'Old Author',
+    excerpt: 'Old excerpt',
+    seen: [{ at: base - 3000, kind: 'share' }],
+  };
+  const cardMid = {
+    url: 'https://www.threads.com/@old.name/post/DbezfB0gYvP',
+    kind: 'strip',
+    at: base - 2000,
+    // 無 seen 欄位:遷移應以自身 at 補種一筆(不帶 kind)。
+  };
+  const cardNew = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'icon',
+    at: base - 1000,
+    author: 'New Author',
+    seen: [{ at: base - 1000, kind: 'icon' }],
+  };
+  const bg = loadBackgroundForMigration([cardNew, cardMid, cardOld]);
+
+  bg.fireInstalled({ reason: 'update' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '同 post ID 的三張卡應合成一張');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, 'url 取最新一筆(改名後的網址)');
+  assert.equal(history[0].kind, 'icon', 'kind 取最新一筆');
+  assert.equal(history[0].at, base - 1000, 'at 維持最新一筆的時間');
+  assert.equal(history[0].author, 'New Author', '欄位新值優先');
+  assert.equal(history[0].excerpt, 'Old excerpt', '主卡缺席的欄位才往舊卡補');
+  // Array.from 把 sandbox realm 的陣列換成本 realm 的，deepEqual 的 prototype
+  // 檢查才不會因跨 realm 而誤判(下同)。
+  assert.deepEqual(
+    Array.from(history[0].seen, (e) => e.at),
+    [base - 3000, base - 2000, base - 1000],
+    'seen[] 為三張卡的聯集，按 at 升序(含以 cardMid 的 at 補種的那一筆)'
+  );
+  assert.equal('kind' in history[0].seen[1], false, '補種的起始紀錄不帶 kind');
+});
+
+test('遷移:seen[] 聯集超過 50 筆時裁到最新 50 筆', async () => {
+  const base = 1700000000000;
+  const seenOf = (offset, count) =>
+    Array.from({ length: count }, (_, i) => ({ at: base - offset + i, kind: 'share' }));
+  const cardOld = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: base - 2000,
+    seen: seenOf(2000, 40),
+  };
+  const cardNew = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'icon',
+    at: base - 1000,
+    seen: seenOf(1000, 40),
+  };
+  const bg = loadBackgroundForMigration([cardNew, cardOld]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const seen = bg.storage.localSnapshot().history[0].seen;
+  assert.equal(seen.length, 50, '80 筆聯集應裁到上限 50 筆');
+  assert.equal(seen[49].at, base - 1000 + 39, '保留的是最新的一端');
+  assert.ok(
+    seen.every((event, i) => i === 0 || seen[i - 1].at <= event.at),
+    '裁切後仍為 at 升序'
+  );
+});
+
+test('遷移:短碼 fallback 鍵——同一短碼的失敗卡合併，不同短碼各自獨立', async () => {
+  const base = 1700000000000;
+  const shareA = 'https://www.threads.com/share/CodeAAA';
+  const shareB = 'https://www.threads.com/share/CodeBBB';
+  const bg = loadBackgroundForMigration([
+    { url: shareB, kind: 'share', at: base - 1000, seen: [{ at: base - 1000, kind: 'share' }] },
+    { url: shareA, kind: 'share', at: base - 2000, seen: [{ at: base - 2000, kind: 'share' }] },
+    { url: shareA, kind: 'share', at: base - 3000, seen: [{ at: base - 3000, kind: 'share' }] },
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 2, '同短碼的兩張合成一張，不同短碼維持獨立');
+  assert.equal(history[0].url, shareB);
+  assert.equal(history[1].url, shareA);
+  assert.equal(history[1].seen.length, 2, '同短碼兩張卡的事件聯集');
+});
+
+test('遷移:失敗卡收編——文章卡的 original 與失敗卡的 url 配對，收編後只剩文章卡', async () => {
+  const base = 1700000000000;
+  const shareUrl = 'https://www.threads.com/share/MigrateCode';
+  const failed = { url: shareUrl, kind: 'share', at: base - 5000 };
+  const post = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: base - 1000,
+    original: shareUrl,
+    seen: [{ at: base - 1000, kind: 'share' }],
+  };
+  const bg = loadBackgroundForMigration([post, failed]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '失敗卡被收編，只剩文章卡');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL);
+  assert.deepEqual(
+    Array.from(history[0].seen, (e) => e.at),
+    [base - 5000, base - 1000],
+    'seen[] 含失敗當下的時刻(以失敗卡的 at 補種)'
+  );
+});
+
+test('遷移:冪等——已整平的資料重跑一次不變，且不再寫回 storage', async () => {
+  const base = 1700000000000;
+  const bg = loadBackgroundForMigration([
+    { url: CLEANED_NOTICE_CLEAN_URL, kind: 'icon', at: base - 1000, seen: [{ at: base - 2000 }, { at: base - 1000, kind: 'icon' }] },
+    { url: 'https://www.threads.com/@other/post/OtherPostId', kind: 'share', at: base - 3000, seen: [{ at: base - 3000, kind: 'share' }] },
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+  const firstWriteCount = bg.storage.localCalls.set.length;
+  const afterFirst = bg.storage.localSnapshot().history;
+
+  bg.fireInstalled();
+  await settle();
+
+  assert.deepEqual(bg.storage.localSnapshot().history, afterFirst, '重跑結果與第一次完全相同');
+  assert.equal(bg.storage.localCalls.set.length, firstWriteCount, '已是永久合併形狀時不再寫回 storage');
+  assert.equal(firstWriteCount, 0, '本來就無可合併的資料，第一次也不該寫回');
+});
+
+test('遷移:空表與單卡表無害——不寫回、不損壞既有資料', async () => {
+  const emptyBg = loadBackgroundForMigration();
+  emptyBg.fireInstalled({ reason: 'install' });
+  await settle();
+  assert.equal(emptyBg.storage.localSnapshot().history, undefined, '空表遷移不得憑空寫出 history');
+  assert.equal(emptyBg.storage.localCalls.set.length, 0, '空表不寫回');
+
+  const single = { url: CLEANED_NOTICE_CLEAN_URL, kind: 'share', at: 1700000000000 };
+  const singleBg = loadBackgroundForMigration([single]);
+  singleBg.fireInstalled();
+  await settle();
+  assert.deepEqual(singleBg.storage.localSnapshot().history, [single], '單卡表原樣保留');
+  assert.equal(singleBg.storage.localCalls.set.length, 0, '單卡表不寫回');
+});

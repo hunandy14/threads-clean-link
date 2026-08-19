@@ -75,6 +75,11 @@ chrome.runtime.onInstalled.addListener(() => {
   reinjectIntoOpenTabs().catch((err) => {
     console.warn('[threads-clean-link] 既開分頁的自癒重注入失敗', err);
   });
+  // 紀錄整平成永久合併形狀的一次性遷移(見 migrateHistoryMerge)。同樣不分
+  // 安裝原因一律執行:首裝時紀錄是空的、已整平過的資料再跑一次也不會有任
+  // 何變化(冪等且不寫回)，用 details.reason 分流只會多一個會過時的假設。
+  // 函式內部已接住所有錯誤(遷移失敗不影響任何主功能)，此處不需再補 catch。
+  migrateHistoryMerge();
 });
 
 // ------------------------------------------------------------
@@ -1054,6 +1059,149 @@ function recordHistory(url, kind, extra) {
     })
     .catch((err) => {
       console.error('[threads-clean-link] 寫入紀錄失敗', err);
+    });
+  return historyWriteChain;
+}
+
+// ---- 一次性遷移:既有紀錄整平成永久合併形狀 ----
+//
+// 【動機】舊版以「url + 5 分鐘視窗」去重，同一篇貼文在使用者手上很可能已
+// 經散成好幾張卡(隔天再複製一次多一張、handle 改名前後又各一張、當年解析
+// 失敗的短碼原文再一張)。改成永久合併之後，**新**寫入自然只會有一張卡，
+// 但既有資料不會自己收斂——這支遷移在 onInstalled 跑一次，把舊資料整平。
+//
+// 【演算法】讀全表 → 依 historyDedupKey 分組(同 post ID 為一組，抽不出 ID
+// 的以整條 url 自成一組)→ 組內以 at 最新的一筆為主卡，欄位新值優先(主卡
+// 缺席才依序往較舊的卡取值)、seen[] 取各卡聯集(無 seen 的舊卡以自身 at 補
+// 種一筆)按 at 升序裁到最新 SEEN_MAX、主卡的 url/kind/at 原樣保留 → 再掃一
+// 輪失敗卡收編(文章卡.original === 失敗卡.url，見 findOriginalAdoptIndex)
+// → 寫回。合併後的卡放在該組第一次出現的位置(紀錄是新到舊排列，第一次出
+// 現的通常就是主卡本身)，整體時序不被打亂。
+//
+// 【冪等】已經整平過的資料再跑一次不會有任何變化:單卡組原樣保留(連物件
+// 參照都不換)，失敗卡收編後原卡已刪除、第二輪掃不到配對。實作據此在「每
+// 一筆都是原參照」時直接短路、連寫回都不做，避免每次更新都對 storage 做一
+// 次無意義的整表寫入。
+//
+// 【競態】走既有的 historyWriteChain 串行，與 recordHistory 的
+// read-modify-write 互斥——遷移讀到的必定是完整的表，也不會被同時落盤的新
+// 紀錄覆蓋。寫回同樣先過 capHistoryForStorage(合併只會讓資料變少，這裡純
+// 粹是不讓任何一條寫入路徑繞過儲存上限防線)。
+
+// 純函式:比較兩筆條目的 at(新到舊)。at 不是有限數字者一律排到最後(那筆
+// 時間本身就不可信，不該被選為主卡);刻意不用相減，避免兩個 -Infinity 相
+// 減得到 NaN 讓排序結果未定義。
+function compareEntryAtDesc(a, b) {
+  const av = a && typeof a.at === 'number' && isFinite(a.at) ? a.at : -Infinity;
+  const bv = b && typeof b.at === 'number' && isFinite(b.at) ? b.at : -Infinity;
+  if (av === bv) return 0;
+  return av < bv ? 1 : -1;
+}
+
+// 純函式:把同一組(同合併鍵)的多張卡合成一張。單卡組由呼叫端直接原樣保
+// 留，不會進到這裡。
+function mergeHistoryGroup(group) {
+  // Array#sort 穩定:at 相同時維持原陣列順序(新到舊排列下即較新者在前)。
+  const ordered = group.slice().sort(compareEntryAtDesc);
+  const primary = ordered[0];
+  const merged = { url: primary.url, at: primary.at };
+  if (primary.kind !== undefined) merged.kind = primary.kind;
+  for (let f = 0; f < MERGEABLE_FIELDS.length; f++) {
+    const field = MERGEABLE_FIELDS[f];
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i][field] !== undefined) {
+        merged[field] = ordered[i][field];
+        break;
+      }
+    }
+  }
+  merged.seen = unionSeenEvents(ordered.map(entrySeenEvents));
+  return merged;
+}
+
+// 純函式:整表分組合併。不是物件、或 url 不是字串的條目無從分組，原樣保
+// 留在原位(遷移只做合併，不順手清資料;真正的形狀把關在 options 讀取端)。
+function mergeHistoryByDedupKey(list) {
+  const groups = new Map();
+  const slots = [];
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item || typeof item !== 'object' || typeof item.url !== 'string') {
+      slots.push({ item });
+      continue;
+    }
+    const key = historyDedupKey(item.url);
+    const group = groups.get(key);
+    if (group) {
+      group.push(item);
+      continue;
+    }
+    groups.set(key, [item]);
+    slots.push({ key });
+  }
+
+  return slots.map((slot) => {
+    if (slot.key === undefined) return slot.item;
+    const group = groups.get(slot.key);
+    // 單卡組原樣保留(同一個物件參照)，冪等短路據此判定。
+    return group.length === 1 ? group[0] : mergeHistoryGroup(group);
+  });
+}
+
+// 純函式:遷移的第二輪——失敗卡收編。文章卡的 original 是短碼原文，且表內
+// 有一張 url 恰為該短碼的失敗卡時，把失敗卡併進文章卡並刪除。一張失敗卡
+// 只會被收編一次(removed 記錄)。沒有任何配對時回傳原陣列參照，讓冪等短路
+// 得以成立。
+function adoptFailureEntriesInList(list) {
+  const indexByUrl = new Map();
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (item && typeof item.url === 'string' && !indexByUrl.has(item.url)) indexByUrl.set(item.url, i);
+  }
+
+  const removed = new Set();
+  let next = null;
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item || typeof item !== 'object' || !isAdoptableOriginal(item.original)) continue;
+    const target = indexByUrl.get(item.original);
+    if (target === undefined || target === i || removed.has(target)) continue;
+    if (!next) next = list.slice();
+    next[i] = adoptFailureEntry(next[i], list[target]);
+    removed.add(target);
+  }
+  if (!next) return list;
+  return next.filter((item, i) => !removed.has(i));
+}
+
+function migrateHistoryMerge() {
+  historyWriteChain = historyWriteChain
+    .then(async () => {
+      if (!hasStorageLocal()) return;
+      const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
+      const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
+      // 空表(首裝)與單卡表必然無可合併，連讀後計算都省。
+      if (list.length < 2) return;
+
+      const next = adoptFailureEntriesInList(mergeHistoryByDedupKey(list));
+      // 冪等短路:每一筆都是原物件參照(沒有任何一組被合併、沒有任何一張失
+      // 敗卡被收編)就不寫回。
+      if (next.length === list.length && next.every((item, i) => item === list[i])) return;
+
+      try {
+        await chrome.storage.local.set({ [HISTORY_KEY]: capHistoryForStorage(next) });
+      } catch (err) {
+        // 配額失敗優雅降級，理由同 recordHistory:遷移失敗最多維持舊形狀的
+        // 紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響任何主功能。
+        if (isQuotaExceededError(err)) {
+          console.warn('[threads-clean-link] 紀錄遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
+          return;
+        }
+        throw err;
+      }
+    })
+    .catch((err) => {
+      console.error('[threads-clean-link] 紀錄遷移失敗', err);
     });
   return historyWriteChain;
 }
