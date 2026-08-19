@@ -32,7 +32,7 @@
   var NORMALIZE_POST_URL_PATTERN =
     /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}))\/?(?:[?#].*)?$/i;
 
-  // F5 控制字元剝除範圍。剝:C0(U+0000-001F,**保留 tab U+0009 與 newline
+  // 控制字元剝除範圍。剝:C0(U+0000-001F,**保留 tab U+0009 與 newline
   // U+000A**)、C1(U+007F-009F)、bidi 控制字元(U+061C 阿拉伯字母標記、
   // U+200E/200F LRM/RLM、U+202A-202E 嵌入/覆寫、U+2066-2069 隔離)。**不剝**
   // ZWJ/ZWNJ(U+200C/200D)——emoji 組合序列必要,剝了家庭 emoji 會散成三個
@@ -107,15 +107,15 @@
 
   // ---- 欄位消毒 ----
 
-  // F5 核心:剝除控制/bidi 字元(見 CONTROL_CHARS_RE 註解),獨立匯出供測試
+  // 剝除控制/bidi 字元(見 CONTROL_CHARS_RE 註解),獨立匯出供測試
   // 直打。非字串一律回傳空字串(呼叫端皆先過型別檢查,此處僅防呆)。
   function stripControlChars(value) {
     if (typeof value !== 'string') return '';
     return value.replace(CONTROL_CHARS_RE, '');
   }
 
-  // 選填文字欄位消毒:非字串→undefined;F5 剝除→若成空字串則丟棄→截斷至
-  // maxLen(**先剝後截**)。回傳 undefined 時呼叫端整欄不寫入(不落空值)。
+  // 選填文字欄位消毒:非字串→undefined;剝控制字元→若成空字串則丟棄→截斷
+  // 至 maxLen(**先剝後截**)。回傳 undefined 時呼叫端整欄不寫入(不落空值)。
   function sanitizeText(value, maxLen) {
     if (typeof value !== 'string') return undefined;
     var stripped = stripControlChars(value);
@@ -123,9 +123,9 @@
     return stripped.slice(0, maxLen);
   }
 
-  // F1 強化的 original 欄位消毒。cleanUrl 為本筆已驗證的乾淨網址。
+  // original 欄位消毒。cleanUrl 為本筆已驗證的乾淨網址。
   //   1. 非字串/空→undefined
-  //   2. F5 剝除;剝完成空→undefined
+  //   2. 剝控制字元;剝完成空→undefined
   //   3. === cleanUrl→undefined(與 cleaned 相同代表沒有額外資訊)
   //   4. 長度 > ORIGINAL_MAX→**整欄丟棄**(不截斷:截半的殘 URL 過不了白名單,
   //      不如整欄不留)
@@ -145,7 +145,7 @@
 
   // removedParams 消毒(取嚴版:掃描封頂 slice 前 REMOVED_PARAMS_MAX 筆,不是
   // 「收滿合法項目才停」——防呼叫端用超大 payload 夾帶大量畸形項目拖慢處
-  // 理)。每筆 key/value 先過 stripControlChars(F5),再驗長度上限:key 需為
+  // 理)。每筆 key/value 先過 stripControlChars,再驗長度上限:key 需為
   // 剝除後非空且 ≤ PARAM_KEY_MAX、value 需為剝除後 ≤ PARAM_VALUE_MAX,任一
   // 不符整筆丟棄(容忍陣列裡部分項目壞掉)。非陣列或一筆不剩回傳 undefined。
   function sanitizeRemovedParams(value) {

@@ -48,8 +48,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runInSandbox } = require('./support/helpers');
 
-// 尚未實作 post-icon.js 時 require 會丟 MODULE_NOT_FOUND：刻意延遲到各
-// 測試內部才載入，讓紅燈落在個別測試上，而不是整個測試檔在載入階段就崩掉
+// require 刻意延遲到各測試內部才載入(而非檔案頂層)：載入失敗(如
+// MODULE_NOT_FOUND)時紅燈落在個別測試上，而不是整個測試檔在載入階段就崩掉
 // (沿用 test/popup.test.js 的 loadPopup() 模式)。
 function loadPostIcon() {
   return require(path.join(__dirname, '..', 'post-icon.js'));
@@ -402,8 +402,8 @@ test('pickActionRowIndex:候選清單為空或非陣列輸入一律回傳 null�
   assert.equal(pickActionRowIndex(undefined), null);
 });
 
-// ---- classifyExcerptCandidate(0.5.0 貼文收藏庫:extractExcerpt 逐段決
-// 策 push／skip／stop 的純函式，PM 審查後修正兩條規則) ----
+// ---- classifyExcerptCandidate(extractExcerpt 逐段決策 push／skip／stop
+// 的純函式) ----
 
 test('classifyExcerptCandidate:純標點行(如「...」)不是計數字串，應保留為內文(push)，不中止收集', () => {
   const { classifyExcerptCandidate } = loadPostIcon();
@@ -441,7 +441,7 @@ test('classifyExcerptCandidate:空字串——已收集到內文時中止(stop)�
   assert.equal(classifyExcerptCandidate('', false), 'skip');
 });
 
-// ---- isSamePostPath(方案甲:findContainerByCleanUrl 的可測核心——比對
+// ---- isSamePostPath(findContainerByCleanUrl 的可測核心——比對
 // 兩個網址／href 是否指向同一篇貼文，容忍尾隨斜線／query／hash 差異，也
 // 容忍一邊絕對網址、一邊頁面上常見的相對路徑) ----
 
@@ -485,8 +485,8 @@ test('findContainerByCleanUrl:Node 環境(無 document)一律回傳 null，不�
   assert.equal(findContainerByCleanUrl(null), null);
 });
 
-// ---- resolveFailureToastKey(使用者變更設定規格:share/strip 解析在
-// Threads 頁面內失敗時，頁內 toast 要顯示的 i18n key 對應) ----
+// ---- resolveFailureToastKey(share/strip 解析在 Threads 頁面內失敗時，
+// 頁內 toast 要顯示的 i18n key 對應) ----
 
 test('resolveFailureToastKey:三個已知失敗原因各自對應 background.js 右鍵路徑既有的失敗文案 key', () => {
   const { resolveFailureToastKey } = loadPostIcon();
@@ -506,8 +506,8 @@ test('resolveFailureToastKey:未知原因(含非字串)一律 fallback 到 bgUne
   assert.equal(resolveFailureToastKey(undefined), 'bgUnexpected');
 });
 
-// ---- resolvePostCopyEnabled(使用者變更設定規格:postCopyEnabled 開關，
-// 預設 true，只有明確 false 才關閉) ----
+// ---- resolvePostCopyEnabled(postCopyEnabled 開關，預設 true，只有明確
+// false 才關閉) ----
 
 test('resolvePostCopyEnabled:明確 false 才視為關閉', () => {
   const { resolvePostCopyEnabled } = loadPostIcon();
@@ -583,7 +583,7 @@ test('自癒重注入:新實例啟動時先清掉舊孤兒殘留的 .tcl-copy-ic
 });
 
 // ============================================================
-// 冪等交棒(併發線中2):同一 ISOLATED world 雙注入(手動 F5 × 自癒重注入
+// 冪等交棒:同一 ISOLATED world 雙注入(手動 F5 × 自癒重注入
 // 的毫秒級競態,或更新後的重注入)時,第二個實例先讓第一個退場(斷
 // MutationObserver、清它那批 icon)再接手,消除「雙 observer → 雙落盤 →
 // 時間軸假事件」。用可觀測的假 MutationObserver 驗證舊 observer 被
@@ -644,9 +644,9 @@ test('冪等交棒:同一 window 二次載入 post-icon，舊實例的 MutationO
 });
 
 // ============================================================
-// i18n.js 新增 key:iconTooltip(圖示滑鼠提示)、iconCopied(複製成功提示)。
-// zh/en 兩份字典都要有這兩個 key 且非空字串；既有的 zh/en key 集合對齊
-// 測試在 test/i18n.test.js(不動它)，等實作補上這兩個 key 後會一併通過。
+// i18n.js 的 key:iconTooltip(圖示滑鼠提示)、iconCopied(複製成功提示)，
+// zh/en 兩份字典都要有這兩個 key 且非空字串;既有的 zh/en key 集合對齊測試
+// 在 test/i18n.test.js。
 // ============================================================
 
 test('i18n:zh/en 字典都新增 iconTooltip、iconCopied 兩個 key，且為非空字串', () => {

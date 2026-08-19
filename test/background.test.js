@@ -43,26 +43,22 @@ function makeChrome() {
   return chrome;
 }
 
-// code review #5(url 樣式統一):固定回傳一個 CLEAN_POST_URL_PATTERN(排
-// 除法字元類、無長度上限)可以匹配、但嚴格的 POST_URL_PATTERN(白名單字
-// 元類、長度上限 80)不能匹配的 finalUrl——handle 帶 CLEAN_POST_URL_PATTERN
-// 字元類允許、但不在 POST_URL_PATTERN 白名單內的 '~' 字元。
+// 這組 fixture 的 finalUrl 帶 '~' 字元，寬鬆的 CLEAN_POST_URL_PATTERN(排
+// 除法字元類、無長度上限)可以匹配，但嚴格的 POST_URL_PATTERN(白名單字
+// 元類、長度上限 80)不能——'~' 在前者的字元類內、不在後者的白名單內。
 const SHARE_URL_WEIRD_HANDLE = 'https://www.threads.com/share/WEIRDHANDLE';
 const WEIRD_HANDLE_FINAL_URL = 'https://www.threads.com/@weird~handle/post/AbC123';
 
-// OG 案(解析路徑摘要升級):不含任何 og 標籤的最小 HTML，供不關心 og 擷
-// 取的既有測試當作 response.text() 的預設回傳值——resolveFinalUrl 改讀
-// response.text() 之後，mock response 一律要有 .text()，否則會落入
-// extractOgFields 的容錯分支(console.error + ogFields 保持 {})，雖然
-// 不影響既有斷言(og 欄位缺席時 mergeOgIntoFields 的行為等同修正前)，但
-// 測試輸出會多噪音，這裡統一補上。
+// 不含任何 og 標籤的最小 HTML，供不關心 og 擷取的測試當作 response.text()
+// 的預設回傳值。mock response 一律要有 .text()，否則會落入 extractOgFields
+// 的容錯分支(console.error + ogFields 保持 {})，測試輸出會多噪音。
 const NO_OG_HTML = '<html><head></head><body></body></html>';
 
 function fetchResult(url, text) {
   return { url, text: async () => (text !== undefined ? text : NO_OG_HTML) };
 }
 
-// OG 案:自建 sandbox 用於測 og 擷取/合併/快取橋接，不透過共用的
+// 自建 sandbox 用於測 og 擷取/合併/快取橋接，不透過共用的
 // loadBackgroundWithSettings(該函式的 fetch mock 是固定案例，不適合逐
 // 一加測不同 HTML 內容)。fetch 對固定的 shareUrl 回傳可自訂的 finalUrl
 // 與 HTML 內容；回傳值同時支援 menu 路徑(click)與自動路徑
@@ -88,7 +84,7 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
   };
   chrome.storage = storage.api;
   const fetchCalls = [];
-  // 語系鎖定案:側錄每次 fetch 的 init 物件，供 Accept-Language header 斷言。
+  // 側錄每次 fetch 的 init 物件，供 Accept-Language header 斷言。
   const fetchInits = [];
   const finalUrl = opts.finalUrl || OG_FINAL_URL;
   const shareUrl = opts.shareUrl || OG_SHARE_URL;
@@ -96,15 +92,14 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
     fetchCalls.push(url);
     fetchInits.push(init);
     if (url === shareUrl) return fetchResult(finalUrl, html);
-    // R2-a 統一後,share 路徑的 cleanedNotice 也走 fetchOgFieldsForLocalKind
-    // ——快取命中(resolveShare 已寫入)時不會走到這裡;快取未命中(如
-    // NO_OG_HTML 落負快取後 TTL 內短路,或對從未 resolveShare 的其他貼文
-    // 頁)才會 fetch 貼文頁本身,一律回傳無 og 的最小 HTML,不再拋 unexpected
-    // fetch 噪音(og 空 → DOM 版維持)。
+    // share 路徑的 cleanedNotice 也走 fetchOgFieldsForLocalKind:快取命中
+    // (resolveShare 已寫入)時不會走到這裡;快取未命中(如 NO_OG_HTML 落負
+    // 快取後 TTL 內短路,或對從未 resolveShare 的其他貼文頁)才會 fetch 貼文
+    // 頁本身,一律回傳無 og 的最小 HTML(og 空 → DOM 版維持)。
     return fetchResult(url, NO_OG_HTML);
   };
-  // OG 案(本地路徑補強):fetchOgFieldsForLocalKind 內部用 setTimeout 做
-  // 逾時競速，vm sandbox 預設不含這個全域，這裡明確注入。
+  // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，vm sandbox
+  // 預設不含這個全域，這裡明確注入。
   runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
 
   return {
@@ -145,11 +140,10 @@ function makeFetch(calls) {
     if (url === SHARE_URL_WEIRD_HANDLE) {
       return fetchResult(WEIRD_HANDLE_FINAL_URL);
     }
-    // R2-a 統一後,share/strip/icon 三條 kind 的 cleanedNotice 一律經
+    // share/strip/icon 三條 kind 的 cleanedNotice 一律經
     // fetchOgFieldsForLocalKind 對「貼文頁本身」補一次 og fetch。此 mock
     // 對任何貼文頁(/post/ 形狀,涵蓋 www／無 www、.com／.net 各變體)回傳無
-    // og 的最小 HTML(og 空 → 負快取 → 落盤沿用 DOM 版欄位),行為等同修正
-    // 前 fetch 拋錯被內部吞掉的結果，但不再噴 console.error 噪音。
+    // og 的最小 HTML(og 空 → 負快取 → 落盤沿用 DOM 版欄位)。
     if (/\/post\//.test(url)) {
       return fetchResult(url);
     }
@@ -161,11 +155,10 @@ function makeFetch(calls) {
 function loadBackground() {
   const chrome = makeChrome();
   const calls = [];
-  // F 案(紀錄資料層補齊 original/removedParams):diffRemovedParams(右鍵
-  // 路徑用)需要 URL/URLSearchParams，vm sandbox 預設不含這兩個全域(見
-  // Node vm 文件)，這裡明確注入，讓 background.js 的行為與真實瀏覽器/
-  // Service Worker 環境一致(兩者原生都有 URL/URLSearchParams)。
-  // OG 案(本地路徑補強):fetchOgFieldsForLocalKind 內部用 setTimeout 做
+  // diffRemovedParams(右鍵路徑用)需要 URL/URLSearchParams，vm sandbox
+  // 預設不含這兩個全域(見 Node vm 文件)，這裡明確注入，讓 background.js
+  // 的行為與真實瀏覽器/Service Worker 環境一致(兩者原生都有
+  // URL/URLSearchParams)。fetchOgFieldsForLocalKind 內部用 setTimeout 做
   // 逾時競速，一併注入。
   runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout });
   return { listener: chrome.onMessageListeners[0], calls };
@@ -231,13 +224,12 @@ test('轉址結果不是貼文網址時，回傳 ok:false 與 reason:format-erro
 });
 
 // ============================================================
-// SHARE_URL_PATTERN 尾端收緊規格(v1.1 車道 C)——測試先行、紅燈存證
-// 現行 SHARE_URL_PATTERN(background.js:6)為
+// SHARE_URL_PATTERN 尾端收緊規格
+// SHARE_URL_PATTERN(background.js:6)為
 //   /^https:\/\/(www\.)?threads\.(com|net)\/share\/.+/i
 // 只錨定開頭(^)、尾端用 .+ 且不錨定 $，只要 /share/ 後有至少 1 個
 // 任意字元(含 /、空白、雜訊)就會判定為合法短碼。以下案例表窮舉
 // 「必須匹配」與「不得匹配(收緊目標)」兩類，鎖住尾端收緊後的規格。
-// 本節只新增測試、不改動上面任何既有斷言。
 // ============================================================
 
 // 一律成功的 fetch mock:只用來觀察 SHARE_URL_PATTERN 是否放行(有沒有
@@ -295,8 +287,8 @@ const SHARE_URL_MUST_MATCH_CASES = [
 ];
 
 // 不得匹配(收緊目標):短碼後尾隨額外路徑段、夾帶非法字元/雜訊、或空
-// 短碼。現行正則因尾端用 .+ 且未錨定 $，這些案例目前會被誤判為合法，
-// 屬本車道要收緊掉的紅燈案例;每一列附一句歸類理由。
+// 短碼。正則因尾端用 .+ 且未錨定 $，這些案例會被誤判為合法，屬收緊
+// 目標;每一列附一句歸類理由。
 const SHARE_URL_MUST_NOT_MATCH_CASES = [
   {
     url: 'https://www.threads.com/share/Abc123/extra',
@@ -333,10 +325,6 @@ const SHARE_URL_MUST_NOT_MATCH_CASES = [
   },
 ];
 
-// 【精簡】原本每個案例各自成為一條測試(共 16 條)，但兩組案例各自只驗證
-// 「同一個不變量」的多個資料變體，改為兩條多案例測試:案例表原樣保留，
-// 每個 url 的歸類理由仍寫進斷言訊息，失敗時照樣指得出是哪一列。
-
 test('SHARE_URL_PATTERN 收緊規格(必須匹配):合法短碼一律放行並送出 fetch', async () => {
   for (const { url, reason } of SHARE_URL_MUST_MATCH_CASES) {
     const { listener, calls } = loadBackgroundAlwaysSucceed();
@@ -358,36 +346,34 @@ test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對�
 });
 
 // ============================================================
-// v1.1 設定規格 S1:右鍵選單路徑不受 autoClean 影響，永遠可用。
+// S1:右鍵選單路徑不受 autoClean 影響，永遠可用。
 //
-// 使用者變更設定規格:S2(notifySuccess 把關成功類通知)已隨 notifySuccess
-// 整組移除——成功類通知(右鍵路徑的 bgSuccess、自動路徑的
-// bgAutoSuccess/bgIconSuccess)全數拆除，不再有「要不要顯示」這道關卡；
-// 失敗／錯誤類通知不受任何設定影響，永遠觸發(右鍵路徑維持系統通知；
-// share/strip 自動路徑的失敗改走頁內 toast，見 bridge.test.js／
-// post-icon.test.js，不在本檔覆蓋範圍)。
+// 成功類通知(右鍵路徑的 bgSuccess、自動路徑的 bgAutoSuccess/bgIconSuccess)
+// 全數拆除，不再有「要不要顯示」這道關卡;失敗／錯誤類通知不受任何設定
+// 影響，永遠觸發(右鍵路徑維持系統通知;share/strip 自動路徑的失敗改走頁
+// 內 toast，見 bridge.test.js／post-icon.test.js，不在本檔覆蓋範圍)。
 //
 // 【時序紀律】chrome.storage.sync 的 get/set 一律延遲一個 tick 才結算
 // (見 support/helpers.js)，不允許同 tick 直接 resolve 的假綠燈;
 // 右鍵點擊流程本身是非同步的，測試以 settle() 等它跑完。
 //
-// 【防假綠燈】「失敗通知永遠觸發」這類條目，在現況(完全沒有設定機制)下
-// 本來就會通過。因此這些測試一律搭配一個可鑑別的斷言:同一個 service
-// worker 內成功流程不得發通知，或斷言 SW 確實讀過 chrome.storage.sync，
-// 避免「設定根本沒接上卻碰巧通過」。
+// 【防假綠燈】「失敗通知永遠觸發」這類條目，在完全沒有設定機制下本來就
+// 會通過。因此這些測試一律搭配一個可鑑別的斷言:同一個 service worker 內
+// 成功流程不得發通知，或斷言 SW 確實讀過 chrome.storage.sync，避免「設定
+// 根本沒接上卻碰巧通過」。
 // ============================================================
 
-// 淨化紀錄 + i18n 之後,cleanedNotice 的完整鏈路(讀設定→記錄→讀設定→
-// 讀語言→通知)串了約 5 個 setTimeout(0) tick;Windows 計時器顆粒 ~15ms,
-// 60ms 會偶發性等不完,放寬到 150ms。
+// cleanedNotice 的完整鏈路(讀設定→記錄→讀設定→讀語言→通知)串了約 5 個
+// setTimeout(0) tick;Windows 計時器顆粒 ~15ms,60ms 會偶發性等不完,放寬
+// 到 150ms。
 function settle(ms = 150) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // 凍結 Date:讓 background.js 的 Date.now() 回傳固定值,供去重視窗邊界測試
-// 釘死 `<=` 運算子(見 W1 弱釘),避免測試端 now 與 recordHistory 內
-// Date.now() 的毫秒級偏移讓 now-300000 這種貼邊案例變得不確定。函式體內
-// 的 Date 是測試檔的原生 Date(非凍結),不會遞迴。
+// 釘死 `<=` 運算子,避免測試端 now 與 recordHistory 內 Date.now() 的毫秒
+// 級偏移讓 now-300000 這種貼邊案例變得不確定。函式體內的 Date 是測試檔的
+// 原生 Date(非凍結),不會遞迴。
 function makeFrozenDate(fixed) {
   function FrozenDate(...args) {
     return args.length ? new Date(...args) : new Date(fixed);
@@ -442,10 +428,10 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     storage: storage.api,
   };
   const fetchCalls = [];
-  // F 案:同上方 loadBackground 的理由，右鍵路徑(handleShareLinkClick →
+  // 同上方 loadBackground 的理由，右鍵路徑(handleShareLinkClick →
   // buildMenuHistoryExtra → diffRemovedParams)這條路徑經這個 loader 進
-  // 入，同樣需要注入 URL/URLSearchParams。OG 案(本地路徑補強):
-  // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入。
+  // 入，同樣需要注入 URL/URLSearchParams。fetchOgFieldsForLocalKind
+  // 內部用 setTimeout 做逾時競速，一併注入。
   const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout };
   if (opts.now !== undefined) sandbox.Date = makeFrozenDate(opts.now);
   runInSandbox(SRC, sandbox);
@@ -467,7 +453,7 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   };
 }
 
-// ---- 使用者變更設定規格:autoClean 預設值改為 false ----
+// ---- autoClean 預設值為 false ----
 //
 // background.js 本身不依 settings.autoClean 分支任何邏輯(這顆設定驅動
 // 的行為在 bridge.js／clipboard-guard.js，兩者測試已各自覆蓋預設值)，
@@ -503,8 +489,8 @@ test('S1:autoClean=false 時，右鍵選單仍照常解析短連結並寫入剪�
   assert.ok(bg.storage.calls.get.length >= 1, 'service worker 應讀取 chrome.storage.sync 設定');
 });
 
-// ---- 使用者變更設定規格:成功類通知整組移除，右鍵成功複製不得觸發任何
-// 成功通知(不再有 notifySuccess 這種可開關的把關，行為恆定)----
+// ---- 成功類通知整組移除，右鍵成功複製不得觸發任何成功通知(不再有
+// notifySuccess 這種可開關的把關，行為恆定)----
 
 test('右鍵成功複製不得觸發任何成功通知(成功類通知已整組移除)', async () => {
   const bg = loadBackgroundWithSettings({ autoClean: true });
@@ -518,10 +504,9 @@ test('右鍵成功複製不得觸發任何成功通知(成功類通知已整組�
 
 // ---- 失敗／錯誤類通知不受設定影響，永遠觸發 ----
 
-// 【精簡】三種錯誤來源(無效短連結／網路失敗／轉址結果非貼文)驗的是同一個
-// 不變量:錯誤通知永遠觸發，且其後的成功流程不發通知(成功類通知已整組
-// 移除)。三條併為一條多案例測試，通知 id 逐案例斷言，覆蓋面不減。剪貼簿
-// 寫入失敗因為需要中途翻轉 clipboardOk，harness 形狀不同，仍單獨一條(見下)。
+// 三種錯誤來源(無效短連結／網路失敗／轉址結果非貼文)驗同一個不變量:
+// 錯誤通知永遠觸發，且其後的成功流程不發通知。剪貼簿寫入失敗因為需要中途
+// 翻轉 clipboardOk，harness 形狀不同，仍單獨一條(見下)。
 test('各類錯誤通知照常觸發，其後成功流程不發通知', async () => {
   const cases = [
     { linkUrl: 'https://evil.com/whatever', id: 'threads-clean-link-invalid' },
@@ -560,14 +545,12 @@ test('剪貼簿寫入失敗的錯誤通知照常觸發，其後成功流程不�
 });
 
 // ============================================================
-// 方案甲(歷史即收藏):自動路徑(share/strip/icon)的 cleanedNotice 是淨化
-// 紀錄(唯一資料集)的入筆管道，形狀為
+// 自動路徑(share/strip/icon)的 cleanedNotice 是淨化紀錄(唯一資料集)的
+// 入筆管道，形狀為
 // { type: 'cleanedNotice', cleanUrl, kind, author?, handle?, excerpt? }
 // (kind 白名單 'share' | 'strip' | 'icon',非法整則忽略——見檔末「淨化
-// 紀錄」區塊)。使用者變更設定規格:notifySuccess 整組移除，cleanedNotice
-// 收到就無條件記錄，不再發任何通知——本節驗證這一點，並保留 R1/R2 審查
-// 留下的阻斷級安全回歸測試(原本驗「不得發出通知」，現改驗「不得寫入紀
-// 錄」，驗證核心不變:cleanUrl 必須整串錨定吻合才採信)。
+// 紀錄」區塊)。cleanedNotice 收到就無條件記錄，不再發任何通知。安全回歸:
+// cleanUrl 必須整串錨定吻合才採信，否則不得寫入紀錄。
 // ============================================================
 
 const CLEANED_NOTICE_CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
@@ -606,7 +589,7 @@ test('自動路徑的 cleanedNotice 不影響右鍵路徑的錯誤/失敗通知�
   assert.equal(history[0].seen[1].kind, 'menu', 'seen[] 新在後');
 });
 
-// R1 審查回饋(阻斷級，方案甲重組後改驗紀錄而非通知):cleanedNotice 的
+// cleanedNotice 的
 // cleanUrl 來自頁面腳本可自由 postMessage 的管道，background 是這條路徑
 // 上唯一的信任邊界。驗證樣式若不錨定收尾，「合法貼文網址開頭 + 尾隨任意
 // 文字」就會通過驗證，尾隨內容(含換行、假的系統提示、大量垃圾)原樣寫
@@ -635,7 +618,7 @@ test('R1-2:「合法貼文網址開頭 + 尾隨任意文字」的 cleanedNotice 
   assert.equal(bg.storage.localSnapshot().history.length, 1);
 });
 
-// R2 審查回饋(阻斷級，同上改驗紀錄):只錨定收尾、字元類用排除法(如
+// 只錨定收尾、字元類用排除法(如
 // [^/?#\s]+)仍有缺口——尾隨文字只要「不含空白」就整串吻合而過關。中文
 // 釣魚句不需要空白，純英數長串同理;頁面甚至不必偽造 notice，直接
 // writeText 一個帶中文句的假貼文網址走完整條自動淨化鏈也會被記錄。驗證
@@ -746,9 +729,9 @@ test('紀錄:kind 缺失或非白名單的 cleanedNotice 整則忽略——不�
   assert.equal(bg.storage.localSnapshot().history.length, 1);
 });
 
-// 0.4.0 新增:貼文互動列複製 icon(post-icon.js)點擊複製成功後，經
-// cleanedNotice 送 kind:'icon'——白名單需收下這個新來源，記錄與通知都
-// 比照 share/strip 既有自動路徑一視同仁，不做特殊抑制。
+// 貼文互動列複製 icon(post-icon.js)點擊複製成功後，經 cleanedNotice 送
+// kind:'icon':白名單收下這個來源，記錄與通知都比照 share/strip 自動路徑
+// 一視同仁，不做特殊抑制。
 test('紀錄:cleanedNotice 的 kind 為 icon(貼文互動列複製按鈕)時照常記錄一筆', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
 
@@ -762,14 +745,12 @@ test('紀錄:cleanedNotice 的 kind 為 icon(貼文互動列複製按鈕)時照�
   assert.equal(typeof history[0].at, 'number');
 });
 
-// ---- 方案甲(歷史即收藏):cleanedNotice 選填的 author/handle/excerpt ----
+// ---- cleanedNotice 選填的 author/handle/excerpt ----
 //
 // 這三個欄位由複製 icon(post-icon.js)或 bridge.js(share/strip 路徑)從
 // 貼文容器 DOM 順手擷取，同屬頁面可控輸入，不信任:型別不是 string 的
 // 一律整欄丟棄，字串則截斷至各自長度上限(author/handle 100、excerpt
-// 2000)，寫法沿用 0.5.0 貼文收藏庫基座原本的 sanitizeFavoriteField(已
-// 改名 sanitizeHistoryField)。三者都是選填，缺席不影響其餘欄位或整筆
-// 紀錄的寫入。
+// 2000)。三者都是選填，缺席不影響其餘欄位或整筆紀錄的寫入。
 
 test('紀錄:cleanedNotice 帶合法的 author/handle/excerpt 時，三個欄位原樣寫入紀錄', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
@@ -806,8 +787,8 @@ test('紀錄:cleanedNotice 缺席 author/handle/excerpt 時，紀錄照常寫入
   assert.equal('excerpt' in history[0], false);
 });
 
-// ---- F 案(紀錄資料層補齊 original/removedParams，對齊手機
-// ShareHistoryItem):cleanedNotice 選填的 original/removedParams ----
+// ---- cleanedNotice 選填的 original/removedParams(對齊手機
+// ShareHistoryItem)----
 //
 // guard 端(clipboard-guard.js)經 bridge.js 透傳，share 分支只夾帶
 // original(短碼原文，無 removedParams——伺服器端重新導向前的網址帶了
@@ -904,7 +885,7 @@ test('紀錄:右鍵路徑在剪貼簿寫入成功後記 kind:menu;寫入失敗�
   assert.equal(failed.storage.localSnapshot().history, undefined, '沒寫進剪貼簿就不算淨化成功');
 });
 
-// F 案:右鍵路徑(menu)不經 guard/bridge，original(使用者右鍵點擊的短碼
+// 右鍵路徑(menu)不經 guard/bridge，original(使用者右鍵點擊的短碼
 // 連結)與 removedParams(finalUrl 與 cleanUrl 的差集)background 自身就
 // 有(見 buildMenuHistoryExtra/diffRemovedParams)。fetch mock 對 SHARE_URL
 // 固定回傳 `${CLEAN_POST_URL}?xmt=AQGabc`，diff 出來剛好就是一筆
@@ -923,15 +904,13 @@ test('紀錄:右鍵路徑(menu)自身算出 original(短碼連結)與 removedPar
 });
 
 // ============================================================
-// OG 案(解析路徑摘要升級，使用者拍板混合制):短碼解析路徑(share 與右
-// 鍵路徑共用的 resolveFinalUrl)順手從同一個 response 擷取 og:description
-// (excerpt 全文)／og:title(拆 author/handle)，經 sanitize 後以「og 有
-// 值就蓋過 DOM 版、handle 仍以 DOM/URL 為準」的混合制流入
-// recordHistory 的 extra。PM 追加修訂(查證手機 hunandy14/meta-link-clearer
-// 的 src/lib/post-meta.ts 後裁決，手機因為不做 DOM 擷取而沒有這個問
-// 題):web DOM 抓到的「作者」實為 username，是錯值不是缺席，og 解析出
-// 的顯示名稱優先蓋過；重複值(author === handle 去掉開頭 @)一律視同
-// author 缺席。
+// 短碼解析路徑(share 與右鍵路徑共用的 resolveFinalUrl)順手從同一個
+// response 擷取 og:description(excerpt 全文)／og:title(拆 author/handle)，
+// 經 sanitize 後以「og 有值就蓋過 DOM 版、handle 仍以 DOM/URL 為準」的
+// 混合制流入 recordHistory 的 extra。web DOM 抓到的「作者」實為 username，
+// 是錯值不是缺席，og 解析出的顯示名稱優先蓋過;重複值(author === handle
+// 去掉開頭 @)一律視同 author 缺席。手機因為不做 DOM 擷取而沒有這個問題
+// (對齊 hunandy14/meta-link-clearer 的 src/lib/post-meta.ts)。
 // ============================================================
 
 test('OG 案:右鍵路徑(menu)從 og:title/og:description 抽出 author/handle/excerpt', async () => {
@@ -1035,8 +1014,7 @@ test('OG 案:掃描長度上限對照組——og meta 標籤在 64KB 範圍內�
   assert.equal(history[0].excerpt, '範圍內的內文');
 });
 
-// code review 修正(FAIL 打回，回歸釘子):mergeOgIntoFields 的合併結果先
-// 前沒有再過 sanitizeHistoryField，og 來源的 excerpt/author 可能繞過
+// og 來源的 excerpt/author 落地前必須再過 sanitizeHistoryField，否則會繞過
 // HISTORY_EXCERPT_MAX/HISTORY_AUTHOR_MAX 直通入庫(og:content 屬性值本
 // 身沒有長度上限，extractOgMeta 的 [^"]* 會整段吃下來)。這裡的內容長度
 // (超過 2000/100)與 OG_SCAN_LIMIT(64KB 的正則掃描範圍)是兩件不同的
@@ -1236,7 +1214,7 @@ test('OG 案:og 快取以 cleanUrl 為鍵，不同網址互不污染', async () 
 });
 
 // ============================================================
-// OG 案(本地路徑補強):icon/strip 路徑的 web 動態牆 DOM 沒有個人顯示名
+// icon/strip 路徑的 web 動態牆 DOM 沒有個人顯示名
 // 稱(只有 username)，author 恆等於 handle 會被重複值防禦丟棄，卡片只
 // 剩 @handle。handleCleanedNotice 對 kind icon/strip 且 cleanUrl 通過
 // POST_URL_PATTERN 者，直接 fetch 該貼文頁補抓 og，紀錄落盤延後至 og
@@ -1262,7 +1240,7 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
   };
   chrome.storage = storage.api;
   const fetchCalls = [];
-  // 語系鎖定案:側錄每次 fetch 的 init 物件，供 Accept-Language header 斷言。
+  // 側錄每次 fetch 的 init 物件，供 Accept-Language header 斷言。
   const fetchInits = [];
   const fetchImpl = async (url, init) => {
     fetchCalls.push(url);
@@ -1411,7 +1389,7 @@ test('OG 案(本地路徑補強):strip 路徑抽驗——og fetch 成功時同�
   assert.equal(history[0].handle, '@dafucoding');
 });
 
-// code review #5(url 樣式統一):extractCleanPostUrl 用的
+// extractCleanPostUrl 用的
 // CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字元類、無長度上限)，只用來從
 // 轉址結果「截」出前段乾淨網址;寫入 history 前要再過一次全 repo 單一
 // 權威的 POST_URL_PATTERN(白名單字元類、長度上限 80)。這裡讓 fetch mock
@@ -1472,8 +1450,8 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
       if (url === shareUrl) return fetchResult(finalUrl);
       throw new Error('unexpected fetch: ' + url);
     };
-    // OG 案(本地路徑補強):fetchOgFieldsForLocalKind 內部用 setTimeout 做
-    // 逾時競速，一併注入(此測試雖走右鍵路徑不會觸發，維持一致性)。
+    // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入
+    // (此測試雖走右鍵路徑不會觸發，維持一致性)。
     runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
 
     onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
@@ -1491,9 +1469,9 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
 
 // ============================================================
 // 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
-// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem，
-// PM 快查確認後拍板):recordHistory 改為合併式寫入，以 url(cleaned)為
-// key，在既有清單找「同 url 且 now - entry.at <= 5 分鐘」的條目——
+// src/lib/share-history-storage.ts:DEDUP_WINDOW_MS／mergeDuplicateItem):
+// recordHistory 為合併式寫入，以 url(cleaned)為 key，在既有清單找「同 url
+// 且 now - entry.at <= 5 分鐘」的條目——
 //   - 命中:合併為一筆並浮到最前;at 更新為 now;author/handle/excerpt 新
 //     值優先、新值缺席沿用舊值;kind 更新為本次來源;seen[] append
 //     {at, kind} 並裁到 50 筆(舊在前新在後)。
@@ -1541,9 +1519,8 @@ test('紀錄去重合併:視窗內命中時合併為一筆——浮到最前、a
   assert.equal(history[1].url, other.url, '未命中的其他條目不受影響');
 });
 
-// F 案:original/removedParams 合併語意與 author/handle/excerpt 完全一
-// 致(新值優先、本次缺席沿用舊值)，獨立驗證這兩個新欄位，避免只靠上面
-// 那條併很多斷言的測試間接覆蓋。
+// original/removedParams 合併語意與 author/handle/excerpt 完全一致(新值
+// 優先、本次缺席沿用舊值)，這裡獨立驗證這兩個欄位。
 test('紀錄去重合併:視窗內命中時 original/removedParams 新值優先、本次缺席沿用舊值', async () => {
   const now = Date.now();
   const existing = {
@@ -1608,9 +1585,8 @@ test('紀錄去重合併:seen[] 累積超過 50 筆時裁到最新 50 筆，捨�
   assert.equal(seen[0].at, seenSeed[1].at, '最舊的一筆(seed[0])被裁掉，陣列開頭往後遞補');
 });
 
-// PM 修訂(規格演進):原本「既有條目沒有 seen 欄位時當空陣列起算，不做
-// 遷移」的規格撤回，改採手機版語意——existing.seen 缺席時補種一筆起始
-// 紀錄 [{ at: existing.at }](對齊手機版 `existing.seen ?? [{ at:
+// existing.seen 缺席時補種一筆起始紀錄 [{ at: existing.at }](對齊手機版
+// `existing.seen ?? [{ at:
 // existing.receivedAt }]` 的等效寫法)，讓時間軸看得到條目原本第一次出
 // 現的時間;種子紀錄不帶 kind(那一刻沒有對應的來源事件，UI 時間軸端已
 // 容忍缺 kind 標籤)，再疊上本次事件，合併後 seen[] 應有兩筆。
@@ -1661,9 +1637,8 @@ test('紀錄去重合併:既有條目的 seen[] 若含偽造/損毀資料(at 非
   assert.equal(seen[1].kind, 'icon');
 });
 
-// 使用者拍板(規格翻轉):紀錄不設上限，原本「超過 1000 筆裁掉最舊」的斷
-// 言改為驗證相反的不變量——已有 1000 筆時再寫一筆，變成 1001 筆，原本
-// 最舊的一筆(seed 末筆)必須完整保留、不得被裁掉。
+// 紀錄不設上限:已有 1000 筆時再寫一筆變成 1001 筆，原本最舊的一筆(seed
+// 末筆)必須完整保留、不得被裁掉。
 test('紀錄:不設上限，已有 1000 筆時再寫一筆變成 1001 筆，最舊的一筆仍完整保留', async () => {
   const seed = Array.from({ length: 1000 }, (_, i) => ({
     url: `https://www.threads.com/@seeduser/post/P${i}`,
@@ -1684,7 +1659,7 @@ test('紀錄:不設上限，已有 1000 筆時再寫一筆變成 1001 筆，最�
   assert.equal(history[1000].url, seed[999].url, '最舊的一筆(seed 末筆)完整保留，不得被裁掉');
 });
 
-// 使用者拍板:紀錄不設上限之後，長期使用可能真的把 chrome.storage.local
+// 紀錄不設上限，長期使用可能把 chrome.storage.local
 // 的容量配額(未申請 unlimitedStorage 權限時仍有總量上限)寫爆。配額失敗
 // 要優雅降級:console.warn(帶 [threads-clean-link] 前綴)、不重試、不丟例
 // 外，且不影響複製/淨化等主功能持續運作。
@@ -1849,11 +1824,11 @@ test('自癒重注入:單一分頁注入失敗(已凍結/不允許注入)不影�
 });
 
 // ============================================================
-// 語系鎖定 + 解析保底案:Threads 貼文頁的 og:title 隨 Accept-Language 換
+// 語系鎖定 + 解析保底:Threads 貼文頁的 og:title 隨 Accept-Language 換
 // 格式(英文「かえで (@kaede.hong) on Threads」/ 中文「Threads 上的かえ
-// で（@kaede.hong）」全形括號 + 前綴)。主修是把兩個抓貼文頁的 fetch 點
-// 一律鎖成英文，解析規則不必追語系;保底是 header 萬一失效時，解析器仍
-// 認得全形樣式，且再退一步的 fallback 遇到帳號殘片就整欄放棄。
+// で（@kaede.hong）」全形括號 + 前綴)。抓貼文頁的 fetch 一律鎖成英文，
+// 解析規則不必追語系;保底是 header 萬一失效時，解析器仍認得全形樣式，
+// 且再退一步的 fallback 遇到帳號殘片就整欄放棄。
 // ============================================================
 
 const OG_CHINESE_TITLE_HTML =
@@ -2000,11 +1975,11 @@ test('解析保底:乾淨的 fallback(粉專等無帳號形狀的 og:title)仍�
 });
 
 // ============================================================
-// W1 弱釘(順手補):去重視窗貼邊(DEDUP_WINDOW_MS = 5 分鐘 = 300000ms)。釘
-// 死邊界運算子 `now - at <= DEDUP_WINDOW_MS`:at 恰為 now-300000 應合併(邊
-// 界含),at 為 now-300001 應新增。用凍結 Date 消除「測試端 now」與
-// 「recordHistory 內 Date.now()」的毫秒級偏移,否則 now-300000 這種貼邊案
-// 例會因偏移而變得不確定。
+// 去重視窗貼邊(DEDUP_WINDOW_MS = 5 分鐘 = 300000ms)。釘死邊界運算子
+// `now - at <= DEDUP_WINDOW_MS`:at 恰為 now-300000 應合併(邊界含),at 為
+// now-300001 應新增。用凍結 Date 消除「測試端 now」與「recordHistory 內
+// Date.now()」的毫秒級偏移,否則 now-300000 這種貼邊案例會因偏移而變得不
+// 確定。
 // ============================================================
 
 const W1_FIXED_NOW = 1700000000000;
@@ -2052,7 +2027,7 @@ test('W1 去重視窗貼邊:at 為 now-300001(邊界外)應新增一筆', async 
 });
 
 // ============================================================
-// cr中1 saveHistory 省請求:handleCleanedNotice 進 fetch 之前先 await
+// saveHistory 省請求:handleCleanedNotice 進 fetch 之前先 await
 // getSettings(),saveHistory 為 false 直接 return——連 og 補強 fetch 都不
 // 發、連 recordHistory 都不呼叫。對齊 guard 端 share 路徑已有的省請求閘。
 // ============================================================
@@ -2078,7 +2053,7 @@ test('cr中1 對照組:saveHistory=true 時,cleanedNotice 照常補 og fetch 並
 });
 
 // ============================================================
-// R5 儲存上限(位元組軟預算 8MB + 筆數硬保險 10000),兩者取先觸發者,一律
+// 儲存上限(位元組軟預算 8MB + 筆數硬保險 10000),兩者取先觸發者,一律
 // 從尾端(最舊)裁,本次最新一筆永遠保留。
 // ============================================================
 
@@ -2128,7 +2103,7 @@ test('R5 位元組軟預算:序列化超過 8MB 時從尾端(最舊)裁到預算
 });
 
 // ============================================================
-// F3 og 快取加固:(1) in-flight 去重;(2) 空結果負快取(短 TTL);(3) 真 LRU
+// og 快取加固:(1) in-flight 去重;(2) 空結果負快取(短 TTL);(3) 真 LRU
 // (set 前先 delete)。
 // ============================================================
 

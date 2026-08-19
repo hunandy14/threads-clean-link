@@ -1,10 +1,10 @@
 // test/package.test.js — 打包白名單防漏檔(靜態)。
 //
-// 0.3.0 送審實際踩過的雷:新增 options 頁與 i18n.js 後,tools/build-release.ps1
-// 的 $includeFiles 白名單沒跟上,zip 缺檔導致 Chrome Web Store 的 Linux 自動
-// 安裝測試直接失敗。本測試從 manifest.json 與各 HTML/SW 的實際引用推導
-// 「上架 zip 必要檔案集合」,再比對 ps1 白名單,漏一個就紅燈——新增執行檔
-// 忘了改打包腳本時,在本地就會被擋下,不會燒到商店端。
+// 新增執行檔(如 options 頁、i18n.js)卻沒同步 tools/build-release.ps1 的
+// $includeFiles 白名單時,zip 會缺檔,導致 Chrome Web Store 的 Linux 自動安
+// 裝測試失敗。本測試從 manifest.json 與各 HTML/SW 的實際引用推導「上架 zip
+// 必要檔案集合」,再比對 ps1 白名單,漏一個就紅燈——在本地就擋下,不會燒到
+// 商店端。
 'use strict';
 
 const test = require('node:test');

@@ -36,8 +36,8 @@
       opSub: '脆連結清潔工 · 設定與紀錄',
       opThemeTitle: '切換主題',
       opLangTitle: '語言 / Language',
-      // 統計磚區塊的 aria-label(硬編中文改走 i18n，見 applyI18nDom 的
-      // data-i18n-aria 通道)。
+      // 統計磚區塊的 aria-label(走 i18n，見 applyI18nDom 的 data-i18n-aria
+      // 通道)。
       opStatsAria: '統計摘要',
       // 此磚統計的是 stats.total(entries.length，所有 kind 都算，不只
       // 淨化類的 share/strip)。

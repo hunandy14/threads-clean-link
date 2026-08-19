@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  // ---- 冪等 + 舊實例交棒(併發線中2)----
+  // ---- 冪等 + 舊實例交棒 ----
   // 同一個 ISOLATED world 若已經有本腳本的舊實例在跑(擴充功能更新後的自
   // 癒重注入，或「使用者手動 F5 × 自癒重注入」的毫秒級競態造成同頁雙注
   // 入)，先讓舊實例的 message listener 下線，再由這個新實例接手，消除「雙
@@ -58,17 +58,6 @@
   // 程序邊界，細部 sanitize 交給 background.js。
   var MAX_REMOVED_PARAMS = 20;
 
-  // share/strip 的短碼解析在 Threads 頁面內失敗時，改用頁內 toast 提示。
-  // 真正的 toast 渲染邏輯(含文案 i18n 對應、樣式、自動消失)在
-  // post-icon.js(同
-  // ISOLATED world，document_idle 稍晚載入)，這裡只是執行期守衛後轉呼
-  // 叫——TCLPostIcon 可能還沒初始化完成、或使用者的擴充功能是舊版沒有這
-  // 個 API，兩種情況都靜默略過，不影響既有的 reply() 轉發流程。孤兒情境
-  // (擴充功能已重載，Extension context invalidated)下，本函式呼叫點本
-  // 身位於 chrome.runtime.sendMessage 失敗後的分支，理論上 window.TCLPostIcon
-  // 這個純 DOM／JS 物件參照仍然存在且可呼叫(orphan 只斷了 chrome.runtime
-  // 這條線，不影響同一頁面內已掛好的 window 屬性)，但這不是本車道測試
-  // 得到保證的行為，如實記錄為已知限制，不承諾一定能顯示。
   // 孤兒 content script 偵測(錯誤訊息版):擴充功能更新／重載後，既開分頁
   // 裡的舊 content script 仍在跑，但 chrome.runtime 這條線已斷，
   // sendMessage 會同步丟出帶「Extension context invalidated」字樣的例外。
@@ -78,7 +67,7 @@
     return /extension context invalidated/i.test(msg);
   }
 
-  // R3 孤兒偵測(同步判準):擴充功能更新／重載後，既開分頁裡的舊 content
+  // 孤兒偵測(同步判準):擴充功能更新／重載後，既開分頁裡的舊 content
   // script 仍在跑，但 chrome.runtime.id 變成 undefined。以 runtime.id 當
   // 唯一判準——它是同步、無副作用、不必真的送出一則訊息就問得到的信號，
   // 可在 listener 一進來就先問一次。chrome 整個缺席也視為失效(訊息本來就
@@ -91,9 +80,9 @@
     }
   }
 
-  // R3 自我下線:斷開 message listener 並永久短路。冪等,重複呼叫安全。孤
-  // 兒自檢通過時、sendMessage 擲 context invalidated 時、或被新實例交棒
-  // 時呼叫,把場子讓給重注入的新實例。
+  // 自我下線:斷開 message listener 並永久短路。冪等,重複呼叫安全。孤兒自
+  // 檢通過時、sendMessage 擲 context invalidated 時、或被新實例交棒時呼
+  // 叫,把場子讓給重注入的新實例。
   function disposeBridge() {
     if (disposed) return;
     disposed = true;
@@ -104,16 +93,15 @@
     }
   }
 
-  // 送 background 失敗時一律留下 console 訊號:這兩個 catch 原本是完全靜默
-  // 的，孤兒情境下(擴充功能剛更新)使用者的複製照做、勾勾照亮、紀錄卻靜
-  // 默丟失，連除錯時都找不到任何線索。孤兒與一般失敗分開措辭:孤兒說明自
-  // 癒重注入(background.js 的 reinjectIntoOpenTabs)會補上新的 content
-  // script 接手，不再硬叫使用者重新整理(R3 文案降級)。
+  // 送 background 失敗時一律留下 console 訊號:孤兒情境下(擴充功能剛更新)
+  // 使用者的複製照做、勾勾照亮、紀錄卻靜默丟失，連除錯都無跡可循。孤兒與
+  // 一般失敗分開措辭:孤兒說明自癒重注入(background.js 的 reinjectIntoOpenTabs)
+  // 會補上新的 content script 接手，不硬叫使用者重新整理。
   function warnSendFailure(scope, err) {
     if (isContextInvalidated(err)) {
-      // R3 文案降級:原本硬性叫使用者「請重新整理頁面」，但自癒重注入
-      // (background.js reinjectIntoOpenTabs)通常已經補上帶有效 chrome.runtime
-      // 的新 content script 接手，此時叫使用者重新整理是誤導。改成中性說明。
+      // 自癒重注入(background.js reinjectIntoOpenTabs)通常已補上帶有效
+      // chrome.runtime 的新 content script 接手，此時叫使用者「請重新整理
+      // 頁面」是誤導，改成中性說明。
       console.warn(
         '[threads-clean-link] ' + scope + ':擴充功能情境已失效(擴充功能剛更新或重載)，這次沒有送達 background;自癒重注入會補上新的 content script 接手，一般不需手動處理',
         err
@@ -133,13 +121,12 @@
     }
   }
 
-  // F4 單筆封頂:removedParams 這條 postMessage 管道內容由頁面腳本自由指
-  // 定，除了既有的「筆數 ≤ MAX_REMOVED_PARAMS」外，再確認沒有任一筆的
-  // key/value 字串超過長度上限——擋住「筆數不多但單筆超長」的巨量 payload
-  // 越過 content script → service worker 的程序邊界(補齊下方註解宣稱、但
-  // 原本只做了筆數檢查的防線)。任一筆超長就回傳 false(整欄不轉發,對齊
-  // 筆數超限時「整欄丟棄」的既有粗粒度風格);細部型別/白名單/逐筆截斷仍
-  // 交給 background.js 的 sanitizeRemovedParams。
+  // 單筆封頂:removedParams 這條 postMessage 管道內容由頁面腳本自由指定，
+  // 除了「筆數 ≤ MAX_REMOVED_PARAMS」外，再確認沒有任一筆的 key/value 字串
+  // 超過長度上限——擋住「筆數不多但單筆超長」的巨量 payload 越過 content
+  // script → service worker 的程序邊界。任一筆超長就回傳 false(整欄不轉
+  // 發,對齊筆數超限時「整欄丟棄」的粗粒度風格);細部型別/白名單/逐筆截斷
+  // 仍交給 background.js 的 sanitizeRemovedParams。
   function removedParamsWithinBounds(arr) {
     for (var i = 0; i < arr.length; i++) {
       var item = arr[i];
@@ -155,11 +142,10 @@
     // 本實例已下線(孤兒自檢通過或被新實例交棒)就一律短路。
     if (disposed) return;
 
-    // R3 孤兒自檢:擴充功能情境已失效就直接下線、不 reply、不 handleFailure，
+    // 孤兒自檢:擴充功能情境已失效就直接下線、不 reply、不 handleFailure，
     // 把場子讓給重注入的新實例(guard 端 2.5s 逾時或新實例正確回應接手)。
-    // 放在 listener 最開頭:孤兒實例收到任何訊息都不再搶答毒化自癒後的解
-    // 析(舊 bug:孤兒仍 reply({ok:false,reason:'bridge-exception'}) 搶在新實
-    // 例前回覆)。
+    // 放在 listener 最開頭:孤兒實例收到任何訊息都不再搶答,以免毒化自癒後
+    // 的解析。
     if (isContextLost()) {
       // 留一則降級 console.warn(不再硬叫「請重新整理頁面」,自癒重注入會接
       // 手),孤兒退場才有跡可循;disposed 旗標保證只會 warn 這一次。
@@ -251,10 +237,10 @@
         }
       } catch (e) {
         // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而
-        // 為。但不再靜默吞掉——留一則 console.warn，孤兒情境才有跡可循。
+        // 為。仍留一則 console.warn，孤兒情境才有跡可循。
         warnSendFailure('轉發淨化通知(cleanedNotice)', e);
-        // R3 第二道:cleanedNotice 轉發時 sendMessage 擲 context invalidated
-        // (孤兒競態)也自我下線,不再讓這個死實例處理後續訊息。
+        // cleanedNotice 轉發時 sendMessage 擲 context invalidated(孤兒競態)
+        // 也自我下線,不再讓這個死實例處理後續訊息。
         if (isContextInvalidated(e)) disposeBridge();
       }
       return;
@@ -265,8 +251,8 @@
     if (typeof data.url !== 'string' || !data.url) return;
 
     var requestId = data.requestId;
-    // 記錄與淨化脫鉤(修正規格):recordOnly 由 clipboard-guard.js 依
-    // autoClean 是否關閉決定並隨請求帶上——true 代表這次解析純粹是為了
+    // 記錄與淨化脫鉤:recordOnly 由 clipboard-guard.js 依 autoClean 是否關
+    // 閉決定並隨請求帶上——true 代表這次解析純粹是為了
     // 記錄(剪貼簿不會被改寫，使用者的複製動作本身沒有壞掉)，解析失敗時
     // 不該用頁內 toast 嚇使用者，改成 console.warn 就好；autoClean 開啟
     // (recordOnly=false)時失敗 toast 維持現狀不變。非布林值一律視為
@@ -334,9 +320,9 @@
       // sendMessage 同步丟例外。分兩種:
       //   - context invalidated(孤兒競態:listener 開頭自檢時 id 尚在,呼叫
       //     瞬間才失效):不 reply、不 handleFailure——與開頭的孤兒自檢一致，
-      //     不搶答毒化自癒後的解析，改為自我下線(R3 第二道:sendMessage 擲
-      //     context invalidated 後永久短路並 removeEventListener),讓場子留
-      //     給重注入的新實例。
+      //     不搶答毒化自癒後的解析，改為自我下線(sendMessage 擲 context
+      //     invalidated 後永久短路並 removeEventListener),讓場子留給重注入
+      //     的新實例。
       //   - 其餘同步例外:維持既有 fail-open，直接回報失敗讓 MAIN world 立
       //     刻不必空等 2.5 秒逾時，並留 console 訊號。
       if (isContextInvalidated(e)) {
@@ -359,10 +345,10 @@
   }
 
   // ------------------------------------------------------------
-  // v1.1 設定規格 S6：載入時讀一次 chrome.storage.sync，把設定經
-  // postMessage 以 TCL_SETTINGS_PUSH 下放到 MAIN world（clipboard-guard.js
-  // 沒有 chrome.* API，只能靠這條管道拿到設定）；chrome.storage.onChanged
-  // 觸發時（例如使用者在 popup 切換開關）再次推播最新值。
+  // 載入時讀一次 chrome.storage.sync，把設定經 postMessage 以
+  // TCL_SETTINGS_PUSH 下放到 MAIN world（clipboard-guard.js 沒有 chrome.*
+  // API，只能靠這條管道拿到設定）；chrome.storage.onChanged 觸發時（例如
+  // 使用者在 popup 切換開關）再次推播最新值。
   // ------------------------------------------------------------
 
   // 只下放 autoClean/saveHistory 兩顆鍵:postCopyEnabled 只影響 ISOLATED
@@ -450,7 +436,7 @@
       var mutated = false;
       SETTINGS_KEYS.forEach(function (key) {
         if (changes && Object.prototype.hasOwnProperty.call(changes, key)) {
-          // F6 設定型別鏡像:增量推播也要正規化型別,對齊 pushSettings 的
+          // 設定型別鏡像:增量推播也要正規化型別,對齊 pushSettings 的
           // `typeof settings[key] !== 'boolean'` 守衛——changes 的 newValue 可能
           // 是損毀/偽造的非布林值(或刪鍵時的 undefined),不能原封往 MAIN world
           // 推,非布林一律退回 SETTINGS_DEFAULTS。bridge 是 content script,範圍

@@ -1,8 +1,7 @@
 // test/options.test.js — options 頁邏輯層(options.js)的行為契約。
 // 純函式(過濾/匯入合併/匯出形狀/統計聚合)直接打;controller 以最小 DOM
-// stub 做一條 smoke(整條 init 渲染跑得完、清單筆數與計數正確)——demo
-// 階段踩過「區域變數遮蔽翻譯函式、整頁渲染炸掉但語法全綠」的雷,smoke
-// 就是為了堵這一類執行期炸彈,不逐一測版面。
+// stub 做一條 smoke(整條 init 渲染跑得完、清單筆數與計數正確)，堵「區域
+// 變數遮蔽翻譯函式、整頁渲染炸掉但語法全綠」這類執行期炸彈,不逐一測版面。
 'use strict';
 
 const test = require('node:test');
@@ -43,9 +42,9 @@ test('filterEntries:kind 過濾與關鍵字過濾(不分大小寫)可併用', ()
   assert.equal(options.filterEntries(entries, 'share', 'user_c').length, 0);
 });
 
-// 0.4.0 新增:貼文互動列複製 icon(post-icon.js)的紀錄 kind:'icon'——
 // 篩選 chip(options.html 的 #chips)與 filterEntries 共用同一份純函式,
-// 這裡直接驗證 kind 過濾對新 kind 一樣生效,不用另外搭 DOM 才能測。
+// 這裡直接驗證 kind 過濾對 icon(貼文互動列複製按鈕)一樣生效,不用另外
+// 搭 DOM 才能測。
 test('filterEntries:kind 為 icon 時可單獨篩出貼文按鈕來源的紀錄', () => {
   const entries = [
     { url: URL_A, kind: 'share', at: 3 },
@@ -93,10 +92,8 @@ test('mergeImportedEntries:錨定驗證 url、以 url 去重、kind/at 非法時
   assert.equal(result.merged[0].at, NOW, 'at 缺失應補 now');
 });
 
-// 【使用者拍板，規格翻轉】紀錄不設上限:舊版在此裁到 HISTORY_LIMIT(1000)
-// 筆、汰舊留新;新版合併結果完全不裁切，連同 HISTORY_LIMIT 這個常數與其
-// api 匯出都一併移除(此檔內唯一用途就是這道截斷)。這裡改寫成鎖「不裁切」
-// 的正面斷言，而非單純刪除，讓新行為有測試覆蓋。
+// 紀錄不設上限:合併結果完全不裁切，HISTORY_LIMIT 這個常數與其 api 匯出
+// 都已移除。這條鎖「不裁切」的正面斷言。
 test('mergeImportedEntries:合併結果不裁切，超過舊版上限(1000)也全數保留', () => {
   const existing = Array.from({ length: 999 }, (_, i) => ({
     url: `https://www.threads.com/@u/post/E${i}`,
@@ -131,8 +128,8 @@ test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀,entries �
   assert.deepEqual(payload.entries, [{ url: URL_A, kind: 'share', at: 123 }]);
 });
 
-// 0.5.0 方案甲(歷史即收藏):entries 擴充選填 author/handle/excerpt，為字串
-// 時才輸出，規則與 sanitizeEntries/mergeImportedEntries 一致。
+// entries 擴充選填 author/handle/excerpt，為字串時才輸出，規則與
+// sanitizeEntries/mergeImportedEntries 一致。
 test('buildExportPayload:author/handle/excerpt 為字串時一併輸出，非字串或缺席則不輸出該欄', () => {
   const payload = options.buildExportPayload(
     [
@@ -153,10 +150,9 @@ test('buildExportPayload:author/handle/excerpt 為字串時一併輸出，非字
   assert.deepEqual(payload.entries[1], { url: URL_B, kind: 'strip', at: 2 }, '非字串的 author 不輸出該欄');
 });
 
-// 【審查修正】buildExportPayload 先前漏了 seen/original/removedParams
-// 三欄，使用者匯出備份、換裝置/瀏覽器匯入回來時這三欄資料會無聲消失。
-// 補上後沿用同一套「缺席不寫」慣例:seen 是空陣列或非陣列都不輸出、
-// original 非字串不輸出、removedParams 是空陣列或非陣列都不輸出。
+// buildExportPayload 輸出 seen/original/removedParams 三欄，沿用「缺席不寫」
+// 慣例:seen 是空陣列或非陣列都不輸出、original 非字串不輸出、removedParams
+// 是空陣列或非陣列都不輸出。
 test('buildExportPayload:seen/original/removedParams 有資料時一併輸出，缺席/空陣列則不輸出該欄', () => {
   const payload = options.buildExportPayload(
     [
@@ -188,17 +184,15 @@ test('buildExportPayload:seen/original/removedParams 有資料時一併輸出，
   );
 });
 
-// 0.5.0 方案甲:匯入的 url 額外容忍尾隨斜線/query/hash 並正規化(前身是
-// 收藏庫基座的 FAVORITE_URL_PATTERN，方案甲改名為通用的貼文 url 驗證);
-// 這裡直接驗證這個新增的容忍度，不影響既有「嚴格格式才收」的斷言。
+// 匯入的 url 額外容忍尾隨斜線/query/hash 並正規化，這裡驗證這個容忍度。
 test('mergeImportedEntries:url 容忍尾隨斜線/query/hash 並正規化(前身收藏庫的網址驗證邏輯)', () => {
   const result = options.mergeImportedEntries([], [{ url: `${URL_A}/?xmt=AQGabc`, kind: 'share', at: 1 }], 1000);
   assert.equal(result.added, 1);
   assert.equal(result.merged[0].url, URL_A, 'url 應正規化為不含尾隨斜線/query 的乾淨網址');
 });
 
-// 0.5.0 方案甲:匯入的 author/handle/excerpt 逐條 sanitize(截斷 100/100/
-// 2000，非字串整欄丟棄)，規則與 background.js 落盤前的處理對齊。
+// 匯入的 author/handle/excerpt 逐條 sanitize(截斷 100/100/2000，非字串
+// 整欄丟棄)，規則與 background.js 落盤前的處理對齊。
 test('mergeImportedEntries:author/handle 截斷至 100 字元、excerpt 截斷至 2000 字元，非字串欄位整欄丟棄', () => {
   const result = options.mergeImportedEntries(
     [],
@@ -234,10 +228,9 @@ test('mergeImportedEntries:author/handle 截斷至 100 字元、excerpt 截斷�
   assert.deepEqual(Object.keys(dropped).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入');
 });
 
-// 紀錄去重合併新增(PM 明列測項):匯入條目帶偽造 seen 的 sanitize。匯入檔
-// 是外部輸入，seen[] 逐筆過 at 有限數字、kind 白名單，不合法的記錄整筆丟
-// 棄、不整組作廢；全部不合法時整欄不寫入。上限 SEEN_MAX(50)一併裁切，防
-// 匯入檔夾帶超長偽造陣列。
+// 匯入條目帶偽造 seen 的 sanitize。匯入檔是外部輸入，seen[] 逐筆過 at 有限
+// 數字、kind 白名單，不合法的記錄整筆丟棄、不整組作廢;全部不合法時整欄
+// 不寫入。上限 SEEN_MAX(50)一併裁切，防匯入檔夾帶超長偽造陣列。
 test('mergeImportedEntries:匯入條目帶偽造 seen 時逐筆 sanitize，且裁到上限 50 筆', () => {
   const oversized = Array.from({ length: 60 }, (_, i) => ({ at: i, kind: 'share' }));
   const result = options.mergeImportedEntries(
@@ -276,9 +269,8 @@ test('mergeImportedEntries:匯入條目帶偽造 seen 時逐筆 sanitize，且�
   assert.equal(capped.seen[49].at, oversized[59].at);
 });
 
-// F 案(紀錄資料層補齊 original/removedParams，對齊手機 ShareHistoryItem):
-// 匯入檔的 original/removedParams 屬外部輸入，同樣要逐欄 sanitize，規則
-// 與 background.js 落盤前的處理對齊。
+// 匯入檔的 original/removedParams(對齊手機 ShareHistoryItem)屬外部輸入，
+// 同樣要逐欄 sanitize，規則與 background.js 落盤前的處理對齊。
 
 test('mergeImportedEntries:匯入條目帶合法的 original/removedParams 時原樣寫入；original 與(正規化後的)url 相同時整欄丟棄', () => {
   const result = options.mergeImportedEntries(
@@ -361,10 +353,6 @@ test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日
 
   const stats = options.aggregateStats(entries, nowTs);
   assert.equal(stats.total, 5);
-  // 【規格衝突,如實記錄】counts 補上 icon:0(本輪修正項目 2)後,這個既有的
-  // 整形斷言必然要跟著加上 icon 鍵才能繼續通過——與「既有測試斷言一字不准
-  // 動」的紀律直接衝突,屬修正 counts 缺 icon 鍵這個 bug 本身必然牽動的
-  // 唯一一處,並非另外收緊或弱化判斷,故在此保留機械性更新,PM 覆核。
   assert.deepEqual(stats.counts, { share: 3, strip: 1, menu: 1, icon: 0 });
   assert.equal(stats.week, 3, '滾動 7 天:今天兩筆 + 昨天一筆');
   assert.equal(stats.weekPrev, 1, '前一個 7 天:只有 13 天前那筆');
@@ -374,10 +362,9 @@ test('aggregateStats:總數、來源計數、本週/上週、近 14 天日曆日
   assert.equal(stats.oldestAt, t0 - 14 * DAY - 3600e3);
 });
 
-// KINDS 表補上 icon 後，aggregateStats 的 counts 要能統計 kind:'icon' 的
-// 筆數(供 options.html 統計磚 #statIcon 使用，修正前 counts[e.kind]++ 對
-// 缺席鍵會產生 NaN 而不計數)，且沒有 icon 來源紀錄時 counts.icon 應為 0
-// 而非 undefined。
+// aggregateStats 的 counts 要能統計 kind:'icon' 的筆數(供 options.html
+// 統計磚 #statIcon 使用;counts[e.kind]++ 對缺席鍵會產生 NaN 而不計數)，
+// 且沒有 icon 來源紀錄時 counts.icon 應為 0 而非 undefined。
 test('aggregateStats:counts 應統計 kind 為 icon 的筆數;無 icon 來源時 counts.icon 為 0(而非 undefined)', () => {
   const nowTs = new Date(2026, 7, 10, 12, 0, 0).getTime();
   const stats = options.aggregateStats(
@@ -413,9 +400,8 @@ test('sanitizeEntries:非陣列→空;形狀不對的項目逐筆丟棄', () => 
   );
 });
 
-// 0.4.0 新增:KINDS 表補上 icon 後,sanitizeEntries 的白名單(靠
-// Object.prototype.hasOwnProperty.call(KINDS, e.kind))應收下 kind:'icon',
-// 不再像先前那樣被當成未知 kind 丟棄。
+// sanitizeEntries 的白名單(靠 Object.prototype.hasOwnProperty.call(KINDS,
+// e.kind))應收下 kind:'icon'，不當成未知 kind 丟棄。
 test('sanitizeEntries:kind 為 icon(貼文按鈕)的項目應保留,不再被白名單丟棄', () => {
   const cleaned = options.sanitizeEntries([
     { url: URL_A, kind: 'icon', at: 1 },
@@ -427,11 +413,9 @@ test('sanitizeEntries:kind 為 icon(貼文按鈕)的項目應保留,不再被白
   );
 });
 
-// 縱深防禦(PM 審查後補):url 額外過 POST_URL_PATTERN 形狀驗證——渲染層
-// buildEntryCard 的 openLink.href = e.url、複製到剪貼簿都是 url sink,
-// 讀取階段就該擋掉形狀不對的 url，不依賴「寫入端永遠沒漏」的假設。上一輪
-// 收藏庫基座的 sanitizeFavorites 有這道檢查，方案甲把收藏搬進
-// sanitizeEntries 時漏了，這裡補回來。
+// 縱深防禦:url 額外過 POST_URL_PATTERN 形狀驗證——渲染層 buildEntryCard 的
+// openLink.href = e.url、複製到剪貼簿都是 url sink,讀取階段就該擋掉形狀
+// 不對的 url，不依賴「寫入端永遠沒漏」的假設。
 test('sanitizeEntries:url 形狀不對(非 threads 網域、缺 /post/ 區段、夾帶非法字元等)的條目整筆丟棄', () => {
   const cleaned = options.sanitizeEntries([
     { url: URL_A, kind: 'share', at: 1 }, // 合法
@@ -446,14 +430,10 @@ test('sanitizeEntries:url 形狀不對(非 threads 網域、缺 /post/ 區段、
   );
 });
 
-// 【審查修正，url 樣式統一】長度上限 60→80(handle/post id 各自)，字元類
-// 不變——釘住新邊界值的表格驅動測試見下方「跨層釘住(表格驅動)[url 形狀]」
-// (work item 8 把這個獨立案例併進同一組表格驅動寫法，不重複維護兩份)。
-
-// 0.5.0 方案甲(歷史即收藏):entries 擴充選填 author/handle/excerpt。核心
-// 欄位(url/kind/at)合法時，選填欄位為字串則截斷至長度上限，非字串則整欄
-// 丟棄(不影響核心欄位本身，entry 仍保留)——與 mergeImportedEntries 的
-// sanitizeTextField 規則一致，縱深防禦不依賴 background.js 寫入端沒漏。
+// entries 擴充選填 author/handle/excerpt。核心欄位(url/kind/at)合法時，
+// 選填欄位為字串則截斷至長度上限，非字串則整欄丟棄(不影響核心欄位本身，
+// entry 仍保留)——與 mergeImportedEntries 的 sanitizeTextField 規則一致，
+// 縱深防禦不依賴 background.js 寫入端沒漏。
 test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，非字串則整欄丟棄(entry 仍保留)', () => {
   const cleaned = options.sanitizeEntries([
     { url: URL_A, kind: 'share', at: 1, author: 'A'.repeat(150), handle: 'H'.repeat(150), excerpt: 'E'.repeat(2500) },
@@ -467,14 +447,13 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
   assert.deepEqual(Object.keys(cleaned[1]).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入，但 entry 本身仍保留');
 });
 
-// 紀錄去重合併新增:seen[] 是「先前已經落盤的資料」，讀取階段(sanitizeEntries)
-// 同樣要逐筆 sanitize，偽造/損毀的記錄(at 非數字、kind 不在白名單、非物件)
-// 逐筆丟棄，不因此整個陣列作廢;真的沒有合法記錄剩下時整欄不寫入(缺席不落
-// 空陣列佔位，與 author/handle/excerpt 的慣例一致)。kind 缺席的記錄(手機
-// 版語意的起始種子紀錄，見 background.js 的 mergeHistoryEntry)須視為合法
-// 保留，不得誤殺。另外併入 fix/detail-mimic 車道的獨有案例:seen 整欄本身
-// 非陣列(不是陣列內某一筆形狀不對，是整個欄位型別就錯)同樣視為缺席，不
-// 輸出該欄。
+// seen[] 是「先前已經落盤的資料」，讀取階段(sanitizeEntries)同樣要逐筆
+// sanitize，偽造/損毀的記錄(at 非數字、kind 不在白名單、非物件)逐筆丟棄，
+// 不因此整個陣列作廢;真的沒有合法記錄剩下時整欄不寫入(缺席不落空陣列
+// 佔位，與 author/handle/excerpt 的慣例一致)。kind 缺席的記錄(手機版語意
+// 的起始種子紀錄，見 background.js 的 mergeHistoryEntry)須視為合法保留，
+// 不得誤殺。seen 整欄本身非陣列(不是陣列內某一筆形狀不對，是整個欄位型別
+// 就錯)同樣視為缺席，不輸出該欄。
 test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、缺 kind 的種子紀錄視為合法保留；全丟或整欄非陣列時都不寫入', () => {
   const cleaned = options.sanitizeEntries([
     {
@@ -526,7 +505,7 @@ test('hasCardPreview:author 或 excerpt 任一存在即為 true;皆缺席或僅�
   assert.equal(options.hasCardPreview({ author: '' }), false, '空字串視同缺席');
 });
 
-// ---- 純函式:isLongExcerpt(0.5.0，對齊手機版 history-detail-dialog.tsx 的
+// ---- 純函式:isLongExcerpt(對齊手機版 history-detail-dialog.tsx 的
 // EXCERPT_DIALOG_LINES=15 長文判定)----
 test('isLongExcerpt:行數超過 15 行，或字元量超過 15*22=330，任一超標即為長文', () => {
   assert.equal(options.isLongExcerpt('短短一句'), false);
@@ -538,10 +517,9 @@ test('isLongExcerpt:行數超過 15 行，或字元量超過 15*22=330，任一�
   assert.equal(options.isLongExcerpt(undefined), false, '非字串輸入不丟例外，回傳 false');
 });
 
-// ---- 純函式:buildSeenTimeline(0.5.0，對齊手機版 history-detail-dialog.tsx
-// 的時間軸——另一車道 fix/dedup-merge 才會把 seen:[{at,kind}] 加進條目
-// schema，本分支防禦寫法:seen 缺席/非陣列/單筆一律回傳 null(呼叫端據此
-// 決定要不要顯示時間軸鈕)，多筆才回傳新到舊排序的陣列)----
+// ---- 純函式:buildSeenTimeline(對齊手機版 history-detail-dialog.tsx 的
+// 時間軸)——seen 缺席/非陣列/單筆一律回傳 null(呼叫端據此決定要不要顯示
+// 時間軸鈕)，多筆才回傳新到舊排序的陣列 ----
 test('buildSeenTimeline:seen 缺席、非陣列或只有一筆時回傳 null(單筆時主畫面的記錄時間已經夠用)', () => {
   assert.equal(options.buildSeenTimeline({}), null, 'seen 缺席');
   assert.equal(options.buildSeenTimeline({ seen: 'not-an-array' }), null, 'seen 非陣列');
@@ -597,14 +575,7 @@ test('renderExcerptWithLinks:javascript: 協定不成連結、含省略號的截
   assert.ok(/^https?:\/\//.test(anchors[0].href), 'a.href 一定以 http(s):// 開頭');
 });
 
-// ---- 純函式:buildEntryActions 已隨 UI 全面對齊手機任務移除(卡片 ⋮ 選單
-// 整組撤掉，唯一呼叫端消失，見 options.js 的移除說明註解，PM 授權「原
-// kebab 相關碼與測試移除」)。原本這裡鎖的動作組成不再有意義，改由下方
-// 「卡片 hover 快捷鈕」與詳細視窗底部動作列(靜態 HTML，本來就不經這顆
-// 函式生成)的 controller smoke 測試覆蓋等效行為。----
-
-// ---- 純函式:formatDisplayUrl(UI 全面對齊手機任務，對齊手機版
-// lib/format-display-url.ts)----
+// ---- 純函式:formatDisplayUrl(對齊手機版 lib/format-display-url.ts)----
 test('formatDisplayUrl:去 scheme 與網域(含 www.)，只留 path+query+hash 並去掉開頭斜線', () => {
   assert.equal(options.formatDisplayUrl('https://www.threads.com/@usera/post/AbC123'), '@usera/post/AbC123');
   assert.equal(options.formatDisplayUrl('https://threads.net/@u/post/x?y=1#z'), '@u/post/x?y=1#z');
@@ -615,9 +586,8 @@ test('formatDisplayUrl:解析失敗 fail-open 回傳原字串;非字串輸入回
   assert.equal(options.formatDisplayUrl(null), '');
 });
 
-// ---- 純函式:buildDetailExtraRows(UI 全面對齊手機任務 work item 7，
-// original/removedParams 兩列渲染的資料準備——另一車道正把這兩個欄位存進
-// schema，本分支防禦寫法:缺席/形狀不對就不產生該列)----
+// ---- 純函式:buildDetailExtraRows——original/removedParams 兩列渲染的
+// 資料準備:缺席/形狀不對就不產生該列 ----
 test('buildDetailExtraRows:original 存在且與 url 不同才產生「原始連結」列，值經 formatDisplayUrl', () => {
   const entry = { url: 'https://www.threads.com/@u/post/x', original: 'https://l.threads.net/share/abc?x=1' };
   const rows = options.buildDetailExtraRows(entry);
@@ -631,11 +601,9 @@ test('buildDetailExtraRows:original 缺席/非字串/與 url 相同時都不產�
   assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', original: 123 }).length, 0, '非字串');
   assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', original: 'https://x/y' }).length, 0, '與 url 相同');
 });
-// 【審查修正】removedParams 元素的欄位名是 { key, value }(手機版
-// link-cleaner.ts:171、detail-dialog 的 p.key，也是 background.js
-// sanitizeRemovedParams 實際落盤的形狀)，不是 { name, value }——這裡的
-// fixture 曾經寫錯欄位名，單分支測試因為連 fixture 帶實作一起錯而全綠，
-// 合併後才會被另一車道的真實資料打穿(見 buildDetailExtraRows 上方註解)。
+// removedParams 元素的欄位名是 { key, value }(手機版 link-cleaner.ts:171、
+// detail-dialog 的 p.key，也是 background.js sanitizeRemovedParams 實際落盤
+// 的形狀)，不是 { name, value }。
 test('buildDetailExtraRows:removedParams 逐筆產生「追蹤參數 {name}」列，形狀不對的項目濾掉不影響其他筆', () => {
   const entry = {
     url: 'https://x/y',
@@ -663,27 +631,20 @@ test('buildDetailExtraRows:removedParams 缺席或非陣列時不產生任何追
   assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', removedParams: 'nope' }).length, 0);
 });
 
-// ---- 【審查修正】跨層釘住，改造成表格驅動(work item 8) ----
+// ---- 跨層釘住(表格驅動) ----
 //
-// 【背景】UI 全面對齊手機任務把 buildDetailExtraRows 的 removedParams
-// fixture 寫成 { name, value }，但兩個權威來源(手機版 link-cleaner.ts:171
-// 與 detail-dialog 的 p.key，以及 F 案 background.js 的 sanitizeRemovedParams
-// 實際落盤形狀)都是 { key, value }——單分支測試因為連 fixture 都一起寫
-// 錯而全綠，合併後才會被另一車道的真實資料打穿，兩列變死功能。原本只有
-// removedParams 一欄有這條跨層釘住，這次擴大成表格驅動，涵蓋
-// author/handle/excerpt/original/removedParams 五個選填欄位 + url 形狀
-// 案例，同一類欄位名/長度上限漂移，任一欄未來再犯都能在這裡攔下來，不
-// 用每個欄位各自重新發明一次跨層測試。
+// 兩個權威來源(手機版 link-cleaner.ts:171 與 detail-dialog 的 p.key，
+// 以及 background.js 的 sanitizeRemovedParams 實際落盤形狀)的欄位名/長度
+// 上限必須與 options 讀取端一致。表格涵蓋 author/handle/excerpt/original/
+// removedParams 五個選填欄位 + url 形狀案例，任一欄的欄位名/長度上限漂移
+// 都能在這裡攔下。
 //
 // 每筆 case 把 message 餵給 background.js 真實的 extractHistoryExtraFields
 // (vm sandbox 載入真實原始碼，不是重新複製一份邏輯抄在測試裡)，取得
 // 「background 端真的會落盤的形狀」，原封不動餵給 options.sanitizeEntries
-// (options 端真實讀取路徑)，斷言兩層對同一筆輸入的認定完全一致——這比
+// (options 端真實讀取路徑)，斷言兩層對同一筆輸入的認定完全一致——比
 // 「比對兩邊原始碼字面上寫的欄位名/數字」這種容易同步漂移的弱驗證更難被
 // 同類回歸繞過。
-//
-// 原本 buildDetailExtraRows 那條單獨的 removedParams 跨層釘住測試由這裡
-// 取代(移除)，不重複維護兩份。
 function loadBackgroundSandboxForCrossLayer() {
   const bgSrc =
     fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
@@ -728,14 +689,14 @@ const CROSS_LAYER_FIELD_CASES = [
     expect: { excerpt: 'E'.repeat(2000) },
   },
   {
-    // F1:original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結,兩層都保留。
+    // original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結,兩層都保留。
     field: 'original',
     label: '與 cleaned url 不同且吻合白名單(share 短連結)時應保留',
     message: { original: 'https://www.threads.com/share/abc' },
     expect: { original: 'https://www.threads.com/share/abc' },
   },
   {
-    // F1 取嚴:非白名單(偽造/畸形殘 URL)的 original 兩層都整欄丟棄。
+    // 非白名單(偽造/畸形殘 URL)的 original 兩層都整欄丟棄。
     field: 'original',
     label: 'F1:非白名單 original 兩層都整欄丟棄',
     message: { original: 'https://evil.example/@u/post/ID' },
@@ -819,13 +780,11 @@ CROSS_LAYER_URL_CASES.forEach(({ label, url, expectSurvive }) => {
   });
 });
 
-// ---- 設定頁不再出現 notifySuccess 控件(PM 審查後補) ----
+// ---- 設定頁不再出現 notifySuccess 控件 ----
 //
-// R1 同輪已把成功通知整組拆光，notifySuccess 合併後零讀取端;上一輪誤以
-// 「另一車道尚未拆通知」為由保留這顆開關，是過期情報，變成誤導使用者的
-// 死 UI。這裡從兩個角度釘住它不會再出現:純函式層的 SETTING_IDS/
-// OPTIONS_DEFAULT_SETTINGS 不含這顆鍵，以及 options.html 原文不再有
-// id="notifySuccess" 的控件(靜態檢查，照 popup.test.js 既有的 R1-3 慣例)。
+// 成功通知整組拆除後 notifySuccess 零讀取端。這裡從兩個角度釘住它不會
+// 再出現:純函式層的 SETTING_IDS/OPTIONS_DEFAULT_SETTINGS 不含這顆鍵，以及
+// options.html 原文不再有 id="notifySuccess" 的控件(靜態檢查)。
 test('notifySuccess:OPTIONS_DEFAULT_SETTINGS/SETTING_IDS 不含這顆鍵，options.html 原文也不再有對應控件(成功通知已整組移除)', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(options.OPTIONS_DEFAULT_SETTINGS, 'notifySuccess'), false);
 
@@ -834,15 +793,14 @@ test('notifySuccess:OPTIONS_DEFAULT_SETTINGS/SETTING_IDS 不含這顆鍵，optio
   assert.equal(/\bopNotify(Name|Desc)\b/.test(html), false, 'options.html 不應再引用 opNotifyName/opNotifyDesc');
 });
 
-// ---- 【審查修正】全域 [hidden] 規則(PM 審查後補) ----
+// ---- 全域 [hidden] 規則 ----
 //
 // options.html 只有 .overlay[hidden]{display:none} 這一條窄規則，蓋不到
 // 頁面內任何「自己有寫 display」的其他元素(detailAuthorRow/detailExcerpt/
-// detailExpandBtn 都是——同 specificity 下 author 樣式表一律贏過瀏覽器
-// UA 樣式表的 [hidden]{display:none}，JS 端設 el.hidden=true 完全沒有
-// 視覺效果)。這裡是純 CSS 修正，controller smoke 的最小 DOM stub 不解析
-// 真實 CSS 規則，測不出視覺效果，只能做靜態原文檢查(照上面 notifySuccess
-// 的既有慣例)，鎖住這條全域規則存在且用了 !important。
+// detailExpandBtn 都是——同 specificity 下自身樣式一律贏過瀏覽器 UA 樣式表
+// 的 [hidden]{display:none}，JS 端設 el.hidden=true 完全沒有視覺效果)。
+// 最小 DOM stub 不解析真實 CSS，測不出視覺效果，只能靜態原文檢查，鎖住
+// 這條全域規則存在且用了 !important。
 test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important} 規則', () => {
   const fs = require('node:fs');
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
@@ -853,20 +811,18 @@ test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important}
   );
 });
 
-// ---- 【審查 FAIL 修正】#confirmOverlay 的 z-index(PM 打回，審查 CDP 已驗) ----
+// ---- #confirmOverlay 的 z-index ----
 //
 // 確認框(#confirmOverlay)在 options.html 的 DOM 順序寫在詳細視窗
 // (#detailOverlay)前面，兩者同吃 .overlay 的 z-index:10 時，後出現的
 // detail 依繪製順序蓋上來——「從詳細視窗按刪除這筆」開的確認框整個被
 // 遮住:畫面看似沒反應、焦點靜默落在看不見的 #confirmCancel、點遮罩
-// 關到的是 detail(留下孤兒 confirm)。#timelineOverlay 早就為同一類
-// 疊層情境拉過 z-index:11，這次 confirm-over-detail 是新情境。
+// 關到的是 detail(留下孤兒 confirm)。confirm 需自帶更高 z-index。
 //
-// 純 CSS 修正，最小 DOM stub 不解析真實 CSS，測不出繪製層級，只能做
-// 靜態原文檢查(照上面 [hidden] 的既有慣例)。正則以 ^ 行首錨定 + m
-// 旗標，只認真正的 CSS 規則行——不加錨定的話，本檔/HTML 註解散文裡
-// 只要提到 #confirmOverlay 與 z-index 就會誤命中，變成鎖不住東西的
-// 假釘(前輪教訓)。
+// 最小 DOM stub 不解析真實 CSS，測不出繪製層級，只能靜態原文檢查。正則
+// 以 ^ 行首錨定 + m 旗標，只認真正的 CSS 規則行——不加錨定的話，本檔/HTML
+// 註解散文裡只要提到 #confirmOverlay 與 z-index 就會誤命中，變成鎖不住
+// 東西的假釘。
 test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊在詳細視窗之上)', () => {
   const fs = require('node:fs');
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
@@ -1007,8 +963,8 @@ test('controller smoke:init 讀兩區 storage、整條渲染跑完,清單與計�
   assert.equal(doc.ids.countHint.textContent, '顯示 2 / 2 筆');
   assert.equal(doc.ids.empty.hidden, true);
   assert.equal(doc.ids.statTotal.textContent, '2');
-  // 0.5.0 方案甲:autoClean 預設值改 false(配合另一車道調整
-  // background.js 的預設，popup/options 兩側鏡像同一個 fallback)。
+  // autoClean 預設值 false(popup/options 兩側鏡像同一個 fallback，
+  // 對齊 background.js 的預設)。
   assert.equal(doc.ids.autoClean.checked, false, '設定未存值時應套新預設 false');
 
   controller.setHistory([]);
@@ -1017,16 +973,10 @@ test('controller smoke:init 讀兩區 storage、整條渲染跑完,清單與計�
   assert.equal(doc.ids.countHint.textContent, '顯示 0 / 0 筆');
 });
 
-// 修正前 renderList 的網域段一律硬寫死 'threads.com/'，來自 threads.net 的
-// 紀錄(POST_URL_PATTERN／KINDS 都同時允許 com 與 net)會被顯示成錯誤網域。
-// 這裡直接檢查渲染出來的三段文字節點(網域段／帳號段(<b>)／其餘路徑段)，
+// renderList 的網域段須如實反映紀錄網域:來自 threads.net 的紀錄
+// (POST_URL_PATTERN／KINDS 都同時允許 com 與 net)不得顯示成 .com。這裡
+// 直接檢查渲染出來的三段文字節點(網域段／帳號段(<b>)／其餘路徑段)，
 // 網域段須如實為 'threads.net/'。
-//
-// 【必然的結構性更新，PM 覆核】0.5.0 方案甲把紀錄清單從 <li class="row">
-// 改渲染成 <div class="entry-card">，原本 li → main → urlEl 的巢狀路徑不
-// 復存在;這筆條目沒有 author/excerpt(hasCardPreview 為 false)，降級網址
-// 節點現在是卡片(entry-header 之後)的直接子節點。行為斷言(三段文字节点
-// 拆解結果)完全不變，只是 DOM 路徑跟著新結構調整，並非放寬或收緊判斷。
 test('renderList:threads.net 的紀錄如實顯示 .net,不誤植為 .com', async () => {
   const NET_URL = 'https://www.threads.net/@user_net/post/AbC123';
   const storage = createChromeStorage(
@@ -1053,7 +1003,7 @@ test('renderList:threads.net 的紀錄如實顯示 .net,不誤植為 .com', asyn
 });
 
 // ============================================================
-// 0.5.0 方案甲(歷史即收藏):紀錄卡片牆——帶預覽 / 降級網址兩種形狀
+// 紀錄卡片牆——帶預覽 / 降級網址兩種形狀
 // ============================================================
 
 const CARD_URL_A = 'https://www.threads.com/@usera/post/AbC123_-xyz';
@@ -1088,9 +1038,9 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   assert.equal(doc.ids.rows.children.length, 2);
 
   // 卡片一:有預覽(author+handle+excerpt)——卡頭(徽章+時間)→ 作者列 →
-  // excerpt → 高亮態快捷鈕組(取代舊版常駐 ⋮ 選單，見 buildEntryCard；
-  // UI 全面對齊手機任務:互動照手機的選中態，平時態靠 CSS display:none
-  // 隱藏，這裡的 DOM stub 不解析 CSS，所以節點一律存在，只驗證結構)。
+  // excerpt → 高亮態快捷鈕組(互動照手機的選中態，平時態靠 CSS
+  // display:none 隱藏，這裡的 DOM stub 不解析 CSS，所以節點一律存在，只
+  // 驗證結構)。
   const card0 = doc.ids.rows.children[0];
   assert.equal(card0.className, 'entry-card');
   const header0 = card0.children[0];
@@ -1128,10 +1078,9 @@ test('controller smoke:紀錄卡片牆渲染——帶預覽(author+handle+excerp
   );
 });
 
-// UI 全面對齊手機任務:互動模型翻轉——卡片右上常駐 ⋮ 選單整組撤掉，刪除
-// 動作收斂到只在詳細視窗做(已有獨立測試覆蓋)，卡片層級改成高亮態的兩顆
-// 快捷鈕(複製連結/開啟貼文)。這裡驗證快捷鈕本身的行為:複製鈕點擊會
-// stopPropagation、不會順手把詳細視窗打開;開啟鈕是原生 <a>，href 正確。
+// 卡片高亮態的兩顆快捷鈕(複製連結/開啟貼文)。這裡驗證快捷鈕本身的行為:
+// 複製鈕點擊會 stopPropagation、不會順手把詳細視窗打開;開啟鈕是原生
+// <a>，href 正確。
 test('controller smoke:卡片高亮態快捷鈕——複製鈕不冒泡開啟詳細視窗，開啟鈕 href 正確', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1239,11 +1188,9 @@ test('controller smoke:降級網址條目的詳細視窗顯示網址列，不顯
   );
 });
 
-// 【審查修正】openEntryDetail 的無預覽分支先前只設 hidden，沒清
-// textContent(handleEl 連 hidden 都沒設)——先開一筆有 author/handle/
-// excerpt 的條目，再切到一筆降級條目，若無預覽分支沒清乾淨，這幾個欄位
-// 的舊文字會原地殘留(且 hidden 修正前，[hidden] 對這幾個元素完全沒視覺
-// 效果，殘留文字會直接露出來)。
+// 切到降級條目時，openEntryDetail 的無預覽分支必須清掉 authorName/handle/
+// excerpt 的 textContent 並設 hidden，否則上一筆有 author/handle/excerpt
+// 的條目文字會原地殘留露出來。
 test('controller smoke:切換到降級網址條目時，上一筆的 authorName/handle/excerpt 應清空，不殘留到這一筆', async () => {
   const history = [
     { url: CARD_URL_A, kind: 'share', author: 'Dafu', handle: '@dafucoding', excerpt: 'hello world', at: 3000 },
@@ -1306,8 +1253,8 @@ test('controller smoke:長內文顯示「展開全文」，點擊後移除截斷
 });
 
 // 詳細視窗底部的複製/刪除按鈕操作目前顯示中的 entry(見 detailEntry)。
-// 【R4-新 使用者 2026-08-19 要求】刪除先跳一道確認框(複用清除全部那套
-// confirmOverlay)，文案是「確定刪除這筆紀錄?」/確認鈕「刪除」，確認後才刪。
+// 刪除先跳一道確認框(複用清除全部那套 confirmOverlay)，文案是「確定刪除
+// 這筆紀錄?」/確認鈕「刪除」，確認後才刪。
 test('controller smoke:詳細視窗刪除鈕先跳確認框，確認後刪除目前條目並收合視窗', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1371,12 +1318,9 @@ test('controller smoke:刪除確認框按取消不刪除紀錄', async () => {
   assert.equal(doc.ids.detailOverlay.hidden, false, '取消後詳細視窗仍開著');
 });
 
-// 【R4-a 回歸釘 使用者/PM 覆核】deleteEntry 改回 url+at 精準命中(撤銷
-// PM 第五輪 9e7353f 只比 url 的未預期副作用)。刻意讓 entries 裡出現兩筆
-// 相同 url、不同 at 的資料(同一貼文在 5 分鐘視窗外各自獨立成筆的真實
-// 情境)，刪其中一筆時「只該刪中被點的那一筆」，同 url 的另一筆必須留著。
-// 這條就是那個誤刪 bug 的直接回歸釘:一旦 deleteEntry 退回只比 url，這裡
-// 會變成兩筆都被刪、斷言立刻紅。
+// deleteEntry 以 url+at 精準命中。刻意讓 entries 裡出現兩筆相同 url、不同
+// at 的資料(同一貼文在 5 分鐘視窗外各自獨立成筆的真實情境)，刪其中一筆時
+// 只該刪中被點的那一筆，同 url 的另一筆必須留著(只比 url 會兩筆都誤刪)。
 test('controller smoke:刪除以 url+at 精準命中，同 url 不同 at 兩筆只刪中被點的那一筆', async () => {
   const history = [
     { url: CARD_URL_A, kind: 'share', at: 3000 },
@@ -1413,7 +1357,7 @@ test('controller smoke:刪除以 url+at 精準命中，同 url 不同 at 兩筆�
   );
 });
 
-// 【審查修正】deleteEntry 沒命中時不寫入、不動視窗、不發「已刪除」成功
+// deleteEntry 沒命中時不寫入、不動視窗、不發「已刪除」成功
 // toast——模擬使用者開著詳細視窗時，storage 被「清除全部」這類不經
 // setHistory 重新定位的路徑改掉(persistHistory 直接改 entries，detailEntry
 // 仍是舊物件的參照)，此時點刪除鈕應該安靜地什麼都不做，不能誤發成功
@@ -1459,9 +1403,9 @@ test('controller smoke:詳細視窗開著時若條目已被別處(如清除全�
   );
 });
 
-// 【審查修正】詳細視窗開著時 storage 更新的整合(setHistory 由接線層在
+// 詳細視窗開著時 storage 更新的整合(setHistory 由接線層在
 // storage.onChanged(local 區)時呼叫，對齊 background 新寫入/另一分頁改動
-// 的即時性)：以 url 重新定位 detailEntry，找得到就用新資料刷新視窗內容。
+// 的即時性):以 url 重新定位 detailEntry，找得到就用新資料刷新視窗內容。
 test('controller smoke:詳細視窗開著時 setHistory 帶來同 url 的新資料，應原地刷新視窗內容(不需要使用者手動關再開)', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', author: 'Dafu', excerpt: 'old excerpt', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1486,9 +1430,8 @@ test('controller smoke:詳細視窗開著時 setHistory 帶來同 url 的新資�
   assert.equal(doc.ids.detailExcerpt.textContent, 'new excerpt after live update', '視窗內容應刷新成新資料，不是停在舊快照');
 });
 
-// 【審查修正】setHistory 帶來的新清單裡已經沒有 detailEntry 對應的
-// url(例如另一分頁把這筆刪了)，應該關閉詳細視窗，不留著顯示一筆已經
-// 不存在的紀錄。
+// setHistory 帶來的新清單裡已經沒有 detailEntry 對應的 url(例如另一分頁
+// 把這筆刪了)，應該關閉詳細視窗，不留著顯示一筆已經不存在的紀錄。
 test('controller smoke:詳細視窗開著時 setHistory 帶來的新清單已無對應 url，應關閉詳細視窗', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1512,10 +1455,9 @@ test('controller smoke:詳細視窗開著時 setHistory 帶來的新清單已無
   assert.equal(doc.ids.detailOverlay.hidden, true, '找不到對應 url 時應關閉詳細視窗');
 });
 
-// 【R4-b 回歸釘 cr low5 + UI 中2】setHistory 走「只刷新內容、不重置互動態」
-// 的路徑:使用者正開著時間軸子層時，別處(background/另一分頁)寫入一筆
-// 無關的新紀錄，不該把使用者正在看的時間軸子層關掉。修正前 setHistory →
-// openEntryDetail 無條件 closeTimelineOverlay，任何無關寫入都會把子層重置。
+// setHistory 走「只刷新內容、不重置互動態」的路徑:使用者正開著時間軸
+// 子層時，別處(background/另一分頁)寫入一筆無關的新紀錄，不該把使用者
+// 正在看的時間軸子層關掉。
 test('controller smoke:別處寫入無關紀錄(setHistory)時，使用者正開著的時間軸子層不被關掉', async () => {
   const seen = [
     { at: 1000, kind: 'strip' },
@@ -1555,9 +1497,9 @@ test('controller smoke:別處寫入無關紀錄(setHistory)時，使用者正開
   assert.equal(doc.ids.rows.children.length, 2, '卡片牆應反映新清單的兩筆');
 });
 
-// 【R5 安全F2 + UI 中1】storage 寫入失敗(配額)時:不謊報「已匯入」成功、
-// 發專屬失敗 toast，且 entries 回滾成寫入前的值(記憶體/磁碟不分岔)。
-// 用會 reject 的自訂 localStorage，不走 createChromeStorage(它 set 恆成功)。
+// storage 寫入失敗(配額)時:不謊報「已匯入」成功、發專屬失敗 toast，且
+// entries 回滾成寫入前的值(記憶體/磁碟不分岔)。用會 reject 的自訂
+// localStorage，不走 createChromeStorage(它 set 恆成功)。
 test('R5:匯入寫入失敗(配額)時不發成功 toast、改發失敗 toast，且 entries 回滾', async () => {
   const doc = makeDocumentStub();
   const quotaErr = new Error('QUOTA_BYTES quota exceeded');
@@ -1608,8 +1550,8 @@ test('R5:匯入寫入失敗(配額)時不發成功 toast、改發失敗 toast，
   assert.equal(doc.ids.rows.children.length, 1, '寫入失敗應回滾，卡片牆維持原本一筆(未把 CARD_URL_B 併進去)');
 });
 
-// 【R5】刪除寫入失敗時同樣不謊報「已刪除」——沿用同一條 persistHistory
-// 失敗路徑，這裡最小驗證失敗 toast 取代成功 toast。
+// 刪除寫入失敗時同樣不謊報「已刪除」——沿用同一條 persistHistory 失敗
+// 路徑，這裡最小驗證失敗 toast 取代成功 toast。
 test('R5:刪除寫入失敗時發失敗 toast、不發已刪除，且回滾', async () => {
   const doc = makeDocumentStub();
   const quotaErr = new Error('QUOTA_BYTES_PER_ITEM exceeded');
@@ -1650,10 +1592,10 @@ test('R5:刪除寫入失敗時發失敗 toast、不發已刪除，且回滾', as
   assert.equal(doc.ids.rows.children.length, 1, '失敗回滾，那一筆仍在');
 });
 
-// 【R7 a11y cr low8 + UI low5】開啟對話框時焦點移入(關閉鈕)。makeNode 預設
-// 沒有 focus 方法(全程 typeof 守衛跳過)，這裡臨時掛上 focus spy 驗證焦點
-// 確實被移進對話框。Tab focus trap 需要真實 querySelectorAll，最小 DOM stub
-// 表達不了，由人工/CDP 驗證(見 options.js trapTabInOverlay 註解)。
+// 開啟對話框時焦點移入(關閉鈕)。makeNode 預設沒有 focus 方法(全程 typeof
+// 守衛跳過)，這裡臨時掛上 focus spy 驗證焦點確實被移進對話框。Tab focus
+// trap 需要真實 querySelectorAll，最小 DOM stub 表達不了，由人工/CDP 驗證
+// (見 options.js trapTabInOverlay 註解)。
 test('R7 a11y:開啟詳細視窗時焦點移入關閉鈕', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1678,10 +1620,9 @@ test('R7 a11y:開啟詳細視窗時焦點移入關閉鈕', async () => {
   assert.equal(closeFocused, 1, '開啟詳細視窗時焦點應移到關閉鈕');
 });
 
-// 【R7 a11y】硬編中文 aria-label 改走 i18n:options.html 用 data-i18n-aria，
-// applyI18nDom 有對應通道，i18n 有新 key(zh/en)。DOM stub 的 querySelectorAll
-// 回空陣列測不到 applyI18nDom 的實際套用，改用靜態原文 + 字典檢查(照本檔
-// [hidden] 那條既有慣例)。
+// aria-label 走 i18n:options.html 用 data-i18n-aria，applyI18nDom 有對應
+// 通道，i18n 有 key(zh/en)。DOM stub 的 querySelectorAll 回空陣列測不到
+// applyI18nDom 的實際套用，改用靜態原文 + 字典檢查。
 test('R7 a11y:關閉鈕/統計磚的 aria-label 改走 data-i18n-aria(不再硬編中文)', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   assert.match(html, /id="detailClose"[^>]*data-i18n-aria="opClose"/, '詳細視窗關閉鈕改掛 data-i18n-aria');
@@ -1695,8 +1636,8 @@ test('R7 a11y:關閉鈕/統計磚的 aria-label 改走 data-i18n-aria(不再硬�
   assert.equal(i18n.t('en', 'opStatsAria'), 'Statistics');
 });
 
-// 【PM 追加 純視覺】options 頁首 logo 改用品牌盾牌鏈節 #i-brand(對齊工具列/
-// 商店 PNG)，不再是 sparkles。靜態鎖住 symbol 存在且 topbar logo 引用它。
+// options 頁首 logo 用品牌盾牌鏈節 #i-brand(對齊工具列/商店 PNG)。靜態
+// 鎖住 symbol 存在且 topbar logo 引用它。
 test('PM 追加:options 頁首 logo 使用品牌盾牌 #i-brand symbol', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   assert.match(html, /<symbol id="i-brand"[\s\S]*?<\/symbol>/, '應定義 #i-brand symbol');
@@ -1706,8 +1647,7 @@ test('PM 追加:options 頁首 logo 使用品牌盾牌 #i-brand symbol', () => {
 
 // 詳細視窗照手機版:淨化後連結列——不論有沒有 author/excerpt 預覽都固定
 // 顯示，值經 formatDisplayUrl 顯示正規路徑(@handle/post/ID)，不是完整
-// 網址(UI 全面對齊手機任務 work item 5，authored update:上一輪詳細視窗
-// 仿造時這格顯示完整 URL，這次改用手機版 CopyRow 的顯示格式)。
+// 網址(對齊手機版 CopyRow 的顯示格式)。
 test('controller smoke:詳細視窗固定顯示淨化後連結列(正規路徑，非完整網址)，複製按鈕點擊不丟例外', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1731,16 +1671,15 @@ test('controller smoke:詳細視窗固定顯示淨化後連結列(正規路徑�
   assert.doesNotThrow(() => doc.ids.detailUrlCopyBtn.fire('click'));
 });
 
-// UI 全面對齊手機任務 work item 7:original/removedParams 有資料時，詳細
-// 視窗應在淨化後連結列與記錄時間列之間畫出對應的 kv 列;沒資料時
-// detailExtraRows 容器保持空。
+// original/removedParams 有資料時，詳細視窗應在淨化後連結列與記錄時間列
+// 之間畫出對應的 kv 列;沒資料時 detailExtraRows 容器保持空。
 test('controller smoke:original/removedParams 有資料時詳細視窗畫出對應列，沒資料時容器為空', async () => {
   const historyWithExtra = [
     {
       url: CARD_URL_A,
       kind: 'share',
       at: 1000,
-      // F1:original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結。
+      // original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結。
       original: 'https://www.threads.com/share/xyz',
       removedParams: [{ key: 'igsh', value: 'aBc' }],
     },
@@ -1786,8 +1725,7 @@ test('controller smoke:original/removedParams 缺席時 detailExtraRows 容器�
   assert.equal(doc.ids.detailExtraRows.children.length, 0);
 });
 
-// 時間軸:單筆(或 seen 缺席，因為本分支還沒接 fix/dedup-merge 的 schema
-// 變更)不顯示時間軸鈕——見 buildSeenTimeline 註解。
+// 時間軸:單筆或 seen 缺席時不顯示時間軸鈕——見 buildSeenTimeline 註解。
 test('controller smoke:seen 缺席或只有一筆時，詳細視窗不顯示時間軸鈕', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1809,10 +1747,9 @@ test('controller smoke:seen 缺席或只有一筆時，詳細視窗不顯示時�
 });
 
 // 時間軸:seen 有多筆時顯示時間軸鈕(純文字「時間軸」，不帶次數)，點擊後
-// 開啟子層視窗(PM 補充使用者提供的手機實機截圖後，從上一輪的原地展開
-// 改回巢狀 Modal，逐項對齊手機版 showSeenHistory 分支)，標題帶次數
-// 「解析時間軸(共 N 次)」，逐列新到舊顯示「時間 + 來源標籤」，軌道圓點
-// 最新一筆實心、其餘空心，✕ 鈕關閉子層視窗。
+// 開啟子層視窗(對齊手機版 showSeenHistory)，標題帶次數「解析時間軸
+// (共 N 次)」，逐列新到舊顯示「時間 + 來源標籤」，軌道圓點最新一筆實心、
+// 其餘空心，✕ 鈕關閉子層視窗。
 test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊開啟子層視窗，逐列顯示軌道圓點與時間/來源標籤', async () => {
   const history = [
     {
@@ -1914,8 +1851,8 @@ test('controller smoke:關閉詳細視窗時一併收合已開啟的時間軸子
 });
 
 // ============================================================
-// 0.5.0:常開頁面的即時性稽核——設定在 popup(或另一個 options 分頁)
-// 改動時，常開的本頁要同步反映(controller.setSyncSettings，由接線層的
+// 常開頁面的即時性稽核——設定在 popup(或另一個 options 分頁)改動時，
+// 常開的本頁要同步反映(controller.setSyncSettings，由接線層的
 // chrome.storage.onChanged 監聽器在 areaName==='sync' 時呼叫)。
 // ============================================================
 
@@ -1971,11 +1908,11 @@ test('setSyncSettings:langPref 變更時同步語言並重新渲染卡片文案;
   assert.equal(doc.documentElement.dataset.theme, 'dark', '別處把主題改成 dark，本頁應套用');
 });
 
-// 【R6 併發中3 + cr low6 + UI 效能建議a】60s ticker / visibilitychange 回
-// 分頁時走的 refresh() 改成輕量路徑:只逐一改已登錄時間節點的 textContent，
-// 不呼叫 renderAll 整面重建卡片(全量重建會偷走鍵盤焦點與文字選取)。
-// 這裡驗證兩件事:(1) 卡片 DOM 原地保留(不是重建的新節點);(2) 相對時間
-// 文字有隨當下時間更新。now 用可變 closure 模擬時間前進。
+// 60s ticker / visibilitychange 回分頁時走的 refresh() 是輕量路徑:只逐一
+// 改已登錄時間節點的 textContent，不呼叫 renderAll 整面重建卡片(全量重建
+// 會偷走鍵盤焦點與文字選取)。這裡驗證兩件事:(1) 卡片 DOM 原地保留(不是
+// 重建的新節點);(2) 相對時間文字有隨當下時間更新。now 用可變 closure
+// 模擬時間前進。
 test('refresh:輕量刷新——原地保留卡片節點，只更新相對時間文字，不重建卡片牆', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -2005,8 +1942,7 @@ test('refresh:輕量刷新——原地保留卡片節點，只更新相對時間
   assert.equal(timeEl.textContent, i18n.fmt('zh', 'opRelMin', { n: 4 }), '相對時間文字應原地更新到當下');
 });
 
-// R6 附帶(UI 低8):詳細視窗開著時，ticker 也刷新視窗內的相對時間
-// (detailTime)。
+// 詳細視窗開著時，ticker 也刷新視窗內的相對時間(detailTime)。
 test('refresh:詳細視窗開著時一併刷新視窗內相對時間(detailTime)', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });

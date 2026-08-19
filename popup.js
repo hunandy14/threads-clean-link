@@ -64,7 +64,7 @@
         SETTING_IDS.forEach(function (id) {
           var el = getCheckbox(id);
           if (!el) return;
-          // F6 設定型別鏡像:對齊 options.js 的守衛——storage 值必須真的是
+          // 設定型別鏡像:對齊 options.js 的守衛——storage 值必須真的是
           // boolean 才採用,否則退回預設值(防損毀/偽造的非布林值直接綁上
           // checkbox.checked 造成非預期狀態)。
           var hasValue = settings && Object.prototype.hasOwnProperty.call(settings, id);

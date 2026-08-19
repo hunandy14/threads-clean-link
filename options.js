@@ -9,9 +9,8 @@
 
   // 共用核心 lib(網址正規化、欄位消毒、常數):擴充頁面環境靠 options.html 的
   // <script src="tcl-core.js"> 先載入(全域 root.TCLCore);Node 測試則 require。
-  // sanitize 各函式、長度上限、貼文網址正規化與預設值一律走 TCLCore,不再於本
-  // 檔養一份鏡像(原本 background 寫入側與 options 讀取側各養一份,漂移一處即
-  // 分裂)。
+  // sanitize 各函式、長度上限、貼文網址正規化與預設值一律走 TCLCore，不在本檔
+  // 養鏡像——background 寫入側與 options 讀取側共用單一權威，任一處漂移就分裂。
   var TCLCore =
     typeof module !== 'undefined' && module.exports ? require('./tcl-core.js') : root.TCLCore;
 
@@ -49,9 +48,8 @@
   // sanitize 各函式(文字截斷、seen[]、original、removedParams)一律走 TCLCore
   // (見 tcl-core.js):讀取(sanitizeEntries)與匯入(mergeImportedEntries)都是
   // 獨立信任邊界,縱深防禦不依賴寫入端沒漏——與 background 寫入側共用同一份
-  // 邏輯,F1(original 白名單)/F5(控制字元剝除)追溯消毒在讀取/匯入時一併生效
-  // (既有庫存含 bidi/不合白名單 original 的欄位,讀取時欄位級剝除/丟棄,整筆
-  // 保留)。
+  // 邏輯。original 白名單/控制字元剝除在讀取/匯入時一併追溯生效:既有庫存含
+  // bidi/不合白名單 original 的欄位，讀取時做欄位級剝除/丟棄，整筆保留。
 
   // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
   // 項目——url 除了型別是字串，還要通過 TCLCore.normalizePostUrl 的形狀驗證才
@@ -383,8 +381,7 @@
     // modal，confirmOk 點擊時執行這顆(見 openConfirm/closeConfirm)。
     var confirmAction = null;
 
-    // 注意:此模組內不得宣告名為 t 的區域變數,以免遮蔽翻譯函式
-    // (demo 階段真踩過:var t = createElement(...) 讓整頁渲染炸掉)。
+    // 注意:此模組內不得宣告名為 t 的區域變數，以免遮蔽翻譯函式。
     function tt(key) {
       return i18n.t(locale, key);
     }
@@ -440,9 +437,8 @@
       document.querySelectorAll('[data-i18n-title]').forEach(function (node) {
         node.setAttribute('title', tt(node.getAttribute('data-i18n-title')));
       });
-      // aria-label i18n 通道:options.html 原本硬編中文 aria-label(兩顆
-      // 關閉鈕、統計磚區塊)改掛 data-i18n-aria，語言切換時一併更新，不再
-      // 卡在中文。
+      // aria-label i18n 通道:兩顆關閉鈕與統計磚區塊的 aria-label 掛
+      // data-i18n-aria，語言切換時一併更新，不卡在單一語言。
       document.querySelectorAll('[data-i18n-aria]').forEach(function (node) {
         node.setAttribute('aria-label', tt(node.getAttribute('data-i18n-aria')));
       });
@@ -691,9 +687,7 @@
     // 回傳 Promise 給呼叫端(成功/失敗都 resolve，不 reject):寫入前先記住
     // 現值，失敗(常見:storage.local 配額寫爆)時把記憶體 entries 回滾成
     // 寫入前的值，避免磁碟寫失敗、記憶體卻已經前進造成分岔。呼叫端據
-    // res.ok 決定發成功或失敗 toast——先前「先設 entries 再非同步寫、
-    // rejection 只 console.error 吞掉」會在配額失敗時謊報成功並讓記憶體/
-    // 磁碟分岔。res.quota 供呼叫端挑配額/一般兩種失敗文案。
+    // res.ok 決定發成功/失敗 toast，res.quota 供挑配額/一般兩種失敗文案。
     function persistHistory(list) {
       var prev = entries;
       entries = list;
@@ -852,11 +846,10 @@
     // 刪除入口)，且經一道確認框(見 bindDetailDialog 的 detailDeleteBtn →
     // openConfirm)。
     //
-    // 以 url+at 精準命中(不再只比 url):PM 第五輪為了解「detailEntry 手上
-    // 舊物件 at 過期刪不掉」把比對放寬成只看 url，卻連帶把「同一貼文在
-    // 5 分鐘視窗外各自獨立成筆」的多筆紀錄一起誤刪。現在 setHistory 已把
-    // detailEntry 換成清單裡的新物件(見 refreshDetail)，at 不會過期，精準
-    // 比對本就成立，故改回 url+at——刪一筆只刪中一筆。
+    // 以 url+at 精準命中(不只比 url):只比 url 會把「同一貼文在 5 分鐘視窗
+    // 外各自獨立成筆」的多筆紀錄一起誤刪。setHistory 已把 detailEntry 換成
+    // 清單裡的新物件(見 refreshDetail)，at 不會過期，精準比對成立——刪一筆
+    // 只刪中一筆。
     //
     // 沒有真的命中(例如已被別的分頁/storage 同步事件、或「清除全部」先
     // 移除)就不寫入、不動視窗、也不發「已刪除」成功 toast，避免對使用者
@@ -898,7 +891,7 @@
       // button/a 才有的鍵盤啟動行為(div 預設沒有)。
       card.setAttribute('tabindex', '0');
       card.setAttribute('role', 'button');
-      // 條目鍵(url|at):R6 整面重建卡片時據此還原鍵盤焦點到同一條目。
+      // 條目鍵(url|at):整面重建卡片時據此還原鍵盤焦點到同一條目。
       card.dataset.entryKey = e.url + '|' + e.at;
 
       var header = document.createElement('div');
@@ -1134,8 +1127,8 @@
 
     // storage 變動(setHistory)時原地刷新:只把 detailEntry 換成清單裡的
     // 新物件並重畫內容，不重置使用者正在看的時間軸子層/excerpt 展開態
-    // (cr low5 + UI 中2:別處寫入無關紀錄不該把使用者互動態打回原形)。
-    // detailEntry 換成新物件也讓 R4-a 的 url+at 精準刪除拿到不過期的 at。
+    // (別處寫入無關紀錄不該把使用者互動態打回原形)。detailEntry 換成新
+    // 物件也讓 url+at 精準刪除拿到不過期的 at。
     function refreshDetail(e) {
       detailEntry = e;
       var overlay = byId('detailOverlay');
@@ -1275,9 +1268,9 @@
       on('detailCopyBtn', 'click', function () {
         if (detailEntry) copyEntryUrl(detailEntry);
       });
-      // R4-新:刪除先過一道確認框(複用共用 confirmOverlay)，確認後才真的
-      // 刪。捕捉當下的 detailEntry，即使確認期間 detailEntry 被別的路徑改動，
-      // 也是刪使用者當初按下刪除的那一筆。
+      // 刪除先過一道確認框(複用共用 confirmOverlay)，確認後才真的刪。捕捉
+      // 當下的 detailEntry，即使確認期間 detailEntry 被別的路徑改動，也是刪
+      // 使用者當初按下刪除的那一筆。
       on('detailDeleteBtn', 'click', function () {
         if (!detailEntry) return;
         var target = detailEntry;
@@ -1480,7 +1473,7 @@
           return;
         }
         var result = mergeImportedEntries(entries, parsed.entries, now());
-        // R5:成功才發「已匯入」toast 並關框;寫入失敗(配額)走回滾 + 失敗
+        // 成功才發「已匯入」toast 並關框;寫入失敗(配額)走回滾 + 失敗
         // toast，不謊報成功、也不關框(讓使用者可另存/重試)。
         persistHistory(result.merged).then(function (res) {
           if (!res.ok) {
@@ -1615,7 +1608,7 @@
       restoreFocusedEntry(focusKey);
     }
 
-    // R6 焦點保存:整面重建卡片前記下目前鍵盤焦點落在哪一條目(卡片本身
+    // 焦點保存:整面重建卡片前記下目前鍵盤焦點落在哪一條目(卡片本身
     // 或其內部快捷鈕)，重建後把焦點還回同一條目的新卡片。DOM stub 沒有
     // activeElement，回 null → restore 為 no-op;真實環境的效果由人工/CDP
     // 驗證。以 url|at 當條目鍵(與 buildEntryCard 的 dataset.entryKey 一致)。
@@ -1672,8 +1665,7 @@
     // 常開分頁的相對時間標籤刷新(60s ticker 與 visibilitychange 回分頁時
     // 由接線層呼叫)。走輕量路徑:只逐一改已登錄時間節點的 textContent，
     // 不呼叫 renderAll 整面重建卡片——全量重建會偷走使用者的鍵盤焦點與
-    // 文字選取(併發中3 + cr low6 + UI 效能建議a)。詳細視窗開著時，視窗內
-    // 的相對時間(detailTime)也一併刷新(UI 低8)。
+    // 文字選取。詳細視窗開著時，視窗內的相對時間(detailTime)也一併刷新。
     function refresh() {
       for (var i = 0; i < timeNodes.length; i++) {
         timeNodes[i].node.textContent = relTime(timeNodes[i].at);

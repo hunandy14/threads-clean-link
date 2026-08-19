@@ -143,19 +143,17 @@
     return 'push';
   }
 
-  // 使用者變更設定規格:postCopyEnabled(貼文複製按鈕開關)預設 true，只
-  // 有明確存成 false 才視為關閉；其餘(true／undefined／未設定過／其他
-  // 型別的雜訊值)一律視為啟用。正規化邏輯抽成純函式，讀取 storage 的
-  // fallback 與 storage.onChanged 收到新值時都呼叫這裡，行為保證一致。
+  // postCopyEnabled(貼文複製按鈕開關)預設 true，只有明確存成 false 才視
+  // 為關閉；其餘(true／undefined／未設定過／其他型別的雜訊值)一律視為啟
+  // 用。正規化邏輯抽成純函式，讀取 storage 的 fallback 與
+  // storage.onChanged 收到新值時都呼叫這裡，行為保證一致。
   function resolvePostCopyEnabled(rawValue) {
     return rawValue === false ? false : true;
   }
 
-  // 使用者變更設定規格:share/strip 解析在 Threads 頁面內失敗時(bridge.js
-  // 收到 resolveShare 的 ok:false 回應或同義訊號)，改用頁內 toast 提示，
-  // 不再靠 background 的系統通知(原本這條路徑其實從未真的發過系統通
-  // 知——clipboard-guard.js 一路是靜默 fail-open，這裡是新增的使用者可
-  // 見信號)。文字沿用 background.js 右鍵路徑既有的失敗文案 i18n key，
+  // share/strip 解析在 Threads 頁面內失敗時(bridge.js 收到 resolveShare
+  // 的 ok:false 回應或同義訊號)，用頁內 toast 提示使用者。文字沿用
+  // background.js 右鍵路徑既有的失敗文案 i18n key，
   // 三個已知原因(來自 background.js 的 handleResolveShareMessage)逐一
   // 對應；其餘原因(bridge/guard 自身的連線層失敗，如逾時、通道關閉、
   // sendMessage 例外)一律 fallback 到 bgUnexpected，比照右鍵路徑「未預
@@ -374,8 +372,8 @@
       // storage.onChanged 觸發時即時更新既有 icon 的文案。
       var currentLocale = 'en';
 
-      // 使用者變更設定規格:postCopyEnabled(貼文複製按鈕開關)。讀取完成
-      // 前的預設值就是最終預設值 true(見 resolvePostCopyEnabled)，讀取
+      // postCopyEnabled(貼文複製按鈕開關)。讀取完成前的預設值就是最終預
+      // 設值 true(見 resolvePostCopyEnabled)，讀取
       // 失敗也維持這個值——與 langPref 的「先假設預設值立刻動作、讀到後
       // 再補正」策略一致。
       var postCopyEnabled = true;
@@ -409,8 +407,8 @@
       }
 
       // favContextLost 專屬查詢:字典若真的有這個 key，回傳的值不會等於
-      // key 本身字串，直接採用；字典還沒有這個 key(過渡期或本車道獨立測
-      // 試)時，t() 會原樣把 key 字串傳回來，這裡改用
+      // key 本身字串，直接採用；字典還沒有這個 key 時，t() 會原樣把 key
+      // 字串傳回來，這裡改用
       // FALLBACK_STRINGS.favContextLost 依目前語言取值，不讓使用者看到原
       // 始 key。
       function tContextLost() {
@@ -566,8 +564,8 @@
         (document.head || document.documentElement).appendChild(style);
       }
 
-      // ---- 使用者變更設定規格:頁內失敗 toast(share/strip 解析在 Threads
-      // 頁面內失敗時顯示)。固定定位在畫面底部置中，視覺語言比照複製 icon
+      // ---- 頁內失敗 toast(share/strip 解析在 Threads 頁面內失敗時顯
+      // 示)。固定定位在畫面底部置中，視覺語言比照複製 icon
       // 的自繪氣泡(同款深/淺主題配色、圓角、字級)，3 秒後自動淡出。單一
       // 常駐節點、重複呼叫會直接覆蓋文字並重新計時，不會疊出多個 toast。
       var TOAST_ID = 'tcl-toast';
@@ -809,12 +807,11 @@
         }
 
         // sendMessage 失敗時的錯誤分類:辨識「Extension context invalidated」
-        // 類錯誤(孤兒情境)走專屬處理——先 console.warn 留下可查的訊號(原
-        // 本這條路徑除了 1.5 秒氣泡以外完全沒有 console 痕跡，紀錄靜默丟
-        // 失時無從察覺)，收掉與事實矛盾的勾勾回饋，改用 3 秒底部 toast 說
-        // 明需要重新整理，最後把自己這批已經失效的 icon 收乾淨。其餘錯誤
-        // (background 暫時無回應等)維持原本的 console.warn，不打斷已經成
-        // 功的複製與勾勾回饋。
+        // 類錯誤(孤兒情境)走專屬處理——先 console.warn 留下可查的訊號(否
+        // 則紀錄靜默丟失時無從察覺)，收掉與事實矛盾的勾勾回饋，改用 3 秒
+        // 底部 toast 說明需要重新整理，最後把自己這批已經失效的 icon 收乾
+        // 淨。其餘錯誤(background 暫時無回應等)維持原本的 console.warn，不
+        // 打斷已經成功的複製與勾勾回饋。
         function handleSendError(err) {
           var msg = err && err.message ? err.message : String(err);
           if (/extension context invalidated/i.test(msg)) {
@@ -1286,14 +1283,13 @@
       }
 
       function init() {
-        // 冪等交棒(併發線中2,必須排在最前):同一 ISOLATED world 若已有本腳
-        // 本的舊實例(手動 F5 × 自癒重注入的毫秒級競態,或更新後的重注入),
-        // 先透過 root.__tclPostIconDispose 讓舊實例退場(斷 observer、清掉它
-        // 那批帶舊 OWNER_ATTR 的 icon、後續掃描短路),再由本新實例接手。消除
-        // 「雙 MutationObserver → 雙落盤 → 時間軸假事件」。bridge 是純粹「舊
-        // 的下線、新的接手」;post-icon 因為有 DOM 狀態(icon 節點、observer)
-        // 要乾淨交接,用 retireOrphanInstance 做這件事。首次載入時 hook 尚未
-        // 存在,等同 no-op。
+        // 冪等交棒(必須排在最前):同一 ISOLATED world 若已有本腳本的舊實例
+        // (手動 F5 × 自癒重注入的毫秒級競態,或更新後的重注入),先透過
+        // root.__tclPostIconDispose 讓舊實例退場(斷 observer、清掉它那批帶
+        // 舊 OWNER_ATTR 的 icon、後續掃描短路),再由本新實例接手。消除「雙
+        // MutationObserver → 雙落盤 → 時間軸假事件」。post-icon 因為有 DOM
+        // 狀態(icon 節點、observer)要乾淨交接,用 retireOrphanInstance 做這
+        // 件事。首次載入時 hook 尚未存在,等同 no-op。
         if (typeof root.__tclPostIconDispose === 'function') {
           try {
             root.__tclPostIconDispose();

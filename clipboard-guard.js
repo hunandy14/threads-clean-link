@@ -73,8 +73,8 @@
     return true;
   }
 
-  // S8：來源驗證比照 TCL_RESOLVE_RES 同等級——只信任「本頁面自己發給
-  // 自己」的訊息（event.source 必須是同一個 window，event.origin 必須等於
+  // 來源驗證比照 TCL_RESOLVE_RES 同等級——只信任「本頁面自己發給自己」的
+  // 訊息（event.source 必須是同一個 window，event.origin 必須等於
   // 本頁面 origin，兩者比照 bridge.js 的同款驗證）。驗證不過或形狀不符的
   // 推播完全忽略，不套用任何部分內容，也不影響既有設定。
   window.addEventListener('message', function (event) {
@@ -156,7 +156,7 @@
   // 一律回傳 Promise<string|null>：成功給乾淨網址字串，任何失敗／逾時給 null，
   // 呼叫端收到 null 就等同「沒解析出來」，走 fail-open 用原始參數放行。
   //
-  // recordOnly(記錄與淨化脫鉤，修正規格):autoClean 關閉時仍要照跑解析管
+  // recordOnly(記錄與淨化脫鉤):autoClean 關閉時仍要照跑解析管
   // 線以便記錄，但剪貼簿不能被改寫，且解析失敗不該用頁內 toast 嚇使用者
   // (使用者的複製動作本身沒壞)。這個布林值原樣夾帶進 TCL_RESOLVE_REQ，
   // 讓 bridge.js 知道這次失敗該走 console.warn 還是既有的頁內 toast，見

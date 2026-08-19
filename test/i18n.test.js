@@ -33,10 +33,6 @@ test('t:查無 key 退回 zh 字典,再退回 key 本身,不丟例外', () => {
   assert.equal(i18n.t('ja', 'ppHistorySettings'), '紀錄與設定');
 });
 
-// 【PM 審查後改用 key，功能移除的必然連動】原本用 bgSuccess({url} 樣板)驗
-// fmt() 的插值行為;bgSuccess 隨成功通知整組拆除(R1)一併清掉，改用同樣帶
-// {url} 樣板、仍存在的失敗類 key bgClipboardError，斷言語意(插值是否正確)
-// 不變，只是換了個仍存活的 key 來驗證同一件事。
 test('fmt:{name} 逐一插值,缺對應值時保留原樣', () => {
   assert.equal(
     i18n.fmt('zh', 'bgClipboardError', { url: 'https://www.threads.com/@x/post/y' }),
@@ -52,8 +48,8 @@ test('字典對齊:zh 與 en 的 key 集合完全一致', () => {
   assert.deepEqual(enKeys, zhKeys, 'zh/en 字典的 key 必須一一對應,不得漏翻');
 });
 
-// 0.4.0 新增:貼文互動列複製 icon(post-icon.js)的淨化紀錄 kind 標籤，
-// options 頁篩選 chip 與紀錄列都靠這個 key 顯示文案。
+// 貼文互動列複製 icon(post-icon.js)的淨化紀錄 kind 標籤，options 頁篩選
+// chip 與紀錄列都靠這個 key 顯示文案。
 test('opKindIcon:zh 與 en 兩份字典皆有此 key，且皆非空字串', () => {
   assert.equal(typeof i18n.STRINGS.zh.opKindIcon, 'string');
   assert.ok(i18n.STRINGS.zh.opKindIcon.length > 0);
@@ -61,11 +57,8 @@ test('opKindIcon:zh 與 en 兩份字典皆有此 key，且皆非空字串', () =
   assert.ok(i18n.STRINGS.en.opKindIcon.length > 0);
 });
 
-// 0.5.0 方案甲(歷史即收藏，撤獨立收藏分頁):options 收藏分頁專用的 8 個
-// 基座 key(favTabLabel/favEmpty/favExport/favImport 等)已隨分頁移除，
-// 互動列書籤 icon 專用的 favIconTooltip/favSaved/favRemoved/favFull 也已
-// 隨 R1(post-icon.js 移除書籤功能)一併清除，字典裡只剩 favContextLost
-// 這顆孤兒提示(移交複製路徑使用)，這裡鎖它的存在性。
+// 字典裡收藏相關的 key 只剩 favContextLost 這顆孤兒提示(移交複製路徑使
+// 用)，其餘 fav* 基座 key 都已隨收藏分頁與書籤功能移除，這裡鎖它的存在性。
 test('favContextLost:zh 與 en 兩份字典皆有此 key，且皆非空字串(孤兒提示，移交複製路徑使用)', () => {
   assert.equal(typeof i18n.STRINGS.zh.favContextLost, 'string');
   assert.ok(i18n.STRINGS.zh.favContextLost.length > 0);
