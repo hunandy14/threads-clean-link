@@ -865,8 +865,12 @@
       // 讓 icon 維持原本的 color:inherit，不丟例外。
       function applyNativeColor(icon, row) {
         try {
-          var nativeSvg = row.querySelector('svg[aria-label]');
-          if (!nativeSvg) return;
+          // 取「最後一顆」原生 icon(分享小飛機)當色樣,不取第一顆——
+          // 第一顆是愛心,按過讚會變紅,取樣到紅色整顆 icon 會跟著紅。
+          // 本函式在插入我們的 icon 之前呼叫,此時列尾必為原生按鈕。
+          var svgs = row.querySelectorAll('svg[aria-label]');
+          if (!svgs.length) return;
+          var nativeSvg = svgs[svgs.length - 1];
           var color = root.getComputedStyle(nativeSvg).color;
           if (color) icon.style.color = color;
         } catch (e) {
