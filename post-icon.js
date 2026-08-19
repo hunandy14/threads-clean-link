@@ -329,8 +329,10 @@
         return isExtensionContextLost(typeof chrome !== 'undefined' ? chrome : null);
       }
 
-      // 孤兒退場:斷開 observer、清掉自己注入的 icon，並讓後續掃描一律短路。
-      // 冪等，重複呼叫安全。
+      // 實例退場:斷開 observer、清掉自己注入的 icon，並讓後續掃描一律短
+      // 路。冪等，重複呼叫安全。兩種呼叫時機:(1)孤兒自檢通過(擴充功能更
+      // 新後 chrome.runtime 失效);(2)冪等交棒——同頁載入的下一個新實例透過
+      // root.__tclPostIconDispose 叫本實例先退場再接手(見 init)。
       function retireOrphanInstance() {
         if (disposed) return;
         disposed = true;
@@ -1284,6 +1286,23 @@
       }
 
       function init() {
+        // 冪等交棒(併發線中2,必須排在最前):同一 ISOLATED world 若已有本腳
+        // 本的舊實例(手動 F5 × 自癒重注入的毫秒級競態,或更新後的重注入),
+        // 先透過 root.__tclPostIconDispose 讓舊實例退場(斷 observer、清掉它
+        // 那批帶舊 OWNER_ATTR 的 icon、後續掃描短路),再由本新實例接手。消除
+        // 「雙 MutationObserver → 雙落盤 → 時間軸假事件」。bridge 是純粹「舊
+        // 的下線、新的接手」;post-icon 因為有 DOM 狀態(icon 節點、observer)
+        // 要乾淨交接,用 retireOrphanInstance 做這件事。首次載入時 hook 尚未
+        // 存在,等同 no-op。
+        if (typeof root.__tclPostIconDispose === 'function') {
+          try {
+            root.__tclPostIconDispose();
+          } catch (e) {
+            // 舊實例退場失敗不影響新實例接手。
+          }
+        }
+        root.__tclPostIconDispose = retireOrphanInstance;
+
         // 自癒重注入的清場(必須排在所有掃描之前):擴充功能更新後，
         // background 會把本腳本重新注入既開的 threads 分頁(見 background.js
         // 的 reinjectIntoOpenTabs)，但頁面上還留著孤兒實例注入的
