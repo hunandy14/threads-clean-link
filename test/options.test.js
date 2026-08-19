@@ -1702,6 +1702,15 @@ test('R7 a11y:關閉鈕/統計磚的 aria-label 改走 data-i18n-aria(不再硬�
   assert.equal(i18n.t('en', 'opStatsAria'), 'Statistics');
 });
 
+// 【PM 追加 純視覺】options 頁首 logo 改用品牌盾牌鏈節 #i-brand(對齊工具列/
+// 商店 PNG)，不再是 sparkles。靜態鎖住 symbol 存在且 topbar logo 引用它。
+test('PM 追加:options 頁首 logo 使用品牌盾牌 #i-brand symbol', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(html, /<symbol id="i-brand"[\s\S]*?<\/symbol>/, '應定義 #i-brand symbol');
+  assert.match(html, /class="logo"><svg class="icon"><use href="#i-brand"/, 'topbar logo 應引用 #i-brand');
+  assert.match(html, /fill="#e2925e"/, '#i-brand 應含品牌橘盾色(固定雙色，不跟 currentColor)');
+});
+
 // 詳細視窗照手機版:淨化後連結列——不論有沒有 author/excerpt 預覽都固定
 // 顯示，值經 formatDisplayUrl 顯示正規路徑(@handle/post/ID)，不是完整
 // 網址(UI 全面對齊手機任務 work item 5，authored update:上一輪詳細視窗
