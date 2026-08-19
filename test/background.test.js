@@ -46,21 +46,89 @@ function makeChrome() {
 const SHARE_URL_WEIRD_HANDLE = 'https://www.threads.com/share/WEIRDHANDLE';
 const WEIRD_HANDLE_FINAL_URL = 'https://www.threads.com/@weird~handle/post/AbC123';
 
+// OG 案(解析路徑摘要升級):不含任何 og 標籤的最小 HTML，供不關心 og 擷
+// 取的既有測試當作 response.text() 的預設回傳值——resolveFinalUrl 改讀
+// response.text() 之後，mock response 一律要有 .text()，否則會落入
+// extractOgFields 的容錯分支(console.error + ogFields 保持 {})，雖然
+// 不影響既有斷言(og 欄位缺席時 mergeOgIntoFields 的行為等同修正前)，但
+// 測試輸出會多噪音，這裡統一補上。
+const NO_OG_HTML = '<html><head></head><body></body></html>';
+
+function fetchResult(url, text) {
+  return { url, text: async () => (text !== undefined ? text : NO_OG_HTML) };
+}
+
+// OG 案:自建 sandbox 用於測 og 擷取/合併/快取橋接，不透過共用的
+// loadBackgroundWithSettings(該函式的 fetch mock 是固定案例，不適合逐
+// 一加測不同 HTML 內容)。fetch 對固定的 shareUrl 回傳可自訂的 finalUrl
+// 與 HTML 內容；回傳值同時支援 menu 路徑(click)與自動路徑
+// (sendResolveShare + sendCleanedNotice)兩種呼叫方式，涵蓋 og 快取橋接
+// (resolveShare 快取 → cleanedNotice 撈出合併)需要的完整往返。
+const OG_SHARE_URL = 'https://www.threads.com/share/OGTEST';
+const OG_FINAL_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
+
+function loadBackgroundWithOgHtml(html, opts = {}) {
+  const chrome = makeChrome();
+  const storage = createChromeStorage({ saveHistory: true });
+  const executeScriptCalls = [];
+  const onClickedListeners = [];
+  const onMessageListeners = [];
+  const state = { clipboardOk: opts.clipboardOk !== false };
+  chrome.contextMenus.onClicked.addListener = (fn) => onClickedListeners.push(fn);
+  chrome.runtime.onMessage.addListener = (fn) => onMessageListeners.push(fn);
+  chrome.scripting = {
+    executeScript: async (arg) => {
+      executeScriptCalls.push(arg);
+      return [{ result: state.clipboardOk ? { ok: true } : { ok: false, reason: 'NotAllowedError' } }];
+    },
+  };
+  chrome.storage = storage.api;
+  const fetchCalls = [];
+  const finalUrl = opts.finalUrl || OG_FINAL_URL;
+  const shareUrl = opts.shareUrl || OG_SHARE_URL;
+  const fetchImpl = async (url) => {
+    fetchCalls.push(url);
+    if (url === shareUrl) return fetchResult(finalUrl, html);
+    throw new Error('unexpected fetch: ' + url);
+  };
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams });
+
+  return {
+    storage,
+    executeScriptCalls,
+    fetchCalls,
+    click(info, tab) {
+      onClickedListeners[0](info, tab);
+    },
+    // 模擬 bridge.js 經 chrome.runtime.sendMessage 對 resolveShare 監聽
+    // 器發送請求，並等待回應(callback 形式)。
+    sendResolveShare(message) {
+      return new Promise((resolve) => {
+        onMessageListeners.slice().forEach((fn) => fn(message, {}, resolve));
+      });
+    },
+    // 模擬 bridge.js 轉發 cleanedNotice，不需要回應。
+    sendCleanedNotice(message) {
+      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+    },
+  };
+}
+
 // 依 url 回傳固定的 fetch 結果，模擬短連結解析伺服器的轉址行為。
 function makeFetch(calls) {
   return async (url) => {
     calls.push(url);
     if (url === SHARE_URL) {
-      return { url: `${CLEAN_POST_URL}?xmt=AQGabc`, body: { cancel: async () => {} } };
+      return fetchResult(`${CLEAN_POST_URL}?xmt=AQGabc`);
     }
     if (url === 'https://www.threads.com/share/NETWORKFAIL') {
       throw new Error('network down');
     }
     if (url === 'https://www.threads.com/share/NOTAPOST') {
-      return { url: 'https://www.threads.com/login', body: { cancel: async () => {} } };
+      return fetchResult('https://www.threads.com/login');
     }
     if (url === SHARE_URL_WEIRD_HANDLE) {
-      return { url: WEIRD_HANDLE_FINAL_URL, body: { cancel: async () => {} } };
+      return fetchResult(WEIRD_HANDLE_FINAL_URL);
     }
     throw new Error('unexpected fetch: ' + url);
   };
@@ -152,7 +220,7 @@ test('轉址結果不是貼文網址時，回傳 ok:false 與 reason:format-erro
 function makeAlwaysSucceedFetch(calls) {
   return async (url) => {
     calls.push(url);
-    return { url: `${CLEAN_POST_URL}?xmt=AQGabc`, body: { cancel: async () => {} } };
+    return fetchResult(`${CLEAN_POST_URL}?xmt=AQGabc`);
   };
 }
 
@@ -1004,6 +1072,319 @@ test('紀錄:右鍵路徑(menu)自身算出 original(短碼連結)與 removedPar
   assert.equal(history[0].removedParams[0].value, 'AQGabc');
 });
 
+// ============================================================
+// OG 案(解析路徑摘要升級，使用者拍板混合制):短碼解析路徑(share 與右
+// 鍵路徑共用的 resolveFinalUrl)順手從同一個 response 擷取 og:description
+// (excerpt 全文)／og:title(拆 author/handle)，經 sanitize 後以「og 有
+// 值就蓋過 DOM 版、handle 仍以 DOM/URL 為準」的混合制流入
+// recordHistory 的 extra。PM 追加修訂(查證手機 hunandy14/meta-link-clearer
+// 的 src/lib/post-meta.ts 後裁決，手機因為不做 DOM 擷取而沒有這個問
+// 題):web DOM 抓到的「作者」實為 username，是錯值不是缺席，og 解析出
+// 的顯示名稱優先蓋過；重複值(author === handle 去掉開頭 @)一律視同
+// author 缺席。
+// ============================================================
+
+test('OG 案:右鍵路徑(menu)從 og:title/og:description 抽出 author/handle/excerpt', async () => {
+  const html =
+    '<html><head>' +
+    '<meta property="og:title" content="かえで (@kaede.hong) on Threads" />' +
+    '<meta property="og:description" content="今天天氣真好，適合出門走走。" />' +
+    '</head><body></body></html>';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author, 'かえで');
+  assert.equal(history[0].handle, '@kaede.hong');
+  assert.equal(history[0].excerpt, '今天天氣真好，適合出門走走。');
+});
+
+test('OG 案:content 在 property 之前的屬性順序也解析得到(對齊手機版同款測試)', async () => {
+  const html = '<meta content="阿明 (@a_ming) on Threads" property="og:title" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, '阿明');
+  assert.equal(history[0].handle, '@a_ming');
+});
+
+test('OG 案:og:title 不含 (@handle) 形狀時，整串當作者名並去掉 on Threads 尾綴，不解析 handle(對齊手機版)', async () => {
+  const html = '<meta property="og:title" content="Some Page on Threads" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, 'Some Page');
+  assert.equal('handle' in history[0], false);
+});
+
+test('OG 案:HTML entity 解碼——十進位(&#65292; 全形逗號)、hex(&#x5b8b; 中日文)、amp/lt/gt/quot 皆正確還原', async () => {
+  const html =
+    '<meta property="og:title" content="&#x5b8b;&#x9577;&#x537f; (@sample_x) on Threads" />' +
+    '<meta property="og:description" content="今天路過巷口那間老茶行&#65292;想起小時候 &amp; &lt;tag&gt; &quot;quote&quot;" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, '宋長卿');
+  assert.equal(history[0].handle, '@sample_x');
+  assert.equal(history[0].excerpt, '今天路過巷口那間老茶行，想起小時候 & <tag> "quote"');
+});
+
+// 惡意輸入案例:og:description 帶 &lt;script&gt; 這類會讓人聯想到 HTML
+// 注入的內容，解碼後應該就是純文字字面值 "<script>...</script>"，不得
+// 被當成可執行的 HTML 標籤——這裡只驗證入庫的是字面字串本身，下游
+// options.js 一律用 textContent 渲染(不是 innerHTML)，純文字字串本來
+// 就不會被瀏覽器解讀為標籤。
+test('OG 案:entity 惡意輸入(&lt;script&gt;)解碼後仍為純文字入庫，不是可執行 HTML', async () => {
+  const html = '<meta property="og:description" content="&lt;script&gt;alert(1)&lt;/script&gt;" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].excerpt, '<script>alert(1)</script>');
+  assert.equal(typeof history[0].excerpt, 'string');
+});
+
+test('OG 案:掃描長度上限(64KB)——og meta 標籤位於掃描範圍之外時擷取不到，缺席回退(不硬造)', async () => {
+  const padding = 'x'.repeat(70000); // 超過 OG_SCAN_LIMIT(65536)
+  const html = `<html><head><!--${padding}--><meta property="og:description" content="超出掃描範圍的內文" /></head></html>`;
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '擷取不到 og 資訊不影響解析本身，剪貼簿複製與紀錄照常完成');
+  assert.equal('excerpt' in history[0], false, '超出掃描範圍的 og 內容不得被找到，缺席就是缺席、不硬造');
+});
+
+// 對照組:og meta 標籤在掃描範圍「之內」時，即使前面有大量填充內容，仍
+// 應正確擷取——確認掃描上限不是「整份 HTML 都不掃」的假動作。
+test('OG 案:掃描長度上限對照組——og meta 標籤在 64KB 範圍內時正常擷取', async () => {
+  const padding = 'x'.repeat(1000); // 遠小於 OG_SCAN_LIMIT
+  const html = `<html><head><!--${padding}--><meta property="og:description" content="範圍內的內文" /></head></html>`;
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].excerpt, '範圍內的內文');
+});
+
+// code review 修正(FAIL 打回，回歸釘子):mergeOgIntoFields 的合併結果先
+// 前沒有再過 sanitizeHistoryField，og 來源的 excerpt/author 可能繞過
+// HISTORY_EXCERPT_MAX/HISTORY_AUTHOR_MAX 直通入庫(og:content 屬性值本
+// 身沒有長度上限，extractOgMeta 的 [^"]* 會整段吃下來)。這裡的內容長度
+// (超過 2000/100)與 OG_SCAN_LIMIT(64KB 的正則掃描範圍)是兩件不同的
+// 事:內容本身遠小於 64KB，不會落入掃描長度上限那條防線，只有落地前的
+// sanitizeHistoryField 這一關能擋下來。
+
+test('OG 案:og:description 超過 2000 字時截斷至 2000(code review 回歸釘子)', async () => {
+  const longExcerpt = 'あ'.repeat(3000);
+  const html = `<meta property="og:description" content="${longExcerpt}" />`;
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].excerpt.length, 2000, 'og:description 超過長度上限應截斷至 2000 字，不得繞過');
+});
+
+test('OG 案:og:title 解析出的顯示名稱超過 100 字時截斷至 100(code review 回歸釘子)', async () => {
+  const longName = 'a'.repeat(150);
+  const html = `<meta property="og:title" content="${longName} (@short_handle) on Threads" />`;
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author.length, 100, 'og:title 解析出的顯示名稱超過長度上限應截斷至 100 字，不得繞過');
+  assert.equal(history[0].handle, '@short_handle', 'handle 本身不受影響，仍照常寫入');
+});
+
+test('OG 案:沒有任何 og 欄位時，右鍵路徑不寫入 author/handle/excerpt(缺席回退)', async () => {
+  const bg = loadBackgroundWithOgHtml(NO_OG_HTML);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '擷取不到 og 資訊不影響複製與紀錄本身');
+  assert.equal('author' in history[0], false);
+  assert.equal('handle' in history[0], false);
+  assert.equal('excerpt' in history[0], false);
+});
+
+// 優先序:share 路徑(guard/bridge 自動路徑)——og:title 解析出的顯示名
+// 稱覆蓋 DOM 版 author(DOM 版通常其實是 username，是錯值)；handle 仍以
+// DOM/URL 擷取版為準，og 版不覆蓋；excerpt 以 og 版(全文)覆蓋 DOM 版
+// (通常是截斷版)。透過 og 快取橋接:先送 resolveShare(觸發
+// resolveFinalUrl 擷取並快取 og 資訊)，再送 cleanedNotice(帶 DOM 版
+// author/handle/excerpt)，驗證 handleCleanedNotice 把兩者正確合併。
+test('OG 案:share 路徑合併優先序——author 被 og 覆蓋、handle 維持 DOM 版、excerpt 被 og(全文)覆蓋', async () => {
+  const html =
+    '<meta property="og:title" content="真實顯示名稱 (@real_handle) on Threads" />' +
+    '<meta property="og:description" content="這是完整未截斷的貼文全文內容。" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  const resolveResponse = await bg.sendResolveShare({ type: 'resolveShare', url: OG_SHARE_URL });
+  assert.equal(resolveResponse.ok, true);
+  assert.equal(resolveResponse.cleanUrl, OG_FINAL_URL);
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: OG_FINAL_URL,
+    kind: 'share',
+    author: 'dom_username', // web DOM 抓到的「作者」其實是 username
+    handle: '@dom_username',
+    excerpt: '這是被 DOM 顯示層截斷的內文…',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].author, '真實顯示名稱', 'author 應被 og:title 解析出的顯示名稱覆蓋');
+  assert.equal(history[0].handle, '@dom_username', 'handle 仍應維持 DOM/URL 擷取版，og 版不覆蓋');
+  assert.equal(history[0].excerpt, '這是完整未截斷的貼文全文內容。', 'excerpt 應被 og 版(全文)覆蓋');
+});
+
+// 優先序:og 缺席時完全維持 DOM 版(og 只補位/覆蓋，不會把 DOM 版清空)。
+test('OG 案:share 路徑 og 缺席時，完全維持 DOM 版 author/handle/excerpt', async () => {
+  const bg = loadBackgroundWithOgHtml(NO_OG_HTML);
+
+  await bg.sendResolveShare({ type: 'resolveShare', url: OG_SHARE_URL });
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: OG_FINAL_URL,
+    kind: 'share',
+    author: 'dom_author',
+    handle: '@dom_handle',
+    excerpt: 'dom excerpt',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, 'dom_author');
+  assert.equal(history[0].handle, '@dom_handle');
+  assert.equal(history[0].excerpt, 'dom excerpt');
+});
+
+// 優先序:handle 在 DOM 版缺席時，og 版補位(不是「DOM 有值才生效」，是
+// 「DOM 沒有才輪到 og」)。
+test('OG 案:share 路徑 DOM 版 handle 缺席時，og 版補位', async () => {
+  const html = '<meta property="og:title" content="真實顯示名稱 (@og_handle) on Threads" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  await bg.sendResolveShare({ type: 'resolveShare', url: OG_SHARE_URL });
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: OG_FINAL_URL,
+    kind: 'strip', // strip 路徑不會觸發 resolveShare，但這裡刻意測試「若剛好有快取」的補位行為與 kind 無關
+    excerpt: 'dom excerpt',
+    // 刻意不帶 author/handle，模擬 DOM 完全沒抓到的情況。
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, '真實顯示名稱');
+  assert.equal(history[0].handle, '@og_handle', 'DOM 版缺席時 og 版應補位');
+});
+
+// 重複值防禦:DOM 版 author 與 handle(去掉開頭 @)相同時(web DOM 抓到的
+// 「作者」實為 username 的典型症狀)，且沒有 og 資訊可覆蓋，author 應視
+// 同缺席，不落重複值。
+test('OG 案:重複值防禦——DOM 版 author 與 handle(去掉 @)相同、且無 og 可覆蓋時，author 視同缺席', async () => {
+  const bg = loadBackgroundWithOgHtml(NO_OG_HTML);
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: CLEAN_POST_URL,
+    kind: 'icon', // icon 路徑，從不觸發 resolveShare，og 快取恆為空
+    author: 'dupe_user',
+    handle: '@dupe_user',
+    excerpt: 'some excerpt',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal('author' in history[0], false, 'author 與 handle 重複時應視同缺席，不存重複值');
+  assert.equal(history[0].handle, '@dupe_user', 'handle 本身不受影響，仍照常寫入');
+  assert.equal(history[0].excerpt, 'some excerpt');
+});
+
+// 重複值防禦對照組:author 與 handle 不同時，兩者都應正常保留(排除「一
+// 律清空 author」的假動作)。
+test('OG 案:重複值防禦對照組——author 與 handle 不同時，兩者皆正常保留', async () => {
+  const bg = loadBackgroundWithOgHtml(NO_OG_HTML);
+
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: CLEAN_POST_URL,
+    kind: 'icon',
+    author: '真實顯示名稱',
+    handle: '@some_handle',
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history[0].author, '真實顯示名稱');
+  assert.equal(history[0].handle, '@some_handle');
+});
+
+// 重複值防禦:og 覆蓋後與 handle 仍相同的邊角情況(og:title 只有帳號名、
+// 沒有真正的顯示名稱)，一樣要套用防禦，不因為來源是 og 就放行。
+test('OG 案:重複值防禦亦適用於 og 覆蓋後的結果(og:title 解析出的名稱恰好與 handle 相同)', async () => {
+  const html = '<meta property="og:title" content="dupe_user (@dupe_user) on Threads" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  bg.click({ linkUrl: OG_SHARE_URL }, { id: 7 });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal('author' in history[0], false, 'og 覆蓋後若仍與 handle 重複，一樣視同缺席');
+  assert.equal(history[0].handle, '@dupe_user');
+});
+
+test('OG 案:og 快取以 cleanUrl 為鍵，不同網址互不污染', async () => {
+  const html = '<meta property="og:title" content="甲使用者 (@user_a) on Threads" />';
+  const bg = loadBackgroundWithOgHtml(html);
+
+  await bg.sendResolveShare({ type: 'resolveShare', url: OG_SHARE_URL });
+
+  // 對另一個從未呼叫過 resolveShare 的網址送 cleanedNotice，快取裡沒有
+  // 它的資料，不該誤撈到剛剛甲網址快取的 og 資訊。
+  const otherUrl = 'https://www.threads.com/@other/post/OtherPost';
+  bg.sendCleanedNotice({
+    type: 'cleanedNotice',
+    cleanUrl: otherUrl,
+    kind: 'icon',
+    author: 'dom_author',
+    handle: '@dom_handle',
+  });
+  await settle();
+
+  const otherEntry = bg.storage.localSnapshot().history.find((e) => e.url === otherUrl);
+  assert.equal(otherEntry.author, 'dom_author', '沒有對應快取時不得誤用其他網址的 og 資訊');
+  assert.equal(otherEntry.handle, '@dom_handle');
+});
+
 // code review #5(url 樣式統一):extractCleanPostUrl 用的
 // CLEAN_POST_URL_PATTERN 刻意寬鬆(排除法字元類、無長度上限)，只用來從
 // 轉址結果「截」出前段乾淨網址;寫入 history 前要再過一次全 repo 單一
@@ -1062,7 +1443,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
     chrome.tabs = { TAB_ID_NONE: -1 };
     chrome.storage = storage.api;
     const fetchImpl = async (url) => {
-      if (url === shareUrl) return { url: finalUrl, body: { cancel: async () => {} } };
+      if (url === shareUrl) return fetchResult(finalUrl);
       throw new Error('unexpected fetch: ' + url);
     };
     runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams });

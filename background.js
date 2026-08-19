@@ -178,9 +178,11 @@ async function handleShareLinkClick(info, tab) {
     return;
   }
 
-  let finalUrl;
+  let finalUrl, ogFields;
   try {
-    finalUrl = await resolveFinalUrl(shareUrl);
+    const resolved = await resolveFinalUrl(shareUrl);
+    finalUrl = resolved.finalUrl;
+    ogFields = resolved.ogFields;
   } catch (err) {
     console.error('[threads-clean-link] 解析短連結失敗', err);
     notifyByKey('threads-clean-link-network-error', 'bgNetworkError');
@@ -216,7 +218,7 @@ async function handleShareLinkClick(info, tab) {
   // 到的內容不該不經檢查就流進 history);不符合就只略過記錄
   // (console.warn)，不影響已經完成的剪貼簿複製。
   if (POST_URL_PATTERN.test(cleanUrl)) {
-    await recordHistory(cleanUrl, 'menu', buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl));
+    await recordHistory(cleanUrl, 'menu', buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl, ogFields));
   } else {
     console.warn(
       '[threads-clean-link] 右鍵路徑解析出的網址不符嚴格白名單樣式，略過記錄(不影響已複製到剪貼簿的內容)',
@@ -229,12 +231,23 @@ async function handleShareLinkClick(info, tab) {
 // 右鍵點擊的短碼連結)與 removedParams(finalUrl 淨化前後的查詢參數差
 // 集)background 自身就有，sanitize 規則與 extractHistoryExtraFields
 // (自動路徑)共用同一組函式(sanitizeOriginalField/sanitizeRemovedParams)。
-function buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl) {
+// author/handle/excerpt:右鍵路徑不經 guard/bridge，沒有任何 DOM 擷取
+// 來源可用，og 資訊(resolveFinalUrl 同一個 response 順手擷取)是這條路
+// 徑的唯一來源——existing 傳空物件，merge 規則等同「og 有什麼就收下什
+// 麼」(見 mergeOgIntoFields 註解)。
+function buildMenuHistoryExtra(shareUrl, finalUrl, cleanUrl, ogFields) {
   const extra = {};
   const original = sanitizeOriginalField(shareUrl, HISTORY_ORIGINAL_MAX, cleanUrl);
   if (original !== undefined) extra.original = original;
   const removedParams = sanitizeRemovedParams(diffRemovedParams(finalUrl, cleanUrl));
   if (removedParams !== undefined) extra.removedParams = removedParams;
+
+  // code review 修正(FAIL 打回):理由同 extractHistoryExtraFields，見
+  // sanitizeOgFields 註解。
+  const merged = sanitizeOgFields(mergeOgIntoFields({}, ogFields));
+  if (merged.author !== undefined) extra.author = merged.author;
+  if (merged.handle !== undefined) extra.handle = merged.handle;
+  if (merged.excerpt !== undefined) extra.excerpt = merged.excerpt;
   return extra;
 }
 
@@ -286,15 +299,28 @@ async function handleCleanedNotice(message) {
 // 丟棄(不寫進回傳物件，而非寫入 undefined/空字串)，字串則截斷至各自長
 // 度上限。回傳值直接可以 Object.assign 進 history 條目(見 recordHistory)。
 // url 參數是本次寫入的乾淨網址，供 sanitizeOriginalField 判斷 original
-// 是否與 cleaned 相同(相同就不存)。
+// 是否與 cleaned 相同(相同就不存)，也用來查 og 快取(見下方)。
 function extractHistoryExtraFields(message, url) {
   const extra = {};
-  const author = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
-  if (author !== undefined) extra.author = author;
-  const handle = sanitizeHistoryField(message && message.handle, HISTORY_AUTHOR_MAX);
-  if (handle !== undefined) extra.handle = handle;
-  const excerpt = sanitizeHistoryField(message && message.excerpt, HISTORY_EXCERPT_MAX);
-  if (excerpt !== undefined) extra.excerpt = excerpt;
+  const domAuthor = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
+  const domHandle = sanitizeHistoryField(message && message.handle, HISTORY_AUTHOR_MAX);
+  const domExcerpt = sanitizeHistoryField(message && message.excerpt, HISTORY_EXCERPT_MAX);
+
+  // share 路徑若剛好有 resolveShare 階段快取到的 og 資訊(見
+  // handleResolveShareMessage／cacheOgFields)，在這裡撈出來合併；
+  // strip/icon 兩條 kind 從未觸發過 resolveShare，這個 cleanUrl 對應不
+  // 到任何快取條目，takeOgFields 恆回傳 null，merge 結果自然等同「維持
+  // DOM 版」，不影響既有行為。
+  const ogFields = takeOgFields(url);
+  // code review 修正(FAIL 打回):merge 結果不能直接信任，統一再過一次
+  // sanitizeOgFields(見該函式註解)，才寫進 extra。
+  const merged = sanitizeOgFields(
+    mergeOgIntoFields({ author: domAuthor, handle: domHandle, excerpt: domExcerpt }, ogFields)
+  );
+  if (merged.author !== undefined) extra.author = merged.author;
+  if (merged.handle !== undefined) extra.handle = merged.handle;
+  if (merged.excerpt !== undefined) extra.excerpt = merged.excerpt;
+
   const original = sanitizeOriginalField(message && message.original, HISTORY_ORIGINAL_MAX, url);
   if (original !== undefined) extra.original = original;
   const removedParams = sanitizeRemovedParams(message && message.removedParams);
@@ -365,6 +391,205 @@ function diffRemovedParams(before, after) {
   } catch (err) {
     return [];
   }
+}
+
+// ---- og:description/og:title 擷取(解析路徑摘要升級，使用者拍板混合
+// 制)。實測 threads 貼文頁的 og:description 是全文且連結完整(DOM 顯示
+// 層才截斷);og:title 形如「かえで (@kaede.hong) on Threads」。短碼解析
+// 路徑(resolveFinalUrl，share 與右鍵路徑共用)本來就 fetch 貼文頁，同一
+// response 順手撈，零額外請求。SW 沒有 DOMParser，自行用 regex 抽取 +
+// HTML entity 解碼，規則對齊手機版 hunandy14/meta-link-clearer 的
+// src/lib/post-meta.ts(ogContent／decodeHtmlEntities／
+// parsePostMetaFromHtml 的 Threads 分支，gh api 讀取確認)，額外加上掃描
+// 長度上限防 ReDoS(手機版沒有這道防線，是本檔案在 SW 環境下的加固)。----
+
+// 掃描長度上限:只在 HTML 前段找 og meta 標籤(通常在 <head>，離文件開頭
+// 很近)，避免對整份頁面(可能數百 KB)全文跑正則。
+const OG_SCAN_LIMIT = 65536;
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 從 HTML 文字擷取 <meta property="og:xxx" content="..."> 的 content 屬
+// 性值，property 可能在 content 之前或之後(不同頁面產生器順序不一定)，
+// 兩種順序都要能比對到。找不到回傳 null。正則沿用手機版 post-meta.ts 的
+// ogContent 寫法，只多了掃描長度上限這一層(見上方常數註解)。
+function extractOgMeta(html, property) {
+  if (typeof html !== 'string' || !html) return null;
+  const scanText = html.slice(0, OG_SCAN_LIMIT);
+  const escaped = escapeRegExp(property);
+  const re1 = new RegExp(`<meta[^>]+property="${escaped}"[^>]+content="([^"]*)"`, 'i');
+  const re2 = new RegExp(`<meta[^>]+content="([^"]*)"[^>]+property="${escaped}"`, 'i');
+  const match = re1.exec(scanText) || re2.exec(scanText);
+  return match ? decodeHtmlEntities(match[1]) : null;
+}
+
+// 極簡 HTML entity 解碼，只處理 og:content 屬性值裡實際會出現的子集(SW
+// 沒有 DOMParser，不用瀏覽器原生解碼器)。規則與順序照抄手機版
+// post-meta.ts 的 decodeHtmlEntities(依序 amp/lt/gt/quot/#39/hex/十進
+// 位，鏈式 replace)。解碼後的純文字只會流入 textContent 類的 sink(下游
+// options.js 卡片渲染皆為 textContent，不是 innerHTML)，不得再進任何
+// HTML sink——這裡的解碼純粹是把屬性值裡的逸出字元還原成使用者看得懂
+// 的原文字元，不是要重新產生可執行的 HTML。
+function decodeHtmlEntities(value) {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (m, hex) => {
+      try {
+        return String.fromCodePoint(parseInt(hex, 16));
+      } catch (e) {
+        return m;
+      }
+    })
+    .replace(/&#(\d+);/g, (m, code) => {
+      try {
+        return String.fromCodePoint(Number(code));
+      } catch (e) {
+        return m;
+      }
+    });
+}
+
+// og:title 常見樣式:「顯示名稱 (@handle) on Threads」。比對規則照抄手
+// 機版 post-meta.ts 的 Threads 分支:非貪婪抓第一組「(@handle)」前的文
+// 字當顯示名稱，不要求整串以「on Threads」結尾——顯示名稱本身含括號、
+// @ 等邊角字元不影響，因為比對的是「第一個」(@…)出現的位置，不是整段
+// 字串的格式。抓不到 (@handle) 形狀時，整串當顯示名稱、只去掉結尾的
+// 「 on Threads」尾綴，不解析 handle(手機版同一套邏輯，涵蓋粉專等
+// og:title 沒有帳號形狀的情況)。回傳 { author?, handle? }(handle 補回
+// 開頭的 @，對齊本檔既有的 handle 儲存格式——手機版儲存不含 @，於渲染
+// 層補上，本檔案渲染層直接吃已含 @ 的 handle，見 options.js)，皆缺席時
+// 回傳 null。
+function parseOgTitle(ogTitle) {
+  if (typeof ogTitle !== 'string' || !ogTitle) return null;
+  const trimmed = ogTitle.trim();
+  const match = /^(.*?)\s*\(@([^)]+)\)/.exec(trimmed);
+  if (match) {
+    const author = match[1].trim();
+    const handle = match[2].trim();
+    const result = {};
+    if (author) result.author = author;
+    if (handle) result.handle = '@' + handle;
+    return result.author || result.handle ? result : null;
+  }
+  const fallbackAuthor = trimmed.replace(/\s+on Threads$/i, '').trim();
+  return fallbackAuthor ? { author: fallbackAuthor } : null;
+}
+
+// 從貼文頁 HTML 一次擷取 og:description(excerpt)與 og:title(拆
+// author/handle)，擷取不到的欄位就缺席、不硬造。回傳值尚未經長度上限
+// sanitize，呼叫端(resolveFinalUrl)統一過 sanitizeOgFields。
+function extractOgFields(html) {
+  const result = {};
+  const description = extractOgMeta(html, 'og:description');
+  if (description) result.excerpt = description;
+  const title = extractOgMeta(html, 'og:title');
+  const parsedTitle = title ? parseOgTitle(title) : null;
+  if (parsedTitle) {
+    if (parsedTitle.author !== undefined) result.author = parsedTitle.author;
+    if (parsedTitle.handle !== undefined) result.handle = parsedTitle.handle;
+  }
+  return result;
+}
+
+// { author?, handle?, excerpt? } 形狀的三欄統一過長度上限，規則與既有
+// author/handle/excerpt 完全一致(沿用 sanitizeHistoryField)。兩種輸入
+// 都會經過這裡:
+//   1. resolveFinalUrl 擷取到的原始 og 資訊(extractOgFields 的回傳
+//      值)，讓兩條呼叫路徑(menu 直接用、share 路徑經 og 快取轉一手)都
+//      拿到同一份已經處理過的資料，不必各自重覆寫一次 sanitize。
+//   2. code review 修正(FAIL 打回，成因:mergeOgIntoFields 的合併結果
+//      沒有再過 sanitizeHistoryField，og 來源的 excerpt/author 可能繞
+//      過長度上限直通入庫)：mergeOgIntoFields 只負責「挑值 + 去重比
+//      對」，不保證輸出仍在長度上限內——它的兩個輸入理論上都已經各自
+//      sanitize 過，但函式本身沒有自我保證，屬於「相信呼叫端」的隱性
+//      假設，任何一處疏漏都會讓超長字串直通入庫。extractHistoryExtraFields
+//      與 buildMenuHistoryExtra 呼叫 mergeOgIntoFields 後，統一再把結
+//      果丟回這裡過一次同一把尺——順序是「先在 mergeOgIntoFields 內完
+//      成 author===handle 去重比對，這裡才截斷」，避免截斷影響去重判
+//      斷的正確性。
+function sanitizeOgFields(rawOgFields) {
+  const out = {};
+  const excerpt = sanitizeHistoryField(rawOgFields && rawOgFields.excerpt, HISTORY_EXCERPT_MAX);
+  if (excerpt !== undefined) out.excerpt = excerpt;
+  const author = sanitizeHistoryField(rawOgFields && rawOgFields.author, HISTORY_AUTHOR_MAX);
+  if (author !== undefined) out.author = author;
+  const handle = sanitizeHistoryField(rawOgFields && rawOgFields.handle, HISTORY_AUTHOR_MAX);
+  if (handle !== undefined) out.handle = handle;
+  return out;
+}
+
+// og 資訊與既有欄位(DOM 擷取或缺席)的合併規則。使用者拍板混合制，PM
+// 追查手機實作(gh api 讀 src/lib/post-meta.ts 確認手機沒有這個問題:
+// 手機從不做 DOM 擷取，一律靠 og:title 解析，不存在「DOM 版作者其實是
+// username」這個本檔案獨有的資料品質問題，故手機端無對應防禦可抄，以下
+// 為本檔案針對此問題的裁決)後追加修訂:web DOM 抓到的「作者」實為
+// username——與 handle 同源、是錯值不是缺席，og:title 解析出的顯示名稱
+// 優先蓋過，不是「新值優先、缺席才沿用」這種對等合併:
+//   - excerpt:og 版是全文(DOM 顯示層才截斷)，og 有值就蓋過既有版本;
+//     og 缺席才維持既有版本。
+//   - author:og 有解析出來就一定蓋過既有版本(既有的 DOM 版本本身就不
+//     可信);og 缺席才維持既有版本。
+//   - handle:反過來，DOM/URL 擷取的 handle 才是可靠來源，既有版本有值
+//     就維持，og 版只在既有版本缺席時補位。
+//   - 重複值防禦:合併後若 author 與 handle(去掉開頭 @ 比較)相同，視
+//     同 author 缺席、不存重複值——通常是 og 解析也失敗、退回到與 DOM
+//     版一樣的窘境(或 og:title 本身就只有帳號名沒有顯示名稱)。
+function mergeOgIntoFields(existing, ogFields) {
+  const hasOg = ogFields && typeof ogFields === 'object';
+  let author = hasOg && ogFields.author !== undefined ? ogFields.author : existing.author;
+  const handle = existing.handle !== undefined ? existing.handle : hasOg && ogFields.handle;
+  const excerpt = hasOg && ogFields.excerpt !== undefined ? ogFields.excerpt : existing.excerpt;
+
+  const normalizedHandle = typeof handle === 'string' ? handle.replace(/^@/, '') : handle;
+  if (author !== undefined && author === normalizedHandle) {
+    author = undefined;
+  }
+
+  const result = {};
+  if (author !== undefined) result.author = author;
+  if (handle) result.handle = handle;
+  if (excerpt !== undefined) result.excerpt = excerpt;
+  return result;
+}
+
+// og 資料橋接快取(share 路徑專用):resolveShare(handleResolveShareMessage)
+// 解析短碼時已經拿到 og 資訊，但 share 路徑實際的 recordHistory 要等
+// guard 之後另外送來的 cleanedNotice(見 handleCleanedNotice)才會發生
+// ——兩者是不同時間點的訊息，用一個以 cleanUrl 為 key 的小快取橋接。用
+// 過即丟(同一 cleanUrl 短時間內只消費一次，避免累積後被不相關的後續記
+// 錄事件誤用);上限與 TTL 防止使用者複製後遲遲不觸發 cleanedNotice 時
+// 無限累積或用到過期資料。menu 路徑不經這個快取，resolveFinalUrl 的回
+// 傳值直接同步使用。
+const OG_CACHE_MAX = 20;
+const OG_CACHE_TTL_MS = 60 * 1000;
+const ogFieldsCache = new Map();
+
+function cacheOgFields(cleanUrl, ogFields) {
+  if (
+    !ogFields ||
+    (ogFields.excerpt === undefined && ogFields.author === undefined && ogFields.handle === undefined)
+  ) {
+    return;
+  }
+  ogFieldsCache.set(cleanUrl, { at: Date.now(), ogFields });
+  if (ogFieldsCache.size > OG_CACHE_MAX) {
+    const oldestKey = ogFieldsCache.keys().next().value;
+    ogFieldsCache.delete(oldestKey);
+  }
+}
+
+function takeOgFields(cleanUrl) {
+  const entry = ogFieldsCache.get(cleanUrl);
+  if (!entry) return null;
+  ogFieldsCache.delete(cleanUrl);
+  if (Date.now() - entry.at > OG_CACHE_TTL_MS) return null;
+  return entry.ogFields;
 }
 
 // ---- 紀錄去重合併(語意對齊手機版 hunandy14/meta-link-clearer 的
@@ -550,9 +775,11 @@ async function handleResolveShareMessage(message) {
     return { ok: false, reason: 'invalid-url' };
   }
 
-  let finalUrl;
+  let finalUrl, ogFields;
   try {
-    finalUrl = await resolveFinalUrl(shareUrl);
+    const resolved = await resolveFinalUrl(shareUrl);
+    finalUrl = resolved.finalUrl;
+    ogFields = resolved.ogFields;
   } catch (err) {
     console.error('[threads-clean-link] (bridge) 解析短連結失敗', err);
     return { ok: false, reason: 'network-error' };
@@ -563,12 +790,20 @@ async function handleResolveShareMessage(message) {
     return { ok: false, reason: 'format-error' };
   }
 
+  // og 資訊透過快取橋接到之後才會抵達的 cleanedNotice(見
+  // handleCleanedNotice／takeOgFields)，這條訊息通道的回應形狀不變，不
+  // 需要多帶欄位、也不需要改動 guard/bridge 的訊息協定。
+  cacheOgFields(cleanUrl, ogFields);
+
   return { ok: true, cleanUrl };
 }
 
 // 對短連結發一次匿名(不帶 cookie)請求並跟隨轉址，只取最終網址。
 // 用 GET 而非 HEAD:匿名 HEAD 常不回傳 302、或會先跳驗證頁，
-// GET + redirect:'follow' 較穩定。
+// GET + redirect:'follow' 較穩定。share 與右鍵路徑共用同一個 resolver，
+// 回傳值除了 finalUrl，也附上這次順手從同一個 response 擷取到的 og 資
+// 訊(見上方 og 擷取區塊)，兩條呼叫路徑各自決定怎麼用(見
+// buildMenuHistoryExtra／handleResolveShareMessage)。
 async function resolveFinalUrl(shareUrl) {
   const response = await fetch(shareUrl, {
     method: 'GET',
@@ -577,14 +812,20 @@ async function resolveFinalUrl(shareUrl) {
   });
   const finalUrl = response.url;
 
-  // 取消未讀取的 body 串流以省流量；取消失敗不影響已取得的 finalUrl。
+  // og:description/og:title(短碼解析路徑順手擷取，同一 response，零額
+  // 外請求):讀取失敗(非文字回應、body 已消費等)一律容錯為空物件，不
+  // 影響 finalUrl 本身的既有行為——og 擷取純屬錦上添花，絕不能讓解析流
+  // 程本身失敗。改讀 response.text() 之後不再需要另外 cancel() 未讀取
+  // 的 body 串流(body 已經被完整消費)。
+  let ogFields = {};
   try {
-    await response.body?.cancel();
+    const text = await response.text();
+    ogFields = sanitizeOgFields(extractOgFields(text));
   } catch (err) {
-    console.error('[threads-clean-link] 取消回應 body 失敗', err);
+    console.error('[threads-clean-link] 讀取回應內容擷取 og 資訊失敗', err);
   }
 
-  return finalUrl;
+  return { finalUrl, ogFields };
 }
 
 // 最終網址符合貼文格式才回傳乾淨網址(去掉整段 query 與 hash)，否則回傳 null。
