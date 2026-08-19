@@ -25,9 +25,6 @@
 
       // ---- popup ----
       ppAutoClean: '自動淨化分享按鈕',
-      // 開關只影響「複製到剪貼簿的內容乾不乾淨」，不影響「會不會解析並
-      // 記錄」——popup 與 options 兩處共用同一份語意，文字內容一致。
-      ppAutoCleanDesc: '複製時自動換成乾淨網址；關閉仍照常寫入紀錄。',
       popPostCopyLabel: '貼文複製按鈕',
       ppHistorySettings: '紀錄與設定',
       ppFooter: '盡力而為，處理失敗不影響原功能。',
@@ -162,7 +159,6 @@
       bgUnexpected: 'Unexpected error. Please try again later.',
 
       ppAutoClean: 'Auto-clean the share button',
-      ppAutoCleanDesc: 'Cleans copied links automatically; recording continues either way.',
       popPostCopyLabel: 'Post copy button',
       ppHistorySettings: 'History & settings',
       ppFooter: 'Best-effort — failures never break the original copy feature.',

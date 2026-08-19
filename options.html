@@ -130,7 +130,8 @@
     place-items: center;
     flex-shrink: 0;
   }
-  .logo .icon { width: 22px; height: 22px; }
+  /* 盾牌在 40px 透明框裡置中,22px 相對標題字重偏小,放大到 28px 取得平衡。 */
+  .logo .icon { width: 28px; height: 28px; }
   .topbar .titles { min-width: 0; flex: 1; }
   .topbar h1 {
     margin: 0;
@@ -1013,7 +1014,7 @@
         <label class="setting-row" for="autoClean">
           <span class="txt">
             <span class="name" data-i18n="opAutoCleanName">自動淨化分享按鈕</span>
-            <div class="desc" data-i18n="opAutoCleanDesc">開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。</div>
+            <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址；關閉仍照常寫入紀錄。</div>
           </span>
           <input type="checkbox" id="autoClean" class="switch" />
         </label>
