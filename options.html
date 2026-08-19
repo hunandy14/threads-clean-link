@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Threads Clean Link — 設定與淨化紀錄</title>
 <style>
-  /* 版型與配色沿用 popup.html 的 CSS 變數習慣;深淺色各自完整調校,
+  /* 版型與配色沿用 popup.html 的 CSS 變數習慣;深淺色各自完整調校，
      另支援 data-theme 手動覆蓋(auto/light/dark，存 chrome.storage.sync)。
 
      【唯一數值權威】所有跟手機版對齊的數值(色票/間距/字級/圓角)一律以
@@ -130,7 +130,8 @@
     place-items: center;
     flex-shrink: 0;
   }
-  .logo .icon { width: 22px; height: 22px; }
+  /* 盾牌在 40px 透明框裡置中，22px 相對標題字重偏小，放大到 28px 取得平衡。 */
+  .logo .icon { width: 28px; height: 28px; }
   .topbar .titles { min-width: 0; flex: 1; }
   .topbar h1 {
     margin: 0;
@@ -209,7 +210,7 @@
     gap: 12px;
     margin-bottom: 12px;
   }
-  /* 左卡高度跟隨右卡:圖表區吃滿剩餘高度並垂直置中,不留下方空洞。 */
+  /* 左卡高度跟隨右卡:圖表區吃滿剩餘高度並垂直置中，不留下方空洞。 */
   .chart-card { display: flex; flex-direction: column; }
   .chart-card .chart-wrap { flex: 1; display: flex; align-items: center; }
   .card-head {
@@ -379,7 +380,7 @@
     border-color: transparent;
     font-weight: 600;
   }
-  /* 篩選生效(非「全部」)時,收合狀態也看得出來。 */
+  /* 篩選生效(非「全部」)時，收合狀態也看得出來。 */
   #filterBtn.active {
     color: var(--accent);
     border-color: var(--accent);
@@ -907,7 +908,7 @@
 </head>
 <body>
 
-<!-- Lucide 圖示(ISC License):symbol + use 復用,currentColor 跟主題。 -->
+<!-- Lucide 圖示(ISC License):symbol + use 復用，currentColor 跟主題。 -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
   <defs>
     <symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></symbol>
@@ -962,7 +963,7 @@
     </div>
   </header>
 
-  <!-- 統計磚:數值由 options.js 從紀錄本地聚合,不另存統計資料。 -->
+  <!-- 統計磚:數值由 options.js 從紀錄本地聚合，不另存統計資料。 -->
   <section class="stats" data-i18n-aria="opStatsAria" aria-label="統計摘要">
     <div class="tile">
       <div class="label"><svg class="icon"><use href="#i-sparkles"/></svg><span data-i18n="opTileTotal">累計紀錄</span></div>
@@ -985,7 +986,7 @@
       <div class="meta" id="statStripMeta"></div>
     </div>
     <!-- 貼文互動列複製 icon(post-icon.js)的統計磚:標籤直接沿用篩選 chip
-         已有的 opKindIcon key(「貼文按鈕」),不另造新 key。 -->
+         已有的 opKindIcon key(「貼文按鈕」)，不另造新 key。 -->
     <div class="tile">
       <div class="label"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="opKindIcon">貼文按鈕</span></div>
       <div class="value" id="statIcon">0</div>
@@ -1013,7 +1014,7 @@
         <label class="setting-row" for="autoClean">
           <span class="txt">
             <span class="name" data-i18n="opAutoCleanName">自動淨化分享按鈕</span>
-            <div class="desc" data-i18n="opAutoCleanDesc">開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。</div>
+            <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址；關閉仍照常寫入紀錄。</div>
           </span>
           <input type="checkbox" id="autoClean" class="switch" />
         </label>
@@ -1106,7 +1107,7 @@
 
 <div class="toast" id="toast"></div>
 
-<!-- 匯入對話框(匯出改為直接下載檔案,不經對話框) -->
+<!-- 匯入對話框(匯出改為直接下載檔案，不經對話框) -->
 <div class="overlay" id="overlay" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <h3 id="modalTitle"><svg class="icon"><use href="#i-upload"/></svg><span data-i18n="opImportTitle">匯入紀錄</span></h3>
