@@ -450,7 +450,13 @@
       var mutated = false;
       SETTINGS_KEYS.forEach(function (key) {
         if (changes && Object.prototype.hasOwnProperty.call(changes, key)) {
-          next[key] = changes[key].newValue;
+          // F6 設定型別鏡像:增量推播也要正規化型別,對齊 pushSettings 的
+          // `typeof settings[key] !== 'boolean'` 守衛——changes 的 newValue 可能
+          // 是損毀/偽造的非布林值(或刪鍵時的 undefined),不能原封往 MAIN world
+          // 推,非布林一律退回 SETTINGS_DEFAULTS。bridge 是 content script,範圍
+          // 外,不改用 TCLCore,守衛用它自己的 SETTINGS_DEFAULTS。
+          var newValue = changes[key].newValue;
+          next[key] = typeof newValue === 'boolean' ? newValue : SETTINGS_DEFAULTS[key];
           mutated = true;
         }
       });

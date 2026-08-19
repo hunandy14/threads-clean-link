@@ -7,13 +7,20 @@
 (function (root) {
   'use strict';
 
-  // 三顆開關的預設值，跨檔鏡像義務:autoClean 與 popup.js/background.js/
-  // bridge.js 一致;saveHistory 與 background.js 一致(guard/bridge 不下放);
-  // postCopyEnabled 與 popup.js 鏡像(貼文互動列複製按鈕，見 post-icon.js)。
+  // 共用核心 lib(網址正規化、欄位消毒、常數):擴充頁面環境靠 options.html 的
+  // <script src="tcl-core.js"> 先載入(全域 root.TCLCore);Node 測試則 require。
+  // sanitize 各函式、長度上限、貼文網址正規化與預設值一律走 TCLCore,不再於本
+  // 檔養一份鏡像(原本 background 寫入側與 options 讀取側各養一份,漂移一處即
+  // 分裂)。
+  var TCLCore =
+    typeof module !== 'undefined' && module.exports ? require('./tcl-core.js') : root.TCLCore;
+
+  // 三顆開關的預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威),options
+  // 頁三顆全收(autoClean/saveHistory/postCopyEnabled)。
   var OPTIONS_DEFAULT_SETTINGS = {
-    autoClean: false,
-    saveHistory: true,
-    postCopyEnabled: true,
+    autoClean: TCLCore.DEFAULT_SETTINGS.autoClean,
+    saveHistory: TCLCore.DEFAULT_SETTINGS.saveHistory,
+    postCopyEnabled: TCLCore.DEFAULT_SETTINGS.postCopyEnabled,
   };
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
@@ -21,22 +28,14 @@
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
 
-  // 淨化紀錄欄位長度上限;author/handle/excerpt 由 background.js 落盤，
-  // options.js 讀取/匯入時再做一次防禦性截斷(縱深防禦，不依賴寫入端)。
-  var ENTRY_AUTHOR_MAX = 100;
-  var ENTRY_EXCERPT_MAX = 2000;
-
-  // 貼文網址驗證/正規化樣式:全 repo 對「合法貼文網址長什麼樣」的單一
-  // 權威定義——白名單字元類(handle:英數/底線/句點;post id:英數/連字號/
-  // 底線)，各自 1-80 字元，容忍尾隨斜線／查詢字串／hash(匯入檔或頁面
-  // DOM 擷取的 href 常帶這些，不應因此整筆拒收)。group 1 = 正規化後的
-  // 乾淨網址。background.js 的 menu 寫入路徑須維持同一組上限，否則本頁
-  // 讀取/整形寫回時會把合法紀錄當「形狀不對」濾掉。
-  var POST_URL_PATTERN =
-    /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}))\/?(?:[?#].*)?$/i;
+  // 貼文網址驗證/正規化走 TCLCore.normalizePostUrl(容尾正規化:白名單字元類 +
+  // 長度上限,容忍尾隨斜線/查詢字串/hash,回傳正規化後的乾淨網址或 null)。
+  // 長度上限與字元類與 background 寫入側共用同一份,漂移風險已由 TCLCore 收斂。
 
   // badge 渲染(buildEntryCard/openEntryDetail/buildTimelineRow)只用 .key
-  // 查 i18n 文案，純文字 pill，KINDS 不需要 icon 欄位。
+  // 查 i18n 文案,純文字 pill,KINDS 不需要 icon 欄位。KINDS 是 UI 關注點(kind→
+  // i18n 顯示 key 的映射),留在 options;seen[].kind 白名單改用 TCLCore.KIND_LIST
+  // (兩者鍵集合一致:share/strip/menu/icon)。
   var KINDS = {
     share: { key: 'opKindShare' },
     strip: { key: 'opKindStrip' },
@@ -47,78 +46,16 @@
 
   // ---- 純函式 ----
 
-  // 選填欄位截斷:非字串或空字串一律回傳 undefined(呼叫端據此整欄不寫
-  // 入)，字串則截斷至長度上限。author/handle/excerpt 共用同一份規則，
-  // 與 background.js 的 sanitizeHistoryField 對齊(獨立信任邊界，不假設
-  // 寫入端沒漏)。
-  function sanitizeTextField(value, max) {
-    if (typeof value !== 'string' || value.length === 0) return undefined;
-    return value.slice(0, max);
-  }
-
-  // seen[] 是「先前已經落盤的資料」，讀取(sanitizeEntries)與匯入
-  // (mergeImportedEntries)都是獨立信任邊界，各自逐筆 sanitize——at 需為
-  // 有限數字，不符就整筆丟棄(容忍陣列裡部分項目壞掉，不因此整個陣列
-  // 作廢)。kind 缺席須視為合法(background.js 合併既有條目缺 seen 時，會
-  // 照手機版語意補種一筆不帶 kind 的起始紀錄，`existing.seen ??
-  // [{ at: existing.receivedAt }]`)，不能當成損毀資料丟掉;kind 若有出現
-  // 則需在 KINDS 白名單內(與 background.js 的 SEEN_KIND_WHITELIST 同一組
-  // 合法值)。裁到 SEEN_MAX 上限，與 background.js 寫入時的裁切對齊。
-  var SEEN_MAX = 50;
-  function sanitizeSeenList(seenList) {
-    if (!Array.isArray(seenList)) return [];
-    var out = [];
-    for (var i = 0; i < seenList.length; i++) {
-      var record = seenList[i];
-      if (!record || typeof record !== 'object') continue;
-      if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
-      if (record.kind === undefined) {
-        out.push({ at: record.at });
-        continue;
-      }
-      if (!Object.prototype.hasOwnProperty.call(KINDS, record.kind)) continue;
-      out.push({ at: record.at, kind: record.kind });
-    }
-    return out.slice(-SEEN_MAX);
-  }
-
-  // original 選填欄位，規則同 sanitizeTextField，額外多一條:與該筆條目
-  // 自己的 url 完全相同就整欄丟棄(手機版語意是「取與 cleaned 不同者」，
-  // 相同代表沒有額外資訊)。與 background.js 的 sanitizeOriginalField
-  // 規則一致。
-  var ENTRY_ORIGINAL_MAX = 2048;
-  function sanitizeOriginalField(value, url) {
-    if (typeof value !== 'string' || value.length === 0) return undefined;
-    if (value === url) return undefined;
-    return value.slice(0, ENTRY_ORIGINAL_MAX);
-  }
-
-  // removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value }，
-  // 與 background.js 的 sanitizeRemovedParams 同一組門檻)。上限
-  // REMOVED_PARAMS_MAX 筆，每筆 key 需為非空字串且 ≤ REMOVED_PARAM_KEY_MAX、
-  // value 需為字串(可為空字串)且 ≤ REMOVED_PARAM_VALUE_MAX，任一不符就整
-  // 筆丟棄(容忍陣列裡部分項目壞掉，寫法對齊 sanitizeSeenList)。輸入非
-  // 陣列，或 sanitize 後一筆不剩，回傳 undefined。
-  var REMOVED_PARAMS_MAX = 20;
-  var REMOVED_PARAM_KEY_MAX = 64;
-  var REMOVED_PARAM_VALUE_MAX = 512;
-  function sanitizeRemovedParams(value) {
-    if (!Array.isArray(value)) return undefined;
-    var out = [];
-    for (var i = 0; i < value.length; i++) {
-      if (out.length >= REMOVED_PARAMS_MAX) break;
-      var item = value[i];
-      if (!item || typeof item !== 'object') continue;
-      if (typeof item.key !== 'string' || item.key.length === 0 || item.key.length > REMOVED_PARAM_KEY_MAX) continue;
-      if (typeof item.value !== 'string' || item.value.length > REMOVED_PARAM_VALUE_MAX) continue;
-      out.push({ key: item.key, value: item.value });
-    }
-    return out.length > 0 ? out : undefined;
-  }
+  // sanitize 各函式(文字截斷、seen[]、original、removedParams)一律走 TCLCore
+  // (見 tcl-core.js):讀取(sanitizeEntries)與匯入(mergeImportedEntries)都是
+  // 獨立信任邊界,縱深防禦不依賴寫入端沒漏——與 background 寫入側共用同一份
+  // 邏輯,F1(original 白名單)/F5(控制字元剝除)追溯消毒在讀取/匯入時一併生效
+  // (既有庫存含 bidi/不合白名單 original 的欄位,讀取時欄位級剝除/丟棄,整筆
+  // 保留)。
 
   // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
-  // 項目——url 除了型別是字串，還要通過 POST_URL_PATTERN 的形狀驗證才收。
-  // 渲染層 buildEntryCard 的 openLink.href = e.url、剪貼簿複製都是 url
+  // 項目——url 除了型別是字串，還要通過 TCLCore.normalizePostUrl 的形狀驗證才
+  // 收。渲染層 buildEntryCard 的 openLink.href = e.url、剪貼簿複製都是 url
   // sink，不該仰賴「寫入端永遠沒漏」這個假設，讀取階段就該把形狀不對的
   // url 整筆擋掉。選填欄位(author/handle/excerpt)型別不是字串就整欄
   // 丟棄、字串則截斷至長度上限，entry 本身仍保留(與核心欄位的「整筆
@@ -130,7 +67,7 @@
         return (
           e &&
           typeof e.url === 'string' &&
-          POST_URL_PATTERN.test(e.url) &&
+          TCLCore.normalizePostUrl(e.url) !== null &&
           typeof e.at === 'number' &&
           isFinite(e.at) &&
           Object.prototype.hasOwnProperty.call(KINDS, e.kind)
@@ -138,22 +75,22 @@
       })
       .map(function (e) {
         var out = { url: e.url, kind: e.kind, at: e.at };
-        var author = sanitizeTextField(e.author, ENTRY_AUTHOR_MAX);
+        var author = TCLCore.sanitizeText(e.author, TCLCore.LIMITS.AUTHOR_MAX);
         if (author !== undefined) out.author = author;
-        var handle = sanitizeTextField(e.handle, ENTRY_AUTHOR_MAX);
+        var handle = TCLCore.sanitizeText(e.handle, TCLCore.LIMITS.AUTHOR_MAX);
         if (handle !== undefined) out.handle = handle;
-        var excerpt = sanitizeTextField(e.excerpt, ENTRY_EXCERPT_MAX);
+        var excerpt = TCLCore.sanitizeText(e.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
         if (excerpt !== undefined) out.excerpt = excerpt;
         // seen[] 比照 author/handle/excerpt 的「缺席不落空值」慣例。這一行
         // 同時承擔驗證與保留兩職——少了它，即使 storage 真的有 seen，渲染
         // 端也永遠讀不到，詳細視窗的「時間軸」鈕會變成永遠打不開的死功能。
-        var seenList = sanitizeSeenList(e.seen);
+        var seenList = TCLCore.sanitizeSeenList(e.seen);
         if (seenList.length > 0) out.seen = seenList;
         // original/removedParams 比照同一套「缺席不落空值」慣例。original
         // 的相同判斷用這筆條目自己的 url(out.url，此時已通過形狀驗證)。
-        var original = sanitizeOriginalField(e.original, out.url);
+        var original = TCLCore.sanitizeOriginal(e.original, out.url);
         if (original !== undefined) out.original = original;
-        var removedParams = sanitizeRemovedParams(e.removedParams);
+        var removedParams = TCLCore.sanitizeRemovedParams(e.removedParams);
         if (removedParams !== undefined) out.removedParams = removedParams;
         return out;
       });
@@ -206,8 +143,8 @@
     return { ok: true, entries: parsed.entries };
   }
 
-  // 匯入合併:url 過 POST_URL_PATTERN 白名單並正規化(容忍尾隨斜線/query/
-  // hash)、以正規化後的 url 與現有去重;kind 非白名單→'share',at 非有限
+  // 匯入合併:url 過 TCLCore.normalizePostUrl 白名單並正規化(容忍尾隨斜線/
+  // query/hash)、以正規化後的 url 與現有去重;kind 非白名單→'share',at 非有限
   // 數字→now;author/handle/excerpt 逐條 sanitize(型別+截斷，規則同
   // sanitizeEntries)。合併後新到舊排序，結果不裁切(紀錄不設上限，匯入
   // 多少留多少)。
@@ -221,32 +158,31 @@
     var skipped = 0;
     imported.forEach(function (raw) {
       var rawUrl = raw && typeof raw.url === 'string' ? raw.url.trim() : '';
-      var match = POST_URL_PATTERN.exec(rawUrl);
-      if (!match || seen[match[1]]) {
+      var url = TCLCore.normalizePostUrl(rawUrl);
+      if (url === null || seen[url]) {
         skipped++;
         return;
       }
-      var url = match[1];
       seen[url] = true;
       var entry = {
         url: url,
         kind: raw && Object.prototype.hasOwnProperty.call(KINDS, raw.kind) ? raw.kind : 'share',
         at: raw && typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : now,
       };
-      var author = sanitizeTextField(raw && raw.author, ENTRY_AUTHOR_MAX);
+      var author = TCLCore.sanitizeText(raw && raw.author, TCLCore.LIMITS.AUTHOR_MAX);
       if (author !== undefined) entry.author = author;
-      var handle = sanitizeTextField(raw && raw.handle, ENTRY_AUTHOR_MAX);
+      var handle = TCLCore.sanitizeText(raw && raw.handle, TCLCore.LIMITS.AUTHOR_MAX);
       if (handle !== undefined) entry.handle = handle;
-      var excerpt = sanitizeTextField(raw && raw.excerpt, ENTRY_EXCERPT_MAX);
+      var excerpt = TCLCore.sanitizeText(raw && raw.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
       if (excerpt !== undefined) entry.excerpt = excerpt;
       // 匯入檔的 seen[]/original/removedParams 皆屬外部輸入，同樣要逐筆
       // sanitize，防止偽造/損毀資料混進來。original 的相同判斷用正規化
-      // 後的 url(match[1])，不是匯入檔裡未正規化的原始 url 字串。
-      var seenList = sanitizeSeenList(raw && raw.seen);
+      // 後的 url，不是匯入檔裡未正規化的原始 url 字串。
+      var seenList = TCLCore.sanitizeSeenList(raw && raw.seen);
       if (seenList.length > 0) entry.seen = seenList;
-      var original = sanitizeOriginalField(raw && raw.original, url);
+      var original = TCLCore.sanitizeOriginal(raw && raw.original, url);
       if (original !== undefined) entry.original = original;
-      var removedParams = sanitizeRemovedParams(raw && raw.removedParams);
+      var removedParams = TCLCore.sanitizeRemovedParams(raw && raw.removedParams);
       if (removedParams !== undefined) entry.removedParams = removedParams;
       merged.push(entry);
       added++;
@@ -1478,7 +1414,6 @@
 
   var api = {
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
-    POST_URL_PATTERN: POST_URL_PATTERN,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,
     buildExportPayload: buildExportPayload,
