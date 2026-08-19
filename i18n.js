@@ -27,7 +27,7 @@
       ppAutoClean: '自動淨化分享按鈕',
       // 開關只影響「複製到剪貼簿的內容乾不乾淨」，不影響「會不會解析並
       // 記錄」——popup 與 options 兩處共用同一份語意，文字內容一致。
-      ppAutoCleanDesc: '開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。',
+      ppAutoCleanDesc: '複製時自動換成乾淨網址；關閉仍照常寫入紀錄。',
       popPostCopyLabel: '貼文複製按鈕',
       ppHistorySettings: '紀錄與設定',
       ppFooter: '盡力而為，處理失敗不影響原功能。',
@@ -56,7 +56,7 @@
       // ---- options:設定 ----
       opSettingsTitle: '設定',
       opAutoCleanName: '自動淨化分享按鈕',
-      opAutoCleanDesc: '開啟:複製到的是淨化後的乾淨網址;關閉:剪貼簿保持原樣。無論開關，都會解析並寫入紀錄。',
+      opAutoCleanDesc: '複製時自動換成乾淨網址；關閉仍照常寫入紀錄。',
       opSaveName: '保存紀錄',
       opSaveDesc: '僅存於本機',
       // 與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關說明(popup
@@ -152,7 +152,7 @@
       bgUnexpected: 'Unexpected error. Please try again later.',
 
       ppAutoClean: 'Auto-clean the share button',
-      ppAutoCleanDesc: 'On: the copied link is cleaned. Off: your clipboard is left as-is. Either way the post is resolved and recorded.',
+      ppAutoCleanDesc: 'Cleans copied links automatically; recording continues either way.',
       popPostCopyLabel: 'Post copy button',
       ppHistorySettings: 'History & settings',
       ppFooter: 'Best-effort — failures never break the original copy feature.',
@@ -176,7 +176,7 @@
 
       opSettingsTitle: 'Settings',
       opAutoCleanName: 'Auto-clean the share button',
-      opAutoCleanDesc: 'On: the copied link is cleaned. Off: your clipboard is left as-is. Either way the post is resolved and recorded.',
+      opAutoCleanDesc: 'Cleans copied links automatically; recording continues either way.',
       opSaveName: 'Keep history',
       opSaveDesc: 'Local only',
       opPostCopyName: 'Post copy button',
