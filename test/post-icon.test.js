@@ -44,7 +44,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
+const { runInSandbox } = require('./support/helpers');
 
 // 尚未實作 post-icon.js 時 require 會丟 MODULE_NOT_FOUND：刻意延遲到各
 // 測試內部才載入，讓紅燈落在個別測試上，而不是整個測試檔在載入階段就崩掉
@@ -52,6 +54,123 @@ const path = require('node:path');
 function loadPostIcon() {
   return require(path.join(__dirname, '..', 'post-icon.js'));
 }
+
+const SRC = fs.readFileSync(path.join(__dirname, '..', 'post-icon.js'), 'utf8');
+
+// ============================================================
+// 【最小 document 假件:只服務「自癒重注入」這兩條測試】
+// 本檔其餘測試一律只測不碰 document 的純函式(見檔頭約定)，但孤兒自癒的
+// 兩個保證天生就在 DOM 層——「啟動時要先清掉舊實例殘留的 icon 節點」與
+// 「孤兒實例不得再掃描注入」，兩者都無法用純函式表達。這裡只搭剛好夠
+// init() 跑完的假件(建立樣式節點、查詢選擇器、移除節點)，並記錄查詢過
+// 的選擇器供斷言;不擴充成通用 DOM harness——完整注入流程(找互動列、插
+// 入節點、點擊回饋)仍屬瀏覽器整合層，不在此檔涵蓋。
+// ============================================================
+
+function createStubNode(nodeName) {
+  return {
+    nodeName,
+    id: '',
+    textContent: '',
+    innerHTML: '',
+    style: {},
+    childNodes: [],
+    classList: { add() {}, remove() {} },
+    setAttribute() {},
+    getAttribute() {
+      return null;
+    },
+    appendChild(child) {
+      this.childNodes.push(child);
+      return child;
+    },
+    removeChild(child) {
+      const idx = this.childNodes.indexOf(child);
+      if (idx !== -1) this.childNodes.splice(idx, 1);
+      return child;
+    },
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    addEventListener() {},
+  };
+}
+
+// staleIconCount:模擬「擴充功能更新前、已孤兒化的舊實例」留在 DOM 上的
+// .tcl-copy-icon 節點數量。每顆掛在自己的父節點下，被摘掉時記錄下來。
+function createFakeDocument(staleIconCount) {
+  let iconNodes = [];
+  const removedIndexes = [];
+  const selectors = [];
+
+  for (let i = 0; i < staleIconCount; i++) {
+    const node = { className: 'tcl-copy-icon', index: i };
+    node.parentNode = {
+      removeChild(child) {
+        removedIndexes.push(child.index);
+        iconNodes = iconNodes.filter((n) => n !== child);
+        return child;
+      },
+    };
+    iconNodes.push(node);
+  }
+
+  return {
+    readyState: 'complete',
+    head: createStubNode('head'),
+    body: createStubNode('body'),
+    documentElement: createStubNode('html'),
+    getElementById() {
+      return null;
+    },
+    createElement(tag) {
+      return createStubNode(tag);
+    },
+    addEventListener() {},
+    querySelectorAll(selector) {
+      selectors.push(selector);
+      // 真實的 querySelectorAll 回傳靜態 NodeList，這裡也回傳快照——實
+      // 作是邊迭代邊 removeChild，回傳活陣列會跳號漏刪。
+      if (selector === '.tcl-copy-icon') return iconNodes.slice();
+      return [];
+    },
+    // ---- 測試專用觀測點 ----
+    selectors,
+    removedIndexes,
+    currentIcons() {
+      return iconNodes.slice();
+    },
+  };
+}
+
+// chromeRef 傳 null 代表「連 chrome 都沒有」；傳 { runtime: {} } 代表孤兒。
+function loadPostIconInFakeDom(doc, chromeRef) {
+  const warnings = [];
+  const sandbox = {
+    window: {
+      location: { origin: 'https://www.threads.com' },
+      navigator: {},
+      getComputedStyle: () => ({ color: '' }),
+    },
+    document: doc,
+    console: {
+      warn: (...args) => warnings.push(args.map(String).join(' ')),
+      error: () => {},
+      log: () => {},
+    },
+    setTimeout,
+    clearTimeout,
+    URL,
+  };
+  if (chromeRef) sandbox.chrome = chromeRef;
+  runInSandbox(SRC, sandbox);
+  return { warnings, api: sandbox.window.TCLPostIcon };
+}
+
+const CONTAINER_SELECTOR = 'div[data-pressable-container]';
 
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
@@ -404,6 +523,63 @@ test('resolvePostCopyEnabled:true／undefined／未設定過／其他雜訊值�
   assert.equal(resolvePostCopyEnabled(null), true);
   assert.equal(resolvePostCopyEnabled('false'), true);
   assert.equal(resolvePostCopyEnabled(0), true);
+});
+
+// ---- 孤兒偵測退場(擴充功能更新後，既開分頁的舊 content script 仍在跑，
+// 但 chrome.runtime.id 已消失:sendMessage 必失敗、紀錄靜默丟失。判準與
+// 退場行為) ----
+
+test('孤兒偵測:runtime.id 消失即視為情境失效，該實例整個退場——不再掃描注入，並留下 console 訊號', () => {
+  const { isExtensionContextLost } = loadPostIcon();
+
+  // 判準本身:runtime 物件還在、只有 id 消失，正是孤兒 content script 的
+  // 形狀(這也是 sendMessage 會同步丟 Extension context invalidated 的前
+  // 兆)。chrome 或 chrome.runtime 整個缺席同樣視為失效(訊息本來就送不出
+  // 去，行為等價)。
+  assert.equal(isExtensionContextLost({ runtime: { id: 'abcdefghijklmnop' } }), false, '正常 content script');
+  assert.equal(isExtensionContextLost({ runtime: { id: undefined } }), true, '孤兒:id 消失');
+  assert.equal(isExtensionContextLost({ runtime: { id: '' } }), true);
+  assert.equal(isExtensionContextLost({}), true);
+  assert.equal(isExtensionContextLost(null), true);
+  assert.equal(isExtensionContextLost(undefined), true);
+
+  // 退場行為:孤兒實例載入(或既有實例的下一輪掃描)必須整個短路，不得再
+  // 去掃貼文容器——否則它會繼續注入「點了會複製、但不會記錄」的假 icon，
+  // 還會跟自癒重注入的新實例搶同一個容器(冪等檢查先到先贏)。
+  const doc = createFakeDocument(0);
+  const { warnings } = loadPostIconInFakeDom(doc, { runtime: {} });
+
+  assert.equal(
+    doc.selectors.includes(CONTAINER_SELECTOR),
+    false,
+    '孤兒實例不得再掃描貼文容器(掃描前的 runtime 自檢必須先短路)'
+  );
+  assert.equal(
+    warnings.some((line) => line.includes('擴充功能情境已失效')),
+    true,
+    '孤兒退場必須留下 console.warn，不得像修正前那樣完全無聲'
+  );
+});
+
+// ---- 自癒重注入的清場(background.js 的 reinjectIntoOpenTabs 會在擴充功能
+// 更新後把本腳本重新注入既開分頁) ----
+
+test('自癒重注入:新實例啟動時先清掉舊孤兒殘留的 .tcl-copy-icon 節點，冪等檢查才不會誤判「已注入」而整頁跳過', () => {
+  const doc = createFakeDocument(2);
+  const { api } = loadPostIconInFakeDom(doc, { runtime: { id: 'abcdefghijklmnop' } });
+
+  // 這就是坑本身:hasExistingIcon 只看得到「有沒有 .tcl-copy-icon 節點」，
+  // 分不出那顆是誰注入的。清場沒做的話，重注入的新腳本會在每個容器上都
+  // 判定「已經注入過」，頁面就只剩一排點了不會記錄的假 icon。
+  assert.equal(api.hasExistingIcon({ querySelector: () => ({}) }), true, '冪等檢查確實只認節點在不在');
+
+  assert.deepEqual(doc.currentIcons(), [], '舊實例殘留的 icon 節點必須在啟動時全數移除');
+  assert.deepEqual(doc.removedIndexes, [0, 1], '兩顆殘留 icon 都要從各自的父節點上摘掉(逐一移除，不漏刪)');
+  assert.equal(
+    doc.selectors.includes(CONTAINER_SELECTOR),
+    true,
+    '清場之後要照常掃描注入(情境有效的新實例不該被自己的孤兒自檢擋下)'
+  );
 });
 
 // ============================================================

@@ -1698,3 +1698,124 @@ test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級�
   assert.equal(bg.executeScriptCalls.length, 1, '配額失敗不影響右鍵複製等主功能持續運作');
   assert.equal(bg.storage.localSnapshot().history.length, 1, '排除配額問題後，新的紀錄應能正常寫入');
 });
+
+// ============================================================
+// 擴充功能更新後的自癒重注入(chrome.runtime.onInstalled)
+// ------------------------------------------------------------
+// 更新完成的當下，既開 threads 分頁裡的舊 content script 已經孤兒化
+// (chrome.runtime.id 消失、sendMessage 必失敗、紀錄靜默丟失)。background
+// 對這些分頁重新注入 ISOLATED world 的三支腳本，讓它們立刻換上有效身分。
+// 這條測試釘住兩件事:注入目標只限 threads 分頁(絕不外流到其他站台)，以及
+// 注入的檔案清單/順序/world 與 manifest 的 content_scripts 對齊。
+// ============================================================
+
+function loadBackgroundForReinject(tabs, opts = {}) {
+  const chrome = makeChrome();
+  const onInstalledListeners = [];
+  const queryArgs = [];
+  const executeScriptCalls = [];
+  chrome.runtime.onInstalled.addListener = (fn) => onInstalledListeners.push(fn);
+  chrome.tabs = {
+    TAB_ID_NONE: -1,
+    query: async (queryInfo) => {
+      queryArgs.push(queryInfo);
+      if (opts.queryThrows) throw new Error('tabs.query 失敗');
+      return tabs;
+    },
+  };
+  chrome.scripting = {
+    executeScript: async (injection) => {
+      executeScriptCalls.push(injection);
+      if (opts.injectThrows) throw new Error('cannot inject into this tab');
+      return [{}];
+    },
+  };
+  chrome.storage = createChromeStorage({}).api;
+  runInSandbox(SRC, {
+    chrome,
+    fetch: async () => {
+      throw new Error('unexpected fetch');
+    },
+    console,
+    URL,
+    URLSearchParams,
+  });
+
+  return {
+    queryArgs,
+    executeScriptCalls,
+    fireInstalled(details) {
+      onInstalledListeners.slice().forEach((fn) => fn(details || { reason: 'update' }));
+    },
+  };
+}
+
+test('自癒重注入:onInstalled 只對 threads 分頁重新注入 ISOLATED world 腳本，其餘分頁一律不碰', async () => {
+  const bg = loadBackgroundForReinject([
+    { id: 1, url: 'https://www.threads.com/@kaede.hong/post/DcDrsdAmhlU' },
+    { id: 2, url: 'https://threads.net/search?q=x' },
+    // 以下都不該被注入:形近網域、把 threads.com 放在子網域位置的釣魚網
+    // 域、非 https、URL 被權限遮蔽(undefined)、以及沒有有效 tabId 的分頁。
+    { id: 3, url: 'https://evilthreads.com/@x/post/1' },
+    { id: 4, url: 'https://threads.com.evil.example/@x/post/1' },
+    { id: 5, url: 'http://www.threads.com/@x/post/1' },
+    { id: 6, url: undefined },
+    { id: -1, url: 'https://www.threads.com/' },
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+
+  // 陣列一律先 Array.from 搬回本 realm 再比對:sandbox 內建立的陣列與外
+  // 層的 Array.prototype 不同源，deepEqual 會判「結構相同但非同一 realm」
+  // 而失敗(同 helpers.js 對 settings 物件的既有註記)。
+  assert.equal(bg.queryArgs.length, 1, 'tabs.query 只查一次');
+  assert.deepEqual(
+    Array.from(bg.queryArgs[0].url),
+    ['https://*.threads.com/*', 'https://*.threads.net/*'],
+    'tabs.query 應以 manifest 既有的 host 樣式先擋一層(不新增任何權限)'
+  );
+
+  assert.deepEqual(
+    bg.executeScriptCalls.map((call) => call.target.tabId).sort((a, b) => a - b),
+    [1, 2],
+    '只有真正的 threads 分頁會被重新注入'
+  );
+  bg.executeScriptCalls.forEach((call) => {
+    assert.deepEqual(
+      Array.from(call.files),
+      ['bridge.js', 'i18n.js', 'post-icon.js'],
+      '檔案與順序需對齊 manifest 的 content_scripts(MAIN world 的 clipboard-guard.js 刻意不重注入)'
+    );
+    assert.equal(call.world, 'ISOLATED', '重注入的是 ISOLATED world 腳本');
+  });
+});
+
+test('自癒重注入:單一分頁注入失敗(已凍結/不允許注入)不影響其他分頁，也不會變成未捕捉的 rejection', async () => {
+  const bg = loadBackgroundForReinject(
+    [
+      { id: 11, url: 'https://www.threads.com/' },
+      { id: 12, url: 'https://www.threads.net/' },
+    ],
+    { injectThrows: true }
+  );
+
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args);
+  try {
+    bg.fireInstalled();
+    await settle();
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(bg.executeScriptCalls.length, 2, '一個分頁失敗不得中斷其他分頁的注入');
+  assert.equal(
+    warnCalls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('分頁自癒重注入失敗')
+    ).length,
+    2,
+    '每個失敗的分頁各留一則可查的警告'
+  );
+});

@@ -82,7 +82,85 @@ chrome.runtime.onInstalled.addListener(() => {
   createContextMenu().catch((err) => {
     console.error('[threads-clean-link] 建立右鍵選單失敗', err);
   });
+  reinjectIntoOpenTabs().catch((err) => {
+    console.warn('[threads-clean-link] 既開分頁的自癒重注入失敗', err);
+  });
 });
+
+// ------------------------------------------------------------
+// 擴充功能安裝/更新後的自癒重注入
+// ------------------------------------------------------------
+//
+// 【問題】擴充功能更新(或開發時重載)後，Chrome 不會把已注入既開分頁的
+// content script 移除，它們照樣在跑，但與擴充功能之間的連線已被切斷:
+// chrome.runtime.id 變成 undefined，任何 sendMessage 都同步丟出「Extension
+// context invalidated」。使用者看到的是「按鈕都在、複製也成功，但紀錄全部
+// 靜默丟失」，而且非重新整理不能復原——沒人會知道要重新整理。
+//
+// 【解法】更新完成的當下，對每個既開的 threads 分頁重新注入 ISOLATED world
+// 的三支腳本，讓分頁立刻換上帶有效 chrome.runtime 的新實例。所需權限
+// (scripting + threads 的 host_permissions)全部既有，不新增任何權限。
+//
+// 【MAIN world 的 clipboard-guard.js 刻意不重注入】它是純頁面層的
+// navigator.clipboard.writeText／copy 事件包裹，完全不碰 chrome.* API，擴
+// 充功能重載不會讓它失效;它 postMessage 出來的 TCL_RESOLVE_REQ／
+// TCL_CLEANED_NOTICE 是靠「監聽 window message 的 bridge.js」接手，而 bridge
+// 這一支我們重注入了(新身分、chrome.runtime 有效)，所以整條管道會自動接
+// 回來——舊 guard 依賴的是「頁面上有人在聽 message」這件事，不是某個特定
+// 的 bridge 實例。反過來重注入 guard 才有害:舊包裹還在，writeText 會被包
+// 第二層，一次複製可能觸發兩次淨化/兩次通知。
+// (此依賴關係已於 0.5.0 以 CDP 實機驗證:重載擴充功能後只重注入
+// bridge/i18n/post-icon，舊 guard 的 share/strip 路徑照常記錄成功。)
+const REINJECT_MATCHES = ['https://*.threads.com/*', 'https://*.threads.net/*'];
+
+// 重注入的檔案與順序刻意對齊 manifest.json 的 content_scripts:bridge.js 先
+// 上(它負責 window message 橋接)，接著 i18n.js(post-icon.js 的文案來源)，
+// 最後 post-icon.js。少一支或順序顛倒都會讓新實例缺件。
+const REINJECT_FILES = ['bridge.js', 'i18n.js', 'post-icon.js'];
+
+// 分頁 URL 的自我把關:tabs.query 的 url 篩選已經先擋一層，這裡再依同一組
+// 主機規則過濾一次，確保就算查詢條件被忽略(不同瀏覽器版本對 url 篩選的
+// 權限要求不一致)也不會把腳本注進非 threads 的分頁。對齊 manifest 的
+// `https://*.threads.com/*`:主網域本身與任何子網域都算，其他 TLD 不算。
+const THREADS_PAGE_PATTERN = /^https:\/\/([A-Za-z0-9-]+\.)*threads\.(com|net)(\/|$)/i;
+
+function isThreadsPageUrl(url) {
+  return typeof url === 'string' && THREADS_PAGE_PATTERN.test(url);
+}
+
+async function reinjectIntoOpenTabs() {
+  if (!chrome.tabs || typeof chrome.tabs.query !== 'function') return;
+  if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') return;
+
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ url: REINJECT_MATCHES });
+  } catch (err) {
+    console.warn('[threads-clean-link] 查詢既開分頁失敗，略過自癒重注入', err);
+    return;
+  }
+
+  const targets = (tabs || []).filter(
+    (tab) => tab && tab.id !== undefined && tab.id !== chrome.tabs.TAB_ID_NONE && isThreadsPageUrl(tab.url)
+  );
+
+  // 逐分頁獨立容錯:分頁可能已被凍結/丟棄、正在導向他站、或是 Chrome 不允
+  // 許注入的狀態。一個分頁失敗不影響其他分頁，也不讓 onInstalled 變成未捕
+  // 捉的 rejection——自癒是盡力而為，失敗最多退回「使用者自己重新整理」。
+  await Promise.all(
+    targets.map(async (tab) => {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: REINJECT_FILES,
+          world: 'ISOLATED',
+        });
+      } catch (err) {
+        console.warn('[threads-clean-link] 分頁自癒重注入失敗(分頁 id:' + tab.id + ')', err);
+      }
+    })
+  );
+}
 
 // 先清空舊選單再建立，避免重新安裝/更新時 id 重複觸發 lastError 雜訊。
 // removeAll 失敗也不該擋住後續建立選單，故在此就地接住、只記錄不中斷。

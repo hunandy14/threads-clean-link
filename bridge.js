@@ -39,6 +39,32 @@
   // 這個純 DOM／JS 物件參照仍然存在且可呼叫(orphan 只斷了 chrome.runtime
   // 這條線，不影響同一頁面內已掛好的 window 屬性)，但這不是本車道測試
   // 得到保證的行為，如實記錄為已知限制，不承諾一定能顯示。
+  // 孤兒 content script 偵測(錯誤訊息版):擴充功能更新／重載後，既開分頁
+  // 裡的舊 content script 仍在跑，但 chrome.runtime 這條線已斷，
+  // sendMessage 會同步丟出帶「Extension context invalidated」字樣的例外。
+  // 只用來把 catch 到的錯誤分類成看得懂的警告文字，不改變控制流。
+  function isContextInvalidated(err) {
+    var msg = (err && err.message) || String(err);
+    return /extension context invalidated/i.test(msg);
+  }
+
+  // 送 background 失敗時一律留下 console 訊號:這兩個 catch 原本是完全靜默
+  // 的，孤兒情境下(擴充功能剛更新)使用者的複製照做、勾勾照亮、紀錄卻靜
+  // 默丟失，連除錯時都找不到任何線索。孤兒與一般失敗分開措辭，孤兒明講
+  // 「請重新整理頁面」——這是唯一的復原方式(不動作的話，background 的自
+  // 癒重注入也會補上新的 content script，見 background.js 的
+  // reinjectIntoOpenTabs)。
+  function warnSendFailure(scope, err) {
+    if (isContextInvalidated(err)) {
+      console.warn(
+        '[threads-clean-link] ' + scope + ':擴充功能情境已失效(擴充功能剛更新或重載)，這次沒有送達 background，請重新整理頁面',
+        err
+      );
+    } else {
+      console.warn('[threads-clean-link] ' + scope + ':送給 background 失敗', err);
+    }
+  }
+
   function notifyResolveFailureToast(reason) {
     try {
       if (window.TCLPostIcon && typeof window.TCLPostIcon.showResolveFailureToast === 'function') {
@@ -127,7 +153,9 @@
           maybePromise.catch(function () {});
         }
       } catch (e) {
-        // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而為。
+        // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而
+        // 為。但不再靜默吞掉——留一則 console.warn，孤兒情境才有跡可循。
+        warnSendFailure('轉發淨化通知(cleanedNotice)', e);
       }
       return;
     }
@@ -203,8 +231,11 @@
         }
       });
     } catch (e) {
-      // sendMessage 同步丟例外（例如擴充功能情境已失效）：直接回報失敗。
+      // sendMessage 同步丟例外（例如擴充功能情境已失效）：直接回報失敗，
+      // 讓 MAIN world 立刻 fail-open(不必空等 2.5 秒逾時)，並留下 console
+      // 訊號說明這次為什麼沒解析／沒記錄。
       reply({ ok: false, reason: 'bridge-exception' });
+      warnSendFailure('轉發短碼解析請求(resolveShare)', e);
       handleFailure('bridge-exception');
     }
   });
