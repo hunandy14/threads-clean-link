@@ -523,9 +523,11 @@ test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、�
 // 讀取階段(sanitizeEntries)同樣要逐欄 sanitize original/removedParams，
 // 規則與 mergeImportedEntries 那組測試一致。
 
-test('sanitizeEntries:original 與該筆條目自己的 url 相同時整欄丟棄，非字串/空字串同樣丟棄，其餘原樣保留(截斷至長度上限)', () => {
+// F1 取嚴(原「超長截斷至 2048」→「超長整欄丟棄」;新增白名單:original 需吻合
+// SHARE 或容尾 POST 樣式,偽造/畸形殘 URL 一律丟棄)。見 TCLCore.sanitizeOriginal。
+test('sanitizeEntries(F1):original 白名單通過者原樣保留,與 url 相同/非字串/空字串/超長/畸形一律整欄丟棄', () => {
   const cleaned = options.sanitizeEntries([
-    { url: URL_A, kind: 'strip', at: 1, original: `${URL_A}?xmt=AQGabc` }, // 合法
+    { url: URL_A, kind: 'strip', at: 1, original: `${URL_A}?xmt=AQGabc` }, // 合法(容尾 POST)
     { url: URL_B, kind: 'share', at: 1, original: URL_B }, // 與自己的 url 相同 → 丟棄
     { url: URL_C, kind: 'share', at: 1, original: 12345 }, // 非字串 → 丟棄
     {
@@ -533,16 +535,16 @@ test('sanitizeEntries:original 與該筆條目自己的 url 相同時整欄丟�
       kind: 'share',
       at: 1,
       original: `x${'a'.repeat(2100)}`,
-    }, // 超長 → 截斷至 2048
+    }, // 超長且非白名單 → 整欄丟棄(F1:不再截斷)
   ]);
 
   assert.equal(cleaned.find((e) => e.url === URL_A).original, `${URL_A}?xmt=AQGabc`);
   assert.equal('original' in cleaned.find((e) => e.url === URL_B), false, '與自己的 url 相同不存');
   assert.equal('original' in cleaned.find((e) => e.url === URL_C), false, '非字串整欄丟棄');
   assert.equal(
-    cleaned.find((e) => e.url === 'https://www.threads.com/@userd/post/JkL012').original.length,
-    2048,
-    '超長應截斷至 2048 字'
+    'original' in cleaned.find((e) => e.url === 'https://www.threads.com/@userd/post/JkL012'),
+    false,
+    'F1:超長/畸形 original 整欄丟棄,不截斷'
   );
 });
 
@@ -715,6 +717,8 @@ function loadBackgroundSandboxForCrossLayer() {
   const bgSrc =
     fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
     '\n' +
+    fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
+    '\n' +
     fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
   // 最小 chrome mock:只滿足 background.js 檔案最外層註冊監聽器所需的
   // 呼叫面(見 background.test.js 的 makeChrome 同一組道理)，不需要完整
@@ -753,10 +757,18 @@ const CROSS_LAYER_FIELD_CASES = [
     expect: { excerpt: 'E'.repeat(2000) },
   },
   {
+    // F1:original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結,兩層都保留。
     field: 'original',
-    label: '與 cleaned url 不同時應保留',
-    message: { original: 'https://l.threads.net/share/abc' },
-    expect: { original: 'https://l.threads.net/share/abc' },
+    label: '與 cleaned url 不同且吻合白名單(share 短連結)時應保留',
+    message: { original: 'https://www.threads.com/share/abc' },
+    expect: { original: 'https://www.threads.com/share/abc' },
+  },
+  {
+    // F1 取嚴:非白名單(偽造/畸形殘 URL)的 original 兩層都整欄丟棄。
+    field: 'original',
+    label: 'F1:非白名單 original 兩層都整欄丟棄',
+    message: { original: 'https://evil.example/@u/post/ID' },
+    expect: {},
   },
   {
     field: 'original',
@@ -1488,7 +1500,8 @@ test('controller smoke:original/removedParams 有資料時詳細視窗畫出對�
       url: CARD_URL_A,
       kind: 'share',
       at: 1000,
-      original: 'https://l.threads.net/share/xyz?igsh=aBc',
+      // F1:original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結。
+      original: 'https://www.threads.com/share/xyz',
       removedParams: [{ key: 'igsh', value: 'aBc' }],
     },
   ];

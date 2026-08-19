@@ -9,10 +9,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
 
-// background.js 依賴共用 i18n 模組(真實環境靠 importScripts 載入);
-// 測試把 i18n.js 原始碼接在前面,兩支腳本共用同一個 sandbox 全域。
+// background.js 依賴共用 i18n 與 tcl-core 模組(真實環境靠 importScripts
+// 載入);測試把 i18n.js 與 tcl-core.js 原始碼接在前面,三支腳本共用同一個
+// sandbox 全域(TCLI18N / TCLCore 已存在,background 的 importScripts 條件式便
+// 不執行)。
 const SRC =
   fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
+  '\n' +
+  fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
   '\n' +
   fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
@@ -939,7 +943,10 @@ test('紀錄:original 型別不是字串或為空字串時整欄丟棄', async (
   });
 });
 
-test('紀錄:original 超過 2048 字時截斷', async () => {
+// F1 取嚴(原「截斷至 2048」→「整欄丟棄」):original 超過 ORIGINAL_MAX 不再截
+// 半保留——截半的殘 URL 過不了白名單、也失去原始連結的語意,不如整欄不留。
+// 見 TCLCore.sanitizeOriginal 第 4 條(長度 > ORIGINAL_MAX → undefined)。
+test('紀錄(F1):original 超過 2048 字時整欄丟棄(不截斷)', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
   const longOriginal = `${CLEANED_NOTICE_CLEAN_URL}?${'a'.repeat(2100)}`;
 
@@ -952,7 +959,7 @@ test('紀錄:original 超過 2048 字時截斷', async () => {
   await settle();
 
   const history = bg.storage.localSnapshot().history;
-  assert.equal(history[0].original.length, 2048, 'original 應截斷至 2048 字');
+  assert.equal('original' in history[0], false, 'original 超長應整欄丟棄');
 });
 
 test('紀錄:removedParams 型別不是陣列時整欄丟棄', async () => {
