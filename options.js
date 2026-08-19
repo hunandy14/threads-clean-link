@@ -281,9 +281,14 @@
   // 不可信文字，這裡只做純 DOM 組裝(textContent + createElement)，href 由
   // 正則保證以 http(s):// 開頭，javascript: 等協定進不來;含省略號「…」的
   // 是 Threads 顯示層截斷的殘缺網址，維持純文字不做成連結。
-  function renderExcerptWithLinks(el, text) {
+  function renderExcerptWithLinks(doc, el, text) {
+    // doc 由呼叫端傳入(controller 的注入 document),不碰全域。
+    if (typeof text !== 'string' || text === '' || !/https?:\/\//.test(text)) {
+      // 快速路徑:沒有連結的內文(多數情況)直接整段賦值。
+      el.textContent = typeof text === 'string' ? text : '';
+      return;
+    }
     el.textContent = '';
-    if (typeof text !== 'string' || text === '') return;
     var parts = text.split(/(https?:\/\/[^\s]+)/);
     for (var i = 0; i < parts.length; i++) {
       var part = parts[i];
@@ -292,16 +297,16 @@
         // 尾端黏著的標點不算連結本體，切回文字段
         var m = part.match(/[),.;:!?、。」』]+$/);
         var url = m ? part.slice(0, part.length - m[0].length) : part;
-        var a = document.createElement('a');
+        var a = doc.createElement('a');
         a.className = 'excerpt-link';
         a.href = url;
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
         a.textContent = url;
         el.appendChild(a);
-        if (m) el.appendChild(document.createTextNode(m[0]));
+        if (m) el.appendChild(doc.createTextNode(m[0]));
       } else {
-        el.appendChild(document.createTextNode(part));
+        el.appendChild(doc.createTextNode(part));
       }
     }
   }
@@ -957,7 +962,7 @@
         }
         if (excerptEl) {
           excerptEl.hidden = !hasExcerpt;
-          renderExcerptWithLinks(excerptEl, hasExcerpt ? e.excerpt : '');
+          renderExcerptWithLinks(document, excerptEl, hasExcerpt ? e.excerpt : '');
           excerptEl.classList.remove('expanded');
         }
         if (expandBtn) expandBtn.hidden = !(hasExcerpt && isLongExcerpt(e.excerpt));

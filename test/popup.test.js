@@ -271,15 +271,15 @@ test('導航列:popup.html 有 button#openOptions,點擊呼叫 openOptionsPage',
   assert.equal(opened, 1, '點擊導航列應呼叫 openOptionsPage 一次');
 });
 
-// 0.5.0 新增(使用者指定):導航列的舊箭頭字元「›」換成 Lucide 的
-// chevron-right inline SVG，靜態讀 popup.html 原文把關，避免日後又退回
-// 純文字符號。
-test('導航列:舊箭頭字元「›」已換成 Lucide chevron-right inline SVG', () => {
+// 0.5.0(使用者指定,後改版):導航列箭頭定案為 Lucide arrow-up-right
+// inline SVG(↗,「開新分頁」語意),取代先前的 chevron-right;靜態讀
+// popup.html 原文把關,避免日後退回純文字符號或舊 chevron。
+test('導航列:nav-chev 為 Lucide arrow-up-right inline SVG(↗ 開新分頁語意)', () => {
   const html = readPopupHtml();
 
   assert.equal(html.includes('›'), false, 'popup.html 不應再含舊箭頭字元「›」');
   assert.ok(
-    /<svg\b[^>]*class="nav-chev"[^>]*>[\s\S]*?<path d="m9 18 6-6-6-6"\/>[\s\S]*?<\/svg>/.test(html),
-    'nav-chev 應為 Lucide chevron-right 的 inline SVG(path d="m9 18 6-6-6-6")'
+    /<svg\b[^>]*class="nav-chev"[^>]*>[\s\S]*?<path d="M7 7h10v10"\/><path d="M7 17 17 7"\/>[\s\S]*?<\/svg>/.test(html),
+    'nav-chev 應為 Lucide arrow-up-right 的 inline SVG(M7 7h10v10 + M7 17 17 7)'
   );
 });
