@@ -8,30 +8,28 @@ if (typeof TCLI18N === 'undefined' && typeof importScripts === 'function') {
   importScripts('i18n.js');
 }
 
-// Threads 分享短連結格式，例如：https://www.threads.com/share/AbCdEfGhI
-const SHARE_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s]*)?(#[^\s]*)?$/i;
+// 共用核心 lib(網址樣式、欄位消毒、常數):SW 環境用 importScripts 載入;
+// 測試 sandbox 由測試端先把 tcl-core.js 原始碼載進同一個 sandbox(TCLCore
+// 已存在),此條件式便不執行。SHARE_URL_PATTERN、乾淨貼文網址的權威判定
+// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore,不再
+// 於本檔養一份鏡像(原本 background 與 options 各養一份,漂移一處即分裂)。
+if (typeof TCLCore === 'undefined' && typeof importScripts === 'function') {
+  importScripts('tcl-core.js');
+}
+
+// Threads 分享短連結格式改走 TCLCore.SHARE_URL_PATTERN(原本此處養一份鏡像)。
 
 // 乾淨貼文網址格式，例如：https://www.threads.com/@username/post/AbCd123EfGh
 // 刻意不錨定收尾：extractCleanPostUrl 仰賴它能從帶 query/hash 的轉址結果
 // 「截」出前段乾淨網址，加上 $ 會讓截取失效。
 const CLEAN_POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[^/?#]+\/post\/[^/?#]+/i;
 
-// 全 repo 單一權威的乾淨貼文網址驗證樣式，錨定整串內容(不只截前段)。
-// 刻意用「白名單字元類 + 長度上限」而非排除法:排除法(如 [^/?#\s]+)只
-// 擋得住帶空白的尾隨文字，中文釣魚句不需要空白，「合法前綴 + 帳號異
-// 常，請至 evil.example 重新登入」照樣整串吻合而過關。Threads 的 handle
-// 與 post id 實際上都只有 ASCII(handle 允許英數/底線/句點;post id 是
-// base64url 短碼)，收緊到實際字母表不會誤殺。長度上限 80，與
-// options.js 的 POST_URL_PATTERN 對齊(兩份常數各自獨立維護，本檔無建置
-// 系統可共用單一來源，但字元類與長度都保持一致)。
-//
-// cleanedNotice(見 handleCleanedNotice)與 menu 路徑寫入 history 前(見
-// handleShareLinkClick)都要過這一關，兩條路徑共用同一份權威驗證——
-// extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆(不錨定收尾，
-// 只用來從帶 query/hash 的轉址結果截出前段乾淨網址)，寬鬆匹配到的內容
-// 不能不經這裡的錨定驗證就直接流進 history——渲染/去重/點擊跳轉都吃
-// 這個 url 欄位。
-const POST_URL_PATTERN = /^https:\/\/(www\.)?threads\.(com|net)\/@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}$/i;
+// 全 repo 單一權威的乾淨貼文網址驗證改走 TCLCore.isCleanPostUrl(錨定整串、
+// 白名單字元類 + 長度上限);原本此處養一份 POST_URL_PATTERN 鏡像,與 options
+// 的同義常數漂移風險已由 TCLCore 收斂。cleanedNotice(見 handleCleanedNotice)
+// 與 menu 路徑寫入 history 前(見 handleShareLinkClick)都過同一份權威驗證——
+// extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆(不錨定收尾),寬鬆
+// 匹配到的內容不能不經 isCleanPostUrl 就直接流進 history。
 
 const CONTEXT_MENU_ID = 'threads-clean-link-resolve';
 const NOTIFICATION_ICON = 'icons/icon128.png';
@@ -42,9 +40,12 @@ const NOTIFICATION_ICON = 'icons/icon128.png';
 // 路徑改頁內 toast，見 bridge.js／post-icon.js)。saveHistory(只有
 // background 記錄時把關，guard/bridge 不下放)與 autoClean 的預設值須
 // 與 popup.js／bridge.js／clipboard-guard.js 同步。
+// 預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威),background 只挑
+// 自己把關的兩顆(autoClean/saveHistory;postCopyEnabled 是 popup/post-icon 的
+// 事,background 不讀)。
 const DEFAULT_SETTINGS = {
-  autoClean: false,
-  saveHistory: true,
+  autoClean: TCLCore.DEFAULT_SETTINGS.autoClean,
+  saveHistory: TCLCore.DEFAULT_SETTINGS.saveHistory,
 };
 
 // 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
@@ -54,26 +55,12 @@ const DEFAULT_SETTINGS = {
 // 優雅降級(不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能)。
 const HISTORY_KEY = 'history';
 
-// 紀錄條目上，author/handle/excerpt 為選填欄位，由複製 icon
-// (post-icon.js)或 bridge.js(share/strip 路徑，經 findContainerByCleanUrl
-// 就地擷取)順手從貼文容器 DOM 附上。長度上限與手機版 post-meta 的
-// EXCERPT_MAX_CHARS 對齊。
-const HISTORY_EXCERPT_MAX = 2000;
-// author/handle 共用同一個長度上限;兩者性質相近(顯示名稱/帳號代稱)，
-// 沒有各自訂上限的必要。
-const HISTORY_AUTHOR_MAX = 100;
-
-// original 是使用者實際複製到/觸發時的原始連結(share 短碼原文，或 strip
-// 剝參前的原網址)，上限沿用 bridge.js 既有的 MAX_CLEAN_URL_LENGTH 門檻
-// (同一種「頁面可控字串」，用同一把尺)。removedParams 是被剝除的追蹤查
-// 詢參數清單，型別對齊手機版 hunandy14/meta-link-clearer 的 RemovedParam
-// ({ key, value }，實測 gh api 讀 src/lib/link-cleaner.ts:171 確認)。上限
-// 與單筆長度沿用一般追蹤參數(如 xmt/utm_*)的合理範圍，防惡意超長
-// payload。
-const HISTORY_ORIGINAL_MAX = 2048;
-const REMOVED_PARAMS_MAX = 20;
-const REMOVED_PARAM_KEY_MAX = 64;
-const REMOVED_PARAM_VALUE_MAX = 512;
+// 選填欄位長度上限(author/handle/excerpt/original)、removedParams 筆數與
+// 單筆 key/value 上限、seen[] 上限,一律走 TCLCore.LIMITS(單一權威,與 options
+// 讀取端共用同一組值)。原本 background 於此養一份鏡像常數,已由 TCLCore 收斂。
+// author/handle 共用 AUTHOR_MAX;excerpt 對齊手機版 post-meta EXCERPT_MAX_CHARS;
+// original 對齊 bridge.js MAX_CLEAN_URL_LENGTH;removedParams 型別對齊手機版
+// RemovedParam({ key, value })。
 
 // 事件監聽器一律註冊在檔案最外層：service worker 閒置會被終止，
 // 監聽器需在每次喚醒時同步掛回去，不能包在非同步流程裡面。
@@ -257,7 +244,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleShareLinkClick(info, tab) {
   const shareUrl = info.linkUrl;
 
-  if (!shareUrl || !SHARE_URL_PATTERN.test(shareUrl)) {
+  if (!shareUrl || !TCLCore.SHARE_URL_PATTERN.test(shareUrl)) {
     notifyByKey('threads-clean-link-invalid', 'bgInvalid');
     return;
   }
@@ -297,11 +284,11 @@ async function handleShareLinkClick(info, tab) {
   // bridge，original(shareUrl)與 removedParams(finalUrl 與 cleanUrl 的
   // 差集)background 自己手上就有。
   //
-  // 寫入前用全 repo 單一權威的 POST_URL_PATTERN 錨定驗一次(見上方註解:
+  // 寫入前用全 repo 單一權威的 TCLCore.isCleanPostUrl 錨定驗一次(見上方註解:
   // extractCleanPostUrl 用的 CLEAN_POST_URL_PATTERN 刻意寬鬆，寬鬆匹配
   // 到的內容不該不經檢查就流進 history);不符合就只略過記錄
   // (console.warn)，不影響已經完成的剪貼簿複製。
-  if (POST_URL_PATTERN.test(cleanUrl)) {
+  if (TCLCore.isCleanPostUrl(cleanUrl)) {
     // R2-b 四路徑落盤收斂:menu 路徑把手上的 original(使用者右鍵點擊的短
     // 碼)與 removedParams(finalUrl 淨化前後的查詢參數差集)組成與
     // cleanedNotice 同形的訊息物件，連同 resolveFinalUrl 同一 response 順手
@@ -362,13 +349,11 @@ async function getSettings() {
 // 2.5 秒落盤，也不要污染資料。
 async function handleCleanedNotice(message) {
   const cleanUrl = message && message.cleanUrl;
-  if (typeof cleanUrl !== 'string' || !POST_URL_PATTERN.test(cleanUrl)) {
+  if (!TCLCore.isCleanPostUrl(cleanUrl)) {
     return;
   }
   const kind =
-    message.kind === 'share' || message.kind === 'strip' || message.kind === 'icon'
-      ? message.kind
-      : null;
+    message && TCLCore.NOTICE_KIND_LIST.indexOf(message.kind) !== -1 ? message.kind : null;
   if (!kind) {
     return;
   }
@@ -411,9 +396,9 @@ async function handleCleanedNotice(message) {
 // 個參數進來(可能是 null/空物件，代表逾時/失敗/沒收穫，merge 端會容錯)。
 function extractHistoryExtraFields(message, url, ogFields) {
   const extra = {};
-  const domAuthor = sanitizeHistoryField(message && message.author, HISTORY_AUTHOR_MAX);
-  const domHandle = sanitizeHistoryField(message && message.handle, HISTORY_AUTHOR_MAX);
-  const domExcerpt = sanitizeHistoryField(message && message.excerpt, HISTORY_EXCERPT_MAX);
+  const domAuthor = TCLCore.sanitizeText(message && message.author, TCLCore.LIMITS.AUTHOR_MAX);
+  const domHandle = TCLCore.sanitizeText(message && message.handle, TCLCore.LIMITS.AUTHOR_MAX);
+  const domExcerpt = TCLCore.sanitizeText(message && message.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
 
   // code review 修正(FAIL 打回):merge 結果不能直接信任，統一再過一次
   // sanitizeOgFields(見該函式註解)，才寫進 extra。
@@ -424,55 +409,13 @@ function extractHistoryExtraFields(message, url, ogFields) {
   if (merged.handle !== undefined) extra.handle = merged.handle;
   if (merged.excerpt !== undefined) extra.excerpt = merged.excerpt;
 
-  const original = sanitizeOriginalField(message && message.original, HISTORY_ORIGINAL_MAX, url);
+  // F1 強化:original 除了截斷/去重,還要吻合 SHARE 或容尾 POST 白名單、超長整
+  // 欄丟棄(不截半),偽造/畸形殘 URL 不入庫(見 TCLCore.sanitizeOriginal)。
+  const original = TCLCore.sanitizeOriginal(message && message.original, url);
   if (original !== undefined) extra.original = original;
-  const removedParams = sanitizeRemovedParams(message && message.removedParams);
+  const removedParams = TCLCore.sanitizeRemovedParams(message && message.removedParams);
   if (removedParams !== undefined) extra.removedParams = removedParams;
   return extra;
-}
-
-// 非字串一律回傳 undefined(呼叫端據此整欄丟棄);空字串比照非字串同樣
-// 丟棄(不落 author:'' 這種空欄位)；其餘字串截斷至 maxLen。
-function sanitizeHistoryField(value, maxLen) {
-  if (typeof value !== 'string' || value.length === 0) return undefined;
-  return value.slice(0, maxLen);
-}
-
-// original 選填欄位，規則同 sanitizeHistoryField，額外多一條——截斷
-// 「前」若與本次寫入的 cleaned url 完全相同就整欄丟棄:手機版語意是
-// 「取與 cleaned 不同者」，相同代表沒有額外資訊(guard 端已經先擋過一
-// 次，這裡是信任邊界上的權威判斷，不能只靠上游自律)。
-function sanitizeOriginalField(value, maxLen, url) {
-  if (typeof value !== 'string' || value.length === 0) return undefined;
-  if (value === url) return undefined;
-  return value.slice(0, maxLen);
-}
-
-// removedParams 選填欄位，型別對齊手機版 RemovedParam({ key, value })。
-// 上限 REMOVED_PARAMS_MAX 筆，每筆 key 需為非空字串且 ≤
-// REMOVED_PARAM_KEY_MAX、value 需為字串(可為空字串)且 ≤
-// REMOVED_PARAM_VALUE_MAX，任一不符就整筆丟棄(容忍陣列裡部分項目壞掉，
-// 寫法對齊 sanitizeSeenList)。輸入非陣列，或 sanitize 後一筆不剩，回傳
-// undefined。
-//
-// 走訪次數本身也封頂，不是「收滿 REMOVED_PARAMS_MAX 筆合法項目就
-// break」——輸入陣列若夾帶大量畸形項目、合法項目很晚才出現，只靠收穫量
-// 封頂會把整個超大陣列掃過一輪才停下，等同讓呼叫端能用超大 payload 拖
-// 慢處理時間(bridge.js 已在自己那層擋過，這裡仍是縱深防禦，不假設呼叫
-// 端一定有先過濾)。用索引界定的迴圈，最多只看前 REMOVED_PARAMS_MAX 筆
-// 原始項目，掃描量與收穫量同時封頂在同一個常數。
-function sanitizeRemovedParams(value) {
-  if (!Array.isArray(value)) return undefined;
-  const out = [];
-  const scanLimit = Math.min(value.length, REMOVED_PARAMS_MAX);
-  for (let i = 0; i < scanLimit; i++) {
-    const item = value[i];
-    if (!item || typeof item !== 'object') continue;
-    if (typeof item.key !== 'string' || item.key.length === 0 || item.key.length > REMOVED_PARAM_KEY_MAX) continue;
-    if (typeof item.value !== 'string' || item.value.length > REMOVED_PARAM_VALUE_MAX) continue;
-    out.push({ key: item.key, value: item.value });
-  }
-  return out.length > 0 ? out : undefined;
 }
 
 // 右鍵路徑(menu)專用——對齊手機版 hunandy14/meta-link-clearer 的
@@ -671,11 +614,11 @@ function extractOgFields(html) {
 //      斷的正確性。
 function sanitizeOgFields(rawOgFields) {
   const out = {};
-  const excerpt = sanitizeHistoryField(rawOgFields && rawOgFields.excerpt, HISTORY_EXCERPT_MAX);
+  const excerpt = TCLCore.sanitizeText(rawOgFields && rawOgFields.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
   if (excerpt !== undefined) out.excerpt = excerpt;
-  const author = sanitizeHistoryField(rawOgFields && rawOgFields.author, HISTORY_AUTHOR_MAX);
+  const author = TCLCore.sanitizeText(rawOgFields && rawOgFields.author, TCLCore.LIMITS.AUTHOR_MAX);
   if (author !== undefined) out.author = author;
-  const handle = sanitizeHistoryField(rawOgFields && rawOgFields.handle, HISTORY_AUTHOR_MAX);
+  const handle = TCLCore.sanitizeText(rawOgFields && rawOgFields.handle, TCLCore.LIMITS.AUTHOR_MAX);
   if (handle !== undefined) out.handle = handle;
   return out;
 }
@@ -861,14 +804,9 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
 // 次分享。
 const DEDUP_WINDOW_MS = 5 * 60 * 1000;
 
-// seen[] 上限:防單一熱門連結無限累積解析紀錄，與手機版 SEEN_AT_MAX
-// 對齊。
-const SEEN_MAX = 50;
-
-// seen[].kind 白名單，與淨化紀錄本身的 kind 白名單同一組('menu' 屬右鍵
-// 選單路徑，額外算進來——handleCleanedNotice 的白名單不含 'menu' 是因為
-// 那條路徑不經這個訊息通道，但 kind 值本身在 seen[] 裡是合法的)。
-const SEEN_KIND_WHITELIST = ['share', 'strip', 'icon', 'menu'];
+// seen[] 上限(TCLCore.LIMITS.SEEN_MAX)與 kind 白名單(TCLCore.KIND_LIST,含
+// 'menu')一律走 TCLCore;seen[] 逐筆消毒改用 TCLCore.sanitizeSeenList(與
+// options 讀取/匯入端共用同一份,連 slice(-SEEN_MAX) 都在函式內完成)。
 
 // 純函式:在既有清單中找出「同一個 url 且在去重視窗內」的條目 index，
 // 找不到回傳 -1。與手機版 mergeDuplicateItem 內的 findIndex 對齊(手機版
@@ -885,30 +823,10 @@ function findDedupIndex(list, url, now) {
   return -1;
 }
 
-// 純函式:seen[] 逐筆 sanitize——at 需為有限數字，任一不符就整筆丟棄(容
-// 忍陣列裡部分項目壞掉，不因此讓整個陣列作廢)。kind 是選填標籤:缺席時
-// 直接保留(只剩 at)，因為手機版「補種起始紀錄」的種子記錄
-// (`{ at: existing.receivedAt }`，見 mergeHistoryEntry)本來就沒有來
-// 源標籤，UI 時間軸端已經容忍這種缺 kind 的記錄——kind 若有出現則必須
-// 在白名單內，不在白名單就整筆丟棄。輸入非陣列一律回傳空陣列。寫入
-// storage 前(合併路徑，見 mergeHistoryEntry)與 options.js 的匯入合併
-// 都要過這關，防止偽造/損毀的 seen 資料混進去——seen 來源是「先前已經
-// 落盤的資料」，可能被匯入檔或未來版本的存放格式汙染，不能照單全收。
-function sanitizeSeenList(seen) {
-  if (!Array.isArray(seen)) return [];
-  const out = [];
-  for (const record of seen) {
-    if (!record || typeof record !== 'object') continue;
-    if (typeof record.at !== 'number' || !Number.isFinite(record.at)) continue;
-    if (record.kind === undefined) {
-      out.push({ at: record.at });
-      continue;
-    }
-    if (typeof record.kind !== 'string' || SEEN_KIND_WHITELIST.indexOf(record.kind) === -1) continue;
-    out.push({ at: record.at, kind: record.kind });
-  }
-  return out;
-}
+// seen[] 逐筆消毒改走 TCLCore.sanitizeSeenList(見該檔註解:at 需為有限數字、
+// kind 缺席保留、kind 有值需在 KIND_LIST 白名單內、裁到 SEEN_MAX)。原本
+// background 與 options 各養一份鏡像,已收斂;唯一差異是 slice 位置——TCLCore
+// 版在函式內就裁,對 merge 端無行為差(concat 本次一筆後照樣再裁,見下方)。
 
 // 純函式:把本次的 kind/extra 併入既有條目 existing，回傳全新的條目物件
 // (不改動 existing，也不假設 existing 形狀完全乾淨——只挑用得到的欄
@@ -933,9 +851,9 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   const removedParams =
     extra && extra.removedParams !== undefined ? extra.removedParams : existing.removedParams;
   const priorSeen = Array.isArray(existing.seen)
-    ? sanitizeSeenList(existing.seen)
+    ? TCLCore.sanitizeSeenList(existing.seen)
     : [{ at: existing.at }];
-  const seen = priorSeen.concat([{ at: now, kind }]).slice(-SEEN_MAX);
+  const seen = priorSeen.concat([{ at: now, kind }]).slice(-TCLCore.LIMITS.SEEN_MAX);
 
   const merged = { url, kind, at: now, seen };
   if (author !== undefined) merged.author = author;
@@ -1065,12 +983,12 @@ function isQuotaExceededError(err) {
   return /QUOTA_BYTES/i.test(message);
 }
 
-// 不信任呼叫端傳入的 url，一律用 SHARE_URL_PATTERN 重新驗證，
+// 不信任呼叫端傳入的 url，一律用 TCLCore.SHARE_URL_PATTERN 重新驗證，
 // 不符合就直接拒絕、不對外發送任何請求。
 async function handleResolveShareMessage(message) {
   const shareUrl = message && message.url;
 
-  if (typeof shareUrl !== 'string' || !SHARE_URL_PATTERN.test(shareUrl)) {
+  if (typeof shareUrl !== 'string' || !TCLCore.SHARE_URL_PATTERN.test(shareUrl)) {
     return { ok: false, reason: 'invalid-url' };
   }
 

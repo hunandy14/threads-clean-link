@@ -715,6 +715,8 @@ function loadBackgroundSandboxForCrossLayer() {
   const bgSrc =
     fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
     '\n' +
+    fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
+    '\n' +
     fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
   // 最小 chrome mock:只滿足 background.js 檔案最外層註冊監聽器所需的
   // 呼叫面(見 background.test.js 的 makeChrome 同一組道理)，不需要完整
@@ -753,10 +755,18 @@ const CROSS_LAYER_FIELD_CASES = [
     expect: { excerpt: 'E'.repeat(2000) },
   },
   {
+    // F1:original 需吻合白名單(SHARE 或容尾 POST);用合法 share 短連結,兩層都保留。
     field: 'original',
-    label: '與 cleaned url 不同時應保留',
-    message: { original: 'https://l.threads.net/share/abc' },
-    expect: { original: 'https://l.threads.net/share/abc' },
+    label: '與 cleaned url 不同且吻合白名單(share 短連結)時應保留',
+    message: { original: 'https://www.threads.com/share/abc' },
+    expect: { original: 'https://www.threads.com/share/abc' },
+  },
+  {
+    // F1 取嚴:非白名單(偽造/畸形殘 URL)的 original 兩層都整欄丟棄。
+    field: 'original',
+    label: 'F1:非白名單 original 兩層都整欄丟棄',
+    message: { original: 'https://evil.example/@u/post/ID' },
+    expect: {},
   },
   {
     field: 'original',
