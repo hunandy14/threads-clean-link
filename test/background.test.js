@@ -2643,6 +2643,9 @@ function loadBackgroundForSync(opts = {}) {
     URLSearchParams,
     setTimeout,
     clearTimeout,
+    // TCLCore.randomUuid 缺 crypto 即拋錯(不以 Math.random 補位),recordHistory
+    // 的新建路徑要生 entry id，沙箱少了它整條寫入會失敗。與本檔其他 fixture 一致。
+    crypto,
   });
 
   return {
