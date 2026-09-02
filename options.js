@@ -47,7 +47,7 @@
   function nonEmptyString(value) {
     return typeof value === 'string' && value !== '' ? value : null;
   }
-  // 條目的最早事件時間:seen 事件取最小 at(不是 seen[0].at,匯入檔不保證已
+  // 條目的最早事件時間:seen 事件取最小 at(不是 seen[0].at，匯入檔不保證已
   // 排序)，一個可用事件都沒有時退回條目自身的 at。
   function earliestEventAt(entry) {
     var seen = TCLCore.sanitizeSeenList(entry && entry.seen);
@@ -207,7 +207,7 @@
   }
 
   // 匯入檔的單筆整形:url 過 TCLCore.normalizePostUrl 白名單並正規化(容忍尾
-  // 隨斜線/query/hash);kind 非白名單→'share',at 非有限數字→now;
+  // 隨斜線/query/hash);kind 非白名單→'share'，at 非有限數字→now;
   // author/handle/excerpt/seen/original/removedParams 逐條 sanitize(規則同
   // sanitizeEntries——匯入檔是外部輸入，偽造/損毀資料不得混進來)。雲端 schema
   // 的七個欄位一併補齊:檔案帶了就沿用(id 尤其不得重新生成——那等於在雲端把
@@ -1857,19 +1857,26 @@
           // 已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成墓碑
           // 撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由同步引擎
           // 上傳。未登入不動 syncState。
+          //
+          // 【順序】先落盤 clearedAt 再清本機。反過來的話，兩步之間分頁被關
+          // 掉會留下「本機已清空、雲端水位線沒寫」，下次同步就把整份雲端資料
+          // 拉回來，使用者眼中是「清了又自己長回來」。這個順序的最壞情況是
+          // clearedAt 已記但本機沒清，下次同步照樣清掉雲端，本機由使用者再清
+          // 一次即可。
           action: function () {
-            var signedIn = isSignedIn();
-            persistHistory([]).then(function (res) {
-              if (!res.ok) {
-                onPersistFailed(res);
-                return;
-              }
-              var done = signedIn ? patchSyncAccount({ clearedAt: now() }) : Promise.resolve();
-              done.then(function () {
+            var marked = isSignedIn() ? patchSyncAccount({ clearedAt: now() }) : Promise.resolve();
+            marked
+              .then(function () {
+                return persistHistory([]);
+              })
+              .then(function (res) {
+                if (!res.ok) {
+                  onPersistFailed(res);
+                  return;
+                }
                 renderAll();
                 toast(tt('opToastCleared'));
               });
-            });
           },
         });
       });

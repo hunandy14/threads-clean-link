@@ -244,19 +244,21 @@
     };
   }
 
-  // UUID v4 生成器。service worker 與擴充頁面的全域都有 crypto.randomUUID,
-  // 沒有時(舊環境/受限 context)以 getRandomValues 或 Math.random 補位，版本位
-  // 與 variant 位照 RFC 4122 固定，輸出格式一致。
+  // UUID v4 生成器。三種載入環境(service worker、擴充頁面、Node 測試)的全域
+  // 都有 crypto.randomUUID，只在缺席時退到 getRandomValues 自行組裝，版本位
+  // 與 variant 位照 RFC 4122 固定。**沒有 crypto 就直接拋錯**——id 是雲端卡片
+  // 的身分，用 Math.random 這種弱隨機補位會製造可預測的碰撞，寧可整條寫入路
+  // 徑失敗也不落一個不可信的 id。
   function randomUuid() {
-    if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID();
+    var webCrypto = typeof crypto !== 'undefined' && crypto ? crypto : null;
+    if (webCrypto && typeof webCrypto.randomUUID === 'function') {
+      return webCrypto.randomUUID();
+    }
+    if (!webCrypto || typeof webCrypto.getRandomValues !== 'function') {
+      throw new Error('[threads-clean-link] 環境缺少 crypto，無法生成 UUID');
     }
     var bytes = new Uint8Array(16);
-    if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') {
-      crypto.getRandomValues(bytes);
-    } else {
-      for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-    }
+    webCrypto.getRandomValues(bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     var hex = [];
@@ -367,7 +369,7 @@
       original: typeof item.original === 'string' && item.original ? item.original : url,
       receivedAt: receivedAt,
       dirty: false,
-      // serverUpdatedAt 取雲端本次回傳值，缺席則沿用既有(不得憑空清成 null,
+      // serverUpdatedAt 取雲端本次回傳值，缺席則沿用既有(不得憑空清成 null，
       // 它是下一輪合併的判準)。
       serverUpdatedAt:
         optionalFiniteNumber(item.updatedAt) !== null

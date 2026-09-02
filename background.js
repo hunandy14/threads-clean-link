@@ -1044,7 +1044,7 @@ const HISTORY_SCHEMA_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty
 
 // 純函式:把雲端 schema 的七個欄位補上 entry(就地改動傳入的 entry，呼叫端
 // 傳的一律是剛建好的新物件)。previous 是這張卡合併前的樣子(新建路徑傳
-// null),now 是本次事件時間。
+// null)，now 是本次事件時間。
 //   - id:沿用既有(它是雲端卡片的身分，換一次等於在雲端另開一張卡)，沒有
 //     才生成 UUID v4。
 //   - postKey:一律由本次的 url 重算(衍生欄位，handle 改名/子網域變體都算得
