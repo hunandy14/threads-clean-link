@@ -2699,3 +2699,76 @@ test('雲端同步權限:使用者拒絕授權時不送出 sync.signIn', async (
     '拒絕授權後送出登入只會讓 SW 端白跑一趟並轉成 permission_required'
   );
 });
+
+test('雲端同步權限:使用者拒絕授權時顯示 toast 說明，不留下「按了沒反應」', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: false });
+  const ctx = makeSyncPermissionCtx(permissions);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.syncSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(
+    ctx.doc.ids.toast.textContent,
+    i18n.t('zh', 'opSyncPermissionDenied'),
+    '拒絕授權後畫面必須說明為什麼什麼都沒發生'
+  );
+});
+
+test('雲端同步權限:origin 一律夾到兩個合法的後端 host，不跟著 background 傳來的值走', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: true });
+  // background 若被冒名或形狀走樣傳來任意 apiBase，這個值會直接變成
+  // permissions.request 的 origin;必須夾回 manifest 宣告過的兩個之一。
+  const ctx = makeSyncPermissionCtx(permissions, 'https://evil.example');
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.syncSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(permissions.requestCalls[0], {
+    permissions: ['identity'],
+    origins: ['https://api.metalinkclearer.workers.dev/*'],
+  });
+});
+
+test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 syncState 為基底', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000)],
+    syncState: { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+  });
+  await ctx.controller.init();
+  await settle();
+
+  // 頁面開著的期間，service worker 推進了游標並記下上次同步時間。開頁快照
+  // 完全不知道這件事;拿快照整包覆寫會把游標回捲。
+  await ctx.storage.local.set({
+    syncState: {
+      userId: 'user-1',
+      email: 'a@example.com',
+      cursor: '1700000000000~srv-9',
+      lastSyncedAt: 99000,
+      clearedAt: null,
+      lastError: null,
+    },
+  });
+  await settle();
+
+  const setsBefore = ctx.storage.localCalls.set.length;
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const written = ctx.storage.localCalls.set.slice(setsBefore);
+  assert.equal(written.length, 1, '水位線與清空必須是同一次 set，不留半套狀態');
+  assert.deepEqual(Object.keys(written[0]).sort(), ['history', 'syncState']);
+
+  const snapshot = ctx.storage.localSnapshot();
+  assert.deepEqual(snapshot.history, []);
+  assert.equal(typeof snapshot.syncState.clearedAt, 'number');
+  assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9', '不得用開頁快照把引擎推進的游標回捲');
+  assert.equal(snapshot.syncState.lastSyncedAt, 99000, 'lastSyncedAt 同理');
+});
