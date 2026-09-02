@@ -24,8 +24,48 @@
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   var HISTORY_KEY = 'history';
+  // 帳號同步狀態(docs/cloud-sync-plan.md 4.2)。options 只讀 userId 判斷登入
+  // 態、只寫 clearedAt(清除全部的全域水位線)，其餘欄位由同步引擎維護。
+  var SYNC_ACCOUNT_KEY = 'syncState';
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
+
+  // 墓碑判定:deletedAt 為有限數字代表本機已軟刪、等待伺服器 ack。墓碑必須
+  // 留在 storage(它是待上傳的刪除意圖)，但一律不進畫面、統計、圖表與匯出。
+  function isTombstone(entry) {
+    return !!entry && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
+  }
+  function liveEntries(list) {
+    return list.filter(function (e) {
+      return !isTombstone(e);
+    });
+  }
+
+  function finiteOrNull(value) {
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }
+  function nonEmptyString(value) {
+    return typeof value === 'string' && value !== '' ? value : null;
+  }
+  // 條目的最早事件時間:seen 事件取最小 at(不是 seen[0].at,匯入檔不保證已
+  // 排序)，一個可用事件都沒有時退回條目自身的 at。
+  function earliestEventAt(entry) {
+    var seen = TCLCore.sanitizeSeenList(entry && entry.seen);
+    var earliest = null;
+    seen.forEach(function (record) {
+      if (earliest === null || record.at < earliest) earliest = record.at;
+    });
+    if (earliest !== null) return earliest;
+    return finiteOrNull(entry && entry.at);
+  }
+  // 已持久化的 receivedAt 與事件序列推導值取較早者(只往前不往後)。
+  function resolveReceivedAt(entry) {
+    var stored = finiteOrNull(entry && entry.receivedAt);
+    var derived = earliestEventAt(entry);
+    if (stored === null) return derived;
+    if (derived === null) return stored;
+    return Math.min(stored, derived);
+  }
 
   // 貼文網址驗證/正規化走 TCLCore.normalizePostUrl(容尾正規化:白名單字元類 +
   // 長度上限，容忍尾隨斜線/查詢字串/hash，回傳正規化後的乾淨網址或 null)。
@@ -90,8 +130,33 @@
         if (original !== undefined) out.original = original;
         var removedParams = TCLCore.sanitizeRemovedParams(e.removedParams);
         if (removedParams !== undefined) out.removedParams = removedParams;
-        return out;
+        return keepSchemaFields(out, e);
       });
+  }
+
+  // 讀取端把雲端 schema 的七個欄位原樣帶過來(型別不對就退回該欄的安全預
+  // 設，鍵仍保留)。**只保留、不補值**:缺席代表這筆還沒跑過 background 的
+  // 遷移，補值是遷移與寫入路徑的職責。
+  //
+  // 這一步是刪除／匯入寫回 storage 那份陣列的來源，漏掉任一欄，使用者按一次
+  // 刪除就會把整張表的 id 與待上傳的墓碑一起洗掉。墓碑本身不在這裡過濾——
+  // 它必須留在陣列，不顯示是渲染層的事。
+  function keepSchemaFields(out, source) {
+    function has(field) {
+      return Object.prototype.hasOwnProperty.call(source, field);
+    }
+    if (has('id')) out.id = nonEmptyString(source.id);
+    if (has('postKey')) out.postKey = nonEmptyString(source.postKey);
+    // original 已由 sanitizeOriginal 處理過(與 url 相同時視為沒有額外資訊而
+    // 丟棄)。新 schema 下它是雲端必填欄位，值恰為 url 時同樣要留住。
+    if (out.original === undefined && typeof source.original === 'string') {
+      if (TCLCore.stripControlChars(source.original) === out.url) out.original = out.url;
+    }
+    if (has('receivedAt')) out.receivedAt = finiteOrNull(source.receivedAt);
+    if (has('dirty')) out.dirty = source.dirty === true;
+    if (has('serverUpdatedAt')) out.serverUpdatedAt = finiteOrNull(source.serverUpdatedAt);
+    if (has('deletedAt')) out.deletedAt = finiteOrNull(source.deletedAt);
+    return out;
   }
 
   // kind 過濾('all' 不過濾)+ 關鍵字過濾(比對整條網址，不分大小寫)。
@@ -141,47 +206,132 @@
     return { ok: true, entries: parsed.entries };
   }
 
-  // 匯入合併:url 過 TCLCore.normalizePostUrl 白名單並正規化(容忍尾隨斜線/
-  // query/hash)、以正規化後的 url 與現有去重;kind 非白名單→'share',at 非有限
-  // 數字→now;author/handle/excerpt 逐條 sanitize(型別+截斷，規則同
-  // sanitizeEntries)。合併後新到舊排序，結果不裁切(紀錄不設上限，匯入
-  // 多少留多少)。
-  function mergeImportedEntries(existing, imported, now) {
-    var seen = {};
-    existing.forEach(function (e) {
-      seen[e.url] = true;
+  // 匯入檔的單筆整形:url 過 TCLCore.normalizePostUrl 白名單並正規化(容忍尾
+  // 隨斜線/query/hash);kind 非白名單→'share',at 非有限數字→now;
+  // author/handle/excerpt/seen/original/removedParams 逐條 sanitize(規則同
+  // sanitizeEntries——匯入檔是外部輸入，偽造/損毀資料不得混進來)。雲端 schema
+  // 的七個欄位一併補齊:檔案帶了就沿用(id 尤其不得重新生成——那等於在雲端把
+  // 同一張卡拆成兩張)，沒帶才補值。
+  function buildImportedEntry(raw, url, now) {
+    var entry = {
+      url: url,
+      kind: raw && Object.prototype.hasOwnProperty.call(KINDS, raw.kind) ? raw.kind : 'share',
+      at: raw && typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : now,
+    };
+    var author = TCLCore.sanitizeText(raw && raw.author, TCLCore.LIMITS.AUTHOR_MAX);
+    if (author !== undefined) entry.author = author;
+    var handle = TCLCore.sanitizeText(raw && raw.handle, TCLCore.LIMITS.AUTHOR_MAX);
+    if (handle !== undefined) entry.handle = handle;
+    var excerpt = TCLCore.sanitizeText(raw && raw.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
+    if (excerpt !== undefined) entry.excerpt = excerpt;
+    var seenList = TCLCore.sanitizeSeenList(raw && raw.seen);
+    if (seenList.length > 0) entry.seen = seenList;
+    // original 的相同判斷用正規化後的 url，不是匯入檔裡未正規化的原始字串。
+    // 檔案帶了 original 就照既有規則消毒(與 url 相同即沒有額外資訊，整欄丟
+    // 棄);整欄缺席才以 url 補(伺服器必填)。
+    if (raw && typeof raw.original === 'string') {
+      var original = TCLCore.sanitizeOriginal(raw.original, url);
+      if (original !== undefined) entry.original = original;
+    } else {
+      entry.original = url;
+    }
+    var removedParams = TCLCore.sanitizeRemovedParams(raw && raw.removedParams);
+    if (removedParams !== undefined) entry.removedParams = removedParams;
+
+    entry.id = nonEmptyString(raw && raw.id) || TCLCore.randomUuid();
+    entry.postKey = TCLCore.postKeyOf(url);
+    entry.receivedAt = resolveReceivedAt(Object.assign({}, entry, { receivedAt: raw && raw.receivedAt }));
+    // 匯入進來的資料(別台裝置的鏡像或本機舊匯出檔)在本機都是待上傳狀態。
+    entry.dirty = true;
+    entry.serverUpdatedAt = finiteOrNull(raw && raw.serverUpdatedAt);
+    entry.deletedAt = null;
+    return entry;
+  }
+
+  // 兩張同 postKey 的卡合成一張。新到舊的顯示欄位(url/kind/at 與選填欄位)以
+  // at 較新的一張為主、缺席才由另一張補位;雲端身分欄位反過來以本機既有的為
+  // 準(id 換一次等於在雲端另開一張卡，serverUpdatedAt 是伺服器的值)。
+  // receivedAt 取兩者最早，seen 取聯集，deletedAt 清為 null——匯入同一篇貼文
+  // 是明確的復活意圖。
+  function mergeSamePostEntries(existing, incoming) {
+    var primary = incoming.at >= existing.at ? incoming : existing;
+    var secondary = primary === incoming ? existing : incoming;
+    var out = { url: primary.url, kind: primary.kind, at: primary.at };
+    MERGEABLE_FIELDS.forEach(function (field) {
+      if (primary[field] !== undefined) out[field] = primary[field];
+      else if (secondary[field] !== undefined) out[field] = secondary[field];
     });
+
+    var seenList = unionSeenLists(existing.seen, incoming.seen);
+    if (seenList.length > 0) out.seen = seenList;
+
+    out.id = nonEmptyString(existing.id) || nonEmptyString(incoming.id) || TCLCore.randomUuid();
+    out.postKey = TCLCore.postKeyOf(out.url);
+    var earliest = [resolveReceivedAt(existing), resolveReceivedAt(incoming)].filter(function (v) {
+      return v !== null;
+    });
+    out.receivedAt = earliest.length > 0 ? Math.min.apply(null, earliest) : null;
+    out.dirty = true;
+    out.serverUpdatedAt =
+      finiteOrNull(existing.serverUpdatedAt) !== null
+        ? existing.serverUpdatedAt
+        : finiteOrNull(incoming.serverUpdatedAt);
+    out.deletedAt = null;
+    return out;
+  }
+
+  // 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合(與 background 的
+  // 同名清單一致)。
+  var MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
+
+  // 兩張卡的 seen 事件聯集:同 at 只留一筆，按 at 升序，裁到最新 SEEN_MAX 筆。
+  function unionSeenLists(a, b) {
+    var byAt = {};
+    var out = [];
+    [a, b].forEach(function (list) {
+      TCLCore.sanitizeSeenList(list).forEach(function (record) {
+        if (Object.prototype.hasOwnProperty.call(byAt, record.at)) return;
+        byAt[record.at] = true;
+        out.push(record);
+      });
+    });
+    out.sort(function (x, y) {
+      return x.at - y.at;
+    });
+    return out.slice(-TCLCore.LIMITS.SEEN_MAX);
+  }
+
+  // 匯入合併:去重鍵是 postKey(D11)——作者改名後同一篇貼文的乾淨網址不同、
+  // 正規化後仍不相等，以 url 去重會多開一張卡、雲端跟著分裂。同鍵不是「略
+  // 過」而是合併語意(seen 聯集、receivedAt 取最早、墓碑復活)，計數上仍算
+  // skipped(對使用者而言就是「沒有新增一筆」)。同一批匯入檔內部的同 postKey
+  // 也先併起來，否則一次匯入就自己製造出兩張同文卡。合併後新到舊排序，結果
+  // 不裁切(紀錄不設上限，匯入多少留多少)。
+  function mergeImportedEntries(existing, imported, now) {
     var merged = existing.slice();
+    var indexByKey = {};
+    merged.forEach(function (e, i) {
+      var key = TCLCore.postKeyOf(e.url);
+      if (!Object.prototype.hasOwnProperty.call(indexByKey, key)) indexByKey[key] = i;
+    });
+
     var added = 0;
     var skipped = 0;
     imported.forEach(function (raw) {
       var rawUrl = raw && typeof raw.url === 'string' ? raw.url.trim() : '';
       var url = TCLCore.normalizePostUrl(rawUrl);
-      if (url === null || seen[url]) {
+      if (url === null) {
         skipped++;
         return;
       }
-      seen[url] = true;
-      var entry = {
-        url: url,
-        kind: raw && Object.prototype.hasOwnProperty.call(KINDS, raw.kind) ? raw.kind : 'share',
-        at: raw && typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : now,
-      };
-      var author = TCLCore.sanitizeText(raw && raw.author, TCLCore.LIMITS.AUTHOR_MAX);
-      if (author !== undefined) entry.author = author;
-      var handle = TCLCore.sanitizeText(raw && raw.handle, TCLCore.LIMITS.AUTHOR_MAX);
-      if (handle !== undefined) entry.handle = handle;
-      var excerpt = TCLCore.sanitizeText(raw && raw.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
-      if (excerpt !== undefined) entry.excerpt = excerpt;
-      // 匯入檔的 seen[]/original/removedParams 皆屬外部輸入，同樣要逐筆
-      // sanitize，防止偽造/損毀資料混進來。original 的相同判斷用正規化
-      // 後的 url，不是匯入檔裡未正規化的原始 url 字串。
-      var seenList = TCLCore.sanitizeSeenList(raw && raw.seen);
-      if (seenList.length > 0) entry.seen = seenList;
-      var original = TCLCore.sanitizeOriginal(raw && raw.original, url);
-      if (original !== undefined) entry.original = original;
-      var removedParams = TCLCore.sanitizeRemovedParams(raw && raw.removedParams);
-      if (removedParams !== undefined) entry.removedParams = removedParams;
+      var entry = buildImportedEntry(raw, url, now);
+      if (Object.prototype.hasOwnProperty.call(indexByKey, entry.postKey)) {
+        var idx = indexByKey[entry.postKey];
+        merged[idx] = mergeSamePostEntries(merged[idx], entry);
+        skipped++;
+        return;
+      }
+      indexByKey[entry.postKey] = merged.length;
       merged.push(entry);
       added++;
     });
@@ -426,6 +576,29 @@
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
     var syncState = DEFAULT_SYNC_STATE;
+    // chrome.storage.local.syncState 的帳號同步狀態(計劃 4.2，與上面那顆
+    // 卡片狀態是兩回事)。刪除與清除全部依它的 userId 分流(D6:未登入行為與
+    // 現況完全一致)。
+    var syncAccount = TCLCore.normalizeSyncState(null);
+
+    function isSignedIn() {
+      return nonEmptyString(syncAccount.userId) !== null;
+    }
+
+    // 把 patch 併進帳號同步狀態並寫回 storage(整包寫回，不夾帶未知鍵)。
+    function patchSyncAccount(patch) {
+      syncAccount = TCLCore.normalizeSyncState(Object.assign({}, syncAccount, patch));
+      return Promise.resolve(localStore.set({ [SYNC_ACCOUNT_KEY]: syncAccount })).catch(function (err) {
+        if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入同步狀態失敗', err);
+      });
+    }
+
+    // 畫面、統計、圖表與匯出共用的可見清單:墓碑留在 entries(它是待上傳的
+    // 刪除意圖)，但四處一律看不到它——漏掉任一處就會出現「清單看不到、統計
+    // 卻多一筆」的分岔。
+    function visibleEntries() {
+      return liveEntries(entries);
+    }
 
     // 注意:此模組內不得宣告名為 t 的區域變數，以免遮蔽翻譯函式。
     function tt(key) {
@@ -529,7 +702,7 @@
 
     // ---- 統計磚 ----
     function renderStats() {
-      var stats = aggregateStats(entries, now());
+      var stats = aggregateStats(visibleEntries(), now());
       var setText = function (id, text) {
         var el = byId(id);
         if (el) el.textContent = text;
@@ -941,7 +1114,7 @@
         openConfirm({
           titleKey: 'opSyncSignInBtn',
           okKey: 'opSyncSignInConfirmDo',
-          desc: tf('opSyncSignInConfirmDesc', { n: entries.length }),
+          desc: tf('opSyncSignInConfirmDesc', { n: visibleEntries().length }),
           action: function () {
             sendSyncAction({ type: 'sync.signIn' });
           },
@@ -1027,14 +1200,23 @@
     // 移除)就不寫入、不動視窗、也不發「已刪除」成功 toast，避免對使用者
     // 謊報一個沒發生的動作。寫入失敗(配額)走 onPersistFailed 回滾+失敗
     // toast，不謊報成功。
+    //
+    // 【依登入態分流】已登入時是軟刪:entry 留在陣列，寫下 deletedAt 墓碑 +
+    // dirty，等伺服器 ack 才真的移除(墓碑不進畫面，見 visibleEntries)。未登
+    // 入維持現況硬刪(D6:「僅保存於這台裝置」的承諾在未登入時必須成立)。
+    // 兩條路徑都不換 id——伺服器要靠它認出刪的是哪一張卡。
     function deleteEntry(e) {
       var hit = false;
-      var next = entries.filter(function (x) {
-        if (!hit && x.url === e.url && x.at === e.at) {
-          hit = true;
-          return false;
+      var deletedAt = now();
+      var next = [];
+      entries.forEach(function (x) {
+        var match = !hit && x.url === e.url && x.at === e.at;
+        if (!match) {
+          next.push(x);
+          return;
         }
-        return true;
+        hit = true;
+        if (isSignedIn()) next.push(Object.assign({}, x, { deletedAt: deletedAt, dirty: true }));
       });
       if (!hit) return;
       if (detailEntry && detailEntry.url === e.url && detailEntry.at === e.at) closeEntryDetail();
@@ -1496,7 +1678,7 @@
       // 重新登錄(見 timeNodes / refresh)。
       timeNodes = [];
       rowsEl.textContent = '';
-      var matched = filterEntries(entries, activeKind, query);
+      var matched = filterEntries(visibleEntries(), activeKind, query);
       var visible = matched.slice(0, pageSize);
 
       visible.forEach(function (e) {
@@ -1601,7 +1783,7 @@
       // 匯出:直接下載檔案。
       on('exportBtn', 'click', function () {
         closeMenu();
-        var payload = buildExportPayload(entries, new Date(now()).toISOString());
+        var payload = buildExportPayload(visibleEntries(), new Date(now()).toISOString());
         download('threads-clean-link-history.json', JSON.stringify(payload, null, 2));
         toast(tt('opToastExported'));
       });
@@ -1671,15 +1853,22 @@
         openConfirm({
           titleKey: 'opClearAll',
           okKey: 'opClearDo',
-          desc: tf('opClearConfirmDesc', { n: entries.length }),
+          desc: tf('opClearConfirmDesc', { n: visibleEntries().length }),
+          // 已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成墓碑
+          // 撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由同步引擎
+          // 上傳。未登入不動 syncState。
           action: function () {
+            var signedIn = isSignedIn();
             persistHistory([]).then(function (res) {
               if (!res.ok) {
                 onPersistFailed(res);
                 return;
               }
-              renderAll();
-              toast(tt('opToastCleared'));
+              var done = signedIn ? patchSyncAccount({ clearedAt: now() }) : Promise.resolve();
+              done.then(function () {
+                renderAll();
+                toast(tt('opToastCleared'));
+              });
             });
           },
         });
@@ -1726,11 +1915,12 @@
     function init() {
       var keys = Object.assign({ langPref: null, themePref: 'auto' }, OPTIONS_DEFAULT_SETTINGS);
       var readSync = Promise.resolve(syncStorage.get(keys));
-      var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [] }));
+      var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null }));
       return Promise.all([readSync, readLocal]).then(function (results) {
         var settings = results[0] || {};
         var localData = results[1] || {};
         entries = sanitizeEntries(localData[HISTORY_KEY]);
+        syncAccount = TCLCore.normalizeSyncState(localData[SYNC_ACCOUNT_KEY]);
 
         langPref = settings.langPref === 'zh' || settings.langPref === 'en' ? settings.langPref : null;
         locale = i18n.resolveLocale(langPref);
