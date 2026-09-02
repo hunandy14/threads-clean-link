@@ -363,11 +363,84 @@ test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對�
 // 根本沒接上卻碰巧通過」。
 // ============================================================
 
-// cleanedNotice 的完整鏈路(讀設定→記錄→讀設定→讀語言→通知)串了約 5 個
-// setTimeout(0) tick;Windows 計時器顆粒 ~15ms,60ms 會偶發性等不完，放寬
-// 到 150ms。
+// settle() 原本用固定牆鐘等待非同步鏈路(讀設定→記錄→讀設定→讀語言→通知
+// 等，每一步都經 chrome.storage mock 的 setTimeout(0) 落盤)跑完;機器忙時
+// 固定 ms 等不到鏈路跑完就斷言，閒時又白等，兩頭不討好。改用計時器計數:
+// 全域 setTimeout/clearTimeout 包一層，同時記錄兩件事——(a)只增不減的
+// 「累計排程次數」，(b)「目前尚未觸發」的計時器集合。兩者缺一不可:
+//   - 只看(a)：像 fetchOgFieldsForLocalKind 的 2.5 秒逾時競速這種一開始
+//     就排好、中途不會再新增排程的長效計時器，兩輪之間次數不會變，會被
+//     誤判成「已經沒事在跑」而提早收尾，等不到它真正觸發。
+//   - 只看(b)：0ms 延遲的計時器常常在下一輪輪詢前就已經觸發並從集合中
+//     移除，若只看「目前存活」會整個錯過那個瞬間、誤判成從未發生過排程。
+// 兩者任一有變化(次數增加，或集合非空)都算「還在動」，連續兩輪都沒有變
+// 化(次數不變且集合已空)才視為鏈路真正跑完並穩定下來——若整條鏈路在
+// settle() 開始輪詢前就已經跑完(如純同步分支、或呼叫端已自行 await 過
+// 一次的收尾流程)，兩輪都天生穩定，一樣算數，不強求「這次一定要親眼看
+// 到活動」。同時保留 ms 的語意:穩定後仍至少等原 ms 的一小部分(吸收未經
+// 計時器、純微任務完成的收尾工作)，逾時上限則以 ms 為準再留緩衝(涵蓋
+// settle(2700) 這類需要真的等滿內部逾時競速的呼叫點)，超時直接
+// resolve、不吞錯，讓原本的斷言自己失敗。
+// 輪詢本身要用原生(未被此包裝影響)的 setTimeout 排程，且不可用
+// setImmediate:check phase 在沒有其他 I/O 時不會真的讓出，會在同一個牆
+// 鐘毫秒內狂打數十萬次、Date.now() 幾乎不動，必須靠 setTimeout 讓每輪真
+// 的推進時間。(曾嘗試用 async_hooks 側錄「目前存活的 Timeout 資源」，但
+// 它對全域每一個 Promise/tick 都會觸發回呼，整檔跑下來拖慢兩成以上，改
+// 包 setTimeout 本身開銷小得多。)
+let totalTimersScheduled = 0;
+const pendingTimers = new Set();
+const nativeSetTimeout = global.setTimeout;
+const nativeClearTimeout = global.clearTimeout;
+global.setTimeout = function trackedSetTimeout(fn, ms, ...args) {
+  totalTimersScheduled++;
+  const handle = nativeSetTimeout((...cbArgs) => {
+    pendingTimers.delete(handle);
+    return fn(...cbArgs);
+  }, ms, ...args);
+  pendingTimers.add(handle);
+  return handle;
+};
+global.clearTimeout = function trackedClearTimeout(handle) {
+  pendingTimers.delete(handle);
+  return nativeClearTimeout(handle);
+};
+// 「逾時後才回應」類測試會刻意留下一個吃滿內部逾時(如 2.5 秒)才會觸發的
+// 背景計時器、且不等它跑完就讓測試結束(見 test('OG 案(本地路徑補強):icon
+// 路徑 fetch 逾時...') 這類案例)。pendingTimers 是整份檔案共用的單一集
+// 合，若不清乾淨，下一個測試呼叫 settle() 時會誤把這顆與自己無關的舊計
+// 時器當成「還在動」，白等到它真正觸發才收尾。每個測試開始前清空，只保
+// 留「這個測試自己造成的排程」。
+test.beforeEach(() => {
+  pendingTimers.clear();
+});
+
 function settle(ms = 150) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const floor = Math.max(Math.floor(ms / 5), 20);
+    const cap = Math.max(ms + 500, 2000);
+    let lastCount = totalTimersScheduled;
+    let stableTicks = 0;
+
+    function tick() {
+      const countChanged = totalTimersScheduled !== lastCount;
+      if (countChanged) lastCount = totalTimersScheduled;
+      const stillPending = pendingTimers.size > 0;
+      if (countChanged || stillPending) {
+        stableTicks = 0;
+      } else {
+        stableTicks++;
+      }
+      const elapsed = Date.now() - start;
+      const settled = stableTicks >= 2 && elapsed >= floor;
+      if (settled || elapsed >= cap) {
+        resolve();
+        return;
+      }
+      nativeSetTimeout(tick, 4);
+    }
+    nativeSetTimeout(tick, 4);
+  });
 }
 
 // 載入 background.js，並以指定設定填入 chrome.storage.sync;同時側錄
