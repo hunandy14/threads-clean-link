@@ -54,7 +54,7 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
-【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄預設僅保存在你的裝置上(chrome.storage.local)，不會上傳(除非另行啟用『雲端同步』並以 Google 帳號登入)，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
+【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄預設僅保存在你的裝置上(chrome.storage.local)，不會上傳(除非另行啟用「雲端同步」並以 Google 帳號登入)，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
 
 【雲端同步(選用)】在「紀錄與設定」頁使用 Google 帳號登入後，清理紀錄可額外同步到雲端、並與手機版 App 互通;不登入則完全不受影響，行為與現在一樣。
 
@@ -243,7 +243,7 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Authentication information | 不勾 | 匿名請求刻意 `credentials: 'omit'`，不讀取、不傳送任何登入憑證或 cookie |
 | Personal communications | 不勾 | 不讀取頁面內容、不讀取剪貼簿既有內容 |
 | Location | 不勾 | 不存取地理位置 |
-| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。0.3.0 起的「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址、只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集 |
+| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。0.3.0 起的「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址、預設只存 chrome.storage.local、不傳輸給任何一方(含開發者;除非另行以 Google 帳號登入啟用「雲端同步」)，依 CWS 定義不構成蒐集;雲端同步啟用後的資料揭露見下方「雲端同步上線後，需改勾選的兩項」 |
 | User activity | 不勾 | 不追蹤點擊、捲動等使用者行為 |
 | Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
 
@@ -265,7 +265,7 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 ### 三項認證聲明 —— 全部勾選(皆為真)
 
 - 「I do not sell or transfer user data to third parties, outside of the approved use cases」→ **勾選**(沒有任何資料可賣，也未傳輸給第三方)
-- 「I do not use or transfer user data for purposes unrelated to the item's single purpose」→ **勾選**(唯一的網路請求就是單一用途聲明裡描述的短碼解析)
+- 「I do not use or transfer user data for purposes unrelated to the item's single purpose」→ **勾選**(短碼解析是核心網路請求；雲端同步(選用，登入後)的同步請求服務同一單一用途，見上方「單一用途」聲明維持不變的說明，沒有為無關用途使用或轉讓資料)
 - 「I do not use or transfer user data to determine creditworthiness or for lending purposes」→ **勾選**(完全無關)
 
 ### 為什麼「發網路請求」不等於「蒐集資料」
