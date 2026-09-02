@@ -4,12 +4,12 @@
 //   - Node 測試:CommonJS require
 //
 // 全部外部依賴一律由 create() 注入(storage／fetch／now／alarms／broadcast／
-// auth／permissions／randomUUID／writeChain／setTimeout／clearTimeout),模組本
+// auth／permissions／randomUUID／writeChain／setTimeout／clearTimeout)，模組本
 // 身不碰全域 chrome／fetch／Date——SW 隨時被回收，測試要能在 node 內以假時鐘
 // 跑完整往返，兩者都靠這條紀律。
 //
 // history 的讀改寫一律包進注入的 writeChain(background.js 的
-// historyWriteChain),與 recordHistory／遷移共用同一條序列鏈，否則兩邊的
+// historyWriteChain)，與 recordHistory／遷移共用同一條序列鏈，否則兩邊的
 // read-modify-write 會互相覆蓋。
 (function (root) {
   'use strict';
@@ -22,16 +22,16 @@
 
   // ---- 協定與排程常數 ----
 
-  // D5:Google Web client(公開值),後端 aud 陣列已含此 client。
+  // D5:Google Web client(公開值)，後端 aud 陣列已含此 client。
   var CLIENT_ID = '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com';
 
-  // D9:apiBase 只有這兩個合法值,syncApiBase 覆寫成其他值一律忽略——
+  // D9:apiBase 只有這兩個合法值，syncApiBase 覆寫成其他值一律忽略——
   // 覆寫鍵是 storage.local 的普通鍵，被寫入任意 origin 就等於把 bearer
   // token 送去別人家。
   var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
   var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
 
-  // D12:週期 alarm 不低於 1 分鐘(MV3 硬性下限),新紀錄去抖 2 秒。
+  // D12:週期 alarm 不低於 1 分鐘(MV3 硬性下限)，新紀錄去抖 2 秒。
   var ALARM_NAME = 'tcl-sync';
   var SYNC_PERIOD_MINUTES = 5;
   var DEBOUNCE_MS = 2000;
@@ -64,6 +64,7 @@
   var AUTH_KEY = 'syncAuth';
   var API_BASE_KEY = 'syncApiBase';
   var BACKOFF_KEY = 'syncBackoff';
+  var VERIFIED_AT_KEY = 'syncVerifiedAt';
 
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
@@ -72,14 +73,25 @@
   var DEBOUNCE_KEY = 'syncDebounce';
   var INFLIGHT_TTL_MS = 120000;
 
-  // getState 順手補一次同步的門檻(options／popup 開啟時)。低於此值就不打,
+  // get-session 的節流:SW 每次被喚醒都會啟動驗一次，而喚醒在瀏覽期間非常
+  // 頻繁（每一則訊息、每一個 alarm）。60 次／60 秒的限流桶與手機端共用，
+  // 光是驗 session 就能把它吃光，因此距上次驗證未滿此間隔就跳過。
+  var VERIFY_THROTTLE_MS = 5 * 60000;
+
+  // getState 順手補一次同步的門檻(options／popup 開啟時)。低於此值就不打，
   // 避免每次開頁都吃掉 60 次／60 秒的限流額度(與手機端共用同一桶)。
   var STALE_MS = SYNC_PERIOD_MINUTES * 60000;
 
   // 「已登出」與「出錯」的分野:session_expired 描述的是一次正常的登出轉場
-  // (token 到期／被撤銷),UI 該顯示未登入卡片而非錯誤;其餘 lastError 都是
+  // (token 到期／被撤銷)，UI 該顯示未登入卡片而非錯誤;其餘 lastError 都是
   // 真的出了事，狀態為 error。
   var SIGNED_OUT_ERRORS = ['session_expired'];
+
+  // 重試永遠不會成功的錯誤:forbidden_origin 是「沒帶 Bearer 且來源不對」，
+  // 亦即程式錯誤或後端 allowlist 設定錯誤（契約第 7 點明寫「別重試」）。
+  // 這一類只記錯誤碼，不進退避曲線、也不排下一次 alarm——排了只是每隔幾分鐘
+  // 用同一份必然失敗的請求去敲限流桶。
+  var FATAL_ERRORS = ['forbidden_origin'];
 
   function pollIntervalFor(failures) {
     if (failures <= 0) return POLL_INTERVAL_MS;
@@ -103,7 +115,7 @@
   }
 
   // 這張卡「最新的一次事件」時間。伺服器以此判定早於 clearedAt／墓碑的舊
-  // 資料(api-spec 4.3 規則 2、3),本機套用雲端水位線時必須用同一個判準。
+  // 資料(api-spec 4.3 規則 2、3)，本機套用雲端水位線時必須用同一個判準。
   function eventTimeOf(entry) {
     var latest = typeof entry.receivedAt === 'number' && isFinite(entry.receivedAt) ? entry.receivedAt : 0;
     var seen = Array.isArray(entry.seen) ? entry.seen : [];
@@ -127,16 +139,22 @@
     return typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
   }
 
+  // chrome.storage 的容量配額錯誤（與 background.js 的同名判定同一條規則）。
+  function isQuotaExceededError(err) {
+    var message = (err && err.message) || String(err || '');
+    return /QUOTA_BYTES/i.test(message);
+  }
+
   function finiteNumber(value) {
     return typeof value === 'number' && isFinite(value);
   }
 
   /**
    * 這筆 entry 送得上雲嗎?判準逐條對齊伺服器的 normalizeItem(api-spec 3.1):
-   * 缺 id／original／cleaned,或 receivedAt 不是有限正數，整筆會被**靜默丟棄**
-   * ——不進 applied 也不進 rejectedIds。送這種資料上去等於永遠拿不到 ack,
+   * 缺 id／original／cleaned，或 receivedAt 不是有限正數，整筆會被**靜默丟棄**
+   * ——不進 applied 也不進 rejectedIds。送這種資料上去等於永遠拿不到 ack，
    * dirty 清不掉，每一輪重送一次，活鎖。損毀資料經遷移後真的可能長成這樣
-   * (receivedAt 為 null),所以在 outbox 這一關就攔下來。
+   * (receivedAt 為 null)，所以在 outbox 這一關就攔下來。
    */
   function isUploadable(entry) {
     if (typeof entry.id !== 'string' || entry.id.length < 1 || entry.id.length > 64) return false;
@@ -150,9 +168,9 @@
   }
 
   /**
-   * 雲端 item 的形狀閘門。TCLCore.fromSyncItem 是純映射、不做輸入驗證,形狀
+   * 雲端 item 的形狀閘門。TCLCore.fromSyncItem 是純映射、不做輸入驗證，形狀
    * 不對的欄位會原樣寫進 entry;而 options 讀取端的 sanitizeEntries 是有損
-   * 閘門(url 無法正規化／at 非有限數字／kind 不在白名單就整筆丟掉),寫進去
+   * 閘門(url 無法正規化／at 非有限數字／kind 不在白名單就整筆丟掉)，寫進去
    * 的壞資料會在使用者眼前直接消失。信任邊界在這裡:後端回來的東西一律先驗。
    */
   function acceptIncomingItem(item) {
@@ -200,13 +218,19 @@
     var writeChain = typeof deps.writeChain === 'function' ? deps.writeChain : function (fn) {
       return Promise.resolve().then(fn);
     };
+    // 容量上限:由 background 注入 capHistoryForStorage（位元組軟預算＋筆數硬
+    // 保險，並優先淘汰墓碑）。拉取是唯一會把 history 變長的寫入路徑，沒有這
+    // 一道就會在雲端資料多於本機上限時直接把 storage 寫爆。
+    var capHistory = typeof deps.capHistory === 'function' ? deps.capHistory : function (list) {
+      return list;
+    };
     var setTimer = deps.setTimeout;
     var clearTimer = deps.clearTimeout;
 
     // 同一個 SW 實例內的單飛:三次 syncNow 同時進來時共用同一個 promise。
     // 跨實例的單飛靠 session 旗標(claimInflight)。
     var inflight = null;
-    // 去抖計時器 handle(SW 存活期路徑),只留最後一次排程。
+    // 去抖計時器 handle(SW 存活期路徑)，只留最後一次排程。
     var debounceTimer = null;
 
     // ---- storage 小工具 ----
@@ -242,6 +266,7 @@
       defaults[AUTH_KEY] = null;
       defaults[API_BASE_KEY] = null;
       defaults[BACKOFF_KEY] = null;
+      defaults[VERIFIED_AT_KEY] = null;
       return localGet(defaults).then(function (got) {
         var authRecord = got[AUTH_KEY];
         var backoff = got[BACKOFF_KEY];
@@ -253,6 +278,7 @@
               : null,
           apiBase: got[API_BASE_KEY] === API_BASE_STAGING ? API_BASE_STAGING : API_BASE_PRODUCTION,
           failures: backoff && typeof backoff.failures === 'number' ? backoff.failures : 0,
+          verifiedAt: finiteNumber(got[VERIFIED_AT_KEY]) ? got[VERIFIED_AT_KEY] : null,
         };
       });
     }
@@ -317,12 +343,15 @@
     // ---- HTTP ----
 
     /**
-     * 打一次後端。契約:credentials 一律 omit(D1,不夾帶 cookie)、Bearer、
+     * 打一次後端。契約:credentials 一律 omit(D1，不夾帶 cookie)、Bearer、
      * 有 body 才帶 application/json(否則後端回 415)。任何回應帶
      * set-auth-token 就覆寫本地 token(插件端契約第 3 點)。
      */
     function call(ctx, method, path, body) {
-      var init = { method: method, credentials: 'omit', headers: {} };
+      // redirect:'error' — 後端不該對這些端點回 3xx。放任 fetch 自動跟隨，
+      // 轉址後那一站的回應照樣會被下面當成後端回應處理（包含採信它的
+      // set-auth-token 標頭），等於把 token 的來源交給任何能讓後端轉址的人。
+      var init = { method: method, credentials: 'omit', headers: {}, redirect: 'error' };
       init.headers.Authorization = 'Bearer ' + ctx.token;
       if (body !== undefined) {
         init.headers['Content-Type'] = 'application/json';
@@ -451,10 +480,10 @@
 
     /**
      * 把 applied(ack)與 changes(增量)套回本機 history。整段讀改寫包在注入
-     * 的 writeChain 內,與 recordHistory 串行。
+     * 的 writeChain 內，與 recordHistory 串行。
      *
-     * 【只清本輪快照】ack 一律以「伺服器回報的 id」比對,往返期間 recordHistory
-     * 新寫入的 entry 不在回應裡，自然保持 dirty,下一輪才上雲。
+     * 【只清本輪快照】ack 一律以「伺服器回報的 id」比對，往返期間 recordHistory
+     * 新寫入的 entry 不在回應裡，自然保持 dirty，下一輪才上雲。
      */
     function applyResponse(body) {
       return writeChain(function () {
@@ -479,7 +508,7 @@
           var next = [];
           list.forEach(function (entry) {
             if (!entry) return;
-            // 墓碑被 ack 之後才真正從 storage 移除,在此之前必須保留——SW 中途
+            // 墓碑被 ack 之後才真正從 storage 移除，在此之前必須保留——SW 中途
             // 被殺時墓碑還在，下次照樣送得出去。
             if (isTombstone(entry) && deletedIds[entry.id]) return;
             if (canonical[entry.id] !== undefined) {
@@ -489,7 +518,7 @@
                   // 次同步又分裂一張。
                   id: canonical[entry.id],
                   dirty: false,
-                  // serverUpdatedAt 只是「這一輪已上傳」的標記,不是比較用的
+                  // serverUpdatedAt 只是「這一輪已上傳」的標記，不是比較用的
                   // 判準——後端契約(api-spec 3.1)的 ShareHistoryItem 沒有
                   // updatedAt 欄位。新舊一律以 SyncResponse.cursor 與 changes
                   // 為準，本欄不參與任何比較。
@@ -499,7 +528,7 @@
               return;
             }
             if (rejectedIds[entry.id]) {
-              // 拒收的原因一律是「這筆事件早於雲端的清空水位線或墓碑」,原樣
+              // 拒收的原因一律是「這筆事件早於雲端的清空水位線或墓碑」，原樣
               // 重送永遠會被再拒一次。清掉 dirty 讓它停在本機，不無限重試。
               next.push(Object.assign({}, entry, { dirty: false }));
               return;
@@ -523,7 +552,7 @@
               if (typeof row.id === 'string') tombIds[row.id] = true;
             });
             if (changes.deleted && changes.deleted.length) {
-              // 雲端墓碑在本機是硬刪,不是再留一個本機墓碑——留下來會被下一輪
+              // 雲端墓碑在本機是硬刪，不是再留一個本機墓碑——留下來會被下一輪
               // 當成待送出的刪除意圖再送一次。
               next = next.filter(function (entry) {
                 return !(tombKeys[keyOfEntry(entry)] || tombIds[entry.id]);
@@ -554,8 +583,13 @@
             return (b.at || 0) - (a.at || 0);
           });
           var items = {};
-          items[HISTORY_KEY] = next;
-          return localSet(items);
+          items[HISTORY_KEY] = capHistory(next);
+          return localSet(items).catch(function (err) {
+            // 配額爆掉不是「這一輪失敗、下一輪重來就好」而已:游標一旦前進，
+            // 這一頁的增量就再也拉不回來。改成拋出可辨識的錯誤碼，由 runSync
+            // 統一記 lastError 並排退避，游標留在原地下一輪重拉同一頁。
+            throw syncError(isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
+          });
         });
       });
     }
@@ -574,7 +608,7 @@
           })
           .then(function () {
             ctx.state.clearedAt = null;
-            // 舊游標對清空後的雲端已無意義,歸零重拉。
+            // 舊游標對清空後的雲端已無意義，歸零重拉。
             ctx.state.cursor = null;
             return saveState(ctx.state);
           });
@@ -600,9 +634,14 @@
                 since: ctx.state.cursor === null ? '0' : ctx.state.cursor,
               };
               return call(ctx, 'POST', '/api/v1/links/sync', body).then(function (payload) {
-                if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
-                lastChanges = payload ? payload.changes : null;
-                return applyResponse(payload);
+                // 【順序】游標必須等 applyResponse 真的落地才前進。反過來的話，
+                // 寫入失敗（配額、storage 壞掉）時失敗路徑的 saveState 會把已
+                // 前進的游標寫進去，這一頁的增量從此再也拉不回來——伺服器只認
+                // 游標，不會重送。
+                return applyResponse(payload).then(function () {
+                  if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
+                  lastChanges = payload ? payload.changes : null;
+                });
               });
             });
           });
@@ -615,9 +654,12 @@
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
             rounds += 1;
             return call(ctx, 'POST', '/api/v1/links/sync', { since: ctx.state.cursor }).then(function (payload) {
-              if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
-              lastChanges = payload ? payload.changes : null;
-              return applyResponse(payload).then(more);
+              // 同上:先落地再前進游標。
+              return applyResponse(payload).then(function () {
+                if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
+                lastChanges = payload ? payload.changes : null;
+                return more();
+              });
             });
           }
           return more();
@@ -674,7 +716,12 @@
           return saveState({ lastError: 'session_expired' });
         })
         .then(function () {
-          return Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {});
+          // 週期與去抖保底兩支都要清:留著去抖 alarm 會在登出後照樣喚醒 SW，
+          // 白跑一輪什麼也做不了。
+          return Promise.all([
+            Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
+            Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
+          ]);
         })
         .then(function () {
           return broadcastState('signed_out');
@@ -709,8 +756,8 @@
               return broadcastState('error');
             });
           }
-          // nonce 由引擎生成並落 chrome.storage.session,授權往返期間 SW 若
-          // 被回收，回來仍比對得出這一次的 nonce(擋重放)。
+          // nonce 由引擎生成並落 chrome.storage.session，授權往返期間 SW 若
+          // 被回收，回來仍比對得出這一次的 nonce（擋重放）。
           var nonce = randomUUID();
           var items = {};
           items[NONCE_KEY] = nonce;
@@ -719,18 +766,29 @@
               return auth.signInWithGoogle({ clientId: CLIENT_ID, apiBase: ctx.apiBase, nonce: nonce });
             })
             .then(function (result) {
-              // auth 模組是「本次授權實際用了哪枚 nonce」的權威,以它回傳的
-              // 值為準寫回 session 並送給後端，兩邊必然一致。
+              // auth 模組是「本次授權實際用了哪枚 nonce」的權威（launch 時傳
+              // 進去的那枚已由它比對過 id_token payload），以它回傳的值寫回
+              // session。
               var effective = typeof result.nonce === 'string' && result.nonce ? result.nonce : nonce;
               var record = {};
               record[NONCE_KEY] = effective;
-              return sessionSet(record).then(function () {
-                return auth
-                  .exchangeWithBackend({ apiBase: ctx.apiBase, idToken: result.idToken, nonce: effective })
-                  .then(function (exchange) {
-                    return finishSignIn(ctx, result, exchange);
-                  });
-              });
+              return sessionSet(record)
+                .then(function () {
+                  // 送出前真的從 session 讀回來對一次。session 是這枚 nonce 的
+                  // 權威存放處;寫進去又沒讀回來的話，這段往返只是裝飾——SW 被
+                  // 回收重建時也是靠這裡的值，讀不回同一枚就代表狀態已經不可信。
+                  var want = {};
+                  want[NONCE_KEY] = null;
+                  return sessionGet(want);
+                })
+                .then(function (stored) {
+                  if (stored[NONCE_KEY] !== effective) throw syncError('nonce_mismatch');
+                  return auth
+                    .exchangeWithBackend({ apiBase: ctx.apiBase, idToken: result.idToken, nonce: stored[NONCE_KEY] })
+                    .then(function (exchange) {
+                      return finishSignIn(ctx, result, exchange);
+                    });
+                });
             })
             .catch(function (err) {
               ctx.state.lastError = err && err.code ? err.code : 'sign_in_failed';
@@ -825,23 +883,38 @@
     function verifySession() {
       return loadContext().then(function (ctx) {
         if (!ctx.token) return undefined;
-        return call(ctx, 'GET', '/api/auth/get-session')
-          .then(function (payload) {
-            // api-spec 2.2:session 已被撤銷時回的是 200 ＋ null,不是 401。
-            // 把 null 當成「還登入著」會讓失效的 token 一直留在本機。
-            if (!payload || !payload.session) return handleSessionExpired();
-            var user = payload.user || {};
-            if (typeof user.id === 'string') ctx.state.userId = user.id;
-            if (typeof user.email === 'string') ctx.state.email = user.email;
-            return saveState(ctx.state).then(function () {
-              return broadcastState();
-            });
-          })
-          .catch(function (err) {
-            if (err && err.code === 'session_expired') return handleSessionExpired();
-            return undefined;
-          });
+        // 節流:SW 每次喚醒都會叫這支，距上次驗證未滿門檻就跳過（見
+        // VERIFY_THROTTLE_MS）。token 真的失效時，任何 /api/v1/* 的 401 走的是
+        // 同一條失效處理，不會因為跳過驗證而漏掉。
+        if (ctx.verifiedAt !== null && now() - ctx.verifiedAt < VERIFY_THROTTLE_MS) return undefined;
+        var stamp = {};
+        stamp[VERIFIED_AT_KEY] = now();
+        return localSet(stamp).then(function () {
+          return runVerify(ctx);
+        });
       });
+    }
+
+    function runVerify(ctx) {
+      return Promise.resolve()
+        .then(function () {
+          return call(ctx, 'GET', '/api/auth/get-session');
+        })
+        .then(function (payload) {
+          // api-spec 2.2:session 已被撤銷時回的是 200 ＋ null，不是 401。
+          // 把 null 當成「還登入著」會讓失效的 token 一直留在本機。
+          if (!payload || !payload.session) return handleSessionExpired();
+          var user = payload.user || {};
+          if (typeof user.id === 'string') ctx.state.userId = user.id;
+          if (typeof user.email === 'string') ctx.state.email = user.email;
+          return saveState(ctx.state).then(function () {
+            return broadcastState();
+          });
+        })
+        .catch(function (err) {
+          if (err && err.code === 'session_expired') return handleSessionExpired();
+          return undefined;
+        });
     }
 
     function syncNow() {
@@ -886,6 +959,9 @@
               ctx.state.lastError = code;
               return saveState(ctx.state)
                 .then(function () {
+                  // 不可重試的錯誤只記碼:排下一次 alarm 等於每隔幾分鐘用同一份
+                  // 必然失敗的請求去敲 60 次／60 秒的限流桶（與手機端共用）。
+                  if (FATAL_ERRORS.indexOf(code) !== -1) return undefined;
                   return scheduleBackoff(ctx.failures + 1, err && err.retryAfterMs);
                 })
                 .then(function () {
@@ -944,7 +1020,7 @@
 
     /**
      * recordHistory 之後的掛鉤。雙保險:注入的 setTimeout 走 SW 存活期的 2 秒
-     * 去抖，另排一個 30 秒的 alarm 當 SW 被回收時的保底;待辦旗標落 session,
+     * 去抖，另排一個 30 秒的 alarm 當 SW 被回收時的保底;待辦旗標落 session，
      * 兩條路任一先到就清掉旗標並跑同步，另一條到期時看到旗標已清就不重跑。
      * 連續寫入只留最後一次排程(計時器與保底 alarm 一起重排)。
      */

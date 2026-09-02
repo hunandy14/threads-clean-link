@@ -312,6 +312,9 @@ const syncEngine =
         permissions: { contains: (descriptor) => syncAuthApi.containsPermissions(descriptor) },
         randomUUID: () => TCLCore.randomUuid(),
         writeChain: (fn) => enqueueHistoryWrite(fn),
+        // 拉取是唯一會把 history 變長的寫入路徑，套的是與 recordHistory 同一
+        // 份容量上限(位元組軟預算＋筆數硬保險，優先淘汰墓碑)。
+        capHistory: (list) => capHistoryForStorage(list),
         setTimeout: (fn, ms) => setTimeout(fn, ms),
         clearTimeout: (handle) => clearTimeout(handle),
       })

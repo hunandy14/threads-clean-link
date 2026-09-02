@@ -1683,3 +1683,203 @@ test('T8 mock：側錄每次請求的標頭、body 與 credentials', async () =>
   assert.equal(req.headers.authorization, `Bearer ${token}`);
   assert.deepEqual(req.body.deletes, ['gone']);
 });
+
+// ============================================================================
+// 安全審查追加案例（新增，不改既有）
+// ============================================================================
+
+// 游標搶跑:cursor 一旦在 applyResponse 之前就前進，寫入失敗時失敗路徑的
+// saveState 會把已前進的游標落盤，這一頁的增量從此再也拉不回來——伺服器只認
+// 游標，不會重送。
+test('T3 游標不搶跑：history 寫入失敗時 cursor 不前進，下一輪重拉同一頁', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, syncState: { cursor: '0' }, history: [] });
+  env.server.seed([
+    { id: 'srv-b', original: POST_B, cleaned: POST_B, receivedAt: T0 - 20_000, seen: [{ at: T0 - 20_000 }] },
+  ]);
+
+  // 只讓 history 那一次寫入失敗（模擬撞到 chrome.storage 配額）；syncState 等
+  // 其他鍵照常寫得進去，才測得到「失敗路徑會不會把游標一起落盤」。
+  const brokenDeps = Object.assign({}, env.deps, {
+    storage: {
+      session: env.deps.storage.session,
+      local: Object.assign({}, env.deps.storage.local, {
+        set(items) {
+          if (Object.prototype.hasOwnProperty.call(items, 'history')) {
+            return Promise.reject(new Error('QUOTA_BYTES quota exceeded'));
+          }
+          return env.deps.storage.local.set(items);
+        },
+      }),
+    },
+  });
+
+  const broken = TCLSync.create(brokenDeps);
+  await broken.syncNow();
+  await settle(15);
+
+  assert.equal(env.storage.syncState().cursor, '0', 'history 沒落地，游標不得前進');
+  assert.equal(env.storage.syncState().lastError, 'storage_quota', '配額失敗要記成可辨識的錯誤碼');
+  assert.deepEqual(env.storage.history(), [], '本輪什麼都沒寫進去');
+
+  const healthy = TCLSync.create(env.deps);
+  await healthy.syncNow();
+  await settle(15);
+
+  const posts = env.syncPosts();
+  assert.equal(posts[posts.length - 1].body.since, '0', '下一輪必須用同一個游標重拉');
+  assert.equal(env.storage.history().length, 1, '重拉之後那一頁才補得回來');
+});
+
+// 拉取是唯一會把 history 變長的寫入路徑;沒有容量上限，雲端資料多於本機上限
+// 時會直接把 chrome.storage.local 寫爆。
+test('T3 拉：寫回前套用注入的 capHistory 容量上限', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [] });
+  const seedItems = [];
+  for (let i = 0; i < 6; i += 1) {
+    const at = T0 - 300_000 + i;
+    const url = `https://www.threads.com/@c${i}/post/CAPS${String(i).padStart(6, '0')}`;
+    seedItems.push({ id: `cap-${i}`, original: url, cleaned: url, receivedAt: at, seen: [{ at }] });
+  }
+  env.server.seed(seedItems);
+
+  const capCalls = [];
+  const deps = Object.assign({}, env.deps, {
+    capHistory: (list) => {
+      capCalls.push(list.length);
+      return list.slice(0, 2);
+    },
+  });
+  const engine = TCLSync.create(deps);
+  await engine.syncNow();
+  await settle(15);
+
+  assert.ok(capCalls.length >= 1, '每一次寫回 history 之前都要過容量上限');
+  assert.ok(capCalls.some((n) => n === 6), '傳給 capHistory 的是裁切前的完整清單');
+  assert.equal(env.storage.history().length, 2, '超出上限的部分要被裁掉，不得整份寫下去');
+});
+
+// 契約第 7 點:403 forbidden_origin 是程式錯誤或後端 allowlist 設定錯誤，
+// 「別重試」。排下一次 alarm 等於每隔幾分鐘用同一份必然失敗的請求去敲 60 次／
+// 60 秒的限流桶（與手機端共用同一桶）。
+test('T4 403 forbidden_origin：不排下一次 alarm', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  env.server.failNext({ status: 403, code: 'forbidden_origin' });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(env.alarms.creates(), [], '不可重試的錯誤不得排下一次同步');
+  assert.equal(env.storage.syncState().lastError, 'forbidden_origin', '錯誤碼照樣要記');
+});
+
+test('T2 登出失效：週期與去抖保底兩支 alarm 都要清', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  const engine = TCLSync.create(env.deps);
+  await engine.notifyRecorded();
+  await settle();
+  const guard = env.alarms.lastCreate();
+  assert.ok(guard && guard.name !== TCLSync.ALARM_NAME, '前置條件:去抖保底 alarm 已排下');
+
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  await engine.syncNow();
+  await settle(10);
+
+  const cleared = env.alarms.clears().map((c) => c.name);
+  assert.ok(cleared.includes(TCLSync.ALARM_NAME), '週期 alarm 要清');
+  assert.ok(cleared.includes(guard.name), '去抖保底 alarm 也要清，否則登出後照樣喚醒 SW 白跑一輪');
+});
+
+// SW 每次被喚醒（每一則訊息、每一個 alarm）都會啟動驗一次;60 次／60 秒的
+// 限流桶與手機端共用，光是驗 session 就能把它吃光。
+test('T2 verifySession：距上次驗證未滿門檻就跳過，過了門檻才再驗', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true });
+  const first = TCLSync.create(env.deps);
+  await first.verifySession();
+  await settle(10);
+  assert.equal(env.server.requestsTo('/api/auth/get-session', 'GET').length, 1);
+
+  // SW 被回收後重建（session 清空、local 保留）：節流狀態必須落 local，
+  // 否則每次喚醒都會再打一次。
+  const revived = env.recreate(TCLSync, false);
+  await revived.verifySession();
+  await settle(10);
+  assert.equal(
+    env.server.requestsTo('/api/auth/get-session', 'GET').length,
+    1,
+    '門檻內重複喚醒不得再打一次 get-session'
+  );
+
+  env.advance(6 * 60_000);
+  const later = env.recreate(TCLSync, false);
+  await later.verifySession();
+  await settle(10);
+  assert.equal(
+    env.server.requestsTo('/api/auth/get-session', 'GET').length,
+    2,
+    '過了門檻要照常驗，不能永久跳過'
+  );
+});
+
+test('T2 signIn：送給後端的 nonce 是從 session 讀回來的那一枚', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ auth: { nonce: 'nonce-roundtrip' } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.equal(env.auth.calls.exchange.length, 1);
+  assert.equal(env.auth.calls.exchange[0].nonce, 'nonce-roundtrip');
+  assert.equal(env.storage.syncAuth().token, env.server.currentToken(), '登入應完成');
+});
+
+test('T2 signIn：session 讀不回同一枚 nonce 時整條拒收，不換 token', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ auth: { nonce: 'nonce-good' } });
+  // session 寫得進去卻讀回別的值＝狀態已不可信（被別的流程蓋掉／儲存區異常）。
+  const tamperedDeps = Object.assign({}, env.deps, {
+    storage: {
+      local: env.deps.storage.local,
+      session: Object.assign({}, env.deps.storage.session, {
+        get(keys) {
+          return Promise.resolve({ syncNonce: 'nonce-tampered' });
+        },
+      }),
+    },
+  });
+  const engine = TCLSync.create(tamperedDeps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.deepEqual(env.auth.calls.exchange, [], 'nonce 對不上就不得拿 id_token 去換 token');
+  assert.equal((env.storage.syncAuth() || {}).token, undefined, '不得留下任何 token');
+  assert.equal(env.storage.syncState().lastError, 'nonce_mismatch');
+});
+
+test('T2 每個請求都關掉自動跟隨轉址（redirect:"error"）', async () => {
+  const TCLSync = loadSync();
+  const seen = [];
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  const spyDeps = Object.assign({}, env.deps, {
+    fetch: (url, init) => {
+      seen.push(init);
+      return env.deps.fetch(url, init);
+    },
+  });
+  const engine = TCLSync.create(spyDeps);
+  await engine.syncNow();
+  await settle(10);
+
+  assert.ok(seen.length >= 1);
+  seen.forEach((init) => {
+    assert.equal(
+      init.redirect,
+      'error',
+      '跟著轉址走的話，轉址目的地的 set-auth-token 也會被當成後端發的 token'
+    );
+  });
+});
