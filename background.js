@@ -17,6 +17,12 @@ if (typeof TCLCore === 'undefined' && typeof importScripts === 'function') {
   importScripts('tcl-core.js');
 }
 
+// Google 登入模組(雲端同步):SW 環境用 importScripts 載入;測試 sandbox 由
+// 測試端自行載入(TCLAuth 已存在)，此條件式便不執行。
+if (typeof TCLAuth === 'undefined' && typeof importScripts === 'function') {
+  importScripts('auth.js');
+}
+
 // 乾淨貼文網址格式，例如：https://www.threads.com/@username/post/AbCd123EfGh
 // 刻意不錨定收尾：extractCleanPostUrl 仰賴它能從帶 query/hash 的轉址結果
 // 「截」出前段乾淨網址，加上 $ 會讓截取失效。
@@ -238,6 +244,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false; // 不需要回應，同步處理完就結束，不佔用非同步通道。
 });
+
+// 雲端同步登入 spike 入口:由 options 頁的開發用按鈕觸發(chrome.permissions
+// .request 需要使用者手勢，因此不能由 SW 自行發起)。回傳 id_token payload 的
+// 摘要欄位，權杖本體不外流到呼叫端以外的地方。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'auth.spike') {
+    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+  }
+
+  handleAuthSpike(message)
+    .then(sendResponse)
+    .catch((err) => {
+      console.error('[threads-clean-link] auth.spike 處理失敗', err);
+      sendResponse({ ok: false, reason: String(err && err.message ? err.message : err) });
+    });
+
+  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
+});
+
+async function handleAuthSpike(message) {
+  const clientId = message.clientId;
+  const apiBase = message.apiBase;
+  if (!clientId || !apiBase) {
+    return { ok: false, reason: 'missing-client-id-or-api-base' };
+  }
+
+  const signIn = await TCLAuth.signInWithGoogle({ clientId, apiBase });
+  const exchange = await TCLAuth.exchangeWithBackend({
+    apiBase,
+    idToken: signIn.idToken,
+    nonce: signIn.nonce,
+  });
+
+  return {
+    ok: true,
+    payload: {
+      aud: signIn.payload.aud,
+      iss: signIn.payload.iss,
+      email_verified: signIn.payload.email_verified,
+      nonceMatches: signIn.payload.nonce === signIn.nonce,
+    },
+    backend: {
+      status: exchange.status,
+      hasUser: Boolean(exchange.body && exchange.body.user),
+      hasAuthTokenHeader: Boolean(exchange.authToken),
+    },
+  };
+}
 
 // 核心流程
 
