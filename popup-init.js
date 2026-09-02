@@ -19,6 +19,46 @@ document.addEventListener('DOMContentLoaded', function () {
             chrome.runtime.openOptionsPage();
           }
         : null,
+    // 雲端同步狀態列的導向:chrome.runtime.openOptionsPage() 不支援帶
+    // hash，改用 chrome.tabs.create 直接開 options.html#cloud-sync(見
+    // manifest.json 的 options_ui.open_in_tab:true——options 頁本來就是
+    // 獨立分頁，效果等價)。chrome.tabs.create 不需要宣告 "tabs" 權限
+    // (只有讀取既有分頁清單／敏感欄位才需要)。
+    openCloudSyncSection:
+      typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create
+        ? function () {
+            chrome.tabs.create({ url: chrome.runtime.getURL('options.html') + '#cloud-sync' });
+          }
+        : null,
+    // 同一份 runtime.sendMessage 包裝，見 options-init.js 的對應註解。
+    runtime: {
+      sendMessage: function (message) {
+        return new Promise(function (resolve) {
+          try {
+            chrome.runtime.sendMessage(message, function (response) {
+              if (chrome.runtime.lastError) {
+                resolve(undefined);
+                return;
+              }
+              resolve(response);
+            });
+          } catch (e) {
+            resolve(undefined);
+          }
+        });
+      },
+    },
   });
   controller.init();
+
+  // background 廣播 sync.stateChanged 時即時更新狀態列(docs/
+  // cloud-sync-plan.md 第 5.3 節)，popup 每次開啟都是新分頁環境，這裡
+  // 主要是防禦 popup 開著時 background 剛好推送。
+  if (chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener(function (message) {
+      if (message && message.type === 'sync.stateChanged') {
+        controller.setSyncState(message.state);
+      }
+    });
+  }
 });

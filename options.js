@@ -349,6 +349,42 @@
     };
   }
 
+  // ---- 雲端同步(車道 E，消費 docs/cloud-sync-plan.md 第 5 節的 state 形狀) ----
+
+  // state.status 的合法枚舉，逐字照文件第 5.2 節。
+  var SYNC_STATUSES = ['signed_out', 'signed_in', 'syncing', 'error'];
+
+  // background 尚未實作同步引擎(車道 D)前的安全預設:未登入。也是
+  // sync.getState 無回應／回應形狀不對時的退回值(見 fetchSyncState)。
+  var DEFAULT_SYNC_STATE = {
+    status: 'signed_out',
+    email: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  };
+
+  function isValidSyncState(state) {
+    return !!state && typeof state === 'object' && SYNC_STATUSES.indexOf(state.status) !== -1;
+  }
+
+  // 防禦性整形，比照 sanitizeEntries 的慣例:形狀不對(非物件/status 不在
+  // 白名單)一律退回 DEFAULT_SYNC_STATE;個別欄位型別不對就退回該欄位的
+  // 安全預設，不整包丟棄——background 若只有某個欄位暫時給錯型別，UI 仍
+  // 該顯示其餘正確欄位。
+  function normalizeSyncState(state) {
+    if (!isValidSyncState(state)) return DEFAULT_SYNC_STATE;
+    return {
+      status: state.status,
+      email: typeof state.email === 'string' ? state.email : null,
+      lastSyncedAt: typeof state.lastSyncedAt === 'number' && isFinite(state.lastSyncedAt) ? state.lastSyncedAt : null,
+      pendingCount: typeof state.pendingCount === 'number' && isFinite(state.pendingCount) ? state.pendingCount : 0,
+      lastError: typeof state.lastError === 'string' ? state.lastError : null,
+      apiBase: typeof state.apiBase === 'string' ? state.apiBase : '',
+    };
+  }
+
   // ---- 控制器 ----
 
   function createOptionsController(deps) {
@@ -360,6 +396,11 @@
     var now = typeof deps.now === 'function' ? deps.now : function () {
       return Date.now();
     };
+    // runtime 是選配依賴(chrome.runtime 形狀:sendMessage({type,...}) →
+    // Promise<response>)，車道 D 的同步引擎完成前接線層可能還沒注入，
+    // 或注入了但 background 端沒有對應 handler——兩種情況下面的
+    // fetchSyncState/sendSyncAction 都要優雅退回，不丟例外、不卡渲染。
+    var runtime = deps.runtime || null;
 
     var entries = [];
     var locale = 'zh';
@@ -377,9 +418,14 @@
     // 對話框開啟前的 activeElement，關閉時還原焦點(a11y，見 rememberFocus/
     // restoreFocus)。以對話框 key 分槽，巢狀(詳細→時間軸/刪除確認)各記各的。
     var overlayPrevFocus = {};
-    // 確認框(confirmOverlay)當前掛的動作:清除全部 / 刪除這筆共用同一個
-    // modal，confirmOk 點擊時執行這顆(見 openConfirm/closeConfirm)。
+    // 確認框(confirmOverlay)當前掛的動作:清除全部 / 刪除這筆 / 雲端同步
+    // 登入 / 刪除雲端資料共用同一個 modal，confirmOk 點擊時執行這顆(見
+    // openConfirm/closeConfirm)。
     var confirmAction = null;
+    // 雲端同步卡片目前顯示的狀態，預設未登入(見 DEFAULT_SYNC_STATE)。
+    // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
+    // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
+    var syncState = DEFAULT_SYNC_STATE;
 
     // 注意:此模組內不得宣告名為 t 的區域變數，以免遮蔽翻譯函式。
     function tt(key) {
@@ -794,6 +840,131 @@
       if (confirmOverlay) confirmOverlay.hidden = true;
       confirmAction = null;
       restoreFocus('confirm');
+    }
+
+    // ---- 雲端同步卡片 ----
+
+    // 跟 background 要一次目前狀態(頁面載入時呼叫一次)。runtime 未注入、
+    // sendMessage 拋例外、或 background 端沒有對應 handler(MV3 對無人接聽
+    // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_STATE，
+    // 讓卡片優雅顯示未登入態，不因車道 D 還沒做完就卡住整頁。
+    function fetchSyncState() {
+      if (!runtime || typeof runtime.sendMessage !== 'function') {
+        return Promise.resolve(DEFAULT_SYNC_STATE);
+      }
+      var result;
+      try {
+        result = runtime.sendMessage({ type: 'sync.getState' });
+      } catch (e) {
+        return Promise.resolve(DEFAULT_SYNC_STATE);
+      }
+      return Promise.resolve(result).then(normalizeSyncState, function () {
+        return DEFAULT_SYNC_STATE;
+      });
+    }
+
+    // 觸發式動作(signIn/signOut/now/deleteCloud):fire-and-forget，後續
+    // UI 更新一律等 background 廣播 sync.stateChanged(由接線層轉呼叫
+    // setSyncState)，這裡不用回應值直接改畫面——避免兩條更新路徑互相
+    // 打架。runtime 未注入或呼叫失敗時安靜吞掉，不丟例外。
+    function sendSyncAction(message) {
+      if (!runtime || typeof runtime.sendMessage !== 'function') return;
+      try {
+        var result = runtime.sendMessage(message);
+        if (result && typeof result.catch === 'function') result.catch(function () {});
+      } catch (e) {
+        // 同上，優雅退回。
+      }
+    }
+
+    // 純函式風格的更新器:只依 state 決定畫面，不讀寫其他外部狀態(entries
+    // 除外——僅在登入確認框組文案時讀取，不在這裡改動)。簽入/簽出兩個
+    // view 用 hidden 切換;deviceNote 那一列(紀錄清單卡片頁尾)也在此一併
+    // 更新，因為它的文案同樣隨登入態切換(見 options.html 的 #deviceNote
+    // 註解)。
+    function renderSyncCard(state) {
+      var s = state || DEFAULT_SYNC_STATE;
+      var isSignedOut = s.status === 'signed_out';
+
+      var signedOutEl = byId('syncSignedOut');
+      var signedInEl = byId('syncSignedIn');
+      if (signedOutEl) signedOutEl.hidden = !isSignedOut;
+      if (signedInEl) signedInEl.hidden = isSignedOut;
+
+      if (!isSignedOut) {
+        var emailEl = byId('syncEmail');
+        if (emailEl) emailEl.textContent = s.email || '';
+
+        var lastSyncedEl = byId('syncLastSynced');
+        if (lastSyncedEl) {
+          lastSyncedEl.textContent = s.lastSyncedAt !== null ? relTime(s.lastSyncedAt) : tt('opSyncNever');
+        }
+
+        var pendingEl = byId('syncPendingCount');
+        if (pendingEl) pendingEl.textContent = tf('opSyncPendingValue', { n: s.pendingCount });
+
+        var syncing = s.status === 'syncing';
+        var nowBtn = byId('syncNowBtn');
+        if (nowBtn) {
+          nowBtn.disabled = syncing;
+          nowBtn.textContent = tt(syncing ? 'opSyncSyncingBtn' : 'opSyncNowBtn');
+        }
+        var signOutBtn = byId('syncSignOutBtn');
+        if (signOutBtn) signOutBtn.disabled = syncing;
+        var deleteBtn = byId('syncDeleteBtn');
+        if (deleteBtn) deleteBtn.disabled = syncing;
+
+        // error 狀態才顯示 lastError 一行;立即同步鈕維持可點(重試路徑)。
+        var hasError = s.status === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
+        var errorRow = byId('syncErrorRow');
+        var errorText = byId('syncErrorText');
+        if (errorRow) errorRow.hidden = !hasError;
+        if (errorText) errorText.textContent = hasError ? s.lastError : '';
+      }
+
+      var deviceNoteEl = byId('deviceNote');
+      if (deviceNoteEl) deviceNoteEl.textContent = tt(isSignedOut ? 'opDeviceNote' : 'opDeviceNoteSynced');
+    }
+
+    // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫
+    // (比照 setHistory/setSyncSettings 的既有模式:controller 只暴露方法，
+    // 訊息監聽掛在 -init.js)。
+    function setSyncState(state) {
+      syncState = normalizeSyncState(state);
+      renderSyncCard(syncState);
+    }
+
+    function bindSyncCard() {
+      // 登入先跳確認框(複用 confirmOverlay):內容依 D3 告知本機現有筆數、
+      // free 方案雲端保留上限、本機仍完整保留、可隨時登出或刪除。
+      on('syncSignInBtn', 'click', function () {
+        openConfirm({
+          titleKey: 'opSyncSignInBtn',
+          okKey: 'opSyncSignInConfirmDo',
+          desc: tf('opSyncSignInConfirmDesc', { n: entries.length }),
+          action: function () {
+            sendSyncAction({ type: 'sync.signIn' });
+          },
+        });
+      });
+      on('syncNowBtn', 'click', function () {
+        sendSyncAction({ type: 'sync.now' });
+      });
+      on('syncSignOutBtn', 'click', function () {
+        sendSyncAction({ type: 'sync.signOut' });
+      });
+      // 刪除雲端資料一樣走確認框，措辭明講只刪雲端、本機保留(避免與清除
+      // 全部紀錄的本機刪除混淆)。
+      on('syncDeleteBtn', 'click', function () {
+        openConfirm({
+          titleKey: 'opSyncDeleteBtn',
+          okKey: 'opSyncDeleteConfirmDo',
+          desc: tt('opSyncDeleteConfirmDesc'),
+          action: function () {
+            sendSyncAction({ type: 'sync.deleteCloud' });
+          },
+        });
+      });
     }
 
     // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
@@ -1341,6 +1512,9 @@
       var stats = renderStats();
       renderChart(stats);
       renderList();
+      // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderSyncCard
+      // 必須排在它後面才能把已登入態的文案蓋回去。
+      renderSyncCard(syncState);
     }
 
     // ---- 選單/對話框/工具列佈線 ----
@@ -1575,7 +1749,18 @@
         bindToolbar();
         bindDetailDialog();
         bindChartTooltip();
+        bindSyncCard();
         renderAll();
+
+        // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_STATE(未登入)完成首次
+        // 繪製(above 的 renderAll)，真值回來後才刷新。init() 等這步結束
+        // 才 resolve，讓呼叫端 await controller.init() 後畫面已是最終狀態，
+        // 不需另外猜測時序;runtime 未注入或 background 沒回應時
+        // fetchSyncState 立即 resolve(見該函式)，不會拖慢 init()。
+        return fetchSyncState().then(function (state) {
+          syncState = state;
+          renderSyncCard(syncState);
+        });
       });
     }
 
@@ -1677,11 +1862,19 @@
       }
     }
 
-    return { init: init, setHistory: setHistory, setSyncSettings: setSyncSettings, refresh: refresh };
+    return {
+      init: init,
+      setHistory: setHistory,
+      setSyncSettings: setSyncSettings,
+      refresh: refresh,
+      setSyncState: setSyncState,
+    };
   }
 
   var api = {
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
+    DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
+    normalizeSyncState: normalizeSyncState,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,
     buildExportPayload: buildExportPayload,

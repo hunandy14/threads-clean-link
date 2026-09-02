@@ -271,3 +271,171 @@ test('導航列:nav-chev 為 Lucide arrow-up-right inline SVG(↗ 開新分頁�
     'nav-chev 應為 Lucide arrow-up-right 的 inline SVG(M7 7h10v10 + M7 17 17 7)'
   );
 });
+
+// ============================================================
+// 雲端同步狀態列(車道 E，消費 docs/cloud-sync-plan.md 第 5 節的 state
+// 形狀)。popup 只讀狀態、不放登入按鈕(登入在 options 頁的雲端同步卡片
+// 做)，點擊導向 options.html#cloud-sync。background 的同步引擎(車道 D)
+// 尚未實作，這裡驗證的是「runtime 缺席/回應非法都優雅退回未登入態」
+// 這條 UI 契約，不測真的同步行為。
+// ============================================================
+
+function makeFakeRuntime(handlers) {
+  const calls = [];
+  return {
+    calls,
+    sendMessage(message) {
+      calls.push(message);
+      const handler = handlers && handlers[message.type];
+      if (!handler) return Promise.resolve(undefined);
+      return Promise.resolve(handler(message));
+    },
+  };
+}
+
+const SYNC_IDS = [...IDS, 'openOptions', 'syncStatusRow', 'syncStatusText'];
+
+test('雲端同步狀態列:popup.html 有 id=syncStatusRow 的 button(不是 checkbox)', () => {
+  const html = readPopupHtml();
+  assert.ok(
+    /<button\b[^>]*\bid\s*=\s*["']syncStatusRow["']/i.test(html),
+    'popup.html 應有 id=syncStatusRow 的 button'
+  );
+});
+
+const i18n = require(path.join(__dirname, '..', 'i18n.js'));
+
+test('雲端同步狀態列:未注入 runtime 時顯示「未啟用」文案', async () => {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  const controller = popup.createPopupController({ document: doc, storage: storage.sync, i18n });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
+});
+
+test('雲端同步狀態列:background 無回應(sendMessage reject)時，退回未啟用文案', async () => {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => Promise.reject(new Error('Could not establish connection.')),
+  });
+  const controller = popup.createPopupController({ document: doc, storage: storage.sync, i18n, runtime });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
+});
+
+test('雲端同步狀態列:已登入時顯示「已同步 · 相對時間」', async () => {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  const NOW = 1000000;
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      lastSyncedAt: NOW - 2 * 60 * 1000, // 2 分鐘前
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = popup.createPopupController({
+    document: doc,
+    storage: storage.sync,
+    i18n,
+    runtime,
+    now: () => NOW,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(
+    doc.elements.syncStatusText.textContent,
+    i18n.fmt('zh', 'ppSyncActive', { t: i18n.fmt('zh', 'opRelMin', { n: 2 }) })
+  );
+});
+
+test('雲端同步狀態列:點擊呼叫 openCloudSyncSection(帶 #cloud-sync 錨點的導向)，不呼叫一般 openOptionsPage', async () => {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  let cloudOpened = 0;
+  let optionsOpened = 0;
+  const controller = popup.createPopupController({
+    document: doc,
+    storage: storage.sync,
+    i18n,
+    openOptionsPage: () => {
+      optionsOpened++;
+    },
+    openCloudSyncSection: () => {
+      cloudOpened++;
+    },
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.elements.syncStatusRow.fire('click');
+  assert.equal(cloudOpened, 1, '應呼叫專屬的雲端同步導向函式');
+  assert.equal(optionsOpened, 0, '不應誤呼叫一般 openOptionsPage(兩者是不同 dep)');
+});
+
+test('雲端同步狀態列:未注入 openCloudSyncSection 時，退回一般 openOptionsPage(至少能到 options 頁)', async () => {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  let optionsOpened = 0;
+  const controller = popup.createPopupController({
+    document: doc,
+    storage: storage.sync,
+    i18n,
+    openOptionsPage: () => {
+      optionsOpened++;
+    },
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.elements.syncStatusRow.fire('click');
+  assert.equal(optionsOpened, 1);
+});
+
+test('雲端同步狀態列:setSyncState(接線層轉呼叫 background 的 sync.stateChanged 廣播)即時更新文案', async () => {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  const controller = popup.createPopupController({ document: doc, storage: storage.sync, i18n, now: () => 1000000 });
+
+  await controller.init();
+  await settle();
+  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'), '前置:未注入 runtime，預設未登入');
+
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'broadcast@example.com',
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+
+  assert.equal(
+    doc.elements.syncStatusText.textContent,
+    i18n.fmt('zh', 'ppSyncActive', { t: i18n.t('zh', 'opSyncNever') })
+  );
+
+  // 廣播非法形狀時應退回未啟用文案，不因 background 傳壞資料而炸掉畫面。
+  controller.setSyncState({ status: 'nonsense' });
+  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
+});
