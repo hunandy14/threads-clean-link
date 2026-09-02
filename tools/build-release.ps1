@@ -48,6 +48,7 @@ $includeFiles = @(
     'bridge.js',
     'i18n.js',
     'tcl-core.js',
+    'auth.js',
     'post-icon.js',
     'popup.html',
     'popup.js',
