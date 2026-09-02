@@ -139,6 +139,34 @@
       opRelYesterday: '昨天',
       opRelDays: '{n} 天前',
 
+      // ---- options:雲端同步卡片(車道 E，消費 docs/cloud-sync-plan.md
+      // 第 5 節的 state 形狀;background 尚未實作前，任何無回應/形狀不對
+      // 的狀態一律當 signed_out 顯示) ----
+      opSyncTitle: '雲端同步',
+      opSyncSignedOutDesc: '預設關閉，登入 Google 帳號後才會連線；同步內容為清理紀錄的時間、來源與淨化後連結。',
+      opSyncSignInBtn: '使用 Google 帳號登入',
+      // D3:首次綁定全量上傳並告知 free 方案雲端保留上限，{n} 為登入當下
+      // 本機紀錄筆數。
+      opSyncSignInConfirmDesc: '登入後將立即上傳本機目前的 {n} 筆紀錄。免費方案雲端僅保留最新 1000 筆，本機仍完整保留全部紀錄，可隨時登出或刪除雲端資料。',
+      opSyncSignInConfirmDo: '確認登入',
+      opSyncAccountLabel: '帳號',
+      opSyncLastSyncedLabel: '上次同步',
+      opSyncPendingLabel: '待上傳',
+      opSyncPendingValue: '{n} 筆',
+      opSyncNever: '尚未同步',
+      opSyncNowBtn: '立即同步',
+      opSyncSyncingBtn: '同步中…',
+      opSyncSignOutBtn: '登出',
+      opSyncDeleteBtn: '刪除雲端資料',
+      opSyncDeleteConfirmDesc: '只會刪除雲端保存的紀錄，本機紀錄不受影響。確定要繼續嗎？',
+      opSyncDeleteConfirmDo: '確定刪除',
+      // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
+      opDeviceNoteSynced: '已同步至你的 Google 帳號',
+
+      // ---- popup:雲端同步狀態列(唯讀，點擊導向 options 頁的雲端同步卡片) ----
+      ppSyncInactive: '雲端同步：未啟用',
+      ppSyncActive: '已同步 · {t}',
+
       // ---- post-icon:貼文互動列注入的複製連結 icon ----
       iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
@@ -248,6 +276,27 @@
       opRelHour: '{n} hr ago',
       opRelYesterday: 'yesterday',
       opRelDays: '{n} days ago',
+
+      opSyncTitle: 'Cloud sync',
+      opSyncSignedOutDesc: 'Off by default. Connects only after you sign in with Google; syncs each record’s time, source, and cleaned link.',
+      opSyncSignInBtn: 'Sign in with Google',
+      opSyncSignInConfirmDesc: 'Signing in uploads your {n} local records right away. The free plan keeps only the latest 1000 in the cloud, and your device keeps every record. You can sign out or delete your cloud data anytime.',
+      opSyncSignInConfirmDo: 'Confirm sign-in',
+      opSyncAccountLabel: 'Account',
+      opSyncLastSyncedLabel: 'Last synced',
+      opSyncPendingLabel: 'Pending upload',
+      opSyncPendingValue: '{n}',
+      opSyncNever: 'Not synced yet',
+      opSyncNowBtn: 'Sync now',
+      opSyncSyncingBtn: 'Syncing…',
+      opSyncSignOutBtn: 'Sign out',
+      opSyncDeleteBtn: 'Delete cloud data',
+      opSyncDeleteConfirmDesc: 'This only deletes the copy stored in the cloud — your local history is unaffected. Continue?',
+      opSyncDeleteConfirmDo: 'Delete',
+      opDeviceNoteSynced: 'Synced to your Google account',
+
+      ppSyncInactive: 'Cloud sync: off',
+      ppSyncActive: 'Synced · {t}',
 
       iconTooltip: 'Copy original link',
       iconCopied: 'Original link copied',
