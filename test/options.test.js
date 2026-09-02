@@ -225,7 +225,7 @@ test('mergeImportedEntries:author/handle 截斷至 100 字元、excerpt 截斷�
   assert.equal(truncated.excerpt.length, 2000);
 
   const dropped = result.merged.find((e) => e.url === URL_B);
-  assert.deepEqual(Object.keys(dropped).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入');
+  ['author', 'handle', 'excerpt'].forEach((f) => assert.equal(f in dropped, false, 'S4：非字串型別的選填欄位應整欄不寫入'));
 });
 
 // 匯入條目帶偽造 seen 的 sanitize。匯入檔是外部輸入，seen[] 逐筆過 at 有限
@@ -1966,6 +1966,273 @@ test('refresh:詳細視窗開著時一併刷新視窗內相對時間(detailTime)
   controller.refresh();
 
   assert.equal(doc.ids.detailTime.textContent, i18n.fmt('zh', 'opRelMin', { n: 10 }), '視窗內相對時間應一併刷新');
+});
+
+// ============================================================
+// S4:options 直接操作 storage 的路徑對齊雲端 schema
+// ------------------------------------------------------------
+// 刪除／清空的語意依登入態分流(D6:未登入行為與現況完全一致):
+//   - 已登入(syncState.userId 非 null):單筆刪除軟刪(寫 deletedAt 墓碑 +
+//     dirty)，清除全部寫 syncState.clearedAt 這條全域水位線;
+//   - 未登入:維持現況硬刪。
+// 墓碑是「等待上傳的刪除意圖」，必須留在 storage，但一律不進畫面、統計、
+// 圖表與匯出檔。匯入則改以 postKey 去重(D11)，並接受含／不含新欄位兩種格式。
+// ============================================================
+
+const S4_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const S4_NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverUpdatedAt', 'deletedAt'];
+
+// 已登入的 syncState(計劃 4.2 的形狀)。
+function signedInState(overrides) {
+  return Object.assign(
+    { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+    overrides || {}
+  );
+}
+function signedOutState() {
+  return { userId: null, email: null, cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null };
+}
+
+// 一筆已具備新欄位的條目(S1 形狀)。
+function s4Entry(url, at, overrides) {
+  return Object.assign(
+    {
+      url: url,
+      kind: 'share',
+      at: at,
+      seen: [{ at: at, kind: 'share' }],
+      id: 'id-' + at,
+      postKey: 'postkey-' + at,
+      original: url,
+      receivedAt: at,
+      dirty: false,
+      serverUpdatedAt: null,
+      deletedAt: null,
+    },
+    overrides || {}
+  );
+}
+
+function makeController(local, syncSeed) {
+  const storage = createChromeStorage(Object.assign({ langPref: 'zh' }, syncSeed || {}), local);
+  const doc = makeDocumentStub();
+  const downloads = [];
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    download: (name, text) => downloads.push({ name, text }),
+  });
+  return { storage, doc, controller, downloads };
+}
+
+// S4:單筆刪除依登入態分流。同一份資料、同一個動作，登入與未登入的落盤結果
+// 必須不同——把兩種情境放在同一條測試裡，才擋得住「兩邊都照現況硬刪」。
+test('S4 刪除:已登入軟刪(deletedAt + dirty，entry 留在陣列)，未登入維持硬刪', async () => {
+  const inCtx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedInState() });
+  await inCtx.controller.init();
+  await settle();
+  inCtx.doc.ids.rows.children[0].fire('click');
+  inCtx.doc.ids.detailDeleteBtn.fire('click');
+  inCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const inHistory = inCtx.storage.localSnapshot().history;
+  assert.equal(inHistory.length, 1, '已登入時軟刪:entry 仍留在陣列(墓碑要等伺服器 ack 才真刪)');
+  assert.equal(typeof inHistory[0].deletedAt, 'number', 'deletedAt 應寫入刪除時戳');
+  assert.ok(inHistory[0].deletedAt > 0);
+  assert.equal(inHistory[0].dirty, true, '軟刪是待上傳的變更');
+  assert.equal(inHistory[0].id, 'id-1000', '軟刪不得換 id(伺服器要靠它認出刪的是哪張卡)');
+  assert.equal(inCtx.doc.ids.rows.children.length, 0, '墓碑不得留在畫面上');
+  assert.equal(inCtx.doc.ids.toast.textContent, i18n.t('zh', 'opToastDeleted'), '照常回報已刪除');
+
+  const outCtx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedOutState() });
+  await outCtx.controller.init();
+  await settle();
+  outCtx.doc.ids.rows.children[0].fire('click');
+  outCtx.doc.ids.detailDeleteBtn.fire('click');
+  outCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(outCtx.storage.localSnapshot().history, [], '未登入維持現況硬刪，不留墓碑');
+});
+
+// S4:清除全部。已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成
+// 墓碑撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由車道 D 上傳。
+test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入不動 syncState', async () => {
+  const inCtx = makeController(
+    { history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)], syncState: signedInState() }
+  );
+  await inCtx.controller.init();
+  await settle();
+  inCtx.doc.ids.clearBtn.fire('click');
+  inCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const inLocal = inCtx.storage.localSnapshot();
+  assert.deepEqual(inLocal.history, [], '所有 entry 移除');
+  assert.equal(typeof inLocal.syncState.clearedAt, 'number', '應寫 syncState.clearedAt(雲端全域墓碑)');
+  assert.ok(inLocal.syncState.clearedAt > 0);
+  assert.equal(inLocal.syncState.userId, 'user-1', '清除紀錄不等於登出，userId 不得被清掉');
+  assert.equal(inCtx.doc.ids.toast.textContent, i18n.t('zh', 'opToastCleared'));
+
+  const outCtx = makeController({ history: [s4Entry(URL_A, 2000)], syncState: signedOutState() });
+  await outCtx.controller.init();
+  await settle();
+  outCtx.doc.ids.clearBtn.fire('click');
+  outCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(outCtx.storage.localSnapshot().history, []);
+  assert.equal(outCtx.storage.localSnapshot().syncState.clearedAt, null, '未登入不寫雲端水位線');
+});
+
+// S4:墓碑一律不進畫面。清單、筆數提示、統計磚(statTotal)、14 天圖表的
+// bar-label 四處都必須看不到它——四處共用同一份 entries，漏掉任一處就會出
+// 現「清單看不到、統計卻多一筆」的分岔。
+test('S4 墓碑:清單/筆數提示/統計磚/14 天圖表一律不計入', async () => {
+  const now = Date.now();
+  const ctx = makeController({
+    history: [
+      s4Entry(URL_A, now - 1000),
+      s4Entry(URL_B, now - 2000),
+      s4Entry(URL_C, now - 3000, { deletedAt: now - 500, dirty: true }),
+    ],
+    syncState: signedInState(),
+  });
+  // 圖表的「今天」以真實時鐘為準，這裡把 now 對齊真實時間。
+  const ctl = options.createOptionsController({
+    document: ctx.doc,
+    syncStorage: ctx.storage.sync,
+    localStorage: ctx.storage.local,
+    i18n,
+    now: () => now,
+  });
+
+  await ctl.init();
+  await settle();
+
+  assert.equal(ctx.doc.ids.rows.children.length, 2, '墓碑不得渲染成卡片');
+  assert.equal(ctx.doc.ids.countHint.textContent, '顯示 2 / 2 筆');
+  assert.equal(ctx.doc.ids.statTotal.textContent, '2', '統計磚總數不計墓碑');
+  const barLabels = ctx.doc.ids.chart.children
+    .filter((c) => c.getAttribute('class') === 'bar-label')
+    .map((c) => c.textContent);
+  assert.deepEqual(barLabels, ['2'], '14 天圖表今天那一柱只算 2 筆(墓碑不計)');
+});
+
+// S4:匯出檔是使用者換裝置時的完整鏡像，但墓碑是「已刪除」的意思，匯出去
+// 再匯回來等於讓刪掉的紀錄復活。
+test('S4 墓碑:匯出 JSON 不輸出墓碑', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000, { deletedAt: 1500, dirty: true })],
+    syncState: signedInState(),
+  });
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.exportBtn.fire('click');
+  await settle();
+
+  assert.equal(ctx.downloads.length, 1, '應觸發一次下載');
+  const payload = JSON.parse(ctx.downloads[0].text);
+  assert.deepEqual(payload.entries.map((e) => e.url), [URL_A], '墓碑不得出現在匯出檔');
+});
+
+// S4:sanitizeEntries 是 options 讀取端的信任邊界，也是 persistHistory 寫回
+// 去的那份陣列的來源——它丟掉的欄位會在下一次刪除／匯入時被永久寫掉。新欄
+// 位必須原樣保留，墓碑也必須留在陣列裡(只是不顯示)，否則使用者一按刪除，
+// 整張表的 id 與待上傳的墓碑就全部消失。
+test('S4 讀取:sanitizeEntries 保留七個新欄位，墓碑不得在讀取階段被丟棄', () => {
+  const entry = s4Entry(URL_A, 1000, { id: 'keep-id', postKey: 'threads:AbC123_-xyz', dirty: true, serverUpdatedAt: 777 });
+  const out = options.sanitizeEntries([entry]);
+  assert.equal(out.length, 1);
+  S4_NEW_FIELDS.forEach((f) => assert.equal(f in out[0], true, `讀取後遺失新欄位 ${f}`));
+  assert.equal(out[0].id, 'keep-id');
+  assert.equal(out[0].postKey, 'threads:AbC123_-xyz');
+  assert.equal(out[0].dirty, true);
+  assert.equal(out[0].serverUpdatedAt, 777);
+
+  const tomb = options.sanitizeEntries([s4Entry(URL_B, 1000, { deletedAt: 1500 })]);
+  assert.equal(tomb.length, 1, '墓碑是待上傳狀態，讀取階段不得丟棄(不顯示是渲染層的事)');
+  assert.equal(tomb[0].deletedAt, 1500);
+});
+
+// S4:匯入舊格式(v1 匯出檔，沒有任何新欄位)時比照 S2 補齊。
+test('S4 匯入:不含新欄位的舊格式補齊七個新欄位', () => {
+  const result = options.mergeImportedEntries([], [{ url: URL_A, kind: 'icon', at: 900, seen: [{ at: 400, kind: 'share' }] }], 1000);
+  assert.equal(result.merged.length, 1);
+  const e = result.merged[0];
+  S4_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `匯入後缺新欄位 ${f}`));
+  assert.match(e.id, S4_UUID_V4);
+  assert.equal(e.postKey, 'threads:AbC123_-xyz', 'postKey 由正規化後的 url 算出');
+  assert.equal(e.original, URL_A, 'original 缺席時以 url 補');
+  assert.equal(e.receivedAt, 400, 'receivedAt 取 seen 最早事件');
+  assert.equal(e.dirty, true, '匯入進來的資料尚未上傳');
+  assert.equal(e.serverUpdatedAt, null);
+  assert.equal(e.deletedAt, null);
+});
+
+// S4:去重鍵改為 postKey(D11)。作者改名後同一篇貼文的乾淨網址不同、正規化
+// 後仍不相等，舊的 url 去重會多開一張卡，雲端跟著分裂。
+test('S4 匯入:去重以 postKey 為鍵——改名前後的同一篇貼文合併，不新增一筆', () => {
+  const existing = [
+    s4Entry(URL_A, 500, { id: 'keep-id', postKey: 'threads:AbC123_-xyz', seen: [{ at: 500, kind: 'share' }], serverUpdatedAt: 321 }),
+  ];
+  const renamed = 'https://www.threads.com/@renamed.user/post/AbC123_-xyz';
+  const result = options.mergeImportedEntries(existing, [{ url: renamed, kind: 'icon', at: 900, seen: [{ at: 900, kind: 'icon' }] }], 1000);
+
+  assert.equal(result.merged.length, 1, '同 postKey 應合併，不新增一筆');
+  const e = result.merged[0];
+  assert.equal(e.id, 'keep-id', 'id 沿用既有');
+  assert.equal(e.postKey, 'threads:AbC123_-xyz');
+  assert.equal(e.receivedAt, 500, 'receivedAt 取兩者最小');
+  assert.equal(e.dirty, true, '合併後有本機變更待上傳');
+  assert.equal(e.serverUpdatedAt, 321, 'serverUpdatedAt 沿用既有');
+  assert.deepEqual(e.seen.map((s) => s.at), [500, 900], 'seen 取聯集並按時間排序');
+});
+
+// S4:同一批匯入檔內部若有同 postKey 的兩筆(改名前後各匯出過一次)，批內也
+// 要先併起來，否則一次匯入就自己製造出兩張同文卡。
+test('S4 匯入:同一批匯入內部的同 postKey 也合併成一張', () => {
+  const result = options.mergeImportedEntries(
+    [],
+    [
+      { url: URL_A, kind: 'share', at: 500, seen: [{ at: 500, kind: 'share' }] },
+      { url: 'https://www.threads.com/@renamed.user/post/AbC123_-xyz', kind: 'icon', at: 900, seen: [{ at: 900, kind: 'icon' }] },
+    ],
+    1000
+  );
+
+  assert.equal(result.merged.length, 1, '批內同 postKey 應先合併');
+  assert.equal(result.merged[0].receivedAt, 500);
+  assert.deepEqual(result.merged[0].seen.map((s) => s.at), [500, 900]);
+});
+
+// S4:匯入檔帶新欄位(手機匯出／另一台裝置的完整鏡像)時沿用其 id，重新生成
+// 等於在雲端把同一張卡拆成兩張。
+test('S4 匯入:含新欄位的格式沿用檔案裡的 id，不重新生成', () => {
+  const result = options.mergeImportedEntries(
+    [],
+    [
+      {
+        url: URL_A,
+        kind: 'share',
+        at: 900,
+        seen: [{ at: 900, kind: 'share' }],
+        id: 'from-file-0000-4000-8000-000000000000',
+        original: 'https://www.threads.com/share/AbCdEfGhI',
+        receivedAt: 900,
+      },
+    ],
+    1000
+  );
+
+  assert.equal(result.merged[0].id, 'from-file-0000-4000-8000-000000000000');
+  assert.equal(result.merged[0].original, 'https://www.threads.com/share/AbCdEfGhI', '檔案裡的 original 不被 url 覆蓋');
+  assert.equal(result.merged[0].dirty, true, '別台裝置來的資料在本機仍是待上傳');
 });
 
 // ============================================================
