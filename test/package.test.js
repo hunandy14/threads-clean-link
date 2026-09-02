@@ -115,6 +115,9 @@ test('manifest:既有 permissions 與 host_permissions 未被選用權限稀釋'
     'notifications',
     'activeTab',
     'storage',
+    // D12 的週期同步靠 chrome.alarms，沒宣告權限 chrome.alarms 就是 undefined。
+    // alarms 屬非警示型權限，Chrome 更新時不會觸發自動停用(見 test/sync.test.js T5)。
+    'alarms',
   ]);
   assert.deepEqual(manifest.host_permissions, [
     'https://*.threads.com/*',
