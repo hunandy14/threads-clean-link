@@ -100,7 +100,7 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
   };
   // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，vm sandbox
   // 預設不含這個全域，這裡明確注入。
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
   return {
     storage,
@@ -160,7 +160,7 @@ function loadBackground() {
   // 的行為與真實瀏覽器/Service Worker 環境一致(兩者原生都有
   // URL/URLSearchParams)。fetchOgFieldsForLocalKind 內部用 setTimeout 做
   // 逾時競速，一併注入。
-  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -245,7 +245,7 @@ function makeAlwaysSucceedFetch(calls) {
 function loadBackgroundAlwaysSucceed() {
   const chrome = makeChrome();
   const calls = [];
-  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -415,7 +415,7 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   // buildMenuHistoryExtra → diffRemovedParams)這條路徑經這個 loader 進
   // 入，同樣需要注入 URL/URLSearchParams。fetchOgFieldsForLocalKind
   // 內部用 setTimeout 做逾時競速，一併注入。
-  const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout };
+  const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto };
   runInSandbox(SRC, sandbox);
 
   return {
@@ -1244,7 +1244,7 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
     }
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     executeScriptCalls,
@@ -1440,7 +1440,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
     };
     // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入
     // (此測試雖走右鍵路徑不會觸發，維持一致性)。
-    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
     onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
     await settle(400);
@@ -1858,6 +1858,7 @@ function loadBackgroundForReinject(tabs, opts = {}) {
     console,
     URL,
     URLSearchParams,
+    crypto,
   });
 
   return {
@@ -2257,7 +2258,7 @@ function loadBackgroundOgMulti() {
     if (/\/post\//.test(url)) return fetchResult(url, NO_OG_HTML);
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     fetchCalls,
@@ -2330,6 +2331,7 @@ function loadBackgroundForMigration(localHistory) {
     URLSearchParams,
     setTimeout,
     clearTimeout,
+    crypto,
   });
 
   return {
@@ -2541,4 +2543,200 @@ test('遷移(postKeyOf):舊資料兩筆分別為「帶 query」與「m. 子網�
     [base - 2000, base - 1000],
     'seen[] 為兩筆的聯集,按 at 升序'
   );
+});
+
+// ============================================================
+// S3:recordHistory 寫入路徑對齊雲端 schema(docs/cloud-sync-plan.md 4.1)
+// ------------------------------------------------------------
+// 新建與合併兩條路徑都必須產出帶齊七個新欄位(id/postKey/original/
+// receivedAt/dirty/serverUpdatedAt/deletedAt)的條目。合併路徑額外三條不變
+// 量:id 是雲端身分不得換、receivedAt 是「最早事件」只會往前不會往後、既有
+// 墓碑遇到新事件要復活。
+// ============================================================
+
+// S3 新建路徑用的 UUID v4 樣式(與 test/history-schema.test.js 同一份)。
+const S3_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const S3_NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverUpdatedAt', 'deletedAt'];
+// CLEANED_NOTICE_CLEAN_URL 的 postKeyOf 結果(D11:threads:<code>)。
+const S3_POST_KEY = 'threads:DbezfB0gYvP';
+
+test('S3 新建:新 entry 帶齊七個新欄位——id 為 UUID v4、postKey 由 postKeyOf 算、original 補 url、receivedAt 等於 at', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  S3_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `新建的條目缺新欄位 ${f}`));
+  assert.match(e.id, S3_UUID_V4, 'id 應為新生成的 UUID v4');
+  assert.equal(e.postKey, S3_POST_KEY, 'postKey 持久化為 TCLCore.postKeyOf 的結果');
+  assert.equal(e.original, CLEANED_NOTICE_CLEAN_URL, 'cleanedNotice 沒帶 original 時以 url 補(伺服器必填)');
+  assert.equal(e.receivedAt, e.at, '新建時 receivedAt 等於 at');
+  assert.equal(e.dirty, true, '新紀錄尚未上傳，dirty 為 true');
+  assert.equal(e.serverUpdatedAt, null);
+  assert.equal(e.deletedAt, null);
+});
+
+test('S3 新建:cleanedNotice 帶 original 時以該值為準，不被 url 覆蓋', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    original: CLEANED_NOTICE_SHARE_URL,
+  });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  assert.equal(e.original, CLEANED_NOTICE_SHARE_URL);
+  assert.equal(e.postKey, S3_POST_KEY, '其餘新欄位照樣補齊(排除假綠燈)');
+  assert.equal(e.dirty, true);
+});
+
+test('S3 合併:id 沿用既有、postKey 重算、receivedAt 取兩者最小、dirty 標髒、serverUpdatedAt 沿用既有', async () => {
+  const now = Date.now();
+  const existing = {
+    url: 'https://m.threads.com/@dafucoding/post/DbezfB0gYvP',
+    kind: 'share',
+    at: now - 60 * 1000,
+    seen: [{ at: now - 60 * 1000, kind: 'share' }],
+    id: 'existing-id-0000-4000-8000-000000000000',
+    postKey: S3_POST_KEY,
+    original: CLEANED_NOTICE_SHARE_URL,
+    receivedAt: now - 90 * 1000,
+    dirty: false,
+    serverUpdatedAt: now - 30 * 1000,
+    deletedAt: null,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '同 postKey 應合併為一筆');
+  const e = history[0];
+  S3_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `合併結果缺新欄位 ${f}(合併不得丟欄位)`));
+  assert.equal(e.id, 'existing-id-0000-4000-8000-000000000000', 'id 沿用既有——換 id 等於在雲端另開一張卡');
+  assert.equal(e.postKey, S3_POST_KEY, 'postKey 重算(m. 子網域與 www. 同一個鍵)');
+  assert.equal(e.receivedAt, now - 90 * 1000, 'receivedAt 取兩者最小(最早事件只會往前)');
+  assert.equal(e.dirty, true, '本機有新事件，重新標髒待上傳');
+  assert.equal(e.serverUpdatedAt, now - 30 * 1000, 'serverUpdatedAt 是伺服器的值，本機合併不得清掉');
+  assert.equal(e.deletedAt, null);
+  assert.ok(e.at >= now, 'at 照舊浮到最新');
+});
+
+test('S3 合併:既有卡尚未遷移(無 receivedAt)時，receivedAt 退回既有最早事件，不得變成本次的 now', async () => {
+  const now = Date.now();
+  const firstSeen = now - 3 * 60 * 60 * 1000;
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: firstSeen,
+    seen: [{ at: firstSeen, kind: 'share' }],
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  assert.equal(e.receivedAt, firstSeen, '缺 receivedAt 的舊卡以自身最早事件推導後再取最小');
+  assert.match(e.id, S3_UUID_V4, '缺 id 的舊卡在寫入路徑補一個');
+});
+
+test('S3 合併:墓碑復活——既有 deletedAt 非 null 時清為 null 並標髒', async () => {
+  const now = Date.now();
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 60 * 1000,
+    seen: [{ at: now - 60 * 1000, kind: 'share' }],
+    id: 'tomb-id-0000-4000-8000-000000000000',
+    postKey: S3_POST_KEY,
+    original: CLEANED_NOTICE_CLEAN_URL,
+    receivedAt: now - 60 * 1000,
+    dirty: false,
+    serverUpdatedAt: now - 50 * 1000,
+    deletedAt: now - 40 * 1000,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '復活是就地改既有那張卡，不是另開一張');
+  assert.equal(history[0].deletedAt, null, '刪過的貼文再次淨化應復活，不得留著墓碑');
+  assert.equal(history[0].dirty, true, '復活是待上傳的變更');
+  assert.equal(history[0].id, 'tomb-id-0000-4000-8000-000000000000', '復活沿用同一個 id');
+});
+
+test('S3 失敗卡收編:收編後新欄位不丟失，id 沿用貼文卡的', async () => {
+  const now = Date.now();
+  const failedAt = now - 2 * 60 * 60 * 1000;
+  const failed = {
+    url: CLEANED_NOTICE_SHARE_URL,
+    kind: 'share',
+    at: failedAt,
+    handle: '@dafucoding',
+    id: 'failed-id-0000-4000-8000-000000000000',
+    postKey: 'url:threads.com/share/CleanedNoticeCode',
+    original: CLEANED_NOTICE_SHARE_URL,
+    receivedAt: failedAt,
+    dirty: true,
+    serverUpdatedAt: null,
+    deletedAt: null,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [failed] });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    original: CLEANED_NOTICE_SHARE_URL,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '失敗卡被收編，不與貼文卡並存');
+  const e = history[0];
+  S3_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `收編結果缺新欄位 ${f}`));
+  assert.equal(e.postKey, S3_POST_KEY, 'postKey 是貼文卡的(不得沿用失敗卡的短碼 fallback key)');
+  assert.notEqual(e.id, 'failed-id-0000-4000-8000-000000000000', 'id 不得被失敗卡的值覆蓋');
+  assert.equal(e.dirty, true);
+  assert.equal(e.deletedAt, null);
+});
+
+test('S3 合併:seen[] 聯集仍裁到 50 筆，且新欄位照樣帶齊', async () => {
+  const now = Date.now();
+  const seenSeed = Array.from({ length: 50 }, (_, i) => ({ at: now - (50 - i) * 1000, kind: 'share' }));
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 1000,
+    seen: seenSeed,
+    id: 'cap-id-0000-4000-8000-000000000000',
+    postKey: S3_POST_KEY,
+    original: CLEANED_NOTICE_CLEAN_URL,
+    receivedAt: now - 50 * 1000,
+    dirty: false,
+    serverUpdatedAt: null,
+    deletedAt: null,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  assert.equal(e.seen.length, 50, 'seen[] 仍裁到 LIMITS.SEEN_MAX');
+  assert.equal(e.seen[49].kind, 'icon', '本次事件在尾端');
+  assert.equal(
+    e.receivedAt,
+    now - 50 * 1000,
+    'seen 被裁掉最舊一筆不影響 receivedAt——它是這張卡真正的最早事件，裁時間軸不等於改身分'
+  );
+  assert.equal(e.id, 'cap-id-0000-4000-8000-000000000000');
 });
