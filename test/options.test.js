@@ -2591,3 +2591,111 @@ test('雲端同步:setSyncState(接線層轉呼叫 background 的 sync.stateChan
   assert.equal(doc.ids.syncSignedOut.hidden, false);
   assert.equal(doc.ids.syncSignedIn.hidden, true);
 });
+
+// ============================================================
+// 雲端同步的 optional 權限請求(車道 D 接手清單第 1 條)
+// ------------------------------------------------------------
+// identity 與後端 host 走 optional 權限(D8),而 chrome.permissions.request
+// 只能在使用者手勢中呼叫——service worker 自行發起一律失敗。因此「求權限」
+// 這一半落在登入按鈕的 click handler 內:先 contains 探一次，缺才 request,
+// 授予之後才送 sync.signIn。
+// ============================================================
+
+function makeFakePermissions(opts = {}) {
+  const containsCalls = [];
+  const requestCalls = [];
+  return {
+    containsCalls,
+    requestCalls,
+    contains(descriptor) {
+      containsCalls.push(descriptor);
+      return Promise.resolve(opts.granted === true);
+    },
+    request(descriptor) {
+      requestCalls.push(descriptor);
+      return Promise.resolve(opts.accepted !== false);
+    },
+  };
+}
+
+function makeSyncPermissionCtx(permissions, apiBase) {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_out',
+      email: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: apiBase || 'https://api.metalinkclearer.workers.dev',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+    permissions,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+test('雲端同步權限:已授予時只 contains 不 request，直接送出 sync.signIn', async () => {
+  const permissions = makeFakePermissions({ granted: true });
+  const ctx = makeSyncPermissionCtx(permissions);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.syncSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(permissions.containsCalls.length, 1, '登入前必須先探一次權限');
+  assert.deepEqual(permissions.requestCalls, [], '已授予就不該再彈一次權限對話框');
+  assert.ok(
+    ctx.runtime.calls.some((c) => c.type === 'sync.signIn'),
+    '權限齊備時應送出 sync.signIn'
+  );
+});
+
+test('雲端同步權限:缺權限時在手勢內 request，授予後才送 sync.signIn', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: true });
+  const ctx = makeSyncPermissionCtx(permissions, 'https://api-staging.metalinkclearer.workers.dev');
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.syncSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(permissions.requestCalls.length, 1);
+  assert.deepEqual(
+    permissions.requestCalls[0],
+    {
+      permissions: ['identity'],
+      origins: ['https://api-staging.metalinkclearer.workers.dev/*'],
+    },
+    'origin 依 state.apiBase 組出，且落在 manifest 的 optional_host_permissions 內'
+  );
+  assert.ok(ctx.runtime.calls.some((c) => c.type === 'sync.signIn'));
+});
+
+test('雲端同步權限:使用者拒絕授權時不送出 sync.signIn', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: false });
+  const ctx = makeSyncPermissionCtx(permissions);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.syncSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(permissions.requestCalls.length, 1);
+  assert.ok(
+    ctx.runtime.calls.every((c) => c.type !== 'sync.signIn'),
+    '拒絕授權後送出登入只會讓 SW 端白跑一趟並轉成 permission_required'
+  );
+});

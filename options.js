@@ -515,6 +515,10 @@
     apiBase: '',
   };
 
+  // 權限描述子的 origin 來源:state.apiBase 尚未從 background 回來時的退回值。
+  // 兩個環境的 host 都已宣告在 manifest 的 optional_host_permissions。
+  var SYNC_API_BASE_FALLBACK = 'https://api.metalinkclearer.workers.dev';
+
   function isValidSyncState(state) {
     return !!state && typeof state === 'object' && SYNC_STATUSES.indexOf(state.status) !== -1;
   }
@@ -551,6 +555,11 @@
     // 或注入了但 background 端沒有對應 handler——兩種情況下面的
     // fetchSyncState/sendSyncAction 都要優雅退回，不丟例外、不卡渲染。
     var runtime = deps.runtime || null;
+    // permissions 是選配依賴(chrome.permissions 形狀:contains/request 回
+    // Promise<boolean>)。identity 與後端 host 走 optional 權限(D8),而
+    // chrome.permissions.request 只能在使用者手勢中呼叫——service worker 自行
+    // 發起一律失敗，所以「求權限」這一半只能落在登入按鈕的 click handler 裡。
+    var permissionsApi = deps.permissions || null;
 
     var entries = [];
     var locale = 'zh';
@@ -1107,6 +1116,23 @@
       renderSyncCard(syncState);
     }
 
+    // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
+    // sync.signIn——SW 端拿不到權限只會把狀態轉成 error/permission_required,
+    // 白跑一趟。
+    function ensureSyncPermissions() {
+      var base = syncState.apiBase || SYNC_API_BASE_FALLBACK;
+      var descriptor = { permissions: ['identity'], origins: [base.replace(/\/+$/, '') + '/*'] };
+      return Promise.resolve(permissionsApi.contains(descriptor)).then(function (granted) {
+        if (granted) return true;
+        if (typeof permissionsApi.request !== 'function') return false;
+        return Promise.resolve(permissionsApi.request(descriptor)).then(function (accepted) {
+          return accepted === true;
+        });
+      }, function () {
+        return false;
+      });
+    }
+
     function bindSyncCard() {
       // 登入先跳確認框(複用 confirmOverlay):內容依 D3 告知本機現有筆數、
       // free 方案雲端保留上限、本機仍完整保留、可隨時登出或刪除。
@@ -1116,7 +1142,14 @@
           okKey: 'opSyncSignInConfirmDo',
           desc: tf('opSyncSignInConfirmDesc', { n: visibleEntries().length }),
           action: function () {
-            sendSyncAction({ type: 'sync.signIn' });
+            // 沒有注入 permissions 時維持原本的直接送出(權限由 SW 端把關)。
+            if (!permissionsApi || typeof permissionsApi.contains !== 'function') {
+              sendSyncAction({ type: 'sync.signIn' });
+              return;
+            }
+            ensureSyncPermissions().then(function (granted) {
+              if (granted) sendSyncAction({ type: 'sync.signIn' });
+            });
           },
         });
       });
@@ -1866,6 +1899,10 @@
               }
               var done = signedIn ? patchSyncAccount({ clearedAt: now() }) : Promise.resolve();
               done.then(function () {
+                // 線上時立刻推一次:clearedAt 只是「待送出」旗標，等下一個週期
+                // alarm 才送的話，這段空窗內寫入的新紀錄會被伺服器的 cleared_at
+                // 連坐拒收(見 docs/cloud-sync-plan.md 第 7 節風險表)。
+                if (signedIn) sendSyncAction({ type: 'sync.now' });
                 renderAll();
                 toast(tt('opToastCleared'));
               });
