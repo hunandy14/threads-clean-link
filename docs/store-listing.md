@@ -54,7 +54,7 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
-【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄僅保存在你的裝置上(chrome.storage.local)，絕不上傳，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
+【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄預設僅保存在你的裝置上(chrome.storage.local)，不會上傳(除非另行啟用『雲端同步』並以 Google 帳號登入)，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
 
 【雲端同步(選用)】在「紀錄與設定」頁使用 Google 帳號登入後，清理紀錄可額外同步到雲端、並與手機版 App 互通;不登入則完全不受影響，行為與現在一樣。
 
@@ -81,7 +81,7 @@ POPUP SETTINGS
 Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting).
 
 HISTORY & SETTINGS PAGE
-Every successful cleaning can leave a local history entry (searchable, filterable by source, JSON export/import, one-click clear), with totals and a 14-day activity chart. History is stored only on your device (chrome.storage.local), never uploaded, capped at 1,000 entries, and can be disabled entirely with the "Keep cleaning history" switch. The UI, notifications and context menu support Traditional Chinese and English — following your browser language by default, switchable manually.
+Every successful cleaning can leave a local history entry (searchable, filterable by source, JSON export/import, one-click clear), with totals and a 14-day activity chart. History is stored only on your device (chrome.storage.local) by default and never uploaded unless you separately sign in with Google to enable Cloud Sync on the History & Settings page, capped at 1,000 entries, and can be disabled entirely with the "Keep cleaning history" switch. The UI, notifications and context menu support Traditional Chinese and English — following your browser language by default, switchable manually.
 
 CLOUD SYNC (OPTIONAL)
 Sign in with Google on the History & Settings page to additionally sync your cleaning history to the cloud and across your other devices running the companion app; if you don't sign in, nothing changes.
@@ -167,12 +167,12 @@ Used to show a single basic notification after a right-click resolve action comp
 
 **English:**
 ```
-chrome.storage.sync persists the user's preference toggles (auto-clean on/off, success notification on/off, keep-history on/off, interface language and theme) so choices follow the signed-in user across their Chrome devices. chrome.storage.local optionally keeps a device-only history of the clean URLs this extension itself produced (capped at 1,000 entries, oldest pruned), shown on the options page with export/clear controls; it can be disabled with a switch and is never transmitted anywhere. No page content and no pre-existing clipboard content is ever stored.
+chrome.storage.sync persists the user's preference toggles (auto-clean on/off, success notification on/off, keep-history on/off, interface language and theme) so choices follow the signed-in user across their Chrome devices. chrome.storage.local optionally keeps a device-only history of the clean URLs this extension itself produced (capped at 1,000 entries, oldest pruned), shown on the options page with export/clear controls; it can be disabled with a switch and, unless Cloud Sync is separately enabled via Google sign-in, is never transmitted anywhere. No page content and no pre-existing clipboard content is ever stored.
 ```
 
 **繁中對照:**
 ```
-chrome.storage.sync 保存使用者的偏好開關(自動淨化、成功通知、保存紀錄、介面語言與主題)，讓選擇跨 Chrome 裝置同步。chrome.storage.local 則(可選地)保存本擴充功能自己產出的乾淨網址紀錄——僅存於這台裝置，上限 1,000 筆自動汰舊，顯示於 options 頁並提供匯出與清除，可用開關整個停用，絕不傳輸到任何地方。不會儲存頁面內容，也不會儲存剪貼簿裡原本的內容。
+chrome.storage.sync 保存使用者的偏好開關(自動淨化、成功通知、保存紀錄、介面語言與主題)，讓選擇跨 Chrome 裝置同步。chrome.storage.local 則(可選地)保存本擴充功能自己產出的乾淨網址紀錄——僅存於這台裝置，上限 1,000 筆自動汰舊，顯示於 options 頁並提供匯出與清除，可用開關整個停用，除非另行以 Google 帳號登入啟用「雲端同步」，否則絕不傳輸到任何地方。不會儲存頁面內容，也不會儲存剪貼簿裡原本的內容。
 ```
 
 ### Host permissions:`https://*.threads.com/*`、`https://*.threads.net/*`
@@ -195,12 +195,12 @@ host permissions 限定在這兩個 Threads 網域，只用於兩件事:
 
 **English:**
 ```
-None. This extension does not download, fetch, or execute any remote code. All logic ships inside the packaged extension. The only network requests it makes are the anonymous GET requests to Threads described above, used solely to resolve a share short code into its final URL — the response is read for its resolved URL only and is never executed as code.
+None. This extension does not download, fetch, or execute any remote code. All logic ships inside the packaged extension. Unless Cloud Sync is separately enabled via Google sign-in, the only network requests it makes are the anonymous GET requests to Threads described above, used solely to resolve a share short code into its final URL — the response is read for its resolved URL only and is never executed as code. When Cloud Sync is enabled, the extension additionally exchanges JSON data with its own backend as described in the Host permissions section above; that data is likewise never executed as code.
 ```
 
 **繁中對照:**
 ```
-無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的僅是把分享短碼解析成最終網址——回應內容只拿來讀取解析後的網址，絕不會被當成程式碼執行。
+無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。除非另行以 Google 帳號登入啟用「雲端同步」，否則唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的僅是把分享短碼解析成最終網址——回應內容只拿來讀取解析後的網址，絕不會被當成程式碼執行。啟用雲端同步後，本擴充功能會額外與自己的後端交換 JSON 資料(如上方 Host permissions 小節所述)，該資料同樣絕不會被當成程式碼執行。
 ```
 
 ### identity(選用權限，僅登入當下請求)
