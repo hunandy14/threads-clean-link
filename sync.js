@@ -127,6 +127,64 @@
     return typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
   }
 
+  function finiteNumber(value) {
+    return typeof value === 'number' && isFinite(value);
+  }
+
+  /**
+   * 這筆 entry 送得上雲嗎?判準逐條對齊伺服器的 normalizeItem(api-spec 3.1):
+   * 缺 id／original／cleaned,或 receivedAt 不是有限正數，整筆會被**靜默丟棄**
+   * ——不進 applied 也不進 rejectedIds。送這種資料上去等於永遠拿不到 ack,
+   * dirty 清不掉，每一輪重送一次，活鎖。損毀資料經遷移後真的可能長成這樣
+   * (receivedAt 為 null),所以在 outbox 這一關就攔下來。
+   */
+  function isUploadable(entry) {
+    if (typeof entry.id !== 'string' || entry.id.length < 1 || entry.id.length > 64) return false;
+    if (typeof entry.url !== 'string' || TCLCoreRef.normalizePostUrl(entry.url) === null) return false;
+    return finiteNumber(entry.receivedAt) && entry.receivedAt > 0;
+  }
+
+  /** 墓碑只送 id;伺服器對 deletes 的要求是長度 1-64 的字串。 */
+  function isDeletable(entry) {
+    return typeof entry.id === 'string' && entry.id.length >= 1 && entry.id.length <= 64;
+  }
+
+  /**
+   * 雲端 item 的形狀閘門。TCLCore.fromSyncItem 是純映射、不做輸入驗證,形狀
+   * 不對的欄位會原樣寫進 entry;而 options 讀取端的 sanitizeEntries 是有損
+   * 閘門(url 無法正規化／at 非有限數字／kind 不在白名單就整筆丟掉),寫進去
+   * 的壞資料會在使用者眼前直接消失。信任邊界在這裡:後端回來的東西一律先驗。
+   */
+  function acceptIncomingItem(item) {
+    if (!item || typeof item !== 'object') return false;
+    if (typeof item.id !== 'string' || item.id.length < 1) return false;
+    if (typeof item.cleaned !== 'string' || TCLCoreRef.normalizePostUrl(item.cleaned) === null) return false;
+    return finiteNumber(item.receivedAt);
+  }
+
+  /**
+   * 合併結果的收尾整形:核心欄位(url／at)不合格就整筆不收，選填欄位型別不對
+   * 就丟掉該欄。判準與 options 的 sanitizeEntries 一致，避免「同步寫得進去、
+   * 頁面讀不出來」的分岔。
+   */
+  function repairMergedEntry(entry) {
+    if (!entry || typeof entry.url !== 'string' || TCLCoreRef.normalizePostUrl(entry.url) === null) return null;
+    if (!finiteNumber(entry.at)) return null;
+    if (!finiteNumber(entry.receivedAt)) entry.receivedAt = entry.at;
+    entry.seen = TCLCoreRef.sanitizeSeenList(entry.seen);
+    ['author', 'handle', 'excerpt', 'original'].forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(entry, key) && typeof entry[key] !== 'string') {
+        delete entry[key];
+      }
+    });
+    if (Object.prototype.hasOwnProperty.call(entry, 'removedParams')) {
+      var params = TCLCoreRef.sanitizeRemovedParams(entry.removedParams);
+      if (params === undefined) delete entry.removedParams;
+      else entry.removedParams = params;
+    }
+    return entry;
+  }
+
   /**
    * 建立一台同步引擎。所有依賴注入，見檔頭。
    */
@@ -315,14 +373,24 @@
 
     // ---- 切批(api-spec 7.2) ----
 
+    /**
+     * @returns {{batches: object[], dropped: string[]}} dropped 是送不上雲的
+     *   entry id(見 isUploadable):它們的 dirty 必須就地清掉，否則每一輪重送
+     *   一次卻永遠等不到 ack。
+     */
     function buildBatches(history) {
       var upserts = [];
       var deletes = [];
+      var dropped = [];
       history.forEach(function (entry) {
         if (!entry || entry.dirty !== true) return;
-        if (typeof entry.id !== 'string' || !entry.id) return;
         if (isTombstone(entry)) {
-          deletes.push(entry.id);
+          if (isDeletable(entry)) deletes.push(entry.id);
+          else if (typeof entry.id === 'string') dropped.push(entry.id);
+          return;
+        }
+        if (!isUploadable(entry)) {
+          if (typeof entry.id === 'string') dropped.push(entry.id);
           return;
         }
         upserts.push(TCLCoreRef.toSyncItem(entry));
@@ -355,7 +423,28 @@
       // 沒有待推的東西也要發一次:一次往返同時處理推與拉，少發這一次就拉不
       // 到別台裝置的新資料。
       if (!batches.length) batches.push({ upserts: [], deletes: [], seenRows: 0 });
-      return batches;
+      return { batches: batches, dropped: dropped };
+    }
+
+    /** 把送不上雲的 entry 就地標乾淨(本機資料保留，只是不再嘗試上傳)。 */
+    function dropUnsendable(ids) {
+      if (!ids.length) return Promise.resolve();
+      var drop = {};
+      ids.forEach(function (id) {
+        drop[id] = true;
+      });
+      return writeChain(function () {
+        return readHistory().then(function (list) {
+          var next = list.map(function (entry) {
+            return entry && drop[entry.id] && entry.dirty === true
+              ? Object.assign({}, entry, { dirty: false })
+              : entry;
+          });
+          var items = {};
+          items[HISTORY_KEY] = next;
+          return localSet(items);
+        });
+      });
     }
 
     // ---- 套用一次往返的回應 ----
@@ -400,6 +489,10 @@
                   // 次同步又分裂一張。
                   id: canonical[entry.id],
                   dirty: false,
+                  // serverUpdatedAt 只是「這一輪已上傳」的標記,不是比較用的
+                  // 判準——後端契約(api-spec 3.1)的 ShareHistoryItem 沒有
+                  // updatedAt 欄位。新舊一律以 SyncResponse.cursor 與 changes
+                  // 為準，本欄不參與任何比較。
                   serverUpdatedAt: stamp,
                 })
               );
@@ -437,7 +530,7 @@
               });
             }
             (changes.links || []).forEach(function (item) {
-              if (!item || typeof item.cleaned !== 'string') return;
+              if (!acceptIncomingItem(item)) return;
               var key = keyOfItem(item);
               var index = -1;
               for (var i = 0; i < next.length; i += 1) {
@@ -446,7 +539,12 @@
                   break;
                 }
               }
-              var merged = TCLCoreRef.fromSyncItem(item, index === -1 ? null : next[index]);
+              var merged = repairMergedEntry(
+                TCLCoreRef.fromSyncItem(item, index === -1 ? null : next[index])
+              );
+              // 整形後仍不合格就維持本機原樣(有既有卡)或整筆不收(沒有):寫進
+              // 一筆 options 讀不出來的資料，比不寫更糟。
+              if (!merged) return;
               if (index === -1) next.push(merged);
               else next[index] = merged;
             });
@@ -490,9 +588,9 @@
           // 「開始同步」的廣播沿用這一次已經讀好的 ctx 與 history:SW 隨時會
           // 被殺，第一次請求要盡快發出去，不為了一則廣播多跑兩趟 storage。
           emitState(ctx, history, 'syncing');
-          var batches = buildBatches(history);
-          var step = Promise.resolve();
-          batches.forEach(function (batch) {
+          var planned = buildBatches(history);
+          var step = dropUnsendable(planned.dropped);
+          planned.batches.forEach(function (batch) {
             step = step.then(function () {
               var body = {
                 upserts: batch.upserts,
