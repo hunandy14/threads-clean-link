@@ -10,7 +10,7 @@
 // 欄位把擴充 ID 釘死，Console 端才登記得起來。
 //
 // nonce 是這條流程的重放防線:由呼叫端(sync.js 的同步引擎)產生並落
-// chrome.storage.session,本模組只負責把它放進授權請求並比對回來的 id_token
+// chrome.storage.session，本模組只負責把它放進授權請求並比對回來的 id_token
 // payload——SW 在授權往返中途被回收時，重建的引擎仍比對得出這一次的 nonce。
 //
 // 權限:identity 與後端 host 都是 optional 權限。chrome.permissions.request
