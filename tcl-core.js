@@ -127,6 +127,85 @@
     return match ? match[3] : null;
   }
 
+  // ---- 跨裝置合併鍵(postKeyOf) ----
+
+  // 逐字移植自手機 C:\gitRepos\meta-link-clearer\src\lib\post-key.ts 的
+  // postKeyOf，輸入輸出與其完全等價(見 docs/cloud-sync-plan.md D11)。純函
+  // 式、無副作用，SW 與擴充頁共用，雲端同步以此為 history 的合併鍵，取代
+  // extractPostId 只認嚴格樣式(無尾斜線/query，handle 白名單字元類)的局
+  // 限。extractPostId 保留給顯示用途，行為不變。
+
+  // host 是否為 suffix 本身，或其任一子網域(以 '.' + suffix 結尾)。大小寫
+  // 不敏感;用 endsWith 而非 includes，避免 sub.threads.com.evil.com 這種
+  // 「字串包含但非同網域」的釣魚變體被誤判。
+  function hostnameEndsWith(hostname, suffix) {
+    var h = hostname.toLowerCase();
+    return h === suffix || h.slice(-(suffix.length + 1)) === '.' + suffix;
+  }
+
+  // Threads:/@handle/post/<code>;handle 會變，只取 code。
+  var THREADS_POST = /^\/@[^/]+\/post\/([A-Za-z0-9_-]+)\/?$/;
+  // Instagram:/p、/reel、/reels、/tv 後面都是同一種 shortcode。
+  var INSTAGRAM_POST = /^\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)\/?$/;
+  // Facebook 路徑型:.../posts/<id>(數字或 pfbid…)、.../videos/<id>、
+  // /reel/<id>、.../photos/<album>/<id>。
+  var FACEBOOK_POSTS = /\/posts\/([A-Za-z0-9_-]+)\/?$/;
+  var FACEBOOK_VIDEOS = /\/videos\/([0-9]+)\/?$/;
+  var FACEBOOK_REEL = /^\/reel\/([0-9]+)\/?$/;
+  var FACEBOOK_PHOTOS = /\/photos\/[^/]+\/([0-9]+)\/?$/;
+  // Facebook query 型:permalink.php／story.php 用 story_fbid、
+  // photo(.php) 用 fbid、watch 用 v。
+  var FACEBOOK_STORY_PAGES = /^\/(?:permalink|story)\.php$/;
+  var FACEBOOK_PHOTO_PAGES = /^\/photo(?:\.php)?\/?$/;
+  var FACEBOOK_WATCH_PAGES = /^\/watch\/?$/;
+
+  // 從已解析的 Facebook URL 抽貼文/影片/相片識別碼，抽不出回傳 null。
+  function facebookId(parsed) {
+    var path = parsed.pathname;
+    var m =
+      FACEBOOK_POSTS.exec(path) ||
+      FACEBOOK_VIDEOS.exec(path) ||
+      FACEBOOK_REEL.exec(path) ||
+      FACEBOOK_PHOTOS.exec(path);
+    if (m) return m[1];
+    if (FACEBOOK_STORY_PAGES.test(path)) return parsed.searchParams.get('story_fbid');
+    if (FACEBOOK_PHOTO_PAGES.test(path)) return parsed.searchParams.get('fbid');
+    if (FACEBOOK_WATCH_PAGES.test(path)) return parsed.searchParams.get('v');
+    return null;
+  }
+
+  // 退回網址本身當鍵:host 小寫並去掉 www./m./mobile. 前綴，路徑去尾斜線，
+  // query 照留(呼叫端傳入的網址已剝過追蹤參數)。
+  function urlKey(parsed) {
+    var host = parsed.hostname.toLowerCase().replace(/^(?:www|m|mobile)\./, '');
+    var path = parsed.pathname.replace(/\/+$/, '') || '/';
+    return 'url:' + host + path + parsed.search;
+  }
+
+  // 回傳形如 threads:DLxxxx、instagram:Cxxxx、facebook:123456 或
+  // url:host/path 的字串。無法解析的輸入回傳 url:<原字串>，永遠不丟例外。
+  function postKeyOf(cleaned) {
+    var parsed;
+    try {
+      parsed = new URL(cleaned);
+    } catch (e) {
+      return 'url:' + cleaned;
+    }
+    var hostname = parsed.hostname;
+
+    if (hostnameEndsWith(hostname, 'threads.com') || hostnameEndsWith(hostname, 'threads.net')) {
+      var threadsMatch = THREADS_POST.exec(parsed.pathname);
+      if (threadsMatch) return 'threads:' + threadsMatch[1];
+    } else if (hostnameEndsWith(hostname, 'instagram.com')) {
+      var instagramMatch = INSTAGRAM_POST.exec(parsed.pathname);
+      if (instagramMatch) return 'instagram:' + instagramMatch[1];
+    } else if (hostnameEndsWith(hostname, 'facebook.com')) {
+      var fbId = facebookId(parsed);
+      if (fbId) return 'facebook:' + fbId;
+    }
+    return urlKey(parsed);
+  }
+
   // ---- 欄位消毒 ----
 
   // 剝除控制/bidi 字元(見 CONTROL_CHARS_RE 註解)，獨立匯出供測試
@@ -213,6 +292,7 @@
     isCleanPostUrl: isCleanPostUrl,
     normalizePostUrl: normalizePostUrl,
     extractPostId: extractPostId,
+    postKeyOf: postKeyOf,
     KIND_LIST: KIND_LIST,
     NOTICE_KIND_LIST: NOTICE_KIND_LIST,
     LIMITS: LIMITS,
