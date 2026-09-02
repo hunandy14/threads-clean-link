@@ -130,13 +130,13 @@
   // ---- 跨裝置合併鍵(postKeyOf) ----
 
   // 逐字移植自手機 C:\gitRepos\meta-link-clearer\src\lib\post-key.ts 的
-  // postKeyOf,輸入輸出與其完全等價(見 docs/cloud-sync-plan.md D11)。純函
-  // 式、無副作用,SW 與擴充頁共用,雲端同步以此為 history 的合併鍵,取代
-  // extractPostId 只認嚴格樣式(無尾斜線/query,handle 白名單字元類)的局
-  // 限。extractPostId 保留給顯示用途,行為不變。
+  // postKeyOf，輸入輸出與其完全等價(見 docs/cloud-sync-plan.md D11)。純函
+  // 式、無副作用，SW 與擴充頁共用，雲端同步以此為 history 的合併鍵，取代
+  // extractPostId 只認嚴格樣式(無尾斜線/query，handle 白名單字元類)的局
+  // 限。extractPostId 保留給顯示用途，行為不變。
 
   // host 是否為 suffix 本身，或其任一子網域(以 '.' + suffix 結尾)。大小寫
-  // 不敏感;用 endsWith 而非 includes,避免 sub.threads.com.evil.com 這種
+  // 不敏感;用 endsWith 而非 includes，避免 sub.threads.com.evil.com 這種
   // 「字串包含但非同網域」的釣魚變體被誤判。
   function hostnameEndsWith(hostname, suffix) {
     var h = hostname.toLowerCase();

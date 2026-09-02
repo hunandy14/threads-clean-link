@@ -793,14 +793,16 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
 // 主鍵，改名前後的紀錄才仍認得是同一篇。
 //
 // 【合併鍵三層級聯】
-//   1. **post ID 主鍵**(historyDedupKey → TCLCore.extractPostId):吻合嚴格
-//      貼文樣式的 url 一律取 ID 當鍵。
+//   1. **post key 主鍵**(historyDedupKey → TCLCore.postKeyOf):同一篇貼文
+//      不論網址形狀如何變化(handle 改名、網域變體、尾斜線、query)，一律
+//      取得同一個鍵(細節見 historyDedupKey 上方註解)。
 //   2. **original 收編**(findOriginalAdoptIndex):本次落盤的 original 是短
 //      碼原文時，把「當年解析失敗、以短碼原文入庫」的失敗卡一併收編進同文
 //      卡——短碼在解析成功的那一刻才第一次與貼文對上號，這是唯一能把兩者
 //      接起來的時機。
-//   3. **失敗卡自鍵**:抽不出 post ID 的 url(短碼原文等)退回整條 url 當
-//      fallback key。同一個短碼重複入庫仍合成一張，不同短碼各自獨立。
+//   3. **失敗卡自鍵**:抽不出貼文代碼的 url(短碼原文等)退回正規化網址
+//      當 fallback key(url:<host><path><query>，見 urlKey)。同一個短碼
+//      重複入庫仍合成一張，不同短碼各自獨立。
 // 不同短碼指向同一篇貼文的失敗卡彼此認不出來(短碼只有 Meta 伺服器能對應，
 // 本機無從得知兩個短碼是同一篇)，此為自然極限，不另做補救。
 
@@ -813,7 +815,7 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
 // (adoptFailureEntry)、一次性遷移(mergeHistoryGroup)。
 const MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
 
-// 純函式:條目的合併鍵，走 TCLCore.postKeyOf(D11,與手機 postKeyOf 完全等
+// 純函式:條目的合併鍵，走 TCLCore.postKeyOf(D11，與手機 postKeyOf 完全等
 // 價)。同一篇貼文不論 handle 改名、網域變體(www./m./mobile.、threads.com/
 // .net)、尾斜線、query，皆算出同一個 threads:<code> 之類的鍵;抽不出貼文
 // 代碼的一律退回正規化後的網址當 fallback key(url:<host><path><query>)。
@@ -1070,8 +1072,9 @@ function recordHistory(url, kind, extra) {
 // 失敗的短碼原文再一張)。改成永久合併之後，**新**寫入自然只會有一張卡，
 // 但既有資料不會自己收斂——這支遷移在 onInstalled 跑一次，把舊資料整平。
 //
-// 【演算法】讀全表 → 依 historyDedupKey 分組(同 post ID 為一組，抽不出 ID
-// 的以整條 url 自成一組)→ 組內以 at 最新的一筆為主卡，欄位新值優先(主卡
+// 【演算法】讀全表 → 依 historyDedupKey 分組(同一個 postKey 為一組，抽不
+// 出貼文代碼的以正規化網址 url:<host><path><query> 自成一組)→ 組內以 at
+// 最新的一筆為主卡，欄位新值優先(主卡
 // 缺席才依序往較舊的卡取值)、seen[] 取各卡聯集(無 seen 的舊卡以自身 at 補
 // 種一筆)按 at 升序裁到最新 SEEN_MAX、主卡的 url/kind/at 原樣保留 → 再掃一
 // 輪失敗卡收編(文章卡.original === 失敗卡.url，見 findOriginalAdoptIndex)

@@ -1609,9 +1609,9 @@ test('紀錄永久合併:post ID 不同的兩篇貼文各自獨立，不因同�
 
 // 合併鍵改用 TCLCore.postKeyOf(手機 src/lib/post-key.ts 逐字移植)後的紅燈
 // 案例:舊 TCLCore.extractPostId 只認 STRICT_POST_URL_PATTERN(無尾斜線、
-// 無 query、僅 www. 可選前綴),尾斜線變體會直接落回整條 url 當 fallback
-// key,與同一篇貼文的乾淨網址(無尾斜線)算出不同鍵而不合併。postKeyOf 的
-// THREADS_POST 規則容忍尾斜線,兩者應合併為一筆。
+// 無 query、僅 www. 可選前綴)，尾斜線變體會直接落回整條 url 當 fallback
+// key，與同一篇貼文的乾淨網址(無尾斜線)算出不同鍵而不合併。postKeyOf 的
+// THREADS_POST 規則容忍尾斜線，兩者應合併為一筆。
 test('紀錄永久合併(postKeyOf):既有卡的 url 帶尾斜線,與本次乾淨網址(同 post ID、無尾斜線)仍應合併為一筆', async () => {
   const now = Date.now();
   const existing = {
@@ -2498,12 +2498,12 @@ test('遷移:空表與單卡表無害——不寫回、不損壞既有資料', a
   assert.equal(singleBg.storage.localCalls.set.length, 0, '單卡表不寫回');
 });
 
-// 合併鍵改用 TCLCore.postKeyOf 後,遷移分組(mergeHistoryByDedupKey → 內部走
+// 合併鍵改用 TCLCore.postKeyOf 後，遷移分組(mergeHistoryByDedupKey → 內部走
 // historyDedupKey → TCLCore.postKeyOf)也要能整平舊資料裡「同一篇貼文、兩
 // 種網址形狀都不吻合 STRICT_POST_URL_PATTERN」的殘留:一筆帶 query、一筆是
-// m. 子網域。舊 extractPostId 對這兩種形狀都回傳 null,各自以整條 url 字串
-// 為 fallback key,兩條 url 字串不同,遷移分不出是同一篇 → 停留兩筆。
-// postKeyOf 兩者都能抽出同一個 post ID,遷移應整平成一筆。
+// m. 子網域。舊 extractPostId 對這兩種形狀都回傳 null，各自以整條 url 字串
+// 為 fallback key，兩條 url 字串不同，遷移分不出是同一篇 → 停留兩筆。
+// postKeyOf 兩者都能抽出同一個 post ID，遷移應整平成一筆。
 test('遷移(postKeyOf):舊資料兩筆分別為「帶 query」與「m. 子網域」的同一篇貼文,應整平為一筆', async () => {
   const base = 1700000000000;
   const withQuery = {
