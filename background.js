@@ -813,12 +813,12 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
 // (adoptFailureEntry)、一次性遷移(mergeHistoryGroup)。
 const MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
 
-// 純函式:條目的合併鍵。吻合嚴格貼文樣式的 url 取 post ID(handle 改名不影
-// 響);抽不出 ID 的(短碼原文等解析失敗入庫的資料)退回整條 url 當 fallback
-// key。post ID 的字元類不含 ':' 與 '/'，與任何整條 url 形狀的 fallback key
-// 天然不會相撞。
+// 純函式:條目的合併鍵，走 TCLCore.postKeyOf(D11,與手機 postKeyOf 完全等
+// 價)。同一篇貼文不論 handle 改名、網域變體(www./m./mobile.、threads.com/
+// .net)、尾斜線、query，皆算出同一個 threads:<code> 之類的鍵;抽不出貼文
+// 代碼的一律退回正規化後的網址當 fallback key(url:<host><path><query>)。
 function historyDedupKey(url) {
-  return TCLCore.extractPostId(url) || url;
+  return TCLCore.postKeyOf(url);
 }
 
 // 純函式:在既有清單中找出合併鍵相同的條目 index，找不到回傳 -1。**全表比
