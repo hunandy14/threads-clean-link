@@ -97,7 +97,9 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 ## 開發
 
-執行測試:`node --test test/*.test.js`
+執行測試:`node --test test/*.test.js`(或 `npm test`)
+
+一鍵啟動除錯用 Chrome 並載入開發版擴充:`npm run dev`(staging API)或 `npm run dev:prod`(production API)。需先手動建立 `~/.threads-clean-link/dev-build`(本 repo 的另一個 git worktree)與 `~/.threads-clean-link/debug-profile`(已登入 Google 測試帳號的 Chrome profile)，細節見 `tools/dev-browser.mjs` 檔頭註解。
 
 ## License
 
