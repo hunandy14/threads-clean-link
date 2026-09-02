@@ -2480,7 +2480,11 @@ test('遷移:冪等——已整平的資料重跑一次不變，且不再寫回 
 
   assert.deepEqual(bg.storage.localSnapshot().history, afterFirst, '重跑結果與第一次完全相同');
   assert.equal(bg.storage.localCalls.set.length, firstWriteCount, '已是永久合併形狀時不再寫回 storage');
-  assert.equal(firstWriteCount, 0, '本來就無可合併的資料，第一次也不該寫回');
+  // S2:onInstalled 現在依序跑兩支遷移(先 migrateHistoryMerge 再
+  // migrateHistorySchema)。這份 fixture 無可合併，但缺 S1 的新欄位，schema
+  // 遷移必須補齊並寫回一次——冪等的判準因此是「第二次執行不再寫」，不是
+  // 「一次都不寫」。
+  assert.equal(firstWriteCount, 1, 'merge 無可合併，但 schema 需補新欄位，第一次應寫回一次');
 });
 
 test('遷移:空表與單卡表無害——不寫回、不損壞既有資料', async () => {
@@ -2494,8 +2498,14 @@ test('遷移:空表與單卡表無害——不寫回、不損壞既有資料', a
   const singleBg = loadBackgroundForMigration([single]);
   singleBg.fireInstalled();
   await settle();
-  assert.deepEqual(singleBg.storage.localSnapshot().history, [single], '單卡表原樣保留');
-  assert.equal(singleBg.storage.localCalls.set.length, 0, '單卡表不寫回');
+  // S2:單卡表仍無可「合併」，但缺新欄位時 schema 遷移會補齊並寫回一次;
+  // 既有欄位必須原樣保留。
+  const singleHistory = singleBg.storage.localSnapshot().history;
+  assert.equal(singleHistory.length, 1, '單卡表不得被合併掉');
+  assert.equal(singleHistory[0].url, single.url, '既有欄位原樣保留');
+  assert.equal(singleHistory[0].kind, single.kind);
+  assert.equal(singleHistory[0].at, single.at);
+  assert.equal(singleBg.storage.localCalls.set.length, 1, 'schema 遷移補齊新欄位，寫回一次');
 });
 
 // 合併鍵改用 TCLCore.postKeyOf 後，遷移分組(mergeHistoryByDedupKey → 內部走
