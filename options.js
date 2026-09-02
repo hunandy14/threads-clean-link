@@ -566,7 +566,7 @@
     // fetchSyncState/sendSyncAction 都要優雅退回，不丟例外、不卡渲染。
     var runtime = deps.runtime || null;
     // permissions 是選配依賴(chrome.permissions 形狀:contains/request 回
-    // Promise<boolean>)。identity 與後端 host 走 optional 權限(D8),而
+    // Promise<boolean>)。identity 與後端 host 走 optional 權限(D8)，而
     // chrome.permissions.request 只能在使用者手勢中呼叫——service worker 自行
     // 發起一律失敗，所以「求權限」這一半只能落在登入按鈕的 click handler 裡。
     var permissionsApi = deps.permissions || null;
@@ -1145,7 +1145,7 @@
     }
 
     // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
-    // sync.signIn——SW 端拿不到權限只會把狀態轉成 error/permission_required,
+    // sync.signIn——SW 端拿不到權限只會把狀態轉成 error/permission_required，
     // 白跑一趟。
     function ensureSyncPermissions() {
       var base = clampApiBase(syncState.apiBase);

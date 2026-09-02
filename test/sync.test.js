@@ -1883,3 +1883,28 @@ test('T2 每個請求都關掉自動跟隨轉址（redirect:"error"）', async (
     );
   });
 });
+
+test('T4 403 forbidden_origin：連既有的週期 alarm 也要清掉', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  const engine = TCLSync.create(env.deps);
+
+  // 先成功一輪，讓週期 alarm 真的建起來（登入成功那一輪也會建同一支）。
+  await engine.syncNow();
+  await settle(10);
+  assert.ok(
+    env.alarms.creates().some((c) => c.name === TCLSync.ALARM_NAME && typeof c.info.periodInMinutes === 'number'),
+    '前置條件:週期 alarm 已建立'
+  );
+
+  env.advance(10 * 60_000);
+  env.server.failNext({ status: 403, code: 'forbidden_origin' });
+  await engine.syncNow();
+  await settle(10);
+
+  assert.ok(
+    env.alarms.clears().some((c) => c.name === TCLSync.ALARM_NAME),
+    '只跳過退避是不夠的:留著週期 alarm 等於每 5 分鐘拿同一份必然失敗的請求去敲限流桶'
+  );
+  assert.equal(env.storage.syncState().lastError, 'forbidden_origin');
+});

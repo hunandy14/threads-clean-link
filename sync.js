@@ -959,9 +959,14 @@
               ctx.state.lastError = code;
               return saveState(ctx.state)
                 .then(function () {
-                  // 不可重試的錯誤只記碼:排下一次 alarm 等於每隔幾分鐘用同一份
-                  // 必然失敗的請求去敲 60 次／60 秒的限流桶（與手機端共用）。
-                  if (FATAL_ERRORS.indexOf(code) !== -1) return undefined;
+                  // 不可重試的錯誤只記碼，並且要把既有的週期 alarm 一起清掉:
+                  // 只跳過 scheduleBackoff 是不夠的——登入成功那一輪建的
+                  // periodInMinutes 重複 alarm 還在，403 之後就變成每 5 分鐘拿
+                  // 同一份必然失敗的請求去敲 60 次／60 秒的限流桶（與手機端共
+                  // 用同一桶）。使用者重新登入或手動同步時會重新建回來。
+                  if (FATAL_ERRORS.indexOf(code) !== -1) {
+                    return Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {});
+                  }
                   return scheduleBackoff(ctx.failures + 1, err && err.retryAfterMs);
                 })
                 .then(function () {

@@ -259,13 +259,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // 雲端同步接線(docs/cloud-sync-plan.md 第 5 節)
 // ------------------------------------------------------------
 //
-// 引擎本體在 sync.js,依賴全部由這裡注入:SW 隨時被殺，引擎不能自己抓全域
-// chrome/fetch/Date,否則沒有任何辦法在 node 測試裡跑完整往返。
+// 引擎本體在 sync.js，依賴全部由這裡注入:SW 隨時被殺，引擎不能自己抓全域
+// chrome/fetch/Date，否則沒有任何辦法在 node 測試裡跑完整往返。
 //
 // history 的寫入一律交給既有的 historyWriteChain(見 recordHistory):引擎與
 // recordHistory、兩支遷移共用同一條序列鏈，才不會互相覆蓋 read-modify-write。
 
-// chrome.storage 的區域轉接:一律以 Promise 呼叫。區域本身在函式內才取值,
+// chrome.storage 的區域轉接:一律以 Promise 呼叫。區域本身在函式內才取值，
 // 沒有 chrome.storage.session 的環境(舊版瀏覽器/測試替身)不會在接線當下就炸。
 function storageAreaAdapter(name) {
   function area() {
@@ -298,7 +298,7 @@ const syncEngine =
           get: (name) => Promise.resolve(chrome.alarms.get(name)),
           getAll: () => Promise.resolve(chrome.alarms.getAll()),
         },
-        // 廣播給 options/popup。沒有任何頁面開著時 sendMessage 會 reject,
+        // 廣播給 options/popup。沒有任何頁面開著時 sendMessage 會 reject，
         // 那是常態不是錯誤，安靜吞掉。
         broadcast: (message) => {
           try {
@@ -321,7 +321,7 @@ const syncEngine =
     : null;
 
 // options/popup → background 的五個同步訊息。登入態與雲端資料是敏感面:
-// 只接受擴充頁面(sender.id 為本擴充且沒有 tab),content script 與其他擴充
+// 只接受擴充頁面(sender.id 為本擴充且沒有 tab)，content script 與其他擴充
 // 送來的一律不回應、不碰引擎。
 const SYNC_MESSAGE_HANDLERS = {
   'sync.getState': (engine) => engine.getState(),
@@ -1252,9 +1252,9 @@ function evictTombstonesForBudget(list) {
 // 發生在「清除的同時恰好完成一次淨化」，極罕見且後果僅是多留一筆，接受。
 let historyWriteChain = Promise.resolve();
 
-// history 序列鏈的對外入口:同步引擎(sync.js)的每一次讀改寫都掛在這條鏈上,
+// history 序列鏈的對外入口:同步引擎(sync.js)的每一次讀改寫都掛在這條鏈上，
 // 與 recordHistory、兩支遷移串行執行，不互相覆蓋。回傳的 promise 如實反映
-// 這一次寫入的成敗(引擎要據此判定這一輪同步算不算成功);鏈本身另外接住錯誤,
+// 這一次寫入的成敗(引擎要據此判定這一輪同步算不算成功);鏈本身另外接住錯誤，
 // 一次失敗不得讓後續寫入排不進來。
 function enqueueHistoryWrite(fn) {
   const run = historyWriteChain.then(fn);
