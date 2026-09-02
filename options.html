@@ -252,6 +252,20 @@
   }
   .tooltip.show { opacity: 1; }
 
+  /* ---- 雲端同步卡片 ---- */
+  .sync-desc {
+    margin: 0 0 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ink-3);
+  }
+  .sync-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
   /* ---- 設定列 ---- */
   .settings-body { padding: 6px 16px 14px; }
   .setting-row {
@@ -1038,6 +1052,49 @@
     </div>
   </section>
 
+  <!-- 雲端同步卡片(車道 E，消費 docs/cloud-sync-plan.md 第 5 節的 runtime
+       message 介面):id="cloud-sync" 兼作 popup 導向的錨點目標。background
+       尚未實作同步引擎(車道 D)前，sync.getState 無回應/形狀不對一律視為
+       signed_out(見 options.js 的 normalizeSyncState/fetchSyncState)，
+       UI 因此優雅退回未登入態，不會整頁卡住或報錯。 -->
+  <section class="card sync-card" id="cloud-sync">
+    <div class="card-head"><h2 data-i18n="opSyncTitle">雲端同步</h2></div>
+    <div class="settings-body">
+      <!-- 未登入態(預設):說明文案 + 登入鈕。點登入先跳確認框(複用
+           #confirmOverlay，見 options.js 的 openConfirm)，內容依 D3 告知
+           上傳筆數與 free 方案雲端保留上限，確認後才送
+           {type:"sync.signIn"}。 -->
+      <div id="syncSignedOut">
+        <p class="sync-desc" data-i18n="opSyncSignedOutDesc">預設關閉，登入 Google 帳號後才會連線；同步內容為清理紀錄的時間、來源與淨化後連結。</p>
+        <button class="btn btn-primary" id="syncSignInBtn" data-i18n="opSyncSignInBtn">使用 Google 帳號登入</button>
+      </div>
+      <!-- 已登入態:帳號/上次同步/待上傳三列 + 三顆動作鈕。status為
+           syncing 時三顆鈕一律 disabled、立即同步鈕文字換成「同步中…」；
+           status 為 error 時多顯示一行 lastError，立即同步鈕保留可點
+           (重試路徑)。 -->
+      <div id="syncSignedIn" hidden>
+        <div class="detail-kv">
+          <span class="detail-key" data-i18n="opSyncAccountLabel">帳號</span>
+          <span class="detail-value" id="syncEmail"></span>
+        </div>
+        <div class="detail-kv">
+          <span class="detail-key" data-i18n="opSyncLastSyncedLabel">上次同步</span>
+          <span class="detail-value" id="syncLastSynced"></span>
+        </div>
+        <div class="detail-kv">
+          <span class="detail-key" data-i18n="opSyncPendingLabel">待上傳</span>
+          <span class="detail-value" id="syncPendingCount"></span>
+        </div>
+        <p class="sync-desc danger-ink" id="syncErrorRow" hidden><span id="syncErrorText"></span></p>
+        <div class="sync-actions">
+          <button class="btn btn-primary" id="syncNowBtn" data-i18n="opSyncNowBtn">立即同步</button>
+          <button class="btn" id="syncSignOutBtn" data-i18n="opSyncSignOutBtn">登出</button>
+          <button class="btn btn-danger-solid" id="syncDeleteBtn" data-i18n="opSyncDeleteBtn">刪除雲端資料</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- 紀錄清單為卡片牆，單一 view 直接顯示，不分頁 tab。 -->
   <section class="card history">
     <div class="card-head">
@@ -1092,7 +1149,11 @@
     </div>
     <div class="list-foot">
       <span id="countHint"></span>
-      <span data-i18n="opDeviceNote">紀錄僅保存於這台裝置</span>
+      <!-- 雲端同步狀態切換這一列的文案(options.js 的 renderSyncCard):未
+           登入維持既有「僅保存於這台裝置」承諾，已登入換成「已同步至你的
+           Google 帳號」。data-i18n 提供未登入態的初值，已登入態由 JS
+           顯式覆寫(比照 confirmTitleText 等既有做法)。 -->
+      <span id="deviceNote" data-i18n="opDeviceNote">紀錄僅保存於這台裝置</span>
     </div>
   </section>
 
