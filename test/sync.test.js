@@ -21,6 +21,8 @@
 //     permissions,  // { contains(descriptor) => Promise<boolean> }
 //     randomUUID,   // () => string，新 entry 的 id 來源
 //     writeChain,   // (fn) => Promise，background.js 的 historyWriteChain
+//     setTimeout,   // (fn, ms) => handle，去抖的 SW 存活期路徑（T5 雙保險）
+//     clearTimeout, // (handle) => void
 //   }) => engine
 //
 //   engine.getState()        Promise<state>（計劃 5.2 形狀）
@@ -323,6 +325,9 @@ function makeEnv(opts = {}) {
     },
   };
   let uuidSeq = 0;
+  let timerSeq = 0;
+  // 去抖的 SW 存活期路徑（T5 雙保險）：計時器一律注入，測試自己決定何時到期。
+  const timers = { calls: [], live: [], cleared: [] };
   const deps = {
     storage: storage.api,
     fetch: server.fetch,
@@ -332,6 +337,18 @@ function makeEnv(opts = {}) {
     auth,
     permissions,
     randomUUID: () => `uuid-${(uuidSeq += 1)}`,
+    setTimeout: (fn, ms) => {
+      timerSeq += 1;
+      const handle = { id: timerSeq, fn, ms, scheduledAt: clock.t };
+      timers.calls.push(handle);
+      timers.live.push(handle);
+      return handle;
+    },
+    clearTimeout: (handle) => {
+      timers.cleared.push(handle);
+      const index = timers.live.indexOf(handle);
+      if (index !== -1) timers.live.splice(index, 1);
+    },
     writeChain: (fn) => {
       storage.chainDepth.value += 1;
       return Promise.resolve()
@@ -352,6 +369,12 @@ function makeEnv(opts = {}) {
     auth,
     permissions,
     deps,
+    timers,
+    /** 讓目前排定的去抖計時器到期（模擬 SW 還活著、2 秒先到）。 */
+    async runTimers() {
+      const pending = timers.live.splice(0, timers.live.length);
+      for (const handle of pending) await handle.fn();
+    },
     advance(ms) {
       clock.t += ms;
     },
@@ -960,20 +983,38 @@ test('T3 拉：hasMore 為 true 時立刻用新 cursor 再拉一次', async () =
   assert.equal(env.storage.history().length, 260, '積壓要拉完');
 });
 
-test('T3 clearedAt：本機全域墓碑一併送出，ack 後清空', async () => {
-  // 【規格落差】api-spec 4.3 的 SyncRequest 沒有 clearedAt 欄位，伺服器端
-  // cleared_at 的唯一寫入路徑是 DELETE /api/v1/links（4.4）。本條照計劃 T3
-  // 的字面要求斷言「送出 ＋ ack 後清空」，mock 伺服器則照契約忽略該欄位。
+test('T3 clearedAt：推送前先打 DELETE /api/v1/links，成功後清空並作廢舊 cursor', async () => {
+  // PM 裁決：api-spec 4.3 的 SyncRequest 沒有 clearedAt 欄位；「清空全部」的
+  // 雲端語意就是 DELETE /api/v1/links（api-spec 4.4:459-467）——伺服器自己寫
+  // cleared_at，其他裝置下次拉取時據此清本機。
   const TCLSync = loadSync();
   const cleared = T0 - 30_000;
-  const env = makeEnv({ signedIn: true, syncState: { clearedAt: cleared }, history: [entry()] });
+  const staleCursor = '1699999999999~srv-old';
+  const env = makeEnv({
+    signedIn: true,
+    syncState: { clearedAt: cleared, cursor: staleCursor },
+    history: [entry({ id: 'a', url: POST_A, at: T0 - 10_000, receivedAt: T0 - 10_000, dirty: true })],
+  });
+  env.server.seed([
+    { id: 'srv-old', original: POST_B, cleaned: POST_B, receivedAt: T0 - 400_000, seen: [{ at: T0 - 400_000 }] },
+  ]);
   const engine = TCLSync.create(env.deps);
   await engine.syncNow();
-  await settle();
+  await settle(10);
 
-  const carried = env.server.requests.some((r) => JSON.stringify(r.body || {}).includes(String(cleared)));
-  assert.ok(carried, '本機 clearedAt 必須在這一輪送達伺服器');
-  assert.equal(env.storage.syncState().clearedAt, null, 'ack 後本機 clearedAt 要清空');
+  const deletes = env.server.requestsTo('/api/v1/links', 'DELETE');
+  assert.equal(deletes.length, 1, 'clearedAt 非 null 時要先把雲端清掉');
+  assert.equal(deletes[0].headers.authorization, 'Bearer tok-seeded');
+  assert.equal(env.server.linkCount(), 0, '雲端資料要被清光');
+
+  const firstPush = env.syncPosts()[0];
+  assert.ok(firstPush, '清完之後照樣走完這一輪的推拉');
+  assert.ok(
+    env.server.requests.indexOf(deletes[0]) < env.server.requests.indexOf(firstPush),
+    'DELETE 必須早於推送，否則剛推上去的又被自己清掉'
+  );
+  assert.notEqual(firstPush.body.since, staleCursor, 'cursor 歸零：舊游標對清空後的雲端已無意義');
+  assert.equal(env.storage.syncState().clearedAt, null, '成功後清空本機 clearedAt，不得每輪重刪');
 });
 
 test('T3 單飛：同時三次 syncNow 只跑一輪往返', async () => {
@@ -1168,12 +1209,16 @@ test('T4 415／503：進入退避曲線', async () => {
   }
 });
 
-test('T4 網路錯誤：退避曲線 30s→60s→120s→300s→600s 封頂', async () => {
-  // 【規格落差】計劃 D12 寫「照手機 scheduler（30s→600s）」，而手機
-  // src/lib/sync/scheduler.ts 的 pollIntervalFor 是 30/30/60/120/240/480/600
-  // （第一次失敗刻意不加倍）。此處照派工單 T4 字面列的序列斷言。
+test('T4 網路錯誤：退避曲線照手機 pollIntervalFor（首次失敗不加倍，600s 封頂）', async () => {
+  // PM 裁決：以手機端 src/lib/sync/scheduler.ts 的 pollIntervalFor 為準——
+  //   POLL_INTERVAL_MS = 30_000（scheduler.ts:17）
+  //   POLL_BACKOFF_MAX_MS = 600_000（scheduler.ts:19）
+  //   pollIntervalFor(f) = f <= 0 ? 30s : min(30s * 2 ** (f - 1), 600s)
+  //     （scheduler.ts:31-34）
+  // 亦即 30s（正常）→ 30s（第一次失敗，刻意不加倍）→ 60s → 120s → 240s →
+  // 480s → 600s（封頂），原文註解見 scheduler.ts:26。
   const TCLSync = loadSync();
-  const expected = [30_000, 60_000, 120_000, 300_000, 600_000, 600_000];
+  const expected = [30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000];
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const engine = TCLSync.create(env.deps);
 
@@ -1240,7 +1285,10 @@ test('T5 登出時清除 alarm', async () => {
   );
 });
 
-test('T5 recordHistory 後 2 秒去抖：用 alarm 排程，不用 setTimeout', async () => {
+test('T5 recordHistory 後去抖：2 秒 setTimeout ＋ 30 秒 alarm 雙保險', async () => {
+  // PM 裁決：Chrome 的 alarm 最小間隔是 30 秒，2 秒排不出來。去抖走注入的
+  // setTimeout（SW 存活期），另排一個 30 秒的 alarm 當 SW 被回收時的保底；
+  // 兩條路任一先到就跑 syncNow，單飛旗標保證只跑一次。
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const engine = TCLSync.create(env.deps);
@@ -1248,25 +1296,58 @@ test('T5 recordHistory 後 2 秒去抖：用 alarm 排程，不用 setTimeout', 
   await settle();
 
   assert.deepEqual(env.syncPosts(), [], '去抖期間不得立刻同步');
-  const created = env.alarms.creates();
-  assert.ok(created.length >= 1, '必須排一個 alarm；setTimeout 在 SW 被殺後不會醒來');
-  const delay = env.alarms.delayOf(created[created.length - 1], env.now());
-  assert.equal(delay, TCLSync.DEBOUNCE_MS, '去抖 2 秒');
+  assert.equal(TCLSync.DEBOUNCE_MS, 2000);
+  assert.equal(env.timers.live.length, 1, '必須用注入的 setTimeout 排 SW 存活期的去抖');
+  assert.equal(env.timers.live[0].ms, TCLSync.DEBOUNCE_MS, '去抖 2 秒');
+
+  const guard = env.alarms.lastCreate();
+  assert.ok(guard, 'SW 可能在 2 秒內就被回收，必須另排 alarm 保底');
+  assert.equal(env.alarms.delayOf(guard, env.now()), 30_000, 'alarm 保底排在 30 秒（Chrome 的最小間隔）');
+  assert.notEqual(
+    guard.name,
+    TCLSync.ALARM_NAME,
+    '保底 alarm 不得與週期 alarm 同名，同名建立會把週期排程整個蓋掉'
+  );
 });
 
-test('T5 連續 recordHistory 只留最後一次的去抖排程', async () => {
+test('T5 去抖：setTimeout 先到就同步，隨後保底 alarm 到期不得重跑', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const engine = TCLSync.create(env.deps);
   await engine.notifyRecorded();
   await settle();
+  const guard = env.alarms.lastCreate();
+  assert.ok(guard);
+
+  env.advance(TCLSync.DEBOUNCE_MS);
+  await env.runTimers(); // SW 還活著：2 秒那條先到
+  await settle(10);
+  assert.equal(env.syncPosts().length, 1, 'setTimeout 到期要跑一次同步');
+
+  env.advance(30_000);
+  await engine.onAlarm({ name: guard.name });
+  await settle(10);
+  assert.equal(env.syncPosts().length, 1, '去抖已經跑過，保底 alarm 到期不得再跑一次');
+});
+
+test('T5 連續 recordHistory 只留最後一次的去抖排程（計時器與保底 alarm 一起重排）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  const engine = TCLSync.create(env.deps);
+  await engine.notifyRecorded();
+  await settle();
+  const first = env.timers.calls[0];
+  assert.ok(first);
+
   env.advance(1000);
   await engine.notifyRecorded();
   await settle();
 
-  const delay = env.alarms.delayOf(env.alarms.lastCreate(), env.now());
-  assert.equal(delay, TCLSync.DEBOUNCE_MS, '去抖要從最後一次寫入起算（連續分享十次只同步一次）');
-  assert.deepEqual(env.syncPosts(), []);
+  assert.ok(env.timers.cleared.includes(first), '前一個去抖計時器要取消，從最後一次寫入起算');
+  assert.equal(env.timers.live.length, 1, '同時只留一個去抖計時器');
+  assert.equal(env.timers.live[0].ms, TCLSync.DEBOUNCE_MS);
+  assert.equal(env.alarms.delayOf(env.alarms.lastCreate(), env.now()), 30_000, '保底 alarm 一併重排');
+  assert.deepEqual(env.syncPosts(), [], '連續分享十次只在安靜之後同步一次');
 });
 
 test('T5 onAlarm：收到自家 alarm 才跑同步，別人的 alarm 一律忽略', async () => {

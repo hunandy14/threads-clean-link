@@ -34,12 +34,12 @@
 // `set-auth-token` 標頭、`Authorization: Bearer`、`credentials: "omit"`。
 //
 // ============================================================================
-// 已知落差（測試作者標註，不擅自補洞）
+// 契約備註（PM 已裁決）
 // ============================================================================
-// - api-spec 4.3 的 `SyncRequest` **沒有** `clearedAt` 欄位。本 mock 照契約
-//   行事：body 帶 `clearedAt` 時只記錄、不改伺服器狀態（`requests[].body`
-//   仍看得到，供測試斷言引擎確實送了）。伺服器端 `cleared_at` 的唯一寫入
-//   路徑是 `DELETE /api/v1/links`（4.4）。
+// - api-spec 4.3 的 `SyncRequest` **沒有** `clearedAt` 欄位。「清空全部」的
+//   雲端語意就是 `DELETE /api/v1/links`（4.4:459-467）：伺服器自己寫
+//   `cleared_at`，之後 `sync` 拒收早於它的資料，並在 `changes.clearedAt`
+//   回給其他裝置據以清本機。body 若帶了 `clearedAt`，本 mock 只記錄不理會。
 // - api-spec 2.2 明寫 `get-session` 未登入回 `null`（200），**不是** 401。
 //   預設行為照此；要模擬 401 請用 `failNext({ status: 401 })`。
 'use strict';
