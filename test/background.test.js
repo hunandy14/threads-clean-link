@@ -2712,7 +2712,13 @@ test('T6 content script 送來的 sync.* 一律忽略(sender.tab 存在)', async
     const result = await bg.send({ type }, CONTENT_SCRIPT_SENDER);
     assert.equal(result.responded, false, `${type} 來自 content script 時不得回應`);
   }
-  assert.deepEqual(bg.sync.names(), [], '頁面來的訊息不得碰到同步引擎(登入態與雲端資料是敏感面)');
+  // 啟動時的 verifySession 是規格必要的呼叫(見「SW 啟動時驗一次 token」)，
+  // 與本條要驗的「頁面來的訊息碰不到引擎」無關，排除後再比對。
+  assert.deepEqual(
+    bg.sync.names().filter((n) => n !== 'verifySession'),
+    [],
+    '頁面來的訊息不得碰到同步引擎(登入態與雲端資料是敏感面)'
+  );
 });
 
 test('T6 其他擴充/未知 sender 送來的 sync.* 一律忽略', async () => {
@@ -2722,7 +2728,7 @@ test('T6 其他擴充/未知 sender 送來的 sync.* 一律忽略', async () => 
   assert.equal(other.responded, false);
   const anonymous = await bg.send({ type: 'sync.signIn' }, {});
   assert.equal(anonymous.responded, false, 'sender 缺 id 一律當外人');
-  assert.deepEqual(bg.sync.names(), []);
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
 });
 
 test('T6 auth.spike 入口已移除', async () => {
