@@ -515,6 +515,20 @@
     apiBase: '',
   };
 
+  // 權限描述子的 origin 來源:state.apiBase 尚未從 background 回來時的退回值。
+  // 兩個環境的 host 都已宣告在 manifest 的 optional_host_permissions。
+  var SYNC_API_BASE_FALLBACK = 'https://api.metalinkclearer.workers.dev';
+  var SYNC_API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
+
+  // apiBase 只有這兩個合法值（D9）。這個值唯一的去處是權限描述子的 origin，
+  // 照單全收等於讓 background 的任何一次形狀走樣（或訊息被冒名）變成「對任意
+  // 網域請求權限」;兩個環境的 host 都已宣告在 manifest 的
+  // optional_host_permissions，夾到白名單內既安全，也不會讓 request 因為
+  // origin 不在宣告內而直接失敗。
+  function clampApiBase(value) {
+    return value === SYNC_API_BASE_STAGING ? SYNC_API_BASE_STAGING : SYNC_API_BASE_FALLBACK;
+  }
+
   function isValidSyncState(state) {
     return !!state && typeof state === 'object' && SYNC_STATUSES.indexOf(state.status) !== -1;
   }
@@ -551,6 +565,11 @@
     // 或注入了但 background 端沒有對應 handler——兩種情況下面的
     // fetchSyncState/sendSyncAction 都要優雅退回，不丟例外、不卡渲染。
     var runtime = deps.runtime || null;
+    // permissions 是選配依賴(chrome.permissions 形狀:contains/request 回
+    // Promise<boolean>)。identity 與後端 host 走 optional 權限(D8)，而
+    // chrome.permissions.request 只能在使用者手勢中呼叫——service worker 自行
+    // 發起一律失敗，所以「求權限」這一半只能落在登入按鈕的 click handler 裡。
+    var permissionsApi = deps.permissions || null;
 
     var entries = [];
     var locale = 'zh';
@@ -585,12 +604,24 @@
       return nonEmptyString(syncAccount.userId) !== null;
     }
 
-    // 把 patch 併進帳號同步狀態並寫回 storage(整包寫回，不夾帶未知鍵)。
-    function patchSyncAccount(patch) {
-      syncAccount = TCLCore.normalizeSyncState(Object.assign({}, syncAccount, patch));
-      return Promise.resolve(localStore.set({ [SYNC_ACCOUNT_KEY]: syncAccount })).catch(function (err) {
-        if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入同步狀態失敗', err);
-      });
+    // 從 storage 重讀帳號同步狀態、併進 patch，回傳「要寫回去的整包」(整包
+    // 寫回，不夾帶未知鍵)。實際落盤交給呼叫端，好與 history 併成同一次 set。
+    //
+    // 【競態】基底一定重讀，不用開頁快照:cursor／lastSyncedAt／lastError 由
+    // service worker 的同步引擎持續維護，拿快照整包覆寫等於把頁面開著這段期間
+    // 引擎推進的游標回捲，下一輪重拉一大段增量，最壞情況是把使用者早就刪掉的
+    // 雲端資料又拉回來。重讀失敗才退回用快照。
+    function nextSyncAccount(patch) {
+      return Promise.resolve(localStore.get({ [SYNC_ACCOUNT_KEY]: null })).then(
+        function (stored) {
+          return TCLCore.normalizeSyncState(
+            Object.assign({}, TCLCore.normalizeSyncState(stored && stored[SYNC_ACCOUNT_KEY]), patch)
+          );
+        },
+        function () {
+          return TCLCore.normalizeSyncState(Object.assign({}, syncAccount, patch));
+        }
+      );
     }
 
     // 畫面、統計、圖表與匯出共用的可見清單:墓碑留在 entries(它是待上傳的
@@ -907,12 +938,18 @@
     // 現值，失敗(常見:storage.local 配額寫爆)時把記憶體 entries 回滾成
     // 寫入前的值，避免磁碟寫失敗、記憶體卻已經前進造成分岔。呼叫端據
     // res.ok 決定發成功/失敗 toast，res.quota 供挑配額/一般兩種失敗文案。
-    function persistHistory(list) {
+    // extraItems 會併進同一次 set:chrome.storage.local.set 一次提交多個鍵，
+    // 要嘛一起落地要嘛都不落地。清除全部靠它把「雲端水位線」與「清空本機」寫
+    // 成同一次原子寫入，不留「本機已清空、水位線沒寫」的半套狀態——那會讓下
+    // 次同步把整份雲端資料原封不動拉回來。
+    function persistHistory(list, extraItems) {
       var prev = entries;
       entries = list;
       return Promise.resolve()
         .then(function () {
-          return localStore.set({ [HISTORY_KEY]: list });
+          var items = Object.assign({}, extraItems || {});
+          items[HISTORY_KEY] = list;
+          return localStore.set(items);
         })
         .then(function () {
           return { ok: true };
@@ -1107,6 +1144,23 @@
       renderSyncCard(syncState);
     }
 
+    // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
+    // sync.signIn——SW 端拿不到權限只會把狀態轉成 error/permission_required，
+    // 白跑一趟。
+    function ensureSyncPermissions() {
+      var base = clampApiBase(syncState.apiBase);
+      var descriptor = { permissions: ['identity'], origins: [base + '/*'] };
+      return Promise.resolve(permissionsApi.contains(descriptor)).then(function (granted) {
+        if (granted) return true;
+        if (typeof permissionsApi.request !== 'function') return false;
+        return Promise.resolve(permissionsApi.request(descriptor)).then(function (accepted) {
+          return accepted === true;
+        });
+      }, function () {
+        return false;
+      });
+    }
+
     function bindSyncCard() {
       // 登入先跳確認框(複用 confirmOverlay):內容依 D3 告知本機現有筆數、
       // free 方案雲端保留上限、本機仍完整保留、可隨時登出或刪除。
@@ -1116,7 +1170,20 @@
           okKey: 'opSyncSignInConfirmDo',
           desc: tf('opSyncSignInConfirmDesc', { n: visibleEntries().length }),
           action: function () {
-            sendSyncAction({ type: 'sync.signIn' });
+            // 沒有注入 permissions 時維持原本的直接送出(權限由 SW 端把關)。
+            if (!permissionsApi || typeof permissionsApi.contains !== 'function') {
+              sendSyncAction({ type: 'sync.signIn' });
+              return;
+            }
+            ensureSyncPermissions().then(function (granted) {
+              if (!granted) {
+                // 使用者在權限對話框按了拒絕:沒有這一則 toast，畫面就是「按了
+                // 確定但什麼都沒發生」，使用者會以為是壞掉。
+                toast(tt('opSyncPermissionDenied'));
+                return;
+              }
+              sendSyncAction({ type: 'sync.signIn' });
+            });
           },
         });
       });
@@ -1858,22 +1925,36 @@
           // 撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由同步引擎
           // 上傳。未登入不動 syncState。
           //
-          // 【順序】先落盤 clearedAt 再清本機。反過來的話，兩步之間分頁被關
-          // 掉會留下「本機已清空、雲端水位線沒寫」，下次同步就把整份雲端資料
-          // 拉回來，使用者眼中是「清了又自己長回來」。這個順序的最壞情況是
-          // clearedAt 已記但本機沒清，下次同步照樣清掉雲端，本機由使用者再清
-          // 一次即可。
+          // 【原子性】水位線與清空寫在同一次 set(見 persistHistory 的
+          // extraItems)。分兩次寫的話，兩步之間分頁被關掉會留下「本機已清空、
+          // 雲端水位線沒寫」，下次同步就把整份雲端資料拉回來，使用者眼中是
+          // 「清了又自己長回來」。
           action: function () {
-            var marked = isSignedIn() ? patchSyncAccount({ clearedAt: now() }) : Promise.resolve();
-            marked
-              .then(function () {
-                return persistHistory([]);
+            var signedIn = isSignedIn();
+            var prepared = signedIn ? nextSyncAccount({ clearedAt: now() }) : Promise.resolve(null);
+            prepared
+              .then(function (nextAccount) {
+                var extra = null;
+                if (nextAccount) {
+                  extra = {};
+                  extra[SYNC_ACCOUNT_KEY] = nextAccount;
+                }
+                return persistHistory([], extra).then(function (res) {
+                  // 寫成功才更新記憶體快照，失敗時 persistHistory 已回滾
+                  // entries，這裡一併保持 syncAccount 與 storage 一致。
+                  if (res.ok && nextAccount) syncAccount = nextAccount;
+                  return res;
+                });
               })
               .then(function (res) {
                 if (!res.ok) {
                   onPersistFailed(res);
                   return;
                 }
+                // 線上時立刻推一次:clearedAt 只是「待送出」旗標，等下一個週期
+                // alarm 才送的話，這段空窗內寫入的新紀錄會被伺服器的 cleared_at
+                // 連坐拒收(見 docs/cloud-sync-plan.md 第 7 節風險表)。
+                if (signedIn) sendSyncAction({ type: 'sync.now' });
                 renderAll();
                 toast(tt('opToastCleared'));
               });

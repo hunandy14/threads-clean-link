@@ -160,6 +160,9 @@
       opSyncDeleteBtn: '刪除雲端資料',
       opSyncDeleteConfirmDesc: '只會刪除雲端保存的紀錄，本機紀錄不受影響。確定要繼續嗎？',
       opSyncDeleteConfirmDo: '確定刪除',
+      // 使用者在瀏覽器的權限對話框按了拒絕:登入流程就此中止，需要讓他知道
+      // 為什麼什麼都沒發生。
+      opSyncPermissionDenied: '未取得權限，無法登入',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
       opDeviceNoteSynced: '已同步至你的 Google 帳號',
 
@@ -293,6 +296,7 @@
       opSyncDeleteBtn: 'Delete cloud data',
       opSyncDeleteConfirmDesc: 'This only deletes the copy stored in the cloud — your local history is unaffected. Continue?',
       opSyncDeleteConfirmDo: 'Delete',
+      opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opDeviceNoteSynced: 'Synced to your Google account',
 
       ppSyncInactive: 'Cloud sync: off',

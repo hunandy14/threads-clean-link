@@ -2618,6 +2618,236 @@ test('遷移(postKeyOf):舊資料兩筆分別為「帶 query」與「m. 子網�
   );
 });
 
+// ============================================================================
+// 雲端同步的 background 訊息入口（車道 D，T6）
+//
+// 契約：docs/cloud-sync-plan.md 第 5.1／5.2 節的五個訊息，只接受擴充頁
+// （`sender.id === chrome.runtime.id` 且 `!sender.tab`）；content script 送來
+// 一律忽略。同步引擎本體在 sync.js（見 test/sync.test.js），這裡只驗路由與
+// 接線——因此注入 TCLSync 替身，不載入真的引擎。
+// ============================================================================
+
+const SYNC_STATE_KEYS = ['apiBase', 'email', 'lastError', 'lastSyncedAt', 'pendingCount', 'status'];
+
+// TCLSync 替身：側錄 create() 的注入內容與引擎每一次被呼叫。
+function makeSyncStub() {
+  const createCalls = [];
+  const calls = [];
+  const state = {
+    status: 'signed_out',
+    email: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'https://api.metalinkclearer.workers.dev',
+  };
+  const engine = {};
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud', 'verifySession', 'notifyRecorded', 'onAlarm'].forEach(
+    (name) => {
+      engine[name] = (...args) => {
+        calls.push({ name, args });
+        return Promise.resolve(name === 'getState' ? Object.assign({}, state) : Object.assign({}, state));
+      };
+    }
+  );
+  return {
+    createCalls,
+    calls,
+    engine,
+    state,
+    names() {
+      return calls.map((c) => c.name);
+    },
+    api: {
+      ALARM_NAME: 'tcl-sync',
+      DEBOUNCE_MS: 2000,
+      SYNC_PERIOD_MINUTES: 5,
+      API_BASE_PRODUCTION: 'https://api.metalinkclearer.workers.dev',
+      API_BASE_STAGING: 'https://api-staging.metalinkclearer.workers.dev',
+      CLIENT_ID: '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com',
+      create(deps) {
+        createCalls.push(deps);
+        return engine;
+      },
+    },
+  };
+}
+
+const EXTENSION_ID = 'hehokicokbgajpanjcajhmflaennnmdj';
+
+function loadBackgroundForSync(opts = {}) {
+  const sync = makeSyncStub();
+  const chrome = makeChrome();
+  const onMessageListeners = [];
+  const onAlarmListeners = [];
+  const alarmCalls = [];
+  chrome.runtime.id = EXTENSION_ID;
+  chrome.runtime.onMessage.addListener = (fn) => onMessageListeners.push(fn);
+  chrome.runtime.onInstalled.addListener = () => {};
+  chrome.alarms = {
+    create: (name, info) => alarmCalls.push({ op: 'create', name, info }),
+    clear: async (name) => {
+      alarmCalls.push({ op: 'clear', name });
+      return true;
+    },
+    get: async () => undefined,
+    getAll: async () => [],
+    onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
+  };
+  chrome.permissions = {
+    contains: (descriptor, cb) => cb(true),
+    request: (descriptor, cb) => cb(true),
+  };
+  chrome.tabs = { TAB_ID_NONE: -1, query: async () => [] };
+  chrome.scripting = { executeScript: async () => [{ result: { ok: true } }] };
+  const storage = createChromeStorage(
+    { saveHistory: true },
+    opts.localHistory ? { history: opts.localHistory } : {}
+  );
+  chrome.storage = storage.api;
+
+  runInSandbox(SRC, {
+    chrome,
+    // 沙箱內先放好 TCLSync，background.js 的 importScripts 條件式便不執行。
+    TCLSync: sync.api,
+    fetch: async (url) => fetchResult(url, NO_OG_HTML),
+    console,
+    URL,
+    URLSearchParams,
+    setTimeout,
+    clearTimeout,
+    // TCLCore.randomUuid 缺 crypto 即拋錯(不以 Math.random 補位),recordHistory
+    // 的新建路徑要生 entry id，沙箱少了它整條寫入會失敗。與本檔其他 fixture 一致。
+    crypto,
+  });
+
+  return {
+    sync,
+    storage,
+    alarmCalls,
+    fireAlarm(alarm) {
+      onAlarmListeners.slice().forEach((fn) => fn(alarm));
+    },
+    alarmListenerCount() {
+      return onAlarmListeners.length;
+    },
+    // 送一則 runtime 訊息並等回應；沒有任何監聽器接手時回 responded:false。
+    send(message, sender) {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = (payload) => {
+          if (done) return;
+          done = true;
+          resolve(payload);
+        };
+        onMessageListeners.slice().forEach((fn) => {
+          fn(message, sender, (response) => finish({ responded: true, response }));
+        });
+        setTimeout(() => finish({ responded: false, response: undefined }), 200);
+      });
+    },
+  };
+}
+
+const EXT_PAGE_SENDER = { id: EXTENSION_ID };
+const CONTENT_SCRIPT_SENDER = { id: EXTENSION_ID, tab: { id: 12, url: 'https://www.threads.com/' } };
+const OTHER_EXTENSION_SENDER = { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+
+test('T6 sync.getState:擴充頁送來時回應計劃 5.2 的 state 形狀', async () => {
+  const bg = loadBackgroundForSync();
+
+  const result = await bg.send({ type: 'sync.getState' }, EXT_PAGE_SENDER);
+
+  assert.equal(result.responded, true, 'sync.getState 必須有人回應');
+  assert.deepEqual(Object.keys(result.response).sort(), SYNC_STATE_KEYS);
+  assert.ok(bg.sync.names().includes('getState'), '應轉呼叫引擎的 getState');
+});
+
+test('T6 五個訊息各自轉呼叫引擎的對應方法', async () => {
+  const bg = loadBackgroundForSync();
+
+  await bg.send({ type: 'sync.getState' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.signIn' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.now' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
+
+  const names = bg.sync.names();
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud'].forEach((m) => {
+    assert.ok(names.includes(m), `sync.* 訊息應轉呼叫引擎的 ${m}`);
+  });
+});
+
+test('T6 content script 送來的 sync.* 一律忽略(sender.tab 存在)', async () => {
+  const bg = loadBackgroundForSync();
+
+  for (const type of ['sync.getState', 'sync.signIn', 'sync.signOut', 'sync.now', 'sync.deleteCloud']) {
+    const result = await bg.send({ type }, CONTENT_SCRIPT_SENDER);
+    assert.equal(result.responded, false, `${type} 來自 content script 時不得回應`);
+  }
+  // 啟動時的 verifySession 是規格必要的呼叫(見「SW 啟動時驗一次 token」)，
+  // 與本條要驗的「頁面來的訊息碰不到引擎」無關，排除後再比對。
+  assert.deepEqual(
+    bg.sync.names().filter((n) => n !== 'verifySession'),
+    [],
+    '頁面來的訊息不得碰到同步引擎(登入態與雲端資料是敏感面)'
+  );
+});
+
+test('T6 其他擴充/未知 sender 送來的 sync.* 一律忽略', async () => {
+  const bg = loadBackgroundForSync();
+
+  const other = await bg.send({ type: 'sync.signIn' }, OTHER_EXTENSION_SENDER);
+  assert.equal(other.responded, false);
+  const anonymous = await bg.send({ type: 'sync.signIn' }, {});
+  assert.equal(anonymous.responded, false, 'sender 缺 id 一律當外人');
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
+test('T6 auth.spike 入口已移除', async () => {
+  const bg = loadBackgroundForSync();
+
+  const result = await bg.send(
+    { type: 'auth.spike', clientId: 'x', apiBase: 'https://api-staging.metalinkclearer.workers.dev' },
+    EXT_PAGE_SENDER
+  );
+
+  assert.equal(result.responded, false, 'spike 入口是開發用暫時管道，車道 D 必須移除');
+});
+
+test('T6 chrome.alarms.onAlarm 接進引擎', async () => {
+  const bg = loadBackgroundForSync();
+  assert.ok(bg.alarmListenerCount() >= 1, 'background 必須註冊 alarms.onAlarm，否則週期同步永遠不會醒');
+
+  bg.fireAlarm({ name: 'tcl-sync' });
+  await settle();
+
+  assert.ok(bg.sync.names().includes('onAlarm'), 'alarm 觸發要轉入引擎');
+});
+
+test('T6 SW 啟動時驗一次 token(verifySession)', async () => {
+  const bg = loadBackgroundForSync();
+  await settle();
+
+  assert.ok(
+    bg.sync.names().includes('verifySession'),
+    '啟動時要用 get-session 驗 token，不必等 /api/v1/* 打回 401 才發現失效'
+  );
+});
+
+test('T6 recordHistory 之後掛去抖同步(notifyRecorded)', async () => {
+  const bg = loadBackgroundForSync();
+
+  bg.send({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' }, CONTENT_SCRIPT_SENDER);
+  await settle();
+
+  assert.equal(bg.storage.localSnapshot().history.length, 1, '前置條件:紀錄確實寫入');
+  assert.ok(
+    bg.sync.names().includes('notifyRecorded'),
+    '新紀錄要觸發 2 秒去抖同步(D12)，否則只能等週期 alarm'
+  );
+});
+
 // ============================================================
 // S3:recordHistory 寫入路徑對齊雲端 schema(docs/cloud-sync-plan.md 4.1)
 // ------------------------------------------------------------

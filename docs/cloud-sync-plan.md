@@ -187,6 +187,7 @@ background 在 state 變化時廣播 `{type:"sync.stateChanged", state}`，optio
 | 中 | 兩邊清理規則與 post key 規則各自演進、無共用套件 | 把 `postKeyOf` 逐字移植進 `tcl-core.js` 並加對照測試（車道 B） |
 | 中 | 60 次／60 秒 per user 限流由手機＋插件共用同一桶 | alarm 週期不低於 1 分鐘（D12）；首次回填分批並在 429 時看 `Retry-After` 退避 |
 | 低 | staging／production 兩套環境，插件沒有切換概念 | `chrome.storage.local.syncApiBase` 可覆寫（D9），預設 production |
+| 中 | 「清除全部」是先寫本機 `syncState.clearedAt` 旗標、下一輪同步才打 `DELETE /api/v1/links`；伺服器據此寫 `cleared_at` 並拒收早於它的資料，因此清空到送出之間新記下的貼文（以及被拒收後標為已處理的那批）會被連坐丟失 | 已登入時在清除當下就立刻觸發一次 `syncNow`，把窗口壓到一次往返；MVP 接受殘餘窗口（SW 剛好被回收、或當下離線）造成的丟失，不做本機補償佇列 |
 | 低 | 合併語意差異：插件「新值優先、缺席沿用」，雲端以 `max(receivedAt, seen.at)` 判新舊 | 插件端改用雲端判準當唯一權威 |
 | 低 | 鏡像加欄位撐大體積，逼近 8MB 軟預算 | 調降本機保留筆數，或視需要申請 `unlimitedStorage` |
 

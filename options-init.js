@@ -34,6 +34,33 @@ document.addEventListener('DOMContentLoaded', function () {
     // callback + chrome.runtime.lastError 判斷而非原生 Promise 簽名，跨
     // Chrome 版本都能在「background 沒有對應 handler」時穩定退回
     // undefined，不讓未捕捉的 rejection 噴到主控台。
+    // 雲端同步的 optional 權限(identity ＋ 後端 host,D8):request 必須在使用
+    // 者手勢中呼叫，因此由登入按鈕的 click handler 發起(見 options.js 的
+    // ensureSyncPermissions)。callback 形式包成 Promise，與 runtime 同慣例。
+    permissions: {
+      contains: function (descriptor) {
+        return new Promise(function (resolve) {
+          try {
+            chrome.permissions.contains(descriptor, function (granted) {
+              resolve(!chrome.runtime.lastError && granted === true);
+            });
+          } catch (e) {
+            resolve(false);
+          }
+        });
+      },
+      request: function (descriptor) {
+        return new Promise(function (resolve) {
+          try {
+            chrome.permissions.request(descriptor, function (accepted) {
+              resolve(!chrome.runtime.lastError && accepted === true);
+            });
+          } catch (e) {
+            resolve(false);
+          }
+        });
+      },
+    },
     runtime: {
       sendMessage: function (message) {
         return new Promise(function (resolve) {
