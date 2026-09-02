@@ -49,6 +49,7 @@ $includeFiles = @(
     'i18n.js',
     'tcl-core.js',
     'auth.js',
+    'sync.js',
     'post-icon.js',
     'popup.html',
     'popup.js',
