@@ -56,6 +56,8 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄僅保存在你的裝置上(chrome.storage.local)，絕不上傳，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
 
+【雲端同步(選用)】在「紀錄與設定」頁使用 Google 帳號登入後，清理紀錄可額外同步到雲端、並與手機版 App 互通;不登入則完全不受影響，行為與現在一樣。
+
 【誠實隱私聲明(節錄，完整版請見下方 GitHub README)】
 兩個功能只要攔到的是 /share/ 短碼，都會向 threads.com / threads.net 發出一次不帶 cookie 的匿名 GET 請求，藉此把短碼換成乾淨網址——這是短碼問題「必須向伺服器問一次」的技術本質決定的，沒有繞過的辦法。這次請求不帶登入憑證，但仍會讓 Threads 看到你的來源 IP 與瀏覽器特徵，在意這點的話，請優先使用右鍵方式手動處理，或搭配 VPN。若攔到的內容已經是完整貼文網址、只帶追蹤參數，則是純文字處理，零網路請求。
 
@@ -80,6 +82,9 @@ Click the toolbar icon to toggle two settings that take effect instantly: "Auto-
 
 HISTORY & SETTINGS PAGE
 Every successful cleaning can leave a local history entry (searchable, filterable by source, JSON export/import, one-click clear), with totals and a 14-day activity chart. History is stored only on your device (chrome.storage.local), never uploaded, capped at 1,000 entries, and can be disabled entirely with the "Keep cleaning history" switch. The UI, notifications and context menu support Traditional Chinese and English — following your browser language by default, switchable manually.
+
+CLOUD SYNC (OPTIONAL)
+Sign in with Google on the History & Settings page to additionally sync your cleaning history to the cloud and across your other devices running the companion app; if you don't sign in, nothing changes.
 
 HONEST PRIVACY NOTE
 Whenever either feature has to resolve a /share/ short code, it sends one anonymous GET request (no cookies) to threads.com/threads.net to look up the real destination — that's the only way to resolve a short code, and it's disclosed in full on the project README. This request carries no login credentials, but Threads will still see your source IP and browser fingerprint; if that matters to you, prefer the manual right-click flow or use a VPN. When the content is already a full post URL with only tracking parameters attached, cleaning is pure local string processing with zero network requests.
@@ -119,6 +124,8 @@ This extension's single purpose is to convert Threads (threads.com/threads.net) 
 ## 6. 權限理由逐項(Permission justification，審查表單逐項必填)
 
 表單通常要求英文作答;下面每項先給送審用英文，再附繁中對照方便內部核對意思是否有跑掉。五個 `permissions` 加 host permissions，對應 `manifest.json` 目前的宣告:`contextMenus`、`scripting`、`notifications`、`activeTab`、`storage`、`https://*.threads.com/*`、`https://*.threads.net/*`。
+
+「雲端同步」功能上線後，`manifest.json` 另於 `optional_permissions`／`optional_host_permissions` 宣告三項選用權限:`identity`、`https://api.metalinkclearer.workers.dev/*`、`https://api-staging.metalinkclearer.workers.dev/*`。這三項**安裝當下不會要求**，只在使用者於「紀錄與設定」頁主動點擊「使用 Google 帳號登入」的那一刻才會跳出授權提示;理由見下方對應小節。
 
 ### contextMenus
 
@@ -196,6 +203,30 @@ None. This extension does not download, fetch, or execute any remote code. All l
 無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的僅是把分享短碼解析成最終網址——回應內容只拿來讀取解析後的網址，絕不會被當成程式碼執行。
 ```
 
+### identity(選用權限，僅登入當下請求)
+
+**English:**
+```
+Optional permission, off by default and never requested at install time. It is requested only at the exact moment the user clicks "Sign in with Google" on the History & Settings page, to run the standard Chrome identity / Google OAuth flow. The extension only receives the identity token Google returns and uses it solely to establish a session with the developer's own sync backend — it never has access to the user's Google password, and never touches Gmail, Contacts, or any other Google data. The OAuth scope requested is limited to openid, email and profile. If the user never signs in, this permission is never used and no related network request is ever made.
+```
+
+**繁中對照:**
+```
+選用權限，安裝當下不會要求，只有使用者在「紀錄與設定」頁主動點擊「使用 Google 帳號登入」的那一刻，才會觸發標準的 Chrome identity／Google OAuth 流程。本擴充功能只會取得 Google 回傳的身分權杖，並僅用它向開發者自營的同步後端建立工作階段——不會取得使用者的 Google 密碼，也不會碰 Gmail、聯絡人或其他任何 Google 資料。請求的 OAuth 授權範圍(scope)僅限 openid、email、profile。使用者若從未登入，這項權限就永遠不會被使用，也不會有任何相關網路請求。
+```
+
+### Host permissions(選用):`https://api.metalinkclearer.workers.dev/*`、`https://api-staging.metalinkclearer.workers.dev/*`
+
+**English:**
+```
+Optional host permissions, off by default and never requested at install time — requested together with identity only when the user signs in on the History & Settings page. Used for exactly one purpose: syncing the user's own cleaning-history records (URL before and after cleaning, removed tracking parameters, post author name/handle, post summary text, and cleaning timestamp) with the developer's own backend server, which is shared with the developer's companion mobile app so the same history stays consistent across the user's devices. No browsing history, cookies, Threads credentials, or uncleaned page content is ever sent. All traffic is HTTPS. api-staging.metalinkclearer.workers.dev is the developer's own pre-release testing endpoint for this same sync feature. If the user never signs in, neither domain is ever contacted.
+```
+
+**繁中對照:**
+```
+選用 host permissions，安裝當下不會要求，只有使用者在「紀錄與設定」頁登入時，才會與 identity 一起被請求。用途單一:把使用者自己的清理紀錄(清理前後的網址、被移除的追蹤參數、貼文作者名稱與帳號、貼文摘要、清理時間)同步到開發者自營的後端伺服器，這套伺服器與開發者自製的手機 App 共用，讓同一份紀錄在使用者的裝置間保持一致。不會傳送瀏覽紀錄、cookie、Threads 帳號密碼，或任何未清理的頁面內容。所有傳輸皆為 HTTPS。api-staging.metalinkclearer.workers.dev 是開發者針對同一項同步功能的上線前測試端點。使用者若從未登入，這兩個網域都不會被連線。
+```
+
 ---
 
 ## 7. 資料使用揭露(Privacy practices 表單勾選指引)
@@ -217,6 +248,19 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
 
 若表單有「This item does not collect or use user data」這類總結選項，**選是 / 勾選**。
+
+上表對應目前(不含雲端同步)的行為;「雲端同步」上線後，下面兩項需要改成**勾選**，見下一小節草稿。
+
+### 雲端同步上線後，需改勾選的兩項
+
+「雲端同步」是選用功能，但只要擴充功能本身具備這個能力(即使多數使用者不會登入)，Chrome 表單就要求依「可能發生的最大情況」誠實揭露，因此下列兩項需從「不勾」改成「勾選」，並填入用途說明:
+
+| 資料類型 | 是否勾選 | 用途說明草稿 |
+|---|---|---|
+| Authentication information | **勾選** | 僅在使用者主動於「紀錄與設定」頁點擊「使用 Google 帳號登入」後才會取得(Google OAuth 身分權杖)，唯一用途是向開發者自營後端建立/維持雲端同步的登入工作階段(App functionality)。不用於廣告或分析，不轉讓、不出售給第三方，不取得或儲存使用者的 Google 密碼 |
+| User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方 |
+
+**「單一用途」聲明維持不變的說明**:雲端同步是既有「保存清理紀錄」子功能的延伸——把原本只存在本機的同一份紀錄，改為選用地額外存一份到使用者自己的雲端帳號，讓同一位使用者可以跨裝置(含手機版 App)看到同一份紀錄;沒有新增與「Threads 連結淨化」無關的目的，因此第 5 節的單一用途聲明文字不需要修改。
 
 ### 三項認證聲明 —— 全部勾選(皆為真)
 
