@@ -206,6 +206,189 @@
     return urlKey(parsed);
   }
 
+  // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync-plan.md 4.2/4.3) ----
+
+  // chrome.storage.local.syncState 的預設形狀。欄位齊備是同步引擎的前提:
+  // 少一個鍵，讀到的是 undefined 而不是 null，各處「未登入」判定會失準。
+  var DEFAULT_SYNC_STATE = {
+    userId: null,
+    email: null,
+    cursor: null,
+    lastSyncedAt: null,
+    clearedAt: null,
+    lastError: null,
+  };
+
+  // chrome.storage.local.syncAuth 的預設形狀(D10:bearer token 明文存 local)。
+  var DEFAULT_SYNC_AUTH = { token: null };
+
+  function optionalString(value) {
+    return typeof value === 'string' ? value : null;
+  }
+  function optionalFiniteNumber(value) {
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }
+
+  // syncState 防禦性整形:缺席欄位補預設、型別不對的欄位回該欄預設、未知鍵
+  // 一律丟棄(整包會寫回 storage，夾帶的鍵會一路長存)。**每次回傳全新物件**
+  // ——回傳共用的 DEFAULT_SYNC_STATE 參照時，呼叫端一改就污染全域預設值。
+  function normalizeSyncState(state) {
+    var raw = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
+    return {
+      userId: optionalString(raw.userId),
+      email: optionalString(raw.email),
+      cursor: optionalString(raw.cursor),
+      lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
+      clearedAt: optionalFiniteNumber(raw.clearedAt),
+      lastError: optionalString(raw.lastError),
+    };
+  }
+
+  // UUID v4 生成器。service worker 與擴充頁面的全域都有 crypto.randomUUID,
+  // 沒有時(舊環境/受限 context)以 getRandomValues 或 Math.random 補位，版本位
+  // 與 variant 位照 RFC 4122 固定，輸出格式一致。
+  function randomUuid() {
+    if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    var bytes = new Uint8Array(16);
+    if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(bytes);
+    } else {
+      for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    var hex = [];
+    for (var j = 0; j < 16; j++) hex.push(('0' + bytes[j].toString(16)).slice(-2));
+    return (
+      hex.slice(0, 4).join('') +
+      '-' +
+      hex.slice(4, 6).join('') +
+      '-' +
+      hex.slice(6, 8).join('') +
+      '-' +
+      hex.slice(8, 10).join('') +
+      '-' +
+      hex.slice(10, 16).join('')
+    );
+  }
+
+  // seen[].kind → 雲端 seen[].source(D4):share→share，strip/menu/icon→
+  // clipboard。kind 缺席的種子紀錄不對應任何來源事件，回 undefined 讓呼叫端
+  // 整個 source 鍵不輸出——硬塞 clipboard 等於對雲端謊報沒發生過的來源。
+  function seenSourceOf(kind) {
+    if (kind === undefined) return undefined;
+    return kind === 'share' ? 'share' : 'clipboard';
+  }
+
+  // 雲端 seen[].source → 本機 kind。插件沒有 clipboard 這個 kind，一律回
+  // 'share';source 缺席時同樣回 undefined(維持無標籤的種子紀錄)。
+  function seenKindOf(source) {
+    if (source === undefined) return undefined;
+    return 'share';
+  }
+
+  // entry → 雲端 SyncItem(計劃 4.3)。只輸出雲端有的欄位:kind(D4)、dirty、
+  // deletedAt、serverUpdatedAt、postKey、at、url 全屬本機簿記，一律不上雲。
+  // 選填欄位缺席時整個鍵不輸出——輸出 null 會被伺服器當成「明確清空」。
+  function toSyncItem(entry) {
+    var cleaned = normalizePostUrl(entry.url) || entry.url;
+    var item = {
+      id: entry.id,
+      cleaned: cleaned,
+      // original 是伺服器必填欄位，缺席整筆會被靜默丟棄，上傳前最後補一次。
+      original: typeof entry.original === 'string' && entry.original ? entry.original : cleaned,
+      receivedAt: entry.receivedAt,
+    };
+    if (typeof entry.author === 'string') item.author = entry.author;
+    if (typeof entry.handle === 'string') item.handle = entry.handle;
+    if (typeof entry.excerpt === 'string') item.excerpt = entry.excerpt;
+    if (Array.isArray(entry.removedParams) && entry.removedParams.length > 0) {
+      item.removedParams = entry.removedParams.map(function (p) {
+        return { key: p.key, value: p.value };
+      });
+    }
+    if (Array.isArray(entry.seen) && entry.seen.length > 0) {
+      item.seen = entry.seen.map(function (s) {
+        var source = seenSourceOf(s.kind);
+        return source === undefined ? { at: s.at } : { at: s.at, source: source };
+      });
+    }
+    return item;
+  }
+
+  // 雲端 SyncItem → entry。existing 是本機同一張卡(沒有則傳 null):
+  //   - id 以雲端(canonical)為準——伺服器改名時就地改名。
+  //   - kind 沿用既有(雲端無此欄位，D4 已接受跨裝置遺失)，沒有既有卡時預設
+  //     'share'。
+  //   - seen 取雲端與本機的聯集(同 at 去重)，按 at 升序裁到 SEEN_MAX。
+  //   - at 是本機顯示用的最後出現時間，取 max(receivedAt, seen 最大 at)。
+  //   - dirty 清為 false(剛從雲端拉下來)、deletedAt 清為 null(雲端仍存在的
+  //     卡片必須復活，否則別台裝置重新分享的貼文在這台永遠看不到)。
+  function fromSyncItem(item, existing) {
+    var base = existing && typeof existing === 'object' ? existing : null;
+    var url = normalizePostUrl(item.cleaned) || item.cleaned;
+    var receivedAt = optionalFiniteNumber(item.receivedAt);
+
+    var events = [];
+    var seenAt = {};
+    function pushSeen(list) {
+      if (!Array.isArray(list)) return;
+      for (var i = 0; i < list.length; i++) {
+        var record = list[i];
+        if (!record || typeof record !== 'object') continue;
+        if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
+        if (Object.prototype.hasOwnProperty.call(seenAt, record.at)) continue;
+        seenAt[record.at] = true;
+        var kind = record.kind !== undefined ? record.kind : seenKindOf(record.source);
+        events.push(kind === undefined ? { at: record.at } : { at: record.at, kind: kind });
+      }
+    }
+    pushSeen(item.seen);
+    pushSeen(base && base.seen);
+    events.sort(function (a, b) {
+      return a.at - b.at;
+    });
+    events = events.slice(-LIMITS.SEEN_MAX);
+
+    var latest = receivedAt === null ? null : receivedAt;
+    for (var k = 0; k < events.length; k++) {
+      if (latest === null || events[k].at > latest) latest = events[k].at;
+    }
+
+    var entry = {
+      url: url,
+      kind: base && typeof base.kind === 'string' ? base.kind : 'share',
+      at: latest === null ? optionalFiniteNumber(base && base.at) : latest,
+      seen: events,
+      id: item.id,
+      postKey: postKeyOf(url),
+      original: typeof item.original === 'string' && item.original ? item.original : url,
+      receivedAt: receivedAt,
+      dirty: false,
+      // serverUpdatedAt 取雲端本次回傳值，缺席則沿用既有(不得憑空清成 null,
+      // 它是下一輪合併的判準)。
+      serverUpdatedAt:
+        optionalFiniteNumber(item.updatedAt) !== null
+          ? optionalFiniteNumber(item.updatedAt)
+          : optionalFiniteNumber(base && base.serverUpdatedAt),
+      deletedAt: null,
+    };
+
+    var author = typeof item.author === 'string' ? item.author : base && base.author;
+    if (typeof author === 'string') entry.author = author;
+    var handle = typeof item.handle === 'string' ? item.handle : base && base.handle;
+    if (typeof handle === 'string') entry.handle = handle;
+    var excerpt = typeof item.excerpt === 'string' ? item.excerpt : base && base.excerpt;
+    if (typeof excerpt === 'string') entry.excerpt = excerpt;
+    var removedParams = Array.isArray(item.removedParams)
+      ? item.removedParams
+      : base && base.removedParams;
+    if (Array.isArray(removedParams) && removedParams.length > 0) entry.removedParams = removedParams;
+    return entry;
+  }
+
   // ---- 欄位消毒 ----
 
   // 剝除控制/bidi 字元(見 CONTROL_CHARS_RE 註解)，獨立匯出供測試
@@ -297,6 +480,12 @@
     NOTICE_KIND_LIST: NOTICE_KIND_LIST,
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
+    DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
+    DEFAULT_SYNC_AUTH: DEFAULT_SYNC_AUTH,
+    normalizeSyncState: normalizeSyncState,
+    randomUuid: randomUuid,
+    toSyncItem: toSyncItem,
+    fromSyncItem: fromSyncItem,
     stripControlChars: stripControlChars,
     sanitizeText: sanitizeText,
     sanitizeOriginal: sanitizeOriginal,
