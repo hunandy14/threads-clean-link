@@ -225,7 +225,7 @@ test('mergeImportedEntries:author/handle 截斷至 100 字元、excerpt 截斷�
   assert.equal(truncated.excerpt.length, 2000);
 
   const dropped = result.merged.find((e) => e.url === URL_B);
-  assert.deepEqual(Object.keys(dropped).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入');
+  ['author', 'handle', 'excerpt'].forEach((f) => assert.equal(f in dropped, false, 'S4：非字串型別的選填欄位應整欄不寫入'));
 });
 
 // 匯入條目帶偽造 seen 的 sanitize。匯入檔是外部輸入，seen[] 逐筆過 at 有限

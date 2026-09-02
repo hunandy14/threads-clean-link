@@ -838,7 +838,7 @@ test('紀錄:cleanedNotice 缺席 original/removedParams 時，紀錄照常寫�
 
   const history = bg.storage.localSnapshot().history;
   assert.equal(history.length, 1);
-  assert.equal('original' in history[0], false, '缺席欄位不得寫成 undefined 佔位');
+  assert.equal(history[0].original, CLEANED_NOTICE_CLEAN_URL, 'S1：original 缺席時以 url 補');
   assert.equal('removedParams' in history[0], false);
 });
 
