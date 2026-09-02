@@ -85,7 +85,12 @@ chrome.runtime.onInstalled.addListener(() => {
   // 安裝原因一律執行:首裝時紀錄是空的、已整平過的資料再跑一次也不會有任
   // 何變化(冪等且不寫回)，用 details.reason 分流只會多一個會過時的假設。
   // 函式內部已接住所有錯誤(遷移失敗不影響任何主功能)，此處不需再補 catch。
+  //
+  // 【順序】merge 必須先於 schema:mergeHistoryGroup 整平多張卡時會重建物
+  // 件，schema 先補的欄位會在整平後缺一角;先整平再補齊，整平後的卡片才帶
+  // 得齊七個雲端欄位。兩支都掛在同一條 historyWriteChain 上，串行執行。
   migrateHistoryMerge();
+  migrateHistorySchema();
 });
 
 // ------------------------------------------------------------
@@ -928,6 +933,36 @@ function entrySeenEvents(entry) {
   return typeof entry.at === 'number' && isFinite(entry.at) ? [{ at: entry.at }] : [];
 }
 
+// 純函式:條目的最早事件時間(計劃 4.1 的 receivedAt)。取 seen 事件的**最小**
+// at 而非 seen[0].at——真實資料在多次合併/匯入後未必已排序;一個可用事件都
+// 沒有(seen 為空陣列、或 at 全是髒資料)時退回條目自身的 at。
+function entryEarliestAt(entry) {
+  const events = entrySeenEvents(entry);
+  let earliest = null;
+  for (let i = 0; i < events.length; i++) {
+    if (earliest === null || events[i].at < earliest) earliest = events[i].at;
+  }
+  if (earliest !== null) return earliest;
+  return entry && typeof entry.at === 'number' && isFinite(entry.at) ? entry.at : null;
+}
+
+// 純函式:條目已持久化的 receivedAt 與其事件序列推導值取較早者。receivedAt
+// 是這張卡在雲端的「第一次出現時間」，只會往前不會往後——seen 裁到 SEEN_MAX
+// 而丟掉最舊幾筆時，不得讓 receivedAt 跟著往後跳。
+function resolveReceivedAt(entry) {
+  const stored = entry && typeof entry.receivedAt === 'number' && isFinite(entry.receivedAt) ? entry.receivedAt : null;
+  const derived = entryEarliestAt(entry);
+  if (stored === null) return derived;
+  if (derived === null) return stored;
+  return Math.min(stored, derived);
+}
+
+// 純函式:條目是否為墓碑(已軟刪、等待上傳刪除意圖)。墓碑留在 storage 但不
+// 進畫面，裁切時優先淘汰(見 capHistoryForStorage)。
+function isTombstoneEntry(entry) {
+  return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
+}
+
 // 純函式:多張卡的 seen 事件聯集——攤平後按 at 升序排列(卡與卡之間的事件
 // 本來就交錯，不能直接接龍)，再裁到最新 SEEN_MAX 筆。at 相同的事件維持原
 // 順序(Array#sort 穩定)。
@@ -956,6 +991,11 @@ function adoptFailureEntry(entry, failed) {
     }
   }
   merged.seen = unionSeenEvents([entrySeenEvents(entry), entrySeenEvents(failed)]);
+  // 收編把失敗卡那一刻的事件併進時間軸，這張卡的最早事件因此可能往前——
+  // receivedAt 跟著取兩張卡的較早者。id 一律維持同文卡的(失敗卡的 id 指向
+  // 雲端另一張卡，換過去等於改身分)。
+  const earliest = [resolveReceivedAt(entry), resolveReceivedAt(failed)].filter((v) => v !== null);
+  if (earliest.length > 0) merged.receivedAt = Math.min.apply(null, earliest);
   return merged;
 }
 
@@ -995,7 +1035,39 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   if (excerpt !== undefined) merged.excerpt = excerpt;
   if (original !== undefined) merged.original = original;
   if (removedParams !== undefined) merged.removedParams = removedParams;
-  return merged;
+  return applyHistorySchema(merged, existing, now);
+}
+
+// 雲端 schema 的七個欄位(docs/cloud-sync-plan.md 4.1)。遷移與寫入路徑共用
+// 同一份清單，判斷「這筆是否已對齊」也以它為準。
+const HISTORY_SCHEMA_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverUpdatedAt', 'deletedAt'];
+
+// 純函式:把雲端 schema 的七個欄位補上 entry(就地改動傳入的 entry，呼叫端
+// 傳的一律是剛建好的新物件)。previous 是這張卡合併前的樣子(新建路徑傳
+// null)，now 是本次事件時間。
+//   - id:沿用既有(它是雲端卡片的身分，換一次等於在雲端另開一張卡)，沒有
+//     才生成 UUID v4。
+//   - postKey:一律由本次的 url 重算(衍生欄位，handle 改名/子網域變體都算得
+//     出同一個鍵)。
+//   - original:本次/既有皆缺席時以 url 補(伺服器必填，缺席整筆被靜默丟棄)。
+//   - receivedAt:既有值與事件序列推導值取較早者，只往前不往後。
+//   - dirty:本機有新事件，一律標髒待上傳。
+//   - serverUpdatedAt:伺服器的值，本機合併不得清掉。
+//   - deletedAt:清為 null——刪過的貼文再次淨化即復活，就地改既有那張卡。
+function applyHistorySchema(entry, previous, now) {
+  const base = previous && typeof previous === 'object' ? previous : null;
+  entry.id = base && typeof base.id === 'string' && base.id ? base.id : TCLCore.randomUuid();
+  entry.postKey = TCLCore.postKeyOf(entry.url);
+  if (entry.original === undefined) entry.original = entry.url;
+  const earliest = [base === null ? null : resolveReceivedAt(base), typeof now === 'number' ? now : null].filter(
+    (v) => v !== null
+  );
+  entry.receivedAt = earliest.length > 0 ? Math.min.apply(null, earliest) : null;
+  entry.dirty = true;
+  entry.serverUpdatedAt =
+    base && typeof base.serverUpdatedAt === 'number' && isFinite(base.serverUpdatedAt) ? base.serverUpdatedAt : null;
+  entry.deletedAt = null;
+  return entry;
 }
 
 // ---- 紀錄 ----
@@ -1030,7 +1102,11 @@ const HISTORY_MAX_ENTRIES = 10000;
 // 元組以 JSON.stringify(...).length 近似(ASCII 相符;多位元組字元會低估，由
 // 2MB 餘裕吸收)。永遠至少保留最新一筆，不會把本次剛寫入的紀錄也裁掉。
 function capHistoryForStorage(list) {
-  const capped = list.length > HISTORY_MAX_ENTRIES ? list.slice(0, HISTORY_MAX_ENTRIES) : list;
+  // 兩條裁切路徑(筆數、位元組)都先淘汰墓碑:墓碑是使用者早就刪掉、只等伺
+  // 服器 ack 的空殼，純尾端裁切會為了留住它而砍掉使用者真的看得到的紀錄。
+  let capped = evictTombstonesForCount(list);
+  capped = capped.length > HISTORY_MAX_ENTRIES ? capped.slice(0, HISTORY_MAX_ENTRIES) : capped;
+  capped = evictTombstonesForBudget(capped);
 
   // 單次 O(n) 前向累加，避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
   const budgeted = [];
@@ -1041,8 +1117,60 @@ function capHistoryForStorage(list) {
     bytes += itemBytes;
     budgeted.push(capped[i]);
   }
-  // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置)。
+  // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置;遷移的冪等短路也
+  // 依賴這個參照相等)。
   return budgeted.length === list.length ? list : budgeted;
+}
+
+// 純函式:從尾端(最舊)往前丟棄墓碑，最多丟 count 筆，其餘原位保留。沒有丟
+// 掉任何一筆時回傳原陣列參照。
+function dropOldestTombstones(list, count) {
+  if (count <= 0) return list;
+  const dropped = new Set();
+  for (let i = list.length - 1; i >= 0 && dropped.size < count; i--) {
+    if (isTombstoneEntry(list[i])) dropped.add(i);
+  }
+  if (dropped.size === 0) return list;
+  return list.filter((item, i) => !dropped.has(i));
+}
+
+// 筆數硬保險的墓碑優先淘汰:超量幾筆就先丟幾張最舊的墓碑，仍超量才由呼叫
+// 端從尾端砍。
+function evictTombstonesForCount(list) {
+  if (list.length <= HISTORY_MAX_ENTRIES) return list;
+  return dropOldestTombstones(list, list.length - HISTORY_MAX_ENTRIES);
+}
+
+// 位元組軟預算的墓碑優先淘汰:估算總量超標時，從最舊的墓碑開始丟到回到預
+// 算內(或墓碑丟完為止);仍超標由呼叫端的前向累加從尾端裁。
+function evictTombstonesForBudget(list) {
+  // 沒有墓碑就沒有可優先淘汰的對象，省下整表估算(常態路徑)。
+  let hasTombstone = false;
+  for (let i = 0; i < list.length; i++) {
+    if (isTombstoneEntry(list[i])) {
+      hasTombstone = true;
+      break;
+    }
+  }
+  if (!hasTombstone) return list;
+
+  let bytes = 2; // '[]' 外框
+  const itemBytes = [];
+  for (let i = 0; i < list.length; i++) {
+    const size = JSON.stringify(list[i]).length + 1; // +1 近似分隔逗號
+    itemBytes.push(size);
+    bytes += size;
+  }
+  if (bytes <= STORAGE_SOFT_BUDGET) return list;
+
+  const dropped = new Set();
+  for (let i = list.length - 1; i >= 0 && bytes > STORAGE_SOFT_BUDGET; i--) {
+    if (!isTombstoneEntry(list[i])) continue;
+    dropped.add(i);
+    bytes -= itemBytes[i];
+  }
+  if (dropped.size === 0) return list;
+  return list.filter((item, i) => !dropped.has(i));
 }
 
 // 同一個 SW 內的 append 以 promise chain 序列化，避免兩筆同時 read-modify-write
@@ -1077,7 +1205,11 @@ function recordHistory(url, kind, extra) {
         // (防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任來源，
         // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 capHistoryForStorage
         // 處理。
-        entry = Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] });
+        entry = applyHistorySchema(
+          Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] }),
+          null,
+          now
+        );
       }
 
       // 級聯第二步:失敗卡收編。本次的 original 若是短碼原文，且清單裡有一
@@ -1155,6 +1287,9 @@ function compareEntryAtDesc(a, b) {
   return av < bv ? 1 : -1;
 }
 
+// 整平多張卡時必須帶過來的雲端身分欄位(見 mergeHistoryGroup)。
+const MERGE_CARRY_FIELDS = ['id', 'serverUpdatedAt'];
+
 // 純函式:把同一組(同合併鍵)的多張卡合成一張。單卡組由呼叫端直接原樣保
 // 留，不會進到這裡。
 function mergeHistoryGroup(group) {
@@ -1165,6 +1300,19 @@ function mergeHistoryGroup(group) {
   if (primary.kind !== undefined) merged.kind = primary.kind;
   for (let f = 0; f < MERGEABLE_FIELDS.length; f++) {
     const field = MERGEABLE_FIELDS[f];
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i][field] !== undefined) {
+        merged[field] = ordered[i][field];
+        break;
+      }
+    }
+  }
+  // 雲端身分欄位一併帶過來:id 取最新一張有值的卡(整平時憑空換 id 等於在雲
+  // 端另開一張卡)，serverUpdatedAt 同理。其餘五個欄位由 migrateHistorySchema
+  // 在下一支遷移統一補齊(postKey/original/receivedAt 皆可由整平後的卡推導，
+  // dirty 為 true、deletedAt 為 null)。
+  for (let s = 0; s < MERGE_CARRY_FIELDS.length; s++) {
+    const field = MERGE_CARRY_FIELDS[s];
     for (let i = 0; i < ordered.length; i++) {
       if (ordered[i][field] !== undefined) {
         merged[field] = ordered[i][field];
@@ -1259,6 +1407,80 @@ function migrateHistoryMerge() {
     })
     .catch((err) => {
       console.error('[threads-clean-link] 紀錄遷移失敗', err);
+    });
+  return historyWriteChain;
+}
+
+// ---- 一次性遷移:既有紀錄補齊雲端 schema 欄位 ----
+//
+// 【動機】計劃 4.1 為每筆紀錄新增七個欄位(id/postKey/original/receivedAt/
+// dirty/serverUpdatedAt/deletedAt)。新寫入的紀錄由 applyHistorySchema 帶
+// 齊，既有庫存則靠這支遷移在 onInstalled 補一次。
+//
+// 【只補缺席欄位】已具備的欄位一律原封不動——尤其 id(雲端卡片的身分，重新
+// 生成等於每次更新都在雲端多開一張卡)與 dirty(dirty:false 代表已同步，重新
+// 標髒會讓整表無謂重傳)。
+//
+// 【冪等】每一筆都已具備七個欄位時，逐筆回傳原物件參照，據此短路、連寫回都
+// 不做。畸形條目(非物件、url 非字串)無從算 postKey，整筆原樣保留。
+//
+// 【競態】與 migrateHistoryMerge／recordHistory 共用 historyWriteChain 串行;
+// 掛在 merge 之後執行，整平產生的新卡才補得到欄位。
+
+// 純函式:補齊單筆條目缺席的 schema 欄位。無缺席時回傳原物件參照。
+function fillHistorySchema(entry) {
+  if (!entry || typeof entry !== 'object' || typeof entry.url !== 'string') return entry;
+  let missing = false;
+  for (let i = 0; i < HISTORY_SCHEMA_FIELDS.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(entry, HISTORY_SCHEMA_FIELDS[i])) {
+      missing = true;
+      break;
+    }
+  }
+  if (!missing) return entry;
+
+  const next = Object.assign({}, entry);
+  function fill(field, value) {
+    if (!Object.prototype.hasOwnProperty.call(next, field)) next[field] = value;
+  }
+  fill('id', TCLCore.randomUuid());
+  fill('postKey', TCLCore.postKeyOf(next.url));
+  fill('original', next.url);
+  fill('receivedAt', entryEarliestAt(next));
+  // 遷移補齊的資料尚未上傳過，一律標髒;已有 dirty 的條目不動(dirty:false
+  // 是「已同步」，重新標髒會讓整表無謂重傳)。
+  fill('dirty', true);
+  fill('serverUpdatedAt', null);
+  fill('deletedAt', null);
+  return next;
+}
+
+function migrateHistorySchema() {
+  historyWriteChain = historyWriteChain
+    .then(async () => {
+      if (!hasStorageLocal()) return;
+      const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
+      const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
+      if (list.length === 0) return;
+
+      const next = list.map(fillHistorySchema);
+      // 冪等短路:每一筆都是原物件參照(沒有任何一筆缺欄位)就不寫回。
+      if (next.every((item, i) => item === list[i])) return;
+
+      try {
+        await chrome.storage.local.set({ [HISTORY_KEY]: capHistoryForStorage(next) });
+      } catch (err) {
+        // 配額失敗優雅降級，理由同 migrateHistoryMerge:補欄位失敗最多維持
+        // 舊形狀的紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響主功能。
+        if (isQuotaExceededError(err)) {
+          console.warn('[threads-clean-link] 紀錄欄位遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
+          return;
+        }
+        throw err;
+      }
+    })
+    .catch((err) => {
+      console.error('[threads-clean-link] 紀錄欄位遷移失敗', err);
     });
   return historyWriteChain;
 }
