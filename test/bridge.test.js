@@ -326,8 +326,68 @@ test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.
 
 const DEFAULT_SETTINGS = { autoClean: false, saveHistory: true };
 
+// settle() 原本用固定牆鐘等待非同步鏈路(storage get/onChanged、postMessage
+// 皆經 setTimeout(0) 落盤)跑完;機器忙時固定 ms 等不到鏈路跑完就斷言，閒時
+// 又白等。改用計時器計數，作法逐字移植自 test/background.test.js 的同名
+// helper:全域 setTimeout/clearTimeout 包一層，同時記錄(a)只增不減的「累計
+// 排程次數」與(b)「目前尚未觸發」的計時器集合，任一有變化都算「還在動」，
+// 連續兩輪都沒有變化才視為鏈路真正跑完並穩定下來。bridge.js 本身不含任何
+// setTimeout(靠 sandbox 注入的 setTimeout 只轉給 storage mock 與
+// createWindow 的 postMessage 用)，不像 background.js 有需要排除的長效逾時
+// 計時器，故沿用 Set 版即可。輪詢用原生 setTimeout(不可用 setImmediate，
+// check phase 沒有其他 I/O 時不會真的讓出，Date.now() 幾乎不動)，穩定後仍
+// 至少等原 ms 的一小部分，逾時上限以 ms 為準再留緩衝，超時直接 resolve、
+// 不吞錯，讓原本的斷言自己失敗。
+let totalTimersScheduled = 0;
+const pendingTimers = new Set();
+const nativeSetTimeout = global.setTimeout;
+const nativeClearTimeout = global.clearTimeout;
+global.setTimeout = function trackedSetTimeout(fn, ms, ...args) {
+  totalTimersScheduled++;
+  const handle = nativeSetTimeout((...cbArgs) => {
+    pendingTimers.delete(handle);
+    return fn(...cbArgs);
+  }, ms, ...args);
+  pendingTimers.add(handle);
+  return handle;
+};
+global.clearTimeout = function trackedClearTimeout(handle) {
+  pendingTimers.delete(handle);
+  return nativeClearTimeout(handle);
+};
+// pendingTimers 是整份檔案共用的單一集合，每個測試開始前清空，只保留「這
+// 個測試自己造成的排程」，避免上一個測試留下的計時器干擾下一次 settle()。
+test.beforeEach(() => {
+  pendingTimers.clear();
+});
+
 function settle(ms = 30) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const floor = Math.max(Math.floor(ms / 5), 20);
+    const cap = Math.max(ms + 500, 2000);
+    let lastCount = totalTimersScheduled;
+    let stableTicks = 0;
+
+    function tick() {
+      const countChanged = totalTimersScheduled !== lastCount;
+      if (countChanged) lastCount = totalTimersScheduled;
+      const stillPending = pendingTimers.size > 0;
+      if (countChanged || stillPending) {
+        stableTicks = 0;
+      } else {
+        stableTicks++;
+      }
+      const elapsed = Date.now() - start;
+      const settled = stableTicks >= 2 && elapsed >= floor;
+      if (settled || elapsed >= cap) {
+        resolve();
+        return;
+      }
+      nativeSetTimeout(tick, 4);
+    }
+    nativeSetTimeout(tick, 4);
+  });
 }
 
 // 載入 bridge.js 到一個同時具備 chrome.runtime 與 chrome.storage 的 sandbox，

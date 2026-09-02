@@ -50,8 +50,69 @@ const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 // S1 的七個新欄位，遷移／寫入路徑都以這一份為準。
 const NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverUpdatedAt', 'deletedAt'];
 
+// settle() 原本用固定牆鐘等待非同步鏈路(遷移/寫入路徑經 chrome.storage
+// mock 的 setTimeout(0) 落盤，og fetch 補強經 fetchOgFieldsForLocalKind 的
+// setTimeout 逾時競速)跑完;機器忙時固定 ms 等不到鏈路跑完就斷言，閒時又
+// 白等。改用計時器計數，作法逐字移植自 test/background.test.js 的同名
+// helper——本檔經 runInSandbox 載入同一份 background.js(含 fetchOgFields-
+// ForLocalKind 的長效逾時計時器與 TCLSync 引擎的 setTimeout 注入)，需要與
+// background.test.js 一致的保護:全域 setTimeout/clearTimeout 包一層，同
+// 時記錄(a)只增不減的「累計排程次數」與(b)「目前尚未觸發」的計時器集合，
+// 任一有變化都算「還在動」，連續兩輪都沒有變化才視為鏈路真正跑完並穩定
+// 下來。輪詢用原生 setTimeout(不可用 setImmediate，check phase 沒有其他
+// I/O 時不會真的讓出，Date.now() 幾乎不動)，穩定後仍至少等原 ms 的一小部
+// 分，逾時上限以 ms 為準再留緩衝，超時直接 resolve、不吞錯，讓原本的斷言
+// 自己失敗。
+let totalTimersScheduled = 0;
+const pendingTimers = new Set();
+const nativeSetTimeout = global.setTimeout;
+const nativeClearTimeout = global.clearTimeout;
+global.setTimeout = function trackedSetTimeout(fn, ms, ...args) {
+  totalTimersScheduled++;
+  const handle = nativeSetTimeout((...cbArgs) => {
+    pendingTimers.delete(handle);
+    return fn(...cbArgs);
+  }, ms, ...args);
+  pendingTimers.add(handle);
+  return handle;
+};
+global.clearTimeout = function trackedClearTimeout(handle) {
+  pendingTimers.delete(handle);
+  return nativeClearTimeout(handle);
+};
+// pendingTimers 是整份檔案共用的單一集合，每個測試開始前清空，只保留「這
+// 個測試自己造成的排程」，避免上一個測試留下的計時器干擾下一次 settle()。
+test.beforeEach(() => {
+  pendingTimers.clear();
+});
+
 function settle(ms = 150) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const floor = Math.max(Math.floor(ms / 5), 20);
+    const cap = Math.max(ms + 500, 2000);
+    let lastCount = totalTimersScheduled;
+    let stableTicks = 0;
+
+    function tick() {
+      const countChanged = totalTimersScheduled !== lastCount;
+      if (countChanged) lastCount = totalTimersScheduled;
+      const stillPending = pendingTimers.size > 0;
+      if (countChanged || stillPending) {
+        stableTicks = 0;
+      } else {
+        stableTicks++;
+      }
+      const elapsed = Date.now() - start;
+      const settled = stableTicks >= 2 && elapsed >= floor;
+      if (settled || elapsed >= cap) {
+        resolve();
+        return;
+      }
+      nativeSetTimeout(tick, 4);
+    }
+    nativeSetTimeout(tick, 4);
+  });
 }
 
 // service worker 全域本來就有 crypto（randomUUID 是 SW 可用的 API），
