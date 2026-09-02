@@ -23,6 +23,11 @@ if (typeof TCLAuth === 'undefined' && typeof importScripts === 'function') {
   importScripts('auth.js');
 }
 
+// 雲端同步引擎:同上。sync.js 依賴 tcl-core.js 與 auth.js，載入順序不可顛倒。
+if (typeof TCLSync === 'undefined' && typeof importScripts === 'function') {
+  importScripts('sync.js');
+}
+
 // 乾淨貼文網址格式，例如：https://www.threads.com/@username/post/AbCd123EfGh
 // 刻意不錨定收尾：extractCleanPostUrl 仰賴它能從帶 query/hash 的轉址結果
 // 「截」出前段乾淨網址，加上 $ 會讓截取失效。
@@ -250,52 +255,118 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false; // 不需要回應，同步處理完就結束，不佔用非同步通道。
 });
 
-// 雲端同步登入 spike 入口:由 options 頁的開發用按鈕觸發(chrome.permissions
-// .request 需要使用者手勢，因此不能由 SW 自行發起)。回傳 id_token payload 的
-// 摘要欄位，權杖本體不外流到呼叫端以外的地方。
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'auth.spike') {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  }
+// ------------------------------------------------------------
+// 雲端同步接線(docs/cloud-sync-plan.md 第 5 節)
+// ------------------------------------------------------------
+//
+// 引擎本體在 sync.js,依賴全部由這裡注入:SW 隨時被殺，引擎不能自己抓全域
+// chrome/fetch/Date,否則沒有任何辦法在 node 測試裡跑完整往返。
+//
+// history 的寫入一律交給既有的 historyWriteChain(見 recordHistory):引擎與
+// recordHistory、兩支遷移共用同一條序列鏈，才不會互相覆蓋 read-modify-write。
 
-  handleAuthSpike(message)
+// chrome.storage 的區域轉接:一律以 Promise 呼叫。區域本身在函式內才取值,
+// 沒有 chrome.storage.session 的環境(舊版瀏覽器/測試替身)不會在接線當下就炸。
+function storageAreaAdapter(name) {
+  function area() {
+    const store = chrome.storage && chrome.storage[name];
+    if (!store) throw new Error(`chrome.storage.${name} 不可用`);
+    return store;
+  }
+  return {
+    get: (keys) => Promise.resolve(area().get(keys)),
+    set: (items) => Promise.resolve(area().set(items)),
+    remove: (keys) => Promise.resolve(area().remove(keys)),
+  };
+}
+
+// 認證模組:SW 內由 importScripts 保證存在，測試沙箱可能只載了 background
+// 本身，因此以 typeof 取值不讓接線在載入當下就丟 ReferenceError。
+const syncAuthApi = typeof TCLAuth !== 'undefined' ? TCLAuth : null;
+
+// 引擎只在依賴齊備時建立:sync.js 與 chrome.alarms 缺一(舊環境、未宣告
+// alarms 權限、測試沙箱只測其他功能)就整組同步功能靜默停用，不影響主功能。
+const syncEngine =
+  typeof TCLSync !== 'undefined' && typeof TCLSync.create === 'function' && chrome.alarms
+    ? TCLSync.create({
+        storage: { local: storageAreaAdapter('local'), session: storageAreaAdapter('session') },
+        fetch: (url, init) => fetch(url, init),
+        now: () => Date.now(),
+        alarms: {
+          create: (name, info) => chrome.alarms.create(name, info),
+          clear: (name) => Promise.resolve(chrome.alarms.clear(name)),
+          get: (name) => Promise.resolve(chrome.alarms.get(name)),
+          getAll: () => Promise.resolve(chrome.alarms.getAll()),
+        },
+        // 廣播給 options/popup。沒有任何頁面開著時 sendMessage 會 reject,
+        // 那是常態不是錯誤，安靜吞掉。
+        broadcast: (message) => {
+          try {
+            const result = chrome.runtime.sendMessage(message);
+            if (result && typeof result.catch === 'function') result.catch(() => {});
+          } catch (err) {
+            // 無人接聽，忽略。
+          }
+        },
+        auth: syncAuthApi,
+        permissions: { contains: (descriptor) => syncAuthApi.containsPermissions(descriptor) },
+        randomUUID: () => TCLCore.randomUuid(),
+        writeChain: (fn) => enqueueHistoryWrite(fn),
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        clearTimeout: (handle) => clearTimeout(handle),
+      })
+    : null;
+
+// options/popup → background 的五個同步訊息。登入態與雲端資料是敏感面:
+// 只接受擴充頁面(sender.id 為本擴充且沒有 tab),content script 與其他擴充
+// 送來的一律不回應、不碰引擎。
+const SYNC_MESSAGE_HANDLERS = {
+  'sync.getState': (engine) => engine.getState(),
+  'sync.signIn': (engine) => engine.signIn(),
+  'sync.signOut': (engine) => engine.signOut(),
+  'sync.now': (engine) => engine.syncNow(),
+  'sync.deleteCloud': (engine) => engine.deleteCloud(),
+};
+
+function isExtensionPageSender(sender) {
+  if (!sender || sender.tab) return false;
+  const selfId = chrome.runtime && chrome.runtime.id;
+  return typeof selfId === 'string' && selfId !== '' && sender.id === selfId;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message.type !== 'string') return false;
+  const handler = SYNC_MESSAGE_HANDLERS[message.type];
+  if (!handler) return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+  if (!isExtensionPageSender(sender) || !syncEngine) return false;
+
+  Promise.resolve()
+    .then(() => handler(syncEngine))
     .then(sendResponse)
     .catch((err) => {
-      console.error('[threads-clean-link] auth.spike 處理失敗', err);
-      sendResponse({ ok: false, reason: String(err && err.message ? err.message : err) });
+      console.error(`[threads-clean-link] ${message.type} 處理失敗`, err);
+      sendResponse(undefined);
     });
 
   return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
-async function handleAuthSpike(message) {
-  const clientId = message.clientId;
-  const apiBase = message.apiBase;
-  if (!clientId || !apiBase) {
-    return { ok: false, reason: 'missing-client-id-or-api-base' };
-  }
-
-  const signIn = await TCLAuth.signInWithGoogle({ clientId, apiBase });
-  const exchange = await TCLAuth.exchangeWithBackend({
-    apiBase,
-    idToken: signIn.idToken,
-    nonce: signIn.nonce,
+// 週期同步與去抖保底的 alarm 都轉進引擎，由它自己分辨名稱(D12)。
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!syncEngine) return;
+    Promise.resolve(syncEngine.onAlarm(alarm)).catch((err) => {
+      console.error('[threads-clean-link] 同步 alarm 處理失敗', err);
+    });
   });
+}
 
-  return {
-    ok: true,
-    payload: {
-      aud: signIn.payload.aud,
-      iss: signIn.payload.iss,
-      email_verified: signIn.payload.email_verified,
-      nonceMatches: signIn.payload.nonce === signIn.nonce,
-    },
-    backend: {
-      status: exchange.status,
-      hasUser: Boolean(exchange.body && exchange.body.user),
-      hasAuthTokenHeader: Boolean(exchange.authToken),
-    },
-  };
+// SW 每次啟動驗一次 token:用 get-session 主動確認，不必等 /api/v1/* 打回
+// 401 才發現失效(計劃第 3 節補充第 11 點)。
+if (syncEngine) {
+  Promise.resolve(syncEngine.verifySession()).catch((err) => {
+    console.warn('[threads-clean-link] 啟動驗證同步工作階段失敗', err);
+  });
 }
 
 // 核心流程
@@ -1178,10 +1249,29 @@ function evictTombstonesForBudget(list) {
 // 發生在「清除的同時恰好完成一次淨化」，極罕見且後果僅是多留一筆，接受。
 let historyWriteChain = Promise.resolve();
 
+// history 序列鏈的對外入口:同步引擎(sync.js)的每一次讀改寫都掛在這條鏈上,
+// 與 recordHistory、兩支遷移串行執行，不互相覆蓋。回傳的 promise 如實反映
+// 這一次寫入的成敗(引擎要據此判定這一輪同步算不算成功);鏈本身另外接住錯誤,
+// 一次失敗不得讓後續寫入排不進來。
+function enqueueHistoryWrite(fn) {
+  const run = historyWriteChain.then(fn);
+  historyWriteChain = run.catch(() => {});
+  return run;
+}
+
+// 新紀錄寫入後掛去抖同步(D12):2 秒內連續分享只同步一次，細節在 sync.js。
+function notifySyncRecorded() {
+  if (!syncEngine) return;
+  Promise.resolve(syncEngine.notifyRecorded()).catch((err) => {
+    console.warn('[threads-clean-link] 掛去抖同步失敗', err);
+  });
+}
+
 // extra(選填):author/handle/excerpt/original/removedParams，只有實際
 // 擷取到的鍵才會出現(自動路徑見 extractHistoryExtraFields，右鍵路徑組同形
 // 訊息後同樣走它)，Object.assign 進條目時不會覆蓋 url/kind/at/seen。
 function recordHistory(url, kind, extra) {
+  let recorded = false;
   historyWriteChain = historyWriteChain
     .then(async () => {
       if (!hasStorageLocal()) return;
@@ -1244,9 +1334,14 @@ function recordHistory(url, kind, extra) {
         }
         throw err;
       }
+      recorded = true;
     })
     .catch((err) => {
       console.error('[threads-clean-link] 寫入紀錄失敗', err);
+    })
+    .then(() => {
+      // 真的寫進去才掛去抖:設定關閉、配額爆掉、寫入失敗都不該觸發一次同步。
+      if (recorded) notifySyncRecorded();
     });
   return historyWriteChain;
 }
