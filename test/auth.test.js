@@ -226,3 +226,177 @@ test('權限描述子:origins 落在 manifest 宣告的 optional_host_permission
   }
   assert.ok(manifest.optional_permissions.includes('identity'));
 });
+
+// ---- exp 為必要欄位 ----
+//
+// 缺 exp 時「跳過過期檢查」等於接受一枚永不過期的 id_token，那正是重放要的
+// 東西;型別不對(字串秒數、null)同樣不能放行。
+
+test('驗證:payload 缺 exp 時拒收', () => {
+  const payload = validPayload();
+  delete payload.exp;
+  assert.throws(
+    () => TCLAuth.verifyIdTokenPayload(payload, { clientId: CLIENT_ID, nonce: 'nonce-abc' }),
+    /缺少有效的 exp/
+  );
+});
+
+test('驗證:exp 非數字時拒收', () => {
+  for (const exp of [String(Math.floor(Date.now() / 1000) + 3600), null, NaN, Infinity]) {
+    assert.throws(
+      () => TCLAuth.verifyIdTokenPayload(validPayload({ exp }), { clientId: CLIENT_ID, nonce: 'nonce-abc' }),
+      /缺少有效的 exp/,
+      `exp 為 ${String(exp)} 時應拒收`
+    );
+  }
+});
+
+// ---- 預期值空值的前置拒絕 ----
+//
+// expected.clientId／nonce 為空時，payload 也缺該欄位就會「意外相符」
+// (undefined === undefined),整道 aud/nonce 檢查等於被繞過。
+
+test('驗證:expected.clientId 空值時前置拒絕，不落入 aud 比對', () => {
+  const payload = validPayload();
+  delete payload.aud;
+  for (const clientId of [undefined, '', null]) {
+    assert.throws(
+      () => TCLAuth.verifyIdTokenPayload(payload, { clientId, nonce: 'nonce-abc' }),
+      /缺少預期的 client ID/,
+      `clientId 為 ${String(clientId)} 時應前置拒絕`
+    );
+  }
+});
+
+test('驗證:expected.nonce 空值時前置拒絕，不落入 nonce 比對', () => {
+  const payload = validPayload();
+  delete payload.nonce;
+  for (const nonce of [undefined, '', null]) {
+    assert.throws(
+      () => TCLAuth.verifyIdTokenPayload(payload, { clientId: CLIENT_ID, nonce }),
+      /缺少本次請求的 nonce/,
+      `nonce 為 ${String(nonce)} 時應前置拒絕`
+    );
+  }
+});
+
+test('驗證:expected 整個缺席時拒收', () => {
+  assert.throws(() => TCLAuth.verifyIdTokenPayload(validPayload(), null), /缺少 id_token 的預期值/);
+});
+
+// ---- redirect 前綴比對 ----
+//
+// launchWebAuthFlow 回來的網址必須是本擴充的 chromiumapp.org 位址;換成別的
+// 來源就代表這串 fragment 不是我們發起的那一次授權的產物。
+
+test('redirect:前綴與本次請求相符時取得 id_token', () => {
+  const token = fakeJwt(validPayload());
+  assert.equal(
+    TCLAuth.extractIdTokenFromRedirect(`${REDIRECT_URI}#id_token=${token}`, REDIRECT_URI),
+    token
+  );
+});
+
+test('redirect:前綴不是本次的 redirect_uri 時拒收', () => {
+  const token = fakeJwt(validPayload());
+  assert.throws(
+    () =>
+      TCLAuth.extractIdTokenFromRedirect(
+        `https://evil.example/callback#id_token=${token}`,
+        REDIRECT_URI
+      ),
+    /redirect 前綴與本次請求不符/
+  );
+});
+
+test('redirect:另一個擴充 ID 的 chromiumapp 位址同樣拒收', () => {
+  const token = fakeJwt(validPayload());
+  assert.throws(
+    () =>
+      TCLAuth.extractIdTokenFromRedirect(
+        `https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chromiumapp.org/#id_token=${token}`,
+        REDIRECT_URI
+      ),
+    /redirect 前綴與本次請求不符/
+  );
+});
+
+test('redirect:不給預期前綴時維持原行為(呼叫端自行把關)', () => {
+  const token = fakeJwt(validPayload());
+  assert.equal(TCLAuth.extractIdTokenFromRedirect(`https://other.example/#id_token=${token}`), token);
+});
+
+// ---- exchangeWithBackend 的請求形狀 ----
+//
+// 契約見 docs/cloud-sync-plan.md 第 3 節第 1／5／12 點:POST
+// /api/auth/sign-in/social、application/json、credentials:"omit"、body 為
+// { provider:"google", idToken:{ token, nonce } }。錯一項後端就回 400/415,
+// 或(credentials 沒關掉)夾帶 cookie 擴大 CSRF 風險面。
+
+test('exchangeWithBackend:端點、標頭與 body 形狀逐條符合契約', async () => {
+  const calls = [];
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = (url, init) => {
+    calls.push({ url, init });
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name.toLowerCase() === 'set-auth-token' ? 'tok-xyz' : null) },
+      json: async () => ({ user: { id: 'user-1', email: 'someone@example.com' }, redirect: false }),
+    });
+  };
+  try {
+    const result = await TCLAuth.exchangeWithBackend({
+      apiBase: 'https://api-staging.metalinkclearer.workers.dev/',
+      idToken: 'fake.id.token',
+      nonce: 'nonce-abc',
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0].url,
+      'https://api-staging.metalinkclearer.workers.dev/api/auth/sign-in/social',
+      'apiBase 的尾隨斜線不得變成雙斜線'
+    );
+    assert.equal(calls[0].init.method, 'POST');
+    assert.equal(calls[0].init.credentials, 'omit', 'D1:一律不夾帶 cookie');
+    assert.equal(calls[0].init.headers['Content-Type'], 'application/json', '否則後端回 415');
+    assert.deepEqual(JSON.parse(calls[0].init.body), {
+      provider: 'google',
+      idToken: { token: 'fake.id.token', nonce: 'nonce-abc' },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 200);
+    assert.equal(result.authToken, 'tok-xyz', 'token 取自 set-auth-token 標頭');
+    assert.equal(result.body.user.id, 'user-1');
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test('exchangeWithBackend:回應不是 JSON 時 body 為 null，不整個丟例外', async () => {
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = () =>
+    Promise.resolve({
+      ok: false,
+      status: 503,
+      headers: { get: () => null },
+      json: async () => {
+        throw new Error('not json');
+      },
+    });
+  try {
+    const result = await TCLAuth.exchangeWithBackend({
+      apiBase: 'https://api.metalinkclearer.workers.dev',
+      idToken: 'x',
+      nonce: 'n',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 503);
+    assert.equal(result.body, null);
+    assert.equal(result.authToken, null);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});

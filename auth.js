@@ -9,8 +9,13 @@
 // redirect_uri 固定為 https://<擴充 ID>.chromiumapp.org/,由 manifest 的 key
 // 欄位把擴充 ID 釘死，Console 端才登記得起來。
 //
-// nonce 是這條流程的重放防線:本地產生後同時放進授權請求與後端 sign-in body,
-// 回來的 id_token payload 內的 nonce 必須一致，否則整條拒收。
+// nonce 是這條流程的重放防線:由呼叫端(sync.js 的同步引擎)產生並落
+// chrome.storage.session,本模組只負責把它放進授權請求並比對回來的 id_token
+// payload——SW 在授權往返中途被回收時，重建的引擎仍比對得出這一次的 nonce。
+//
+// 權限:identity 與後端 host 都是 optional 權限。chrome.permissions.request
+// 只能在使用者手勢中呼叫，SW 自行發起一律失敗，因此本模組只提供「探」的一半
+// (containsPermissions);「求」的一半在 options 頁的登入按鈕 click handler 內。
 (function (root) {
   'use strict';
 
@@ -41,9 +46,18 @@
 
   // id_token 走 URL fragment 回來(implicit flow 不把權杖放進 query),因此
   // 從 # 之後解析;沒有 fragment 或缺 id_token 一律視為失敗。
-  function extractIdTokenFromRedirect(redirectUrl) {
+  //
+  // expectedRedirectUri 有給就先比對前綴:launchWebAuthFlow 回傳的網址必須是
+  // 本擴充的 chromiumapp.org 位址，換成別的來源就代表這串 fragment 不是我們
+  // 發起的那一次授權的產物，整條拒收。
+  function extractIdTokenFromRedirect(redirectUrl, expectedRedirectUri) {
     if (typeof redirectUrl !== 'string' || redirectUrl.indexOf('#') === -1) {
       throw new Error('授權回呼沒有 fragment，取不到 id_token');
+    }
+    if (typeof expectedRedirectUri === 'string' && expectedRedirectUri) {
+      if (redirectUrl.indexOf(expectedRedirectUri) !== 0) {
+        throw new Error('授權回呼的 redirect 前綴與本次請求不符');
+      }
     }
     var fragment = redirectUrl.slice(redirectUrl.indexOf('#') + 1);
     var params = new URLSearchParams(fragment);
@@ -70,6 +84,15 @@
   // Google 的公鑰輪替狀態),這裡只擋「拿錯 client 的 token」與重放。
   function verifyIdTokenPayload(payload, expected) {
     if (!payload || typeof payload !== 'object') throw new Error('id_token payload 解析失敗');
+    // 預期值本身缺漏時前置拒絕:aud/nonce 比對在 expected 為空字串或 undefined
+    // 時會因為 payload 也缺該欄位而「意外相符」，等於整道檢查被繞過。
+    if (typeof expected !== 'object' || !expected) throw new Error('缺少 id_token 的預期值');
+    if (typeof expected.clientId !== 'string' || !expected.clientId) {
+      throw new Error('缺少預期的 client ID，無法驗 aud');
+    }
+    if (typeof expected.nonce !== 'string' || !expected.nonce) {
+      throw new Error('缺少本次請求的 nonce，無法擋重放');
+    }
     if (payload.aud !== expected.clientId) {
       throw new Error('id_token 的 aud 不是預期的 client ID');
     }
@@ -79,7 +102,12 @@
     if (GOOGLE_ISSUERS.indexOf(payload.iss) === -1) {
       throw new Error('id_token 的 iss 不是 Google');
     }
-    if (typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()) {
+    // exp 是必要欄位:缺漏或型別不對時「跳過過期檢查」等於接受一枚永不過期
+    // 的 token，那正是重放攻擊要的東西。
+    if (typeof payload.exp !== 'number' || !isFinite(payload.exp)) {
+      throw new Error('id_token 缺少有效的 exp');
+    }
+    if (payload.exp * 1000 <= Date.now()) {
       throw new Error('id_token 已過期');
     }
     return payload;
@@ -89,32 +117,17 @@
     return { permissions: ['identity'], origins: [apiBase.replace(/\/+$/, '') + '/*'] };
   }
 
-  // identity 與後端 host 都是 optional 權限。chrome.permissions.request 只能在
-  // 使用者手勢中呼叫，service worker 自行發起會直接丟錯，因此先用 contains 探
-  // 一次:已授予就跳過 request,只有真的缺權限時才需要呼叫端提供手勢脈絡。
-  function ensurePermissions(apiBase) {
-    var descriptor = permissionsFor(apiBase);
+  // SW 端的權限探測:只回報「有沒有」，不發起 request(見檔頭「權限」段落)。
+  // 同步引擎拿到 false 就把狀態轉成 error/permission_required，由 options 頁
+  // 的登入按鈕在使用者手勢內補請求。
+  function containsPermissions(descriptor) {
     return new Promise(function (resolve, reject) {
       chrome.permissions.contains(descriptor, function (granted) {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
-        if (granted) {
-          resolve(true);
-          return;
-        }
-        chrome.permissions.request(descriptor, function (accepted) {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-          if (!accepted) {
-            reject(new Error('使用者未授予 identity 或後端 host 權限'));
-            return;
-          }
-          resolve(true);
-        });
+        resolve(Boolean(granted));
       });
     });
   }
@@ -135,20 +148,23 @@
     });
   }
 
+  // nonce 由呼叫端傳入(引擎生成、落 chrome.storage.session);本模組不自行
+  // 生成，否則 SW 被回收後就沒有任何一方記得這一次用的是哪枚 nonce。
   function signInWithGoogle(options) {
     var clientId = options.clientId;
-    var apiBase = options.apiBase;
-    var nonce;
-    return ensurePermissions(apiBase)
+    var nonce = options.nonce;
+    var redirectUri;
+    return Promise.resolve()
       .then(function () {
-        nonce = generateNonce();
-        var redirectUri = chrome.identity.getRedirectURL();
+        if (typeof clientId !== 'string' || !clientId) throw new Error('signInWithGoogle 缺少 clientId');
+        if (typeof nonce !== 'string' || !nonce) throw new Error('signInWithGoogle 缺少 nonce');
+        redirectUri = chrome.identity.getRedirectURL();
         return launchWebAuthFlow(
           buildAuthorizeUrl({ clientId: clientId, redirectUri: redirectUri, nonce: nonce })
         );
       })
       .then(function (redirectUrl) {
-        var idToken = extractIdTokenFromRedirect(redirectUrl);
+        var idToken = extractIdTokenFromRedirect(redirectUrl, redirectUri);
         var payload = verifyIdTokenPayload(decodeJwtPayload(idToken), {
           clientId: clientId,
           nonce: nonce,
@@ -189,7 +205,7 @@
     GOOGLE_AUTH_ENDPOINT: GOOGLE_AUTH_ENDPOINT,
     SCOPE: SCOPE,
     permissionsFor: permissionsFor,
-    ensurePermissions: ensurePermissions,
+    containsPermissions: containsPermissions,
     generateNonce: generateNonce,
     buildAuthorizeUrl: buildAuthorizeUrl,
     extractIdTokenFromRedirect: extractIdTokenFromRedirect,
