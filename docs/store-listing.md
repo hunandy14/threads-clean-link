@@ -1,6 +1,6 @@
 # Chrome Web Store 上架文案
 
-給開發者主控台(Chrome Web Store Developer Dashboard)逐欄位填寫用，標題即欄位名稱，內文都是可直接複製貼上的文字。所有隱私相關表述均與 [README.md](../README.md) 的〈誠實隱私聲明〉一節保持一致，不得在此加碼、也不得弱化。
+給開發者主控台(Chrome Web Store Developer Dashboard)逐欄位填寫用，標題即欄位名稱，內文都是可直接複製貼上的文字。所有隱私相關表述均與 [README.md](../README.md) 的〈運作原理與隱私〉一節保持一致，不得在此加碼、也不得弱化。
 
 > **範例網址一律使用虛構佔位字串**:`https://www.threads.com/share/AbCdEfGhI`、`https://www.threads.com/@username/post/AbCd123EfGh`。這兩條是刻意做成「格式擬真但明顯是佔位」的假資料(大小寫混合、`@username`)，不對應任何真實帳號或真實短碼，與 background.js 註解、README 範例區塊用的是同一組。
 
@@ -277,20 +277,20 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 ## 8. 隱私權政策 URL
 
 ```
-https://github.com/hunandy14/threads-clean-link#誠實隱私聲明請務必讀完這段
+https://github.com/hunandy14/threads-clean-link#運作原理與隱私
 ```
 
-**驗證結果(已實測，非推測)**:直接 `curl` 抓取 `https://github.com/hunandy14/threads-clean-link` 的渲染後 HTML，確認 GitHub 為〈誠實隱私聲明(請務必讀完這段)〉這個 `##` 標題產出了:
+**驗證結果(已實測，非推測)**:直接 `curl` 抓取 `https://github.com/hunandy14/threads-clean-link/blob/main/README.md` 的渲染後 HTML，確認 GitHub 為〈運作原理與隱私〉這個 `##` 標題產出了:
 
 ```html
-<a id="user-content-誠實隱私聲明請務必讀完這段" class="anchor"
-   aria-label="Permalink: 誠實隱私聲明(請務必讀完這段)"
-   href="#誠實隱私聲明請務必讀完這段">
+<a id="user-content-運作原理與隱私" class="anchor"
+   aria-label="Permalink: 運作原理與隱私"
+   href="#運作原理與隱私">
 ```
 
 `href` 值與上面這個 anchor URL 的 `#` 後半段完全一致，是 GitHub 標題錨點的標準做法(`href="#slug"` 對應 `id="user-content-slug"`)，點擊會正確捲動到隱私聲明段落。**此連結可直接使用，不需要改用 README 頂部連結。**
 
-若之後 README 標題文字有任何調動(例如拿掉「請務必讀完這段」這幾個字)，錨點會跟著變，屆時需要重新用同樣方式驗證一次。
+若之後 README 標題文字有任何調動，錨點會跟著變，屆時需要重新用同樣方式驗證一次。
 
 ---
 
