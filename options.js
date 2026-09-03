@@ -1211,7 +1211,7 @@
       });
     }
 
-    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
+    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode，
     // 網址內容源頭是頁面可控管道，禁 innerHTML。紀錄卡片降級顯示(無
     // author/excerpt 時)靠這份拆解邏輯。
     function buildUrlNode(url, cls) {

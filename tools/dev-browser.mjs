@@ -306,6 +306,8 @@ function helpText() {
     dev-build 的內容重新同步。共用同一個載入路徑是刻意的——同一個擴充 ID
     不能並存兩個 unpacked 路徑，載入路徑跟著環境走就代表每次切環境都要關掉
     重開 Chrome。
+    每次執行都會送一次 chrome.runtime.reload()(不這樣做，service worker 會
+    吃到舊的腳本快取)，已經開著的擴充頁面(options／popup)會跟著被關掉。
 
 環境說明:
     local
@@ -910,7 +912,7 @@ async function main() {
 
   // 三個環境都載同一份副本，只有 local 這一次會多注入 localhost 權限。
   // 共用路徑是刻意的:同一個擴充 ID 不能並存兩個 unpacked 路徑，載入路徑
-  // 跟著環境走就代表每次切環境都得關掉重開 Chrome。實測(Chrome 151)確認
+  // 跟著環境走就代表每次切環境都得關掉重開 Chrome。實測(Chrome 152)確認
   // 同路徑就地重載時，已授予的 identity 與其他 host 權限完整保留;只有
   // 「manifest 不再宣告」的那一項會被撤銷（切回 local 時重按一次授權）。
   // --ref 永遠作用在 dev-build worktree，同步到副本是這一步。

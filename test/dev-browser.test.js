@@ -403,6 +403,7 @@ function createMockCdp({
   wakeSw = true,
   apiBaseReadable = true,
   deadSwConnections = 0,
+  swSilent = false,
 }) {
   const browserWsUrl = `ws://mock-browser:${port}`;
   const swWsUrl = `ws://mock-sw:${port}`;
@@ -431,7 +432,7 @@ function createMockCdp({
     constructor(wsUrl) {
       this.url = wsUrl;
       this.listeners = {};
-      // deadSwConnections:模擬「/json 清單裡還留著剛被終止的 SW target」,
+      // deadSwConnections:模擬「/json 清單裡還留著剛被終止的 SW target」，
       // 連上去當場被切斷。真實 Chrome 隨後會換上新的 target，這裡用消耗
       // 計數器等價表現。
       if (wsUrl === swWsUrl && deadSwConnections > 0) {
@@ -448,6 +449,9 @@ function createMockCdp({
       const msg = JSON.parse(raw);
 
       if (this.url === swWsUrl) {
+        // swSilent:endpoint 活著（連得上、不斷線）但一個指令都不回。這是
+        // 「對端卡住」，與 deadSwConnections 的「連線層斷掉」是兩種失敗。
+        if (swSilent) return;
         if (msg.method === 'Runtime.runIfWaitingForDebugger') {
           swPaused = false;
           queueMicrotask(() =>
@@ -665,6 +669,24 @@ test('attachToServiceWorker(經 reloadExtension):SW endpoint 已死時換一個�
     0,
     '重試路徑上開的喚醒分頁一個都不能留'
   );
+});
+
+test('attachToServiceWorker(經 reloadExtension):SW 活著但不回覆時只試一次，不重試', async () => {
+  const port = 9412;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId, swSilent: true });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  // 逾時用注入的短值，測試不必真的等滿 CDP_COMMAND_TIMEOUT_MS。
+  await assert.rejects(() => devBrowser.reloadExtension(port, extensionId, 50), /逾時/);
+
+  assert.deepEqual(
+    mock.closedTargetIds,
+    ['wake-1'],
+    '只該嘗試一次:endpoint 活著卻不回覆，重試只是再等一輪逾時;而且那一個喚醒分頁要收掉'
+  );
+  assert.equal(mock.newTargetCalls, 1, '不重試就不會再開第二個喚醒分頁');
 });
 
 test('reloadExtension:送出 chrome.runtime.reload()，並關掉自己開的喚醒分頁', async () => {
