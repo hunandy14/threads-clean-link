@@ -16,7 +16,7 @@
 
 | 環境 | 捷徑 | 打字量 |
 |---|---|---|
-| local | `npm run dev` | 最短，預設捷徑 |
+| local | `npm run dev` | 最短，預設捷徑(需先自行啟動本機後端，見 §3) |
 | staging | `npm run dev:staging` | 冒號子指令，一步到位 |
 | production | `npm run dev -- --env production` | 沒有捷徑，得手打完整旗標 |
 
@@ -40,12 +40,32 @@ npm scripts(本專案 `package.json` 原文):
 - `--env <local|staging|production>`:必填，連線目標，無預設值——沒給就印 help 並非 0 退出，逼使用者每次都明確選。
 - `--yes`:跳過 production 的互動確認，供 CI／腳本呼叫；警告文字仍照印，不悄悄跳過。
 - `--fresh`:建全新臨時 profile／state，不沿用既有登入或快取，用於重現「全新使用者」情境。
+- `--restart`:目標載入路徑與執行環境目前載入的不同時，先把它關掉再重開;不帶此旗標只印訊息並非 0 退出，不擅自關使用者手上開著的視窗。
 - `--ref <git ref>`:切換要載入的建置版本(worktree HEAD)，跟 `--env` 正交——可以拿 staging build 連 local，也可以拿某個 PR 分支連 staging。
 - `--no-open`:跑完不自動開啟畫面，供背景／CI 呼叫。
 - `--profile <dir>`:指定要重複使用的 profile 路徑，通常搭配 `--fresh` 印出的路徑回填。
 - `--build <dir>`:指定建置產物所在目錄。
 - `--port <port>`:指定除錯協定埠，供多開實例時避免衝突。
 - `--help` / `-h`:列出所有旗標、環境說明、範例，隨時可查，不必翻原始碼。
+
+### local 的兩個額外要求
+
+**(a) 前置探活。** local 依賴開發機自己跑著的後端，這件事工具無法代勞，但可以在動任何東西之前先確認。`--env local` 啟動前先 `GET http://localhost:8787/health`;不通就印出啟動指令並非 0 退出，**不碰瀏覽器**——後端沒起來的話後面每一步都是白做，還會留下一個連錯環境的瀏覽器要收拾。
+
+```
+錯誤:本機後端 http://localhost:8787/health 沒有回應。
+請先啟動本機後端：cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787
+```
+
+**(b) 開發用權限與正式產物分家。** local 的後端是 `http://localhost:8787`，瀏覽器擴充要連它就得在 manifest 宣告該 host 權限;但這一項絕不能混進上架版。作法是**不改建置產物本身，而是複製一份**:`dev-build` 保持與版控一致，每次執行以它的內容重新同步出 `dev-build-local`，只在副本的 manifest 追加 `http://localhost:8787/*`。注入是純函式(輸入 manifest 物件與 host、輸出新物件、冪等、不動 `key` 與既有 host)，因此可以單獨測，不必啟動瀏覽器。
+
+同一個擴充 ID 不能同時從兩個未封裝路徑載入，所以切換 local ↔ staging 會換載入路徑。工具會比對「瀏覽器目前載的路徑」與「這次要載的路徑」，不同時要求重啟，並把載入路徑印進狀態橫幅。
+
+### 切換環境必須清掉上一個環境的狀態
+
+寫入新的連線目標之前，若目前指向的是另一個環境，先清掉舊的登入憑證與同步狀態(本專案是 `storage.local` 的 `syncAuth`／`syncState`／`syncVerifiedAt`／`syncBackoff`，加上 `storage.session` 的單飛旗標、去抖、nonce)，並印一行「已切換環境，清除舊登入狀態」。
+
+理由是這些狀態全都綁在特定後端上:token 是另一台伺服器簽的，同步游標與清除水位線指向另一份資料庫。留著不會讓人「省一次登入」，只會讓同步一直失敗，而失敗訊息看起來像新環境的問題，於是查錯查半天。三個環境互切都適用，不是只有進出 local 才清。
 
 ## 4. production 守門範本
 
@@ -84,6 +104,7 @@ async function productionGuard({ env, yes, isTTY, readLine }) {
 API 網址:    <這次連的完整網址>
 Profile/State: <用的是哪個 profile 或 state 目錄>
 連線埠/連線資訊: <CDP 埠、DB 連線字串代稱等>
+載入路徑:    <這次載的是哪個目錄的產物>
 建置版本:    <目前程式碼是哪個 commit/ref>
 ========================================
 ```

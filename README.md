@@ -101,9 +101,11 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 一鍵啟動除錯用 Chrome 並載入開發版擴充，連線目標用 `--env` 三選一(local/staging/production)，慣例說明見 `docs/dev-environments.md`:
 
-- `npm run dev`:目前會提示 local 環境尚未建置，非 0 退出(需要後端 wrangler dev 等前置工作，見指令輸出)。
+- `npm run dev`:連本機後端(`http://localhost:8787`)。前置是自行在另一個終端機把後端跑起來(`npx wrangler dev --port 8787`);沒跑起來的話指令會印出啟動方式並非 0 退出，不會啟動 Chrome。載入的是 `dev-build` 的副本 `~/.threads-clean-link/dev-build-local`(每次執行重新同步，只在副本的 manifest 注入 `http://localhost:8787/*` 權限，商店版 manifest 不受影響)。
 - `npm run dev:staging`:連 staging API，日常開發用這個。
 - `npm run dev -- --env production`:連正式環境，會先印警告並要求互動輸入完整字串 `production` 確認才會繼續，`--yes` 可跳過確認(仍會印警告)，非互動環境(non-TTY)一律拒絕。
+
+同一個擴充 ID 不能同時從兩個未封裝路徑載入，因此 local 與 staging 互切要重啟 Chrome:指令偵測到載入路徑改變時會印出說明，加 `--restart` 可讓腳本代為關閉再重開。切換環境時也會清掉上一個環境的登入與同步狀態(舊 token 是另一台伺服器簽的，留著只會讓同步一直失敗)。
 
 需先手動建立 `~/.threads-clean-link/dev-build`(本 repo 的另一個 git worktree)與 `~/.threads-clean-link/debug-profile`(已登入 Google 測試帳號的 Chrome profile)，細節見 `tools/dev-browser.mjs` 檔頭註解與 `node tools/dev-browser.mjs --help`。
 
