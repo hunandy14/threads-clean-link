@@ -59,7 +59,9 @@ const LOCAL_HOST_PERMISSION = 'http://localhost:8787/*';
 const HEALTH_TIMEOUT_MS = 3000;
 
 const START_LOCAL_BACKEND_HINT =
-  `請先啟動本機後端：cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787`;
+  '請先在另一個終端機啟動本機後端（留著別關）：\n' +
+  '  cd %USERPROFILE%\\.threads-clean-link\\api-local\\api\n' +
+  '  npm run dev';
 
 // 切換環境時要清掉的舊狀態。token 是另一台伺服器簽的，游標與水位線指向
 // 另一份資料庫，留著只會讓同步拿舊憑證去打新後端，再把失敗當成新環境的
@@ -311,9 +313,11 @@ function helpText() {
 
 環境說明:
     local
-        連開發機自己跑的後端(${API_BASE.local})，對應 npm run dev。
-        前置:先在另一個終端機跑起後端——
-            cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787
+        連開發機自己跑的後端(${API_BASE.local})，對應本專案的 npm run dev。
+        需要兩個終端機:終端機 1 在後端目錄跑起來(留著別關)——
+            cd %USERPROFILE%\.threads-clean-link\api-local\api
+            npm run dev
+        終端機 2 在本專案跑 npm run dev。
         啟動前會先探 /health，不通就非 0 結束，不會啟動 Chrome。
         副本的 manifest 會多注入 ${LOCAL_HOST_PERMISSION} 權限;dev-build
         本身與商店版 manifest 都不受影響。
@@ -894,7 +898,7 @@ async function main() {
   if (opts.env === 'local') {
     const healthy = await probeHealth(API_BASE.local);
     if (!healthy) {
-      console.error(`錯誤:本機後端 ${API_BASE.local}/health 沒有回應。`);
+      console.error(`錯誤：本機後端 ${API_BASE.local}/health 沒有回應。`);
       console.error(START_LOCAL_BACKEND_HINT);
       process.exitCode = 1;
       return;
