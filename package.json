@@ -4,8 +4,8 @@
   "version": "0.5.2",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "dev": "node tools/dev-browser.mjs",
-    "dev:prod": "node tools/dev-browser.mjs --api production",
+    "dev": "node tools/dev-browser.mjs --env local",
+    "dev:staging": "node tools/dev-browser.mjs --env staging",
     "verify-id": "node tools/verify-extension-id.mjs"
   }
 }
