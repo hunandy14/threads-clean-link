@@ -9,6 +9,8 @@
 //   - withHostPermission／localBuildDirFor／samePath:--env local 的
 //     manifest 副本注入是純函式(冪等、不動 key 與既有 host)
 //   - probeHealth:本機後端探活的失敗路徑一律回 false
+//   - reloadExtension:載入後強制重載擴充，清掉 SW 的舊腳本快取;喚醒分頁
+//     用完即關
 //   - sendCdpCommand:逾時會 reject，不永遠掛住
 //   - configureApiEnvAndCleanup:喚醒 SW 用的暫時分頁，--no-open 時要關掉、
 //     --open 時要沿用成 options 頁而非開兩個(用 mock CDP transport 斷言,
@@ -354,6 +356,11 @@ function createMockCdp({ port, extensionId, currentApiBase = null, wakeSw = true
       let result = {};
       if (msg.method === 'Runtime.evaluate') {
         evaluated.push(msg.params.expression);
+        // 真實 Chrome 收到 chrome.runtime.reload() 會當場終止這個 SW,
+        // 它的 target 隨即從 /json 清單消失;呼叫端要等的正是這一刻。
+        if (msg.params.expression.includes('chrome.runtime.reload()')) {
+          targets = targets.filter((t) => t.type !== 'service_worker');
+        }
         // 讀「目前的 syncApiBase」那一段:回傳測試設定的值，模擬擴充現在
         // 指向哪個環境。
         if (msg.params.expression.includes('got.syncApiBase')) {
@@ -524,6 +531,28 @@ test('configureApiEnv:SW 始終不上線(wakeServiceWorker 自己逾時)時，�
     mock.closedTargetIds,
     ['wake-1'],
     '等待 SW 上線逾時是最常見的失敗;分頁是這一步開的，就得由這一步收掉'
+  );
+});
+
+// ---- 載入後強制重載擴充 ----
+
+test('reloadExtension:送出 chrome.runtime.reload()，並關掉自己開的喚醒分頁', async () => {
+  const port = 9409;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.reloadExtension(port, extensionId);
+
+  assert.ok(
+    mock.evaluated.some((e) => e.includes('chrome.runtime.reload()')),
+    'loadUnpacked 只重讀 manifest;importScripts 進來的模組要靠 reload 才會更新'
+  );
+  assert.deepEqual(mock.closedTargetIds, ['wake-1'], '喚醒用的暫時分頁要收掉');
+  assert.ok(
+    !mock.targets.some((t) => t.type === 'service_worker'),
+    'reload 後要等舊的 SW target 退場才回;連上死掉的 endpoint 會讓下一步永遠等不到回覆'
   );
 });
 

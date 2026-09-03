@@ -421,6 +421,10 @@ async function ensureChromeRunning(opts) {
 
 const CDP_COMMAND_TIMEOUT_MS = 10000;
 
+// reload 後等舊 service worker target 退場的上限。等不到就照常往下走——
+// 後續步驟自己也有逾時，不值得為此中斷整個流程。
+const SW_RETIRE_TIMEOUT_MS = 5000;
+
 // 對指定的 CDP WebSocket endpoint(browser 層級或單一 target 自己的
 // webSocketDebuggerUrl)開一條連線，送出一個指令並等對應 id 的回覆，然後關閉。
 // WebSocket 開了但對端不回覆(target 已消失、CDP 卡住)時，逾時強制 reject,
@@ -565,13 +569,49 @@ async function clearStaleSyncState(swWsUrl, timeoutMs) {
 // 回傳值:若本次為了喚醒 SW 開了暫時分頁，回傳該分頁的 target id,讓呼叫端
 // 決定是收尾關掉(--no-open)還是沿用成 options 頁;SW 原本就在線則回傳
 // undefined。
-async function configureApiEnv(port, extensionId, env, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
-  let sw = await findServiceWorkerTarget(port, extensionId);
-  let wakeTargetId;
-  if (!sw) {
-    console.log('擴充 service worker 尚未上線，開啟 options 頁喚醒 ...');
-    ({ sw, wakeTargetId } = await wakeServiceWorker(port, extensionId));
+async function ensureServiceWorker(port, extensionId) {
+  const sw = await findServiceWorkerTarget(port, extensionId);
+  if (sw) return { sw, wakeTargetId: undefined };
+  console.log('擴充 service worker 尚未上線，開啟 options 頁喚醒 ...');
+  return wakeServiceWorker(port, extensionId);
+}
+
+// Extensions.loadUnpacked 會讓 Chrome 重讀 manifest，但 service worker 以
+// importScripts 拉進來的檔案(tcl-core.js／auth.js／sync.js)吃的是腳本快取,
+// 換過 --ref 之後 manifest 是新的、SW 裡的模組卻還是舊版——現場驗證踩過這
+// 個坑，而且它安靜到會讓人以為程式碼沒生效是自己寫錯。chrome.runtime.reload()
+// 重建註冊，快取才真的失效。
+async function reloadExtension(port, extensionId, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
+  const { sw, wakeTargetId } = await ensureServiceWorker(port, extensionId);
+  try {
+    await sendCdpCommand(sw.webSocketDebuggerUrl, 'Runtime.runIfWaitingForDebugger', {}, timeoutMs);
+    // reload() 當場終止這個 SW，回覆多半收不到;收不到不算失敗。
+    await sendCdpCommand(
+      sw.webSocketDebuggerUrl,
+      'Runtime.evaluate',
+      { expression: 'chrome.runtime.reload()' },
+      timeoutMs
+    ).catch(() => {});
+  } finally {
+    // reload 會把擴充頁面一起收掉，這個分頁多半已經自己消失;關不掉不算錯。
+    if (wakeTargetId) await closeTarget(port, wakeTargetId).catch(() => {});
   }
+
+  // 等舊的 SW target 退場再回。它的 debugger endpoint 在 reload 後就死了,
+  // 接手的步驟若連上去，指令送出去永遠等不到回覆(現場踩過:下一步的
+  // Runtime.runIfWaitingForDebugger 直接逾時)。
+  const deadline = Date.now() + SW_RETIRE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const current = await findServiceWorkerTarget(port, extensionId);
+    if (!current || current.id !== sw.id) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  console.log('已重新載入擴充(清掉 service worker 的舊腳本快取)。');
+}
+
+async function configureApiEnv(port, extensionId, env, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
+  const { sw, wakeTargetId } = await ensureServiceWorker(port, extensionId);
 
   try {
     // CDP 對「剛啟動」的 service worker 預設會暫停等除錯器接手(即使沒人真
@@ -791,6 +831,7 @@ async function main() {
   await ensureChromeRunning(opts);
 
   const extensionId = await loadUnpackedExtension(opts.port, loadPath);
+  await reloadExtension(opts.port, extensionId);
   await configureApiEnvAndCleanup(opts.port, extensionId, opts.env, opts.open);
 
   const buildCommit = await getBuildCommit(opts.build);
@@ -851,6 +892,7 @@ export {
   helpText,
   sendCdpCommand,
   closeTarget,
+  reloadExtension,
   configureApiEnv,
   configureApiEnvAndCleanup,
   openOptionsPage,

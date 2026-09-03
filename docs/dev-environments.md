@@ -61,6 +61,12 @@ npm scripts(本專案 `package.json` 原文):
 
 同一個擴充 ID 不能同時從兩個未封裝路徑載入，所以切換 local ↔ staging 會換載入路徑。工具會比對「瀏覽器目前載的路徑」與「這次要載的路徑」，不同時要求重啟，並把載入路徑印進狀態橫幅。
 
+### 載入新產物後要強制重載一次
+
+把新的產物指給執行環境，不等於它真的跑新的程式碼。瀏覽器擴充這邊的具體形態是:`Extensions.loadUnpacked` 讓 Chrome 重讀了 manifest，但 service worker 用 `importScripts` 拉進來的模組吃的是腳本快取，換過 `--ref` 之後 manifest 是新的、SW 裡的模組還是舊版。這個坑安靜到會讓人以為是自己程式碼寫錯，因此載入後固定再送一次 `chrome.runtime.reload()` 把註冊重建。
+
+通則:凡是「換了產物路徑或內容」的步驟，後面就補一次該平台的強制重載，不要相信載入指令本身會連快取一起換掉。
+
 ### 切換環境必須清掉上一個環境的狀態
 
 寫入新的連線目標之前，若目前指向的是另一個環境，先清掉舊的登入憑證與同步狀態(本專案是 `storage.local` 的 `syncAuth`／`syncState`／`syncVerifiedAt`／`syncBackoff`，加上 `storage.session` 的單飛旗標、去抖、nonce)，並印一行「已切換環境，清除舊登入狀態」。
