@@ -1,6 +1,6 @@
 // test/sync.test.js — 雲端同步引擎 `sync.js`（車道 D）的行為契約，紅燈先行。
 //
-// 唯一真相源：docs/cloud-sync-plan.md 第 3 節（後端契約）、第 4 節（資料模型）、
+// 唯一真相源：docs/cloud-sync.md 第 3 節（插件端契約）、第 4 節（資料模型）、
 // 第 5 節（模組介面）、D9／D10／D12；後端形狀依 meta-link-clearer 的
 // docs/api-spec.md，由 test/helpers/mock-sync-server.js 代言（依據章節與行號見該檔）。
 //

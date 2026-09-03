@@ -24,7 +24,7 @@
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   var HISTORY_KEY = 'history';
-  // 帳號同步狀態(docs/cloud-sync-plan.md 4.2)。options 只讀 userId 判斷登入
+  // 帳號同步狀態(docs/cloud-sync.md 4.2)。options 只讀 userId 判斷登入
   // 態、只寫 clearedAt(清除全部的全域水位線)，其餘欄位由同步引擎維護。
   var SYNC_ACCOUNT_KEY = 'syncState';
   var DAY_MS = 86400000;
@@ -499,7 +499,7 @@
     };
   }
 
-  // ---- 雲端同步(車道 E，消費 docs/cloud-sync-plan.md 第 5 節的 state 形狀) ----
+  // ---- 雲端同步(車道 E，消費 docs/cloud-sync.md 第 5 節的 state 形狀) ----
 
   // state.status 的合法枚舉，逐字照文件第 5.2 節。
   var SYNC_STATUSES = ['signed_out', 'signed_in', 'syncing', 'error'];
@@ -1957,7 +1957,7 @@
                 }
                 // 線上時立刻推一次:clearedAt 只是「待送出」旗標，等下一個週期
                 // alarm 才送的話，這段空窗內寫入的新紀錄會被伺服器的 cleared_at
-                // 連坐拒收(見 docs/cloud-sync-plan.md 第 7 節風險表)。
+                // 連坐拒收(見 docs/cloud-sync.md 第 6 節已知限制)。
                 if (signedIn) sendSyncAction({ type: 'sync.now' });
                 renderAll();
                 toast(tt('opToastCleared'));

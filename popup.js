@@ -22,7 +22,7 @@
   // checkbox 的 id 與 chrome.storage.sync 的鍵同名。
   var SETTING_IDS = ['autoClean', 'postCopyEnabled'];
 
-  // ---- 雲端同步狀態列(唯讀，車道 E 消費 docs/cloud-sync-plan.md 第 5 節
+  // ---- 雲端同步狀態列(唯讀，車道 E 消費 docs/cloud-sync.md 第 5 節
   // 的 state 形狀;popup 不放登入按鈕，只讀狀態並導向 options 頁) ----
 
   var SYNC_STATUSES = ['signed_out', 'signed_in', 'syncing', 'error'];

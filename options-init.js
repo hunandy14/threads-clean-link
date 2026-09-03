@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }, 1000);
     },
     // 雲端同步(車道 E 消費、車道 D 實作 sync.js 的 runtime message 介面，
-    // 見 docs/cloud-sync-plan.md 第 5.1 節):包成 Promise<response>，用
+    // 見 docs/cloud-sync.md 第 5.1 節):包成 Promise<response>，用
     // callback + chrome.runtime.lastError 判斷而非原生 Promise 簽名，跨
     // Chrome 版本都能在「background 沒有對應 handler」時穩定退回
     // undefined，不讓未捕捉的 rejection 噴到主控台。
@@ -92,7 +92,7 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 
   // background 在雲端同步狀態變化時廣播 {type:"sync.stateChanged", state}
-  // (docs/cloud-sync-plan.md 第 5.3 節);options 頁常開時靠這個即時更新
+  // (docs/cloud-sync.md 第 5.3 節);options 頁常開時靠這個即時更新
   // 卡片，不需要輪詢 sync.getState。
   if (chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener(function (message) {

@@ -333,7 +333,7 @@ test('導航列:nav-chev 為 Lucide arrow-up-right inline SVG(↗ 開新分頁�
 });
 
 // ============================================================
-// 雲端同步狀態列(車道 E，消費 docs/cloud-sync-plan.md 第 5 節的 state
+// 雲端同步狀態列(車道 E，消費 docs/cloud-sync.md 第 5 節的 state
 // 形狀)。popup 只讀狀態、不放登入按鈕(登入在 options 頁的雲端同步卡片
 // 做)，點擊導向 options.html#cloud-sync。background 的同步引擎(車道 D)
 // 尚未實作，這裡驗證的是「runtime 缺席/回應非法都優雅退回未登入態」

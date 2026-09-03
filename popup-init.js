@@ -52,7 +52,7 @@ document.addEventListener('DOMContentLoaded', function () {
   controller.init();
 
   // background 廣播 sync.stateChanged 時即時更新狀態列(docs/
-  // cloud-sync-plan.md 第 5.3 節)，popup 每次開啟都是新分頁環境，這裡
+  // cloud-sync.md 第 5.3 節)，popup 每次開啟都是新分頁環境，這裡
   // 主要是防禦 popup 開著時 background 剛好推送。
   if (chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener(function (message) {

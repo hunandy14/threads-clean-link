@@ -1,7 +1,7 @@
 // test/history-schema.test.js — history 資料層對齊雲端 schema 的行為契約
 // （車道 C）。目標實作尚未存在，本檔為紅燈骨架。
 //
-// 規格出處（唯一真相源）：docs/cloud-sync-plan.md 第 4 節資料模型（4.1 新
+// 規格出處（唯一真相源）：docs/cloud-sync.md 第 4 節資料模型（4.1 新
 // 欄位、4.2 storage key、4.3 欄位映射）與第 2 節 D3／D4／D11。條號 S1-S6
 // 對應派工單的規格分節，每個測試頂部註解標明所測條號。
 //

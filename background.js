@@ -256,7 +256,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ------------------------------------------------------------
-// 雲端同步接線(docs/cloud-sync-plan.md 第 5 節)
+// 雲端同步接線(docs/cloud-sync.md 第 5 節)
 // ------------------------------------------------------------
 //
 // 引擎本體在 sync.js，依賴全部由這裡注入:SW 隨時被殺，引擎不能自己抓全域
@@ -1122,7 +1122,7 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   return applyHistorySchema(merged, existing, now);
 }
 
-// 雲端 schema 的七個欄位(docs/cloud-sync-plan.md 4.1)。遷移與寫入路徑共用
+// 雲端 schema 的七個欄位(docs/cloud-sync.md 4.1)。遷移與寫入路徑共用
 // 同一份清單，判斷「這筆是否已對齊」也以它為準。
 const HISTORY_SCHEMA_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverUpdatedAt', 'deletedAt'];
 

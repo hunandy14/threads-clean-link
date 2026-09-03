@@ -343,7 +343,7 @@ test('redirect:不給預期前綴時維持原行為(呼叫端自行把關)', () 
 
 // ---- exchangeWithBackend 的請求形狀 ----
 //
-// 契約見 docs/cloud-sync-plan.md 第 3 節第 1／5／12 點:POST
+// 契約見 docs/cloud-sync.md 第 3 節「登入」「帶入方式」:POST
 // /api/auth/sign-in/social、application/json、credentials:"omit"、body 為
 // { provider:"google", idToken:{ token, nonce } }。錯一項後端就回 400/415,
 // 或(credentials 沒關掉)夾帶 cookie 擴大 CSRF 風險面。

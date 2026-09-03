@@ -139,7 +139,7 @@
       opRelYesterday: '昨天',
       opRelDays: '{n} 天前',
 
-      // ---- options:雲端同步卡片(車道 E，消費 docs/cloud-sync-plan.md
+      // ---- options:雲端同步卡片(車道 E，消費 docs/cloud-sync.md
       // 第 5 節的 state 形狀;background 尚未實作前，任何無回應/形狀不對
       // 的狀態一律當 signed_out 顯示) ----
       opSyncTitle: '雲端同步',

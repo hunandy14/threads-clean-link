@@ -130,7 +130,7 @@
   // ---- 跨裝置合併鍵(postKeyOf) ----
 
   // 逐字移植自手機 C:\gitRepos\meta-link-clearer\src\lib\post-key.ts 的
-  // postKeyOf，輸入輸出與其完全等價(見 docs/cloud-sync-plan.md D11)。純函
+  // postKeyOf，輸入輸出與其完全等價(見 docs/cloud-sync.md D11)。純函
   // 式、無副作用，SW 與擴充頁共用，雲端同步以此為 history 的合併鍵，取代
   // extractPostId 只認嚴格樣式(無尾斜線/query，handle 白名單字元類)的局
   // 限。extractPostId 保留給顯示用途，行為不變。
@@ -206,7 +206,7 @@
     return urlKey(parsed);
   }
 
-  // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync-plan.md 4.2/4.3) ----
+  // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync.md 4.2/4.3) ----
 
   // chrome.storage.local.syncState 的預設形狀。欄位齊備是同步引擎的前提:
   // 少一個鍵，讀到的是 undefined 而不是 null，各處「未登入」判定會失準。

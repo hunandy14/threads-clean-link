@@ -2621,7 +2621,7 @@ test('遷移(postKeyOf):舊資料兩筆分別為「帶 query」與「m. 子網�
 // ============================================================================
 // 雲端同步的 background 訊息入口（車道 D，T6）
 //
-// 契約：docs/cloud-sync-plan.md 第 5.1／5.2 節的五個訊息，只接受本擴充自己的頁面
+// 契約：docs/cloud-sync.md 第 5.1／5.2 節的五個訊息，只接受本擴充自己的頁面
 // （`sender.id === chrome.runtime.id` 且 `sender.url` 為 `chrome-extension://<id>/`
 // 開頭）；content script 送來一律忽略。同步引擎本體在 sync.js（見 test/sync.test.js），
 // 這裡只驗路由與接線——因此注入 TCLSync 替身，不載入真的引擎。
@@ -2934,7 +2934,7 @@ test('T6 recordHistory 之後掛去抖同步(notifyRecorded)', async () => {
 });
 
 // ============================================================
-// S3:recordHistory 寫入路徑對齊雲端 schema(docs/cloud-sync-plan.md 4.1)
+// S3:recordHistory 寫入路徑對齊雲端 schema(docs/cloud-sync.md 4.1)
 // ------------------------------------------------------------
 // 新建與合併兩條路徑都必須產出帶齊七個新欄位(id/postKey/original/
 // receivedAt/dirty/serverUpdatedAt/deletedAt)的條目。合併路徑額外三條不變
