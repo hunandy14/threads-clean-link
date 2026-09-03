@@ -321,8 +321,8 @@ const syncEngine =
     : null;
 
 // options/popup → background 的五個同步訊息。登入態與雲端資料是敏感面:
-// 只接受擴充頁面(sender.id 為本擴充且沒有 tab)，content script 與其他擴充
-// 送來的一律不回應、不碰引擎。
+// 只接受本擴充自己的頁面(sender.url 是 chrome-extension://<自己的 id>/ 開頭)，
+// content script 與其他擴充送來的一律不回應、不碰引擎。
 const SYNC_MESSAGE_HANDLERS = {
   'sync.getState': (engine) => engine.getState(),
   'sync.signIn': (engine) => engine.signIn(),
@@ -331,10 +331,20 @@ const SYNC_MESSAGE_HANDLERS = {
   'sync.deleteCloud': (engine) => engine.deleteCloud(),
 };
 
+// 訊息是否來自本擴充自己的頁面(options／popup)。
+// 不能用 `!sender.tab` 當條件:manifest 的 options_ui.open_in_tab 為 true，設定頁
+// 本身就是一個分頁，sender.tab 存在，五個 sync.* 會全被擋掉。改看 sender.url 前綴
+// ——content script 的 sender.url 是它所在網頁的網址(https://www.threads.com/...)，
+// 其他擴充走的是 onMessageExternal 進不了這個 listener，兩者都構不出
+// chrome-extension://<自己的 id>/ 這個前綴。
+// 本判準假設 manifest 沒有 web_accessible_resources 與 externally_connectable；
+// 若日後新增 WAR，被網頁 iframe 的 WAR 頁面也會帶本擴充前綴，需回頭把判準收窄成
+// 具名頁面(options.html／popup.html)或改用 sender.origin。
 function isExtensionPageSender(sender) {
-  if (!sender || sender.tab) return false;
+  if (!sender) return false;
   const selfId = chrome.runtime && chrome.runtime.id;
-  return typeof selfId === 'string' && selfId !== '' && sender.id === selfId;
+  if (typeof selfId !== 'string' || selfId === '' || sender.id !== selfId) return false;
+  return typeof sender.url === 'string' && sender.url.indexOf('chrome-extension://' + selfId + '/') === 0;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
