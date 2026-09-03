@@ -7,6 +7,13 @@
 //     同一旗標重複出現時後者覆蓋前者
 //   - productionGuard:TTY/非 TTY、--yes、輸入相符/不符
 //   - localNotBuiltError:local 回傳帶 code 的「尚未建置」錯誤
+//   - sendCdpCommand:逾時會 reject，不永遠掛住
+//   - configureApiEnvAndCleanup:喚醒 SW 用的暫時分頁，--no-open 時要關掉、
+//     --open 時要沿用成 options 頁而非開兩個(用 mock CDP transport 斷言,
+//     不需要真 Chrome)
+//   - configureApiEnv:剛喚醒的 SW 在 CDP 裡處於暫停狀態(真實環境驗證發現
+//     的 bug，不送 Runtime.runIfWaitingForDebugger 就會卡死)要先解除暫停;
+//     失敗路徑(如逾時)也要把喚醒分頁關掉，不能只有成功路徑會清
 // 另外靜態檢查 package.json 的 scripts 清單，以及沿用 test/package.test.js
 // 既有邏輯確認打包白名單不誤收 docs/、test/、package.json。
 'use strict';
@@ -192,4 +199,225 @@ test('打包白名單:不收 docs/、test/、package.json', () => {
   assert.ok(!included.includes('package.json'));
   assert.ok(!included.some((f) => f.startsWith('docs/')));
   assert.ok(!included.some((f) => f.startsWith('test/')));
+});
+
+// ---- mock CDP transport(給 configureApiEnvAndCleanup / sendCdpCommand 用) ----
+//
+// dev-browser.mjs 對 CDP 只透過全域 fetch(HTTP 端:/json、/json/version、
+// /json/new)與全域 WebSocket(每個 target 自己的 debugger endpoint)溝通，
+// 兩者都是呼叫當下才查找的全域，不是 import 時就綁死——測試可以整個蓋掉，
+// 不需要真 Chrome。
+
+function createMockCdp({ port, extensionId }) {
+  const browserWsUrl = `ws://mock-browser:${port}`;
+  const swWsUrl = `ws://mock-sw:${port}`;
+  let targets = [];
+  let nextWakeId = 1;
+  let newTargetCalls = 0;
+  const closedTargetIds = [];
+  // 真實 Chrome 對「剛啟動」的 service worker 會暫停等除錯器接手，直到收到
+  // Runtime.runIfWaitingForDebugger 才會處理其他指令(含 Runtime.evaluate)；
+  // 這裡用一個旗標模擬同一份行為，讓測試能重現「不送這道指令就永遠卡住」。
+  let swPaused = false;
+
+  function swTarget() {
+    return {
+      id: 'sw-1',
+      type: 'service_worker',
+      url: `chrome-extension://${extensionId}/background.js`,
+      webSocketDebuggerUrl: swWsUrl,
+    };
+  }
+
+  class MockWebSocket {
+    constructor(wsUrl) {
+      this.url = wsUrl;
+      this.listeners = {};
+      queueMicrotask(() => this._emit('open'));
+    }
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    }
+    send(raw) {
+      const msg = JSON.parse(raw);
+
+      if (this.url === swWsUrl) {
+        if (msg.method === 'Runtime.runIfWaitingForDebugger') {
+          swPaused = false;
+          queueMicrotask(() =>
+            this._emit('message', { data: JSON.stringify({ id: msg.id, result: {} }) })
+          );
+          return;
+        }
+        if (swPaused) {
+          // 暫停狀態下，其他指令(尤其 Runtime.evaluate)一律不回覆——這正是
+          // 真實 Chrome 卡住的行為，靠呼叫端先解除暫停才不會撞上。
+          return;
+        }
+      }
+
+      let result = {};
+      if (msg.method === 'Target.closeTarget') {
+        const targetId = msg.params.targetId;
+        closedTargetIds.push(targetId);
+        targets = targets.filter((t) => t.id !== targetId);
+        result = { success: true };
+      }
+      // Runtime.evaluate 等其他 method 一律回空 result，測試不關心其回傳值。
+      queueMicrotask(() =>
+        this._emit('message', { data: JSON.stringify({ id: msg.id, result }) })
+      );
+    }
+    close() {}
+    _emit(type, evt = {}) {
+      (this.listeners[type] || []).forEach((fn) => fn(evt));
+    }
+  }
+
+  async function fetchImpl(url) {
+    const u = new URL(url);
+    if (u.pathname === '/json/version') {
+      return { ok: true, json: async () => ({ webSocketDebuggerUrl: browserWsUrl }) };
+    }
+    if (u.pathname === '/json/new') {
+      newTargetCalls++;
+      const id = `wake-${nextWakeId++}`;
+      const target = {
+        id,
+        type: 'page',
+        url: decodeURIComponent(u.search.slice(1)),
+        webSocketDebuggerUrl: `ws://mock-page:${id}`,
+      };
+      targets.push(target);
+      // mock 簡化:喚醒分頁一開就視為 SW 隨即上線(剛啟動、處於暫停狀態)，
+      // 不模擬真正的載入延遲(真實流程裡 wakeServiceWorker 本來就是輪詢等它
+      // 出現)。
+      if (!targets.some((t) => t.type === 'service_worker')) {
+        targets.push(swTarget());
+        swPaused = true;
+      }
+      return { ok: true, json: async () => target };
+    }
+    if (u.pathname === '/json') {
+      return { ok: true, json: async () => targets };
+    }
+    throw new Error(`mock fetch 未處理的路徑:${u.pathname}`);
+  }
+
+  return {
+    fetchImpl,
+    WebSocketImpl: MockWebSocket,
+    closedTargetIds,
+    get newTargetCalls() {
+      return newTargetCalls;
+    },
+    get targets() {
+      return targets;
+    },
+    get swPaused() {
+      return swPaused;
+    },
+  };
+}
+
+let originalFetch;
+let originalWebSocket;
+
+test.beforeEach(() => {
+  originalFetch = global.fetch;
+  originalWebSocket = global.WebSocket;
+});
+
+test.afterEach(() => {
+  global.fetch = originalFetch;
+  global.WebSocket = originalWebSocket;
+});
+
+test('configureApiEnvAndCleanup:--no-open 時，喚醒 SW 用的暫時分頁要關掉(回歸:曾經只喚醒不關閉)', async () => {
+  const port = 9401;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.configureApiEnvAndCleanup(port, extensionId, 'staging', false);
+
+  assert.equal(mock.closedTargetIds.length, 1, '應該關閉恰好一個 target');
+  assert.equal(mock.closedTargetIds[0], 'wake-1', '關閉的應是喚醒用的暫時分頁');
+  assert.ok(
+    !mock.targets.some((t) => t.id === 'wake-1'),
+    '關閉後 /json 清單裡不該再看到喚醒用的暫時分頁'
+  );
+});
+
+test('configureApiEnvAndCleanup:open 時，沿用喚醒分頁當 options 頁，不重開第二個', async () => {
+  const port = 9402;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.configureApiEnvAndCleanup(port, extensionId, 'staging', true);
+
+  assert.equal(mock.closedTargetIds.length, 0, 'open 時不該關閉喚醒用的分頁');
+  assert.equal(
+    mock.newTargetCalls,
+    1,
+    'openOptionsPage 應偵測到既有分頁，不再呼叫 /json/new 開第二個'
+  );
+});
+
+test('configureApiEnv:剛喚醒的 SW 處於 CDP 暫停狀態時，會先解除暫停再 evaluate，不會卡住(現場驗證發現的真實 bug)', async () => {
+  const port = 9403;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  const wakeTargetId = await devBrowser.configureApiEnv(port, extensionId, 'staging');
+
+  assert.equal(wakeTargetId, 'wake-1', 'SW 原本未上線，這次呼叫應該喚醒過一個暫時分頁');
+  assert.equal(mock.swPaused, false, 'configureApiEnv 完成時，SW 的暫停狀態應該已經解除');
+});
+
+test('configureApiEnv:失敗時(例如 Runtime.evaluate 逾時)也要把喚醒用的暫時分頁關掉，不留下垃圾分頁', async () => {
+  const port = 9404;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId });
+  // 讓 SW 永遠回不了任何指令(不只是暫停)，模擬 Runtime.evaluate 逾時失敗。
+  const originalSend = mock.WebSocketImpl.prototype.send;
+  mock.WebSocketImpl.prototype.send = function stuckSend(raw) {
+    const msg = JSON.parse(raw);
+    if (this.url === `ws://mock-sw:${port}` && msg.method !== 'Target.closeTarget') return;
+    return originalSend.call(this, raw);
+  };
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await assert.rejects(() => devBrowser.configureApiEnv(port, extensionId, 'staging', 50));
+});
+
+test('sendCdpCommand:逾時會 reject，不會永遠掛住', async () => {
+  class NeverRespondWebSocket {
+    constructor() {
+      this.listeners = {};
+      queueMicrotask(() => this._emit('open'));
+    }
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    }
+    send() {
+      // 故意不回覆，模擬對端卡住不回應。
+    }
+    close() {}
+    _emit(type, evt = {}) {
+      (this.listeners[type] || []).forEach((fn) => fn(evt));
+    }
+  }
+  global.WebSocket = NeverRespondWebSocket;
+
+  await assert.rejects(
+    () => devBrowser.sendCdpCommand('ws://mock-stuck', 'Runtime.evaluate', {}, 50),
+    /逾時/
+  );
 });

@@ -297,9 +297,13 @@ async function ensureChromeRunning(opts) {
   console.log('Chrome 已啟動，CDP 就緒。');
 }
 
+const CDP_COMMAND_TIMEOUT_MS = 10000;
+
 // 對指定的 CDP WebSocket endpoint(browser 層級或單一 target 自己的
 // webSocketDebuggerUrl)開一條連線，送出一個指令並等對應 id 的回覆，然後關閉。
-function sendCdpCommand(wsUrl, method, params) {
+// WebSocket 開了但對端不回覆(target 已消失、CDP 卡住)時，逾時強制 reject,
+// 不讓呼叫端永遠掛住。
+function sendCdpCommand(wsUrl, method, params, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     const id = Math.floor(Math.random() * 1e9);
@@ -308,6 +312,7 @@ function sendCdpCommand(wsUrl, method, params) {
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       try {
         ws.close();
       } catch {
@@ -315,6 +320,10 @@ function sendCdpCommand(wsUrl, method, params) {
       }
       fn(value);
     };
+
+    const timer = setTimeout(() => {
+      finish(reject, new Error(`${method} 逾時:${timeoutMs}ms 內未收到回覆`));
+    }, timeoutMs);
 
     ws.addEventListener('open', () => {
       ws.send(JSON.stringify({ id, method, params }));
@@ -393,28 +402,81 @@ async function wakeServiceWorker(port, extensionId) {
 // 不需要額外走 Target.attachToTarget(每個 target 在 /json 裡自帶專屬 debugger
 // endpoint，連上去即等同已 attach)。env 只會是 staging 或 production——local
 // 在 main() 更早就已經擋下，不會流到這裡。
-async function configureApiEnv(port, extensionId, env) {
+//
+// 回傳值:若本次為了喚醒 SW 開了暫時分頁，回傳該分頁的 target id,讓呼叫端
+// 決定是收尾關掉(--no-open)還是沿用成 options 頁;SW 原本就在線則回傳
+// undefined。
+async function configureApiEnv(port, extensionId, env, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
   let sw = await findServiceWorkerTarget(port, extensionId);
+  let wakeTargetId;
   if (!sw) {
     console.log('擴充 service worker 尚未上線，開啟 options 頁喚醒 ...');
-    ({ sw } = await wakeServiceWorker(port, extensionId));
+    ({ sw, wakeTargetId } = await wakeServiceWorker(port, extensionId));
   }
 
-  const expression =
-    env === 'production'
-      ? "chrome.storage.local.remove('syncApiBase')"
-      : `chrome.storage.local.set({syncApiBase: ${JSON.stringify(API_BASE[env])}})`;
+  try {
+    // CDP 對「剛啟動」的 service worker 預設會暫停等除錯器接手(即使沒人真
+    // 的要下中斷點)，之後送的指令(含 Runtime.evaluate)全部卡在佇列裡，直到
+    // 收到 Runtime.runIfWaitingForDebugger 才會繼續執行——這是 sendCdpCommand
+    // 逐次開關連線也不受影響的目標層級狀態，對「原本就在線」的 SW 呼叫則是
+    // 無害的 no-op，因此不論是否剛喚醒都送一次。
+    await sendCdpCommand(sw.webSocketDebuggerUrl, 'Runtime.runIfWaitingForDebugger', {}, timeoutMs);
 
-  await sendCdpCommand(sw.webSocketDebuggerUrl, 'Runtime.evaluate', {
-    expression: `(async () => { ${expression}; })()`,
-    awaitPromise: true,
-  });
+    const expression =
+      env === 'production'
+        ? "chrome.storage.local.remove('syncApiBase')"
+        : `chrome.storage.local.set({syncApiBase: ${JSON.stringify(API_BASE[env])}})`;
 
-  console.log(
-    env === 'production'
-      ? '已設定 API 環境:production(移除 syncApiBase，使用預設值)'
-      : `已設定 API 環境:staging(${API_BASE.staging})`
-  );
+    await sendCdpCommand(
+      sw.webSocketDebuggerUrl,
+      'Runtime.evaluate',
+      { expression: `(async () => { ${expression}; })()`, awaitPromise: true },
+      timeoutMs
+    );
+
+    console.log(
+      env === 'production'
+        ? '已設定 API 環境:production(移除 syncApiBase，使用預設值)'
+        : `已設定 API 環境:staging(${API_BASE.staging})`
+    );
+  } catch (err) {
+    // 喚醒後的步驟失敗，暫時分頁沒人會再用到，盡量收尾關掉，不讓錯誤路徑
+    // 也洩漏分頁;關閉本身失敗就算了，不能蓋掉原本的錯誤。
+    if (wakeTargetId) {
+      await closeTarget(port, wakeTargetId).catch(() => {});
+    }
+    throw err;
+  }
+
+  return wakeTargetId;
+}
+
+// 關閉指定的 CDP target(走 browser 層級連線送 Target.closeTarget)。用於
+// 收掉 wakeServiceWorker 開的暫時分頁——不關的話 --no-open 形同虛設，CDP
+// 的 /json 清單會一直多一個分頁。
+async function closeTarget(port, targetId) {
+  const version = await cdpVersion(port);
+  await sendCdpCommand(version.webSocketDebuggerUrl, 'Target.closeTarget', { targetId });
+}
+
+// configureApiEnv 之後的收尾:
+//   - open === true:照常開 options 頁。若本次喚醒 SW 已經開了一個
+//     options.html 分頁，openOptionsPage 會在 /json 清單裡找到它並直接
+//     沿用，不會重複開兩個。
+//   - open === false:不開頁。若本次為了喚醒 SW 開了暫時分頁，用完即關,
+//     維持「不開頁就不留任何多的分頁」的承諾。
+async function configureApiEnvAndCleanup(port, extensionId, env, open) {
+  const wakeTargetId = await configureApiEnv(port, extensionId, env);
+
+  if (open) {
+    await openOptionsPage(port, extensionId);
+    return;
+  }
+
+  if (wakeTargetId) {
+    await closeTarget(port, wakeTargetId);
+    console.log('已關閉喚醒 service worker 用的暫時分頁。');
+  }
 }
 
 async function openOptionsPage(port, extensionId) {
@@ -516,11 +578,7 @@ async function main() {
   await ensureChromeRunning(opts);
 
   const extensionId = await loadUnpackedExtension(opts.port, opts.build);
-  await configureApiEnv(opts.port, extensionId, opts.env);
-
-  if (opts.open) {
-    await openOptionsPage(opts.port, extensionId);
-  }
+  await configureApiEnvAndCleanup(opts.port, extensionId, opts.env, opts.open);
 
   const buildCommit = await getBuildCommit(opts.build);
   printBanner({
@@ -563,10 +621,16 @@ export {
   API_BASE,
   DEFAULT_PORT,
   FRESH_DEFAULT_PORT,
+  CDP_COMMAND_TIMEOUT_MS,
   resolveEnv,
   parseArgs,
   productionGuard,
   localNotBuiltError,
   freshProfileDir,
   helpText,
+  sendCdpCommand,
+  closeTarget,
+  configureApiEnv,
+  configureApiEnvAndCleanup,
+  openOptionsPage,
 };
