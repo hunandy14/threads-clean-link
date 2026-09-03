@@ -335,6 +335,10 @@
       return {
         status: statusOverride || statusOf(ctx),
         email: ctx.state.email,
+        // D15:帳號入口顯示用，已經過 tcl-core.js 的 sanitize 把關(見
+        // finishSignIn／runVerify),UI 端不必再驗一次。
+        displayName: ctx.state.displayName,
+        avatarUrl: ctx.state.avatarUrl,
         lastSyncedAt: ctx.state.lastSyncedAt,
         pendingCount: pending,
         lastError: ctx.state.lastError,
@@ -836,6 +840,16 @@
       var user = (exchange.body && exchange.body.user) || {};
       var userId = typeof user.id === 'string' ? user.id : null;
       var email = typeof user.email === 'string' ? user.email : result.email || null;
+      // D15 來源優先序:後端 sign-in/social 回應的 user.name／user.image 優
+      // 先;缺席才退回 id_token payload(result.payload)的 name／picture。
+      // payload 由 auth.js 驗過 aud／nonce／iss／exp，是這次登入唯一另一個
+      // 可信來源。兩欄一律經 sanitize 把關才落地(80 字元上限／
+      // googleusercontent.com 白名單)。
+      var claims = (result && result.payload) || {};
+      var rawName = typeof user.name === 'string' ? user.name : claims.name;
+      var rawAvatar = typeof user.image === 'string' ? user.image : claims.picture;
+      var displayName = TCLCoreRef.sanitizeDisplayName(rawName);
+      var avatarUrl = TCLCoreRef.sanitizeAvatarUrl(rawAvatar);
       // 帳號切換:上一位使用者的雲端鏡像欄位對新帳號毫無意義，全部重置成
       // 「本機新資料」，由這次登入重新全量上傳(比照手機端 active-owner)。
       var switched = ctx.state.userId !== null && userId !== null && ctx.state.userId !== userId;
@@ -845,7 +859,7 @@
           return saveToken(exchange.authToken);
         })
         .then(function () {
-          return saveState({ userId: userId, email: email });
+          return saveState({ userId: userId, email: email, displayName: displayName, avatarUrl: avatarUrl });
         })
         .then(function () {
           alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
@@ -932,6 +946,11 @@
           var user = payload.user || {};
           if (typeof user.id === 'string') ctx.state.userId = user.id;
           if (typeof user.email === 'string') ctx.state.email = user.email;
+          // D15:驗 token 時用 get-session 回應更新一次。只在後端這次真的帶
+          // 了該欄位才覆寫，缺席就沿用既有值(id_token 只在登入當下拿得到，
+          // 這裡沒有第二個來源可退)。
+          if (typeof user.name === 'string') ctx.state.displayName = TCLCoreRef.sanitizeDisplayName(user.name);
+          if (typeof user.image === 'string') ctx.state.avatarUrl = TCLCoreRef.sanitizeAvatarUrl(user.image);
           return saveState(ctx.state).then(function () {
             return broadcastState();
           });
@@ -1029,6 +1048,11 @@
             ctx.state.cursor = null;
             ctx.state.clearedAt = null;
             ctx.state.lastError = null;
+            // D15:使用者主動刪雲端資料是明確的隱私動作，即便帳號仍保持登入
+            // (userId／email 不動)，快取的名字與大頭照也一併清空，不留在本
+            // 機造成「資料已刪但畫面還秀著」的錯覺。
+            ctx.state.displayName = null;
+            ctx.state.avatarUrl = null;
             return saveState(ctx.state);
           })
           .then(function () {

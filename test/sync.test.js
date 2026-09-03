@@ -229,11 +229,21 @@ function createAuthMock(server, opts = {}) {
     signInWithGoogle(options) {
       calls.signIn.push(options);
       if (opts.signInError) return Promise.reject(opts.signInError);
+      const email = opts.email || 'someone@example.com';
+      // D15（車道 A）：id_token payload 的 name／picture 是後端缺席時的退回
+      // 來源。顯式傳 `payloadName: null` / `payloadPicture: null` 表示這枚
+      // id_token 完全沒有該 claim，省略則用假值，供「payload 備援」與「白
+      // 名單拒絕」兩類測試覆寫。
+      const payload = { sub: 'user-abc', email: email };
+      if (opts.payloadName !== null) payload.name = opts.payloadName || 'Fake Payload Name';
+      if (opts.payloadPicture !== null) {
+        payload.picture = opts.payloadPicture || 'https://lh3.googleusercontent.com/a/fake-payload-avatar';
+      }
       return Promise.resolve({
         idToken: opts.idToken || 'fake.id.token',
         nonce: opts.nonce || 'nonce-from-auth',
-        email: opts.email || 'someone@example.com',
-        payload: { sub: 'user-abc', email: opts.email || 'someone@example.com' },
+        email: email,
+        payload: payload,
       });
     },
     exchangeWithBackend(options) {
@@ -535,6 +545,140 @@ test('T2 signIn：userId／email 寫入 syncState 並廣播 stateChanged', async
   assert.equal(env.storage.syncState().userId, 'user-abc');
   assert.ok(env.stateBroadcasts().length >= 1, '登入後必須廣播 sync.stateChanged');
   assert.equal(env.lastState().email, 'someone@example.com');
+});
+
+// ---- D15（車道 A）：syncState 記錄名字與大頭照，供設定頁頭首帳號入口使用 ----
+
+test('T2 signIn：後端 sign-in 回應的 user.name／user.image 寫入 syncState 與 state（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv();
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle();
+
+  assert.equal(env.storage.syncState().displayName, 'Fake User');
+  assert.equal(env.storage.syncState().avatarUrl, 'https://lh3.googleusercontent.com/a/fake-mock-user');
+  // 計劃 5.2 的 state 形狀同樣要帶這兩欄，車道 B 的 UI 才讀得到。
+  assert.equal(env.lastState().displayName, 'Fake User');
+  assert.equal(env.lastState().avatarUrl, 'https://lh3.googleusercontent.com/a/fake-mock-user');
+  const state = await engine.getState();
+  assert.equal(state.displayName, 'Fake User');
+  assert.equal(state.avatarUrl, 'https://lh3.googleusercontent.com/a/fake-mock-user');
+});
+
+test('T2 signIn：displayName 去頭尾空白、上限 80 字元（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ server: { name: '  Alice  ' } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle();
+
+  assert.equal(env.storage.syncState().displayName, 'Alice');
+});
+
+test('T2 signIn：後端缺 user.name／user.image 時退回 id_token payload 的 name／picture（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ server: { name: null, image: null } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle();
+
+  assert.equal(env.storage.syncState().displayName, 'Fake Payload Name', '退回 id_token payload 的 name claim');
+  assert.equal(
+    env.storage.syncState().avatarUrl,
+    'https://lh3.googleusercontent.com/a/fake-payload-avatar',
+    '退回 id_token payload 的 picture claim'
+  );
+});
+
+test('T2 signIn：avatarUrl 不在 googleusercontent.com 白名單時存 null（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ server: { image: 'https://evil.example.com/avatar.png' } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle();
+
+  assert.equal(env.storage.syncState().avatarUrl, null, '白名單外的網址一律拒收，不落地');
+  assert.equal(env.storage.syncState().displayName, 'Fake User', 'displayName 不受 avatarUrl 白名單影響');
+});
+
+test('T2 verifySession：get-session 回應更新 displayName／avatarUrl（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    syncState: { displayName: 'Old Name', avatarUrl: 'https://lh3.googleusercontent.com/a/old' },
+    server: { name: 'New Name', image: 'https://lh3.googleusercontent.com/a/new' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.verifySession();
+  await settle();
+
+  const state = await engine.getState();
+  assert.equal(state.displayName, 'New Name');
+  assert.equal(state.avatarUrl, 'https://lh3.googleusercontent.com/a/new');
+});
+
+test('T2 verifySession：get-session 缺 name／image 時保留既有值（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    syncState: { displayName: 'Old Name', avatarUrl: 'https://lh3.googleusercontent.com/a/old' },
+    server: { name: null, image: null },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.verifySession();
+  await settle();
+
+  const state = await engine.getState();
+  assert.equal(state.displayName, 'Old Name', '後端沒帶這個欄位就不覆寫既有值');
+  assert.equal(state.avatarUrl, 'https://lh3.googleusercontent.com/a/old');
+});
+
+test('T2 signOut：displayName／avatarUrl 隨 syncState 清空（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    syncState: { displayName: 'Alice', avatarUrl: 'https://lh3.googleusercontent.com/a/alice' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.signOut();
+  await settle();
+
+  assert.equal(env.storage.syncState().displayName, null);
+  assert.equal(env.storage.syncState().avatarUrl, null);
+});
+
+test('T2 任何 API 回 401：displayName／avatarUrl 隨 syncState 清空（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    history: [entry()],
+    syncState: { displayName: 'Alice', avatarUrl: 'https://lh3.googleusercontent.com/a/alice' },
+  });
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.equal(env.storage.syncState().displayName, null, 'session 過期視同登出，清空顯示用欄位');
+  assert.equal(env.storage.syncState().avatarUrl, null);
+});
+
+test('T6 deleteCloud：displayName／avatarUrl 清空，但 userId／email 保留（D15）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    syncState: { displayName: 'Alice', avatarUrl: 'https://lh3.googleusercontent.com/a/alice' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.deleteCloud();
+  await settle();
+
+  const state = env.storage.syncState();
+  assert.equal(state.displayName, null, '刪雲端資料是明確的隱私動作，快取的名字也要清');
+  assert.equal(state.avatarUrl, null);
+  assert.equal(state.userId, 'user-abc', '刪雲端資料不等於登出，帳號仍保持登入');
+  assert.equal(state.email, 'someone@example.com');
 });
 
 test('T2 signIn：nonce 落 chrome.storage.session，並與送給後端的 nonce 一致', async () => {
@@ -1547,6 +1691,9 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
 
   assert.deepEqual(Object.keys(state).sort(), [
     'apiBase',
+    // D15（車道 A）：帳號入口顯示用，見上方 signIn／verifySession 相關測試。
+    'avatarUrl',
+    'displayName',
     'email',
     'lastError',
     'lastSyncedAt',
