@@ -22,8 +22,12 @@
 //     失敗路徑(如逾時)也要把喚醒分頁關掉，不能只有成功路徑會清;切換環境
 //     時要在寫入新 apiBase 之前清掉舊環境的登入與同步狀態
 //   - resolveBackendDir／backendStartPlan／parsePidFile／killTreeCommand:
-//     --env local 自動帶起本機後端的純函式決策(目錄解析、要不要啟動、
-//     PID 檔解析、依平台選關閉行程樹的方式)
+//     --env local 自動帶起本機後端的純函式決策(目錄解析——含 TCL_API_LOCAL_DIR
+//     相對路徑經 path.resolve() 解析成絕對路徑、要不要啟動、PID 檔解析——
+//     含超出合法 PID 上界一律回 null、依平台選關閉行程樹的方式)
+//   - isProcessNotFoundError:區分 killTreeRunner 的例外是「行程本來就不
+//     存在」(win32 訊息含 not found／ERROR: The process，其他平台 ESRCH)
+//     還是真正的失敗(例如權限不足)，後者不能被靜默吞掉當成功
 //   - resolveBackendSpawnTarget:win32 上 npm 是 .cmd，直接 spawn 需要
 //     shell:true，但那疊加 detached:true 時 log 檔會是空的(現場實測發現
 //     的真實 bug，見函式註解)——找得到 npm-cli.js 就改用 node.exe 直接
@@ -33,7 +37,9 @@
 //     (win32 找得到／找不到 npm-cli.js 兩種、非 win32 一種)、逾時要清 log
 //     尾段並殺掉剛起的行程樹
 //   - stopBackend:--stop-backend 的三種狀態(有 PID 檔、無 PID 檔且埠仍活著、
-//     無 PID 檔且埠已死)，以及殺行程樹本身失敗(行程早已不存在)不中斷收尾
+//     無 PID 檔且埠已死)，以及殺行程樹失敗時依 isProcessNotFoundError 分流
+//     ——行程本來就不存在則不中斷、照樣清 PID 檔收尾;真正失敗(權限不足等)
+//     則回 kill-failed、保留 PID 檔、不靜默當成功
 // 另外靜態檢查 package.json 的 scripts 清單，以及沿用 test/package.test.js
 // 既有邏輯確認打包白名單不誤收 docs/、test/、package.json。
 'use strict';
@@ -864,6 +870,20 @@ test('resolveBackendDir:TCL_API_LOCAL_DIR 有值時優先採用，空白視同�
   );
 });
 
+test('resolveBackendDir:TCL_API_LOCAL_DIR 是相對路徑時，經 path.resolve() 解析成絕對路徑(與 --build 的路徑處理一致)', () => {
+  const home = path.join('C:', 'Users', 'someone');
+  const relative = path.join('..', 'custom-api-local', 'api');
+  const resolved = devBrowser.resolveBackendDir({ TCL_API_LOCAL_DIR: relative }, home);
+
+  assert.equal(
+    resolved,
+    path.resolve(relative),
+    '相對路徑應該被解析成相對於目前工作目錄的絕對路徑'
+  );
+  assert.notEqual(resolved, relative, '不能原樣回傳沒解析過的相對路徑');
+  assert.ok(path.isAbsolute(resolved), '結果必須是絕對路徑');
+});
+
 // ---- backendStartPlan ----
 
 test('backendStartPlan:健康時跳過，理由 healthy，不查目錄', () => {
@@ -934,6 +954,20 @@ test('parsePidFile:合法正整數字串回數字(含前後空白／換行)，�
   assert.equal(devBrowser.parsePidFile('-5'), null, '負數不是合法 PID');
   assert.equal(devBrowser.parsePidFile('0'), null, '0 不是合法 PID');
   assert.equal(devBrowser.parsePidFile('12.5'), null, '非整數不是合法 PID');
+});
+
+test('parsePidFile:超出合法 PID 上界一律回 null，PID 檔壞掉不會被當成真 PID 拿去殺行程', () => {
+  assert.equal(devBrowser.parsePidFile(String(devBrowser.MAX_PID)), devBrowser.MAX_PID, '上界本身仍合法');
+  assert.equal(
+    devBrowser.parsePidFile('4294967296'),
+    null,
+    '2^32，超過 32 位元帶號整數上限，不是合法 PID'
+  );
+  assert.equal(
+    devBrowser.parsePidFile('99999999999999999999999'),
+    null,
+    '遠超 Number.isSafeInteger 範圍，PID 檔寫壞成這樣也不能放行'
+  );
 });
 
 // ---- killTreeCommand／runKillTree ----
@@ -1357,7 +1391,7 @@ test('stopBackend:殺完行程樹但埠遲遲不放，逾時回 stop-timeout', a
   assert.deepEqual(result, { status: 'stop-timeout', pid: 999 });
 });
 
-test('stopBackend:killTreeRunner 失敗(行程早已不存在)時不中斷，照樣清 PID 檔並回 stopped', async () => {
+test('stopBackend:killTreeRunner 失敗且是「行程本來就不存在」(win32 taskkill 訊息含 not found)時不中斷，照樣清 PID 檔並回 stopped', async () => {
   const unlinkCalls = [];
   const result = await devBrowser.stopBackend({
     pidPath: '/tmp/api-local.pid',
@@ -1367,11 +1401,99 @@ test('stopBackend:killTreeRunner 失敗(行程早已不存在)時不中斷，照
       readFileSyncFn: () => '123',
       unlinkSyncFn: (p) => unlinkCalls.push(p),
       isPortOpenFn: async () => false,
+      platformFn: () => 'win32',
       killTreeRunner: async () => {
-        throw new Error('行程不存在');
+        throw new Error('ERROR: The process "123" not found.');
       },
     },
   });
   assert.deepEqual(result, { status: 'stopped', pid: 123 });
   assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid']);
+});
+
+test('stopBackend:killTreeRunner 失敗且不是「行程本來就不存在」時(例如權限不足)，回 kill-failed 並保留 PID 檔，不靜默當成功', async () => {
+  const unlinkCalls = [];
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '123',
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      isPortOpenFn: async () => true,
+      platformFn: () => 'win32',
+      killTreeRunner: async () => {
+        throw new Error('ERROR: Access is denied.');
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'kill-failed', pid: 123, error: 'ERROR: Access is denied.' });
+  assert.deepEqual(unlinkCalls, [], '殺不掉就不該刪 PID 檔，刪了會讓下一次 --stop-backend 誤判成已經沒在跑');
+});
+
+test('stopBackend:非 win32 平台 killTreeRunner 丟 ESRCH 時視為行程本來就不存在，照樣回 stopped', async () => {
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '456',
+      unlinkSyncFn: () => {},
+      isPortOpenFn: async () => false,
+      platformFn: () => 'linux',
+      killTreeRunner: async () => {
+        const err = new Error('kill ESRCH');
+        err.code = 'ESRCH';
+        throw err;
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'stopped', pid: 456 });
+});
+
+test('stopBackend:非 win32 平台 killTreeRunner 丟非 ESRCH 錯誤時(例如 EPERM)，回 kill-failed', async () => {
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '456',
+      unlinkSyncFn: () => {},
+      isPortOpenFn: async () => true,
+      platformFn: () => 'linux',
+      killTreeRunner: async () => {
+        const err = new Error('kill EPERM');
+        err.code = 'EPERM';
+        throw err;
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'kill-failed', pid: 456, error: 'kill EPERM' });
+});
+
+// ---- isProcessNotFoundError(純函式) ----
+
+test('isProcessNotFoundError:win32 訊息含 not found 或 ERROR: The process 時視為行程不存在', () => {
+  assert.equal(
+    devBrowser.isProcessNotFoundError(new Error('ERROR: The process "123" not found.'), 'win32'),
+    true
+  );
+  assert.equal(
+    devBrowser.isProcessNotFoundError(new Error('some prefix ERROR: The process blah'), 'win32'),
+    true
+  );
+  assert.equal(
+    devBrowser.isProcessNotFoundError(new Error('ERROR: Access is denied.'), 'win32'),
+    false,
+    '權限不足不是行程不存在'
+  );
+  assert.equal(devBrowser.isProcessNotFoundError(null, 'win32'), false, '沒有例外物件時保守回 false');
+});
+
+test('isProcessNotFoundError:非 win32 用例外的 code === ESRCH 判斷', () => {
+  const esrch = Object.assign(new Error('no such process'), { code: 'ESRCH' });
+  const eperm = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+  assert.equal(devBrowser.isProcessNotFoundError(esrch, 'linux'), true);
+  assert.equal(devBrowser.isProcessNotFoundError(eperm, 'linux'), false);
+  assert.equal(devBrowser.isProcessNotFoundError(esrch, 'darwin'), true);
 });

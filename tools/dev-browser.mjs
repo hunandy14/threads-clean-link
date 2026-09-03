@@ -243,10 +243,12 @@ async function probeHealth(apiBase, timeoutMs = HEALTH_TIMEOUT_MS) {
 // 純函式:後端目錄的解析順序——環境變數 TCL_API_LOCAL_DIR 優先(跨 repo 的
 // 後端路徑本來就因人而異，不該寫死)，否則預設 ~/.threads-clean-link/api-local/api。
 // env 與 home 由呼叫端注入(process.env、homedir())，方便測試不必真的設
-// 環境變數或動使用者家目錄。
+// 環境變數或動使用者家目錄。TCL_API_LOCAL_DIR 的值經 path.resolve()，與
+// --build 相關路徑的處理一致——相對路徑(例如 '../api-local/api')會被解析成
+// 相對於目前工作目錄的絕對路徑，之後不管以哪個 cwd 執行本腳本都不跑位。
 function resolveBackendDir(env, home) {
   const override = env && typeof env.TCL_API_LOCAL_DIR === 'string' ? env.TCL_API_LOCAL_DIR.trim() : '';
-  if (override) return override;
+  if (override) return path.resolve(override);
   return path.join(home, '.threads-clean-link', 'api-local', 'api');
 }
 
@@ -260,11 +262,15 @@ function backendStartPlan({ healthy, noBackend, dirExists, pkgJsonExists, backen
   return { action: 'start', command: 'npm', args: ['run', 'dev'], cwd: backendDir };
 }
 
-// 純函式:解析 PID 檔內容。格式不合法(非數字、非正整數)一律回 null，交由
-// 呼叫端當成「PID 檔壞掉／不存在」處理，不丟例外。
+// 純函式:解析 PID 檔內容。格式不合法(非數字、非正整數、超出合法 PID 上界)
+// 一律回 null，交由呼叫端當成「PID 檔壞掉／不存在」處理，不丟例外。上界取
+// 2147483647(32 位元帶號整數上限，Windows／Linux 的 PID 都不會超過這個
+// 範圍)——沒有這道上界檢查，PID 檔若被寫壞成超大數字，會被當成合法 PID
+// 一路傳進 taskkill／process.kill，行為未定義。
+const MAX_PID = 2147483647;
 function parsePidFile(content) {
   const n = Number(String(content).trim());
-  return Number.isInteger(n) && n > 0 ? n : null;
+  return Number.isSafeInteger(n) && n > 0 && n <= MAX_PID ? n : null;
 }
 
 // 純函式:依平台決定關閉行程樹的方式。Windows 用 taskkill /T 連子行程一起
@@ -454,6 +460,23 @@ async function ensureLocalBackend({ apiBase, noBackend, backendDir, logPath, pid
   return { status: 'timeout', log: logPath, tail, pid: child.pid };
 }
 
+// 純函式:判斷 killTreeRunner 丟出的例外是不是「行程本來就不存在」。這種
+// 不算失敗——目標早就死透了，「後端不在跑」這個目的已經達成，繼續收尾即可;
+// 真正的失敗(例如權限不足、taskkill 找不到可執行檔)不能被靜默吞掉當成功，
+// 得讓呼叫端知道並非 0 退出。
+//
+// win32 的 taskkill 對「PID 不存在」印的訊息含 "not found" 或
+// "ERROR: The process"(依語系與 Windows 版本用字略有差異，兩種都比對)；
+// 其他平台 process.kill 對不存在的 pid 丟的例外 code 是 ESRCH。
+function isProcessNotFoundError(err, plat) {
+  if (!err) return false;
+  if (plat === 'win32') {
+    const text = `${err.message || ''} ${err.stderr || ''} ${err.stdout || ''}`;
+    return /not found|ERROR: The process/i.test(text);
+  }
+  return err.code === 'ESRCH';
+}
+
 // --stop-backend 主流程用:讀 PID 檔關掉本腳本先前啟動的後端，並等埠真的
 // 釋放。PID 檔不存在時分兩種情況——埠還活著代表後端是別的方式起的，不歸
 // 本腳本管；埠已經死了代表本來就沒在跑，兩者都不動任何行程。
@@ -478,9 +501,16 @@ async function stopBackend({ pidPath, port, deps = {} }) {
     return portAlive ? { status: 'not-owned' } : { status: 'already-stopped' };
   }
 
+  const plat = platformFn();
   try {
-    await killTreeRunner(pid, platformFn());
-  } catch {
+    await killTreeRunner(pid, plat);
+  } catch (err) {
+    if (!isProcessNotFoundError(err, plat)) {
+      // 不是「行程本來就不存在」——真的失敗了(例如權限不足)，不能靜默吞掉
+      // 當成功，得讓呼叫端印出來並非 0 退出。PID 檔與埠狀態都不動，維持
+      // 原樣，讓使用者知道現況、自行判斷下一步。
+      return { status: 'kill-failed', pid, error: err && err.message ? err.message : String(err) };
+    }
     // pid 可能早就不存在(行程自己結束過，PID 檔沒來得及清)，視為已經達成
     // 「後端不在跑」這個目的，不當成失敗。
   }
@@ -671,7 +701,9 @@ function helpText() {
                         個行程群組送信號)，等埠釋放後印結果並結束(結束碼 0)。
                         獨立旗標，不需要搭配 --env，也不會啟動 Chrome。找不到
                         PID 檔但埠仍有人在聽，代表後端不是本腳本啟動的，印
-                        提示並以非 0 結束，不會動那個行程
+                        提示並以非 0 結束，不會動那個行程。PID 檔內容損毀
+                        (非合法 PID)時視同找不到 PID 檔，不會殺任何行程，
+                        會印提示要求手動處理
     --help, -h         顯示這份說明並結束(結束碼 0)
 
 環境變數:
@@ -1236,6 +1268,12 @@ async function main() {
       process.exitCode = 0;
       return;
     }
+    if (result.status === 'kill-failed') {
+      console.error(`關閉 PID ${result.pid} 失敗:${result.error}`);
+      console.error('行程可能還在跑，PID 檔與埠狀態都未變動，請自行確認並處理。');
+      process.exitCode = 1;
+      return;
+    }
     if (result.status === 'stopped') {
       console.log(`已關閉本機後端（PID ${result.pid}），埠 ${LOCAL_BACKEND_PORT} 已釋放。`);
       process.exitCode = 0;
@@ -1425,8 +1463,10 @@ export {
   resolveBackendDir,
   backendStartPlan,
   parsePidFile,
+  MAX_PID,
   killTreeCommand,
   runKillTree,
+  isProcessNotFoundError,
   resolveBackendSpawnTarget,
   tailLines,
   isPortOpen,
