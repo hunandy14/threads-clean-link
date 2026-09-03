@@ -1046,11 +1046,18 @@
       return null;
     }
 
-    // ---- 共用確認框(清除全部 / 刪除這筆)----
+    // ---- 共用確認框(清除全部 / 刪除這筆 / 登入)----
     // 複用同一個 confirmOverlay:opts.titleKey/okKey 是 i18n key，desc 是已
     // 組好的字串，action 是確認後要跑的函式。標題/確認鈕文案在 JS 端顯式
     // 覆寫(這兩顆有 data-i18n，renderAll 會重設，但確認框開著時不會觸發
     // renderAll，故安全)。
+    //
+    // opts.tone('danger'|'primary')/opts.icon('#i-xxx')決定標題圖示與確認
+    // 鈕外觀:刪除類操作維持既有的垃圾桶圖示 + 紅底實心鈕，登入類操作(見
+    // startSignInFlow)改成 Google G 圖示 + 品牌色實心鈕，不能沿用紅色——
+    // 登入不是破壞性操作，紅底會誤導使用者以為按下去會刪東西。兩者都不給
+    // 時保守預設回刪除類外觀，維持既有呼叫點(清除全部/刪單筆/刪雲端)行為
+    // 不變。
     function openConfirm(opts) {
       var titleText = byId('confirmTitleText');
       if (titleText) titleText.textContent = tt(opts.titleKey);
@@ -1058,6 +1065,16 @@
       if (descEl) descEl.textContent = opts.desc;
       var okBtn = byId('confirmOk');
       if (okBtn) okBtn.textContent = tt(opts.okKey);
+      var isPrimary = opts.tone === 'primary';
+      var iconHref = opts.icon || (isPrimary ? '#i-google' : '#i-trash');
+      var iconEl = byId('confirmIcon');
+      if (iconEl) iconEl.classList.toggle('danger-ink', !isPrimary);
+      var iconUse = byId('confirmIconUse');
+      if (iconUse) iconUse.setAttribute('href', iconHref);
+      if (okBtn) {
+        okBtn.classList.toggle('btn-danger-solid', !isPrimary);
+        okBtn.classList.toggle('btn-primary', isPrimary);
+      }
       confirmAction = typeof opts.action === 'function' ? opts.action : null;
       var confirmOverlay = byId('confirmOverlay');
       if (confirmOverlay) confirmOverlay.hidden = false;
@@ -1202,6 +1219,37 @@
         if (menuEl) menuEl.hidden = true;
         var deviceNoteEl0 = byId('deviceNote');
         if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
+
+        // 完整重設(回歸:曾經提早 return，從 expired/error 切回真正登出時，
+        // 狀態點顏色、錯誤/過期列、姓名/信箱等文字會殘留上一態的內容——觸發
+        // 鈕雖然 hidden，但選單內容本身沒清，下次顯示前若有任何路徑忘記先
+        // 呼叫 renderAccount 就會露出舊資料)。
+        var headerNameEl0 = byId('acctHeaderName');
+        if (headerNameEl0) headerNameEl0.textContent = '';
+        var menuNameEl0 = byId('acctMenuName');
+        if (menuNameEl0) menuNameEl0.textContent = '';
+        var menuEmailEl0 = byId('acctMenuEmail');
+        if (menuEmailEl0) menuEmailEl0.textContent = '';
+        var menuSubEl0 = byId('acctMenuSub');
+        if (menuSubEl0) menuSubEl0.textContent = '';
+
+        var dot0 = byId('statusDot');
+        if (dot0) {
+          dot0.classList.remove('is-danger', 'is-warning');
+          dot0.hidden = true;
+          dot0.removeAttribute('aria-label');
+        }
+
+        var errorRow0 = byId('acctErrorRow');
+        if (errorRow0) errorRow0.hidden = true;
+        var errorText0 = byId('acctErrorText');
+        if (errorText0) errorText0.textContent = '';
+
+        var expiredRow0 = byId('acctExpiredRow');
+        if (expiredRow0) expiredRow0.hidden = true;
+        var expiredText0 = byId('acctExpiredText');
+        if (expiredText0) expiredText0.textContent = '';
+
         return;
       }
 
@@ -1311,6 +1359,8 @@
       openConfirm({
         titleKey: 'opAccountSignIn',
         okKey: 'opSyncSignInConfirmDo',
+        tone: 'primary',
+        icon: '#i-google',
         desc: tf('opSyncSignInConfirmDesc', { n: visibleEntries().length }),
         action: function () {
           // 沒有注入 permissions 時維持原本的直接送出(權限由 SW 端把關)。
@@ -1483,6 +1533,8 @@
         openConfirm({
           titleKey: 'opAccountDeleteCloud',
           okKey: 'opSyncDeleteConfirmDo',
+          tone: 'danger',
+          icon: '#i-trash',
           desc: tt('opSyncDeleteConfirmDesc'),
           action: function () {
             sendSyncAction({ type: 'sync.deleteCloud' });
@@ -1982,6 +2034,8 @@
         openConfirm({
           titleKey: 'opDeleteTitle',
           okKey: 'opDeleteConfirmDo',
+          tone: 'danger',
+          icon: '#i-trash',
           desc: tt('opDeleteConfirmDesc'),
           action: function () {
             deleteEntry(target);
@@ -2204,6 +2258,8 @@
         openConfirm({
           titleKey: 'opClearAll',
           okKey: 'opClearDo',
+          tone: 'danger',
+          icon: '#i-trash',
           desc: tf('opClearConfirmDesc', { n: visibleEntries().length }),
           // 已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成墓碑
           // 撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由同步引擎
