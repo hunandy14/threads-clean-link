@@ -560,18 +560,13 @@
     };
   }
 
-  // avatarUrl 縱深防禦(引擎端也會白名單):只信任 https:// 且 host 以
-  // googleusercontent.com 結尾的網址，其餘一律視為無大頭照，退回字母
-  // 備援——不讓任何形狀走樣或被冒名的 state 把任意網址塞進 <img src>。
+  // avatarUrl 縱深防禦(引擎端 sync.js 存入 syncState 前已用同一份 TCLCore
+  // sanitize 過，這裡不信任那一層、自己在渲染端(DOM sink)再把關一次)。直接
+  // 複用 TCLCore.sanitizeAvatarUrl(單一權威:https:// + host 以
+  // googleusercontent.com 結尾，見 tcl-core.js)，不在本檔另養一份等價
+  // 邏輯——兩處各自實作最容易在其中一處修正網釣變體時漏改另一處。
   function isTrustedAvatarUrl(url) {
-    if (typeof url !== 'string' || url === '') return false;
-    var parsed;
-    try {
-      parsed = new URL(url);
-    } catch (e) {
-      return false;
-    }
-    return parsed.protocol === 'https:' && /(^|\.)googleusercontent\.com$/.test(parsed.hostname);
+    return TCLCore.sanitizeAvatarUrl(url) !== null;
   }
 
   // ---- 控制器 ----
@@ -1140,7 +1135,11 @@
       { circle: 'acctMenuAvatarCircle', letter: 'acctMenuAvatarLetter', photo: 'acctMenuAvatarPhoto' },
     ];
     function renderAvatars(initial, avatarUrl) {
-      var usePhoto = isTrustedAvatarUrl(avatarUrl);
+      // 取 TCLCore 解析後的 href(已正規化，不含控制字元/前後空白)當實際要
+      // 設進 img.src 的值，不是呼叫端傳進來的原始字串——通過驗證跟拿什麼值
+      // 落地是同一次判斷，兩處各自取值容易在其中一處漏改。
+      var safeUrl = TCLCore.sanitizeAvatarUrl(avatarUrl);
+      var usePhoto = safeUrl !== null;
       AVATAR_INSTANCES.forEach(function (a) {
         var letterEl = byId(a.letter);
         var photoEl = byId(a.photo);
@@ -1157,7 +1156,7 @@
             if (letterEl) letterEl.hidden = false;
             if (circleEl) circleEl.classList.remove('has-photo');
           };
-          if (usePhoto) photoEl.src = avatarUrl;
+          if (usePhoto) photoEl.src = safeUrl;
           else if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
         }
         if (circleEl) circleEl.classList.toggle('has-photo', usePhoto);
