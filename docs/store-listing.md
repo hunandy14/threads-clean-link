@@ -175,6 +175,18 @@ chrome.storage.sync persists the user's preference toggles (auto-clean on/off, s
 chrome.storage.sync 保存使用者的偏好開關(自動淨化、成功通知、保存紀錄、介面語言與主題)，讓選擇跨 Chrome 裝置同步。chrome.storage.local 則(可選地)保存本擴充功能自己產出的乾淨網址紀錄——僅存於這台裝置，上限 1,000 筆自動汰舊，顯示於 options 頁並提供匯出與清除，可用開關整個停用，除非另行以 Google 帳號登入啟用「雲端同步」，否則絕不傳輸到任何地方。不會儲存頁面內容，也不會儲存剪貼簿裡原本的內容。
 ```
 
+### alarms
+
+**English:**
+```
+Used to schedule the periodic execution of Cloud Sync (a recurring alarm that wakes the background service worker to push/pull the user's own cleaning-history records) and to schedule retry-with-backoff after a failed sync attempt, since chrome.alarms is the only mechanism available to a Manifest V3 service worker for delayed or periodic work after it has been unloaded. This is a non-intrusive permission — it never triggers any visible alert, popup, or notification on its own. If the user never signs in to Cloud Sync, no alarm of any kind is ever created.
+```
+
+**繁中對照:**
+```
+用於排程雲端同步的週期執行(定期喚醒背景 service worker，推送/拉取使用者自己的清理紀錄)，以及同步失敗後的退避重試排程——因為 Manifest V3 的 service worker 被卸載後，chrome.alarms 是唯一能延遲或週期執行工作的機制。這是非警示型權限，本身不會觸發任何可見的提示、彈窗或通知。使用者若從未登入雲端同步，就不會建立任何 alarm。
+```
+
 ### Host permissions:`https://*.threads.com/*`、`https://*.threads.net/*`
 
 **English:**

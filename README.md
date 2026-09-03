@@ -76,6 +76,7 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 | `scripting` + `activeTab` | 於使用者點選右鍵選單的手勢下，臨時注入當前分頁執行 `navigator.clipboard.writeText` |
 | `notifications` | 顯示還原結果通知 |
 | `storage` | 同步空間(`chrome.storage.sync`)存開關設定與語言/主題偏好;本機空間(`chrome.storage.local`)存淨化紀錄(上限 1,000 筆，僅本機、可停用可清除)。均不蒐集、不外傳任何使用者資料 |
+| `alarms` | 排程雲端同步的週期執行與失敗退避重試(`chrome.alarms`)。屬非警示型權限，不會跳出任何提示或通知;未登入狀態下不會建立任何 alarm |
 | `host_permissions`(`*.threads.com`、`*.threads.net`) | 發出短碼解析請求;於 Threads 頁面注入淨化邏輯 |
 
 未宣告 `<all_urls>` 與 `clipboardRead`。
