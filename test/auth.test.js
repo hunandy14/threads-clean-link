@@ -227,6 +227,21 @@ test('權限描述子:origins 落在 manifest 宣告的 optional_host_permission
   assert.ok(manifest.optional_permissions.includes('identity'));
 });
 
+// local（http://localhost:8787）刻意不進商店版 manifest:它是 dev-browser
+// 產出的 manifest 副本才注入的開發用權限，混進上架版等於平白多要一項審查
+// 委員會會問、使用者也看得到的權限。
+test('權限描述子:localhost 不得出現在商店版 manifest 的 optional_host_permissions', () => {
+  const manifest = JSON.parse(
+    require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'manifest.json'), 'utf8')
+  );
+  const [origin] = TCLAuth.permissionsFor('http://localhost:8787').origins;
+  assert.equal(origin, 'http://localhost:8787/*');
+  assert.ok(
+    !manifest.optional_host_permissions.some((h) => h.includes('localhost')),
+    '商店版 manifest 不得宣告 localhost 權限'
+  );
+});
+
 // ---- exp 為必要欄位 ----
 //
 // 缺 exp 時「跳過過期檢查」等於接受一枚永不過期的 id_token，那正是重放要的

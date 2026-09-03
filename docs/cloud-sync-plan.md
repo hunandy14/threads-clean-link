@@ -33,7 +33,7 @@
 | D6 | 同步預設關閉，使用者主動登入才啟用；未登入行為與現況完全一致 | 「僅保存於這台裝置」的既有承諾在未登入時必須成立，登入是使用者的主動選擇 | 2026-09-02 |
 | D7 | 擴充 ID 固定為 `hehokicokbgajpanjcajhmflaennnmdj`，manifest 加 `key`（值存於 `secrets/manifest-key.json`，非機密），dev build 與商店版同 ID | Google redirect URI 與後端 `EXTENSION_ORIGINS` 都以擴充 ID 為準，ID 漂移會讓登入與 CSRF allowlist 同時失效 | 2026-09-02 |
 | D8 | `identity` 走 `optional_permissions`，後端網域走 `optional_host_permissions`（`https://api.metalinkclearer.workers.dev/*`、`https://api-staging.metalinkclearer.workers.dev/*`），登入當下才請求 | 常駐在 manifest 的必要權限會在更新時觸發 Chrome 自動停用擴充，等到登入才申請可避免 | 2026-09-02 |
-| D9 | API base 預設 production，`chrome.storage.local.syncApiBase` 可覆寫為 staging（開發用） | 插件沒有 build-time 環境切換機制，用 storage 覆寫最小成本達成 dev/staging 測試 | 2026-09-02 |
+| D9 | API base 預設 production，`chrome.storage.local.syncApiBase` 可覆寫為 staging 或 local（`http://localhost:8787`，開發用）；三值以外一律忽略 | 插件沒有 build-time 環境切換機制，用 storage 覆寫最小成本達成 dev/staging/local 測試。local 的 host 權限只宣告在 `tools/dev-browser.mjs` 產出的開發用 manifest 副本，商店版沒有這一項 | 2026-09-02 |
 | D10 | bearer token 存 `chrome.storage.local.syncAuth`（需跨瀏覽器重啟保留登入），風險已知：明文，登出必打 sign-out 撤銷 | `chrome.storage.session` 重啟即清空，不符合「登入態應長期保留」的需求；明文風險以「登出即撤銷」對沖 | 2026-09-02 |
 | D11 | post 身分鍵改用手機的 `postKeyOf` 規則（`threads:<code>`／`url:<正規化>`），history 合併鍵切換，並持久化為 `postKey` 欄位 | 插件現有 `extractPostId` 與手機規則在邊界情況（怪 handle、`m.threads.com`、尾斜線）不等價，會在雲端分裂成兩張卡；伺服器本來就自己算 `postKey`，插件對齊本機規則即可 | 2026-09-02 |
 | D12 | 同步觸發：`chrome.alarms` 週期不低於 1 分鐘＋新紀錄 2 秒去抖＋options／popup 開啟時一次＋手動；退避曲線照手機 scheduler（30s→600s） | MV3 沒有「前景常駐計時器」概念，SW 隨時被殺，所有排程狀態必須可從 `chrome.storage` 復原 | 2026-09-02 |
@@ -99,7 +99,7 @@ chrome.storage.local.syncAuth = {
   token: string | null,
 }
 
-chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production base（D9）
+chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production base，只接受 staging／local 兩個值（D9）
 ```
 
 帳號切換時（`syncState.userId` 變更）需清空本機同步鏡像欄位（`postKey`／`dirty`／`serverUpdatedAt`／`deletedAt`），比照手機端 `sync/active-owner.ts` 的處理方式。
@@ -186,7 +186,7 @@ background 在 state 變化時廣播 `{type:"sync.stateChanged", state}`，optio
 | 中 | 插件的 `kind` 在雲端沒有欄位，跨裝置遺失 | 接受此損失（D4） |
 | 中 | 兩邊清理規則與 post key 規則各自演進、無共用套件 | 把 `postKeyOf` 逐字移植進 `tcl-core.js` 並加對照測試（車道 B） |
 | 中 | 60 次／60 秒 per user 限流由手機＋插件共用同一桶 | alarm 週期不低於 1 分鐘（D12）；首次回填分批並在 429 時看 `Retry-After` 退避 |
-| 低 | staging／production 兩套環境，插件沒有切換概念 | `chrome.storage.local.syncApiBase` 可覆寫（D9），預設 production |
+| 低 | local／staging／production 三套環境，插件沒有切換概念 | `chrome.storage.local.syncApiBase` 可覆寫（D9），預設 production |
 | 中 | 「清除全部」是先寫本機 `syncState.clearedAt` 旗標、下一輪同步才打 `DELETE /api/v1/links`；伺服器據此寫 `cleared_at` 並拒收早於它的資料，因此清空到送出之間新記下的貼文（以及被拒收後標為已處理的那批）會被連坐丟失 | 已登入時在清除當下就立刻觸發一次 `syncNow`，把窗口壓到一次往返；MVP 接受殘餘窗口（SW 剛好被回收、或當下離線）造成的丟失，不做本機補償佇列 |
 | 低 | 合併語意差異：插件「新值優先、缺席沿用」，雲端以 `max(receivedAt, seen.at)` 判新舊 | 插件端改用雲端判準當唯一權威 |
 | 低 | 鏡像加欄位撐大體積，逼近 8MB 軟預算 | 調降本機保留筆數，或視需要申請 `unlimitedStorage` |

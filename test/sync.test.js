@@ -64,6 +64,7 @@ function loadSync() {
 
 const PRODUCTION_BASE = 'https://api.metalinkclearer.workers.dev';
 const STAGING_BASE = 'https://api-staging.metalinkclearer.workers.dev';
+const LOCAL_BASE = 'http://localhost:8787';
 
 const POST_A = 'https://www.threads.com/@alice/post/AAAAAAAAAAA';
 const POST_B = 'https://www.threads.com/@bob/post/BBBBBBBBBBB';
@@ -457,10 +458,11 @@ test('T1 常數：alarm 名稱固定、去抖 2 秒、週期不低於 1 分鐘�
   assert.ok(TCLSync.SYNC_PERIOD_MINUTES >= 1, '週期 alarm 不低於 1 分鐘');
 });
 
-test('T1 常數：apiBase 兩個環境與 Google client id 為模組常數（D5／D9）', () => {
+test('T1 常數：apiBase 三個環境與 Google client id 為模組常數（D5／D9）', () => {
   const TCLSync = loadSync();
   assert.equal(TCLSync.API_BASE_PRODUCTION, PRODUCTION_BASE);
   assert.equal(TCLSync.API_BASE_STAGING, STAGING_BASE);
+  assert.equal(TCLSync.API_BASE_LOCAL, LOCAL_BASE);
   assert.equal(
     TCLSync.CLIENT_ID,
     '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com'
@@ -655,7 +657,7 @@ test('T2 任何回應帶 set-auth-token 就覆寫本地 token（含一般同步�
   assert.equal(env.storage.syncAuth().token, 'tok-rotated-1', '輪替後的 token 必須覆寫本地存值');
 });
 
-test('T2/D9 apiBase：預設 production；syncApiBase 為 staging 時採用；其餘值忽略', async () => {
+test('T2/D9 apiBase：預設 production；syncApiBase 為 staging／local 時採用；其餘值忽略', async () => {
   const TCLSync = loadSync();
 
   const def = makeEnv({ signedIn: true, history: [entry()] });
@@ -674,12 +676,25 @@ test('T2/D9 apiBase：預設 production；syncApiBase 為 staging 時採用；�
   await settle();
   assert.ok(staged.syncPosts().length >= 1, 'staging 覆寫時請求要打到 staging base');
 
+  // local:dev-browser --env local 寫入的開發機後端，白名單第三值。
+  const localEnv = makeEnv({
+    signedIn: true,
+    local: { syncApiBase: LOCAL_BASE },
+    server: { apiBase: LOCAL_BASE },
+    history: [entry()],
+  });
+  const e3 = TCLSync.create(localEnv.deps);
+  assert.equal((await e3.getState()).apiBase, LOCAL_BASE);
+  await e3.syncNow();
+  await settle();
+  assert.ok(localEnv.syncPosts().length >= 1, 'local 覆寫時請求要打到 localhost:8787');
+
   const bogus = makeEnv({ signedIn: true, local: { syncApiBase: 'https://evil.example' } });
-  const e3 = TCLSync.create(bogus.deps);
+  const e4 = TCLSync.create(bogus.deps);
   assert.equal(
-    (await e3.getState()).apiBase,
+    (await e4.getState()).apiBase,
     PRODUCTION_BASE,
-    'production／staging 以外的值一律忽略，不得跟著打過去'
+    'production／staging／local 以外的值一律忽略，不得跟著打過去'
   );
 });
 
