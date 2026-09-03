@@ -343,7 +343,8 @@ function helpText() {
     --profile <dir>    指定 Chrome user-data-dir(預設 ~/.threads-clean-link/debug-profile)
     --build <dir>      指定 dev-build worktree 路徑(預設 ~/.threads-clean-link/dev-build)
     --fresh            在系統暫存目錄建立全新 profile(不沿用既有登入狀態)，
-                        結尾印出路徑，之後可用 --profile <路徑> 重複使用
+                        結尾印出路徑，之後可用 --profile <路徑> 重複使用。
+                        臨時 profile 不會自動清理，用完可自行手動刪除該目錄
     --restart          目標載入路徑與 Chrome 目前載入的不同時，先關閉 Chrome
                         再重開(同一個擴充 ID 的兩個 unpacked 路徑不能並存)。
                         三個環境共用副本路徑之後，只有「Chrome 裡還載著舊版
