@@ -6,8 +6,10 @@
 //   - parseArgs:三個環境、缺/未知 --env 報錯、
 //     --yes/--fresh/--restart/--no-open 解析、同一旗標重複出現時後者覆蓋前者
 //   - productionGuard:TTY/非 TTY、--yes、輸入相符/不符
-//   - withHostPermission／localBuildDirFor／samePath:--env local 的
+//   - withHostPermission／loadedBuildDirFor／samePath:--env local 的
 //     manifest 副本注入是純函式(冪等、不動 key 與既有 host)
+//   - syncLoadedBuild:在暫存目錄實跑一次副本同步(排除 .git、重跑不殘留、
+//     只有 local 會多一項 host、其餘環境與 dev-build 逐字相同)
 //   - probeHealth:本機後端探活的失敗路徑一律回 false
 //   - reloadExtension:載入後強制重載擴充，清掉 SW 的舊腳本快取;喚醒分頁
 //     用完即關
@@ -26,6 +28,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -219,13 +222,104 @@ test('withHostPermission:manifest 沒有 optional_host_permissions 也能注入'
   assert.equal(out.key, 'K');
 });
 
-test('localBuildDirFor:副本與 dev-build 同層，名字加 -local 後綴', () => {
-  const out = devBrowser.localBuildDirFor(path.join('C:', 'x', 'dev-build'));
-  assert.equal(path.basename(out), 'dev-build-local');
+test('loadedBuildDirFor:副本與 dev-build 同層，名字加 -loaded 後綴', () => {
+  const out = devBrowser.loadedBuildDirFor(path.join('C:', 'x', 'dev-build'));
+  assert.equal(path.basename(out), 'dev-build-loaded');
   assert.equal(path.dirname(out), path.join('C:', 'x'));
 
-  const trailing = devBrowser.localBuildDirFor(path.join('C:', 'x', 'dev-build') + path.sep);
-  assert.equal(path.basename(trailing), 'dev-build-local', '尾隨分隔符不該讓 basename 落空');
+  const trailing = devBrowser.loadedBuildDirFor(path.join('C:', 'x', 'dev-build') + path.sep);
+  assert.equal(path.basename(trailing), 'dev-build-loaded', '尾隨分隔符不該讓 basename 落空');
+});
+
+// ---- syncLoadedBuild:在暫存目錄實跑，不碰使用者的 dev-build ----
+
+function makeFakeBuild() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tcl-dev-browser-'));
+  const build = path.join(root, 'dev-build');
+  fs.mkdirSync(path.join(build, 'icons'), { recursive: true });
+  fs.mkdirSync(path.join(build, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(build, '.git', 'HEAD'), 'ref: refs/heads/x');
+  fs.writeFileSync(path.join(build, 'icons', 'icon16.png'), 'png');
+  fs.writeFileSync(path.join(build, 'sync.js'), '// sync');
+  fs.writeFileSync(
+    path.join(build, 'manifest.json'),
+    JSON.stringify(
+      {
+        key: 'FAKE-KEY',
+        manifest_version: 3,
+        optional_permissions: ['identity'],
+        optional_host_permissions: [
+          'https://api.metalinkclearer.workers.dev/*',
+          'https://api-staging.metalinkclearer.workers.dev/*',
+        ],
+      },
+      null,
+      2
+    )
+  );
+  return { root, build, loaded: devBrowser.loadedBuildDirFor(build) };
+}
+
+test('syncLoadedBuild:整包複製但排除 .git，重跑不殘留 dev-build 已刪掉的檔案', (t) => {
+  const { root, build, loaded } = makeFakeBuild();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  devBrowser.syncLoadedBuild(build, loaded);
+  assert.ok(fs.existsSync(path.join(loaded, 'sync.js')));
+  assert.ok(fs.existsSync(path.join(loaded, 'icons', 'icon16.png')));
+  assert.ok(
+    !fs.existsSync(path.join(loaded, '.git')),
+    '.git 是 worktree 中繼資料，複製過去會讓副本被當成另一個 worktree'
+  );
+
+  // dev-build 刪掉一個檔案後重跑:副本裡也該跟著消失。
+  fs.rmSync(path.join(build, 'sync.js'));
+  devBrowser.syncLoadedBuild(build, loaded);
+  assert.ok(!fs.existsSync(path.join(loaded, 'sync.js')), '副本每次重建，不留上一輪的殘骸');
+});
+
+test('syncLoadedBuild:非 local 時副本 manifest 與 dev-build 的逐字相同', (t) => {
+  const { root, build, loaded } = makeFakeBuild();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  devBrowser.syncLoadedBuild(build, loaded);
+  assert.equal(
+    fs.readFileSync(path.join(loaded, 'manifest.json'), 'utf8'),
+    fs.readFileSync(path.join(build, 'manifest.json'), 'utf8'),
+    'staging／production 不該讓副本的 manifest 與 dev-build 有任何差異'
+  );
+});
+
+test('syncLoadedBuild:local 時副本與 dev-build 的差異恰好只有那一項 host', (t) => {
+  const { root, build, loaded } = makeFakeBuild();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  devBrowser.syncLoadedBuild(build, loaded, devBrowser.LOCAL_HOST_PERMISSION);
+  const before = JSON.parse(fs.readFileSync(path.join(build, 'manifest.json'), 'utf8'));
+  const after = JSON.parse(fs.readFileSync(path.join(loaded, 'manifest.json'), 'utf8'));
+
+  assert.equal(after.key, before.key, 'key 逐字相同，否則擴充 ID 會變');
+  assert.deepEqual(Object.keys(after), Object.keys(before), '不該多出或少掉任何頂層欄位');
+  assert.deepEqual(after.optional_host_permissions, [
+    ...before.optional_host_permissions,
+    devBrowser.LOCAL_HOST_PERMISSION,
+  ]);
+
+  // 逐欄位比對:除了 optional_host_permissions 之外，一個字都不能動。
+  for (const key of Object.keys(before)) {
+    if (key === 'optional_host_permissions') continue;
+    assert.deepEqual(after[key], before[key], `${key} 不該被副本改動`);
+  }
+});
+
+test('syncLoadedBuild:副本路徑不是 dev-build 的兄弟目錄時拒絕執行，不遞迴刪除', (t) => {
+  const { root, build } = makeFakeBuild();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  // rmSync 是這支腳本唯一會刪東西的地方，路徑傳錯的後果無法挽回。
+  assert.throws(() => devBrowser.syncLoadedBuild(build, path.join(root, 'sub', 'x')), /同層/);
+  assert.throws(() => devBrowser.syncLoadedBuild(build, build), /不得等於/);
+  assert.ok(fs.existsSync(path.join(build, 'manifest.json')), '拒絕的路徑不得刪到任何東西');
 });
 
 test('samePath:大小寫與尾隨分隔符的差異不算換路徑;缺值一律視為不同', () => {
@@ -302,7 +396,14 @@ test('打包白名單:不收 docs/、test/、package.json', () => {
 // 兩者都是呼叫當下才查找的全域，不是 import 時就綁死——測試可以整個蓋掉，
 // 不需要真 Chrome。
 
-function createMockCdp({ port, extensionId, currentApiBase = null, wakeSw = true }) {
+function createMockCdp({
+  port,
+  extensionId,
+  currentApiBase = null,
+  wakeSw = true,
+  apiBaseReadable = true,
+  deadSwConnections = 0,
+}) {
   const browserWsUrl = `ws://mock-browser:${port}`;
   const swWsUrl = `ws://mock-sw:${port}`;
   let targets = [];
@@ -330,6 +431,14 @@ function createMockCdp({ port, extensionId, currentApiBase = null, wakeSw = true
     constructor(wsUrl) {
       this.url = wsUrl;
       this.listeners = {};
+      // deadSwConnections:模擬「/json 清單裡還留著剛被終止的 SW target」,
+      // 連上去當場被切斷。真實 Chrome 隨後會換上新的 target，這裡用消耗
+      // 計數器等價表現。
+      if (wsUrl === swWsUrl && deadSwConnections > 0) {
+        deadSwConnections -= 1;
+        queueMicrotask(() => this._emit('close'));
+        return;
+      }
       queueMicrotask(() => this._emit('open'));
     }
     addEventListener(type, fn) {
@@ -363,7 +472,9 @@ function createMockCdp({ port, extensionId, currentApiBase = null, wakeSw = true
         }
         // 讀「目前的 syncApiBase」那一段:回傳測試設定的值，模擬擴充現在
         // 指向哪個環境。
-        if (msg.params.expression.includes('got.syncApiBase')) {
+        // apiBaseReadable = false 模擬「回傳形狀不對」:CDP 回了，但沒有
+        // 可用的 result.value，呼叫端讀不出目前指向哪個環境。
+        if (msg.params.expression.includes('got.syncApiBase') && apiBaseReadable) {
           result = { result: { type: 'string', value: currentApiBase } };
         }
       }
@@ -536,6 +647,26 @@ test('configureApiEnv:SW 始終不上線(wakeServiceWorker 自己逾時)時，�
 
 // ---- 載入後強制重載擴充 ----
 
+test('attachToServiceWorker(經 reloadExtension):SW endpoint 已死時換一個重試，不當場放棄', async () => {
+  const port = 9411;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId, deadSwConnections: 1 });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.reloadExtension(port, extensionId);
+
+  assert.ok(
+    mock.evaluated.some((e) => e.includes('chrome.runtime.reload()')),
+    '第一次連到的是剛被終止的 target，重試就該成功'
+  );
+  assert.equal(
+    mock.targets.filter((t) => t.type === 'page').length,
+    0,
+    '重試路徑上開的喚醒分頁一個都不能留'
+  );
+});
+
 test('reloadExtension:送出 chrome.runtime.reload()，並關掉自己開的喚醒分頁', async () => {
   const port = 9409;
   const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
@@ -604,6 +735,26 @@ test('configureApiEnv:目前已指向同一個環境時，不清舊登入狀態'
   assert.ok(
     !mock.evaluated.some((e) => e.includes('syncAuth')),
     '同一個環境重跑一次不該把使用者的登入狀態洗掉'
+  );
+});
+
+test('configureApiEnv:讀不出目前的 apiBase 時保守處理，照樣清掉舊登入狀態', async () => {
+  const port = 9410;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({
+    port,
+    extensionId,
+    currentApiBase: 'http://localhost:8787',
+    apiBaseReadable: false,
+  });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.configureApiEnv(port, extensionId, 'local');
+
+  assert.ok(
+    mock.evaluated.some((e) => e.includes('syncAuth')),
+    '讀不出來就不能假設「沒換環境」;寧可多清一次，也不要把舊 token 留給新後端'
   );
 });
 

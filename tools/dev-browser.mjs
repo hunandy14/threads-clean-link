@@ -5,11 +5,15 @@
 // ~/.threads-clean-link/dev-build)是主 repo 的另一個 git worktree，本腳本
 // 只在指定 --ref 時切換其 HEAD，不建立或初始化該 worktree。
 //
+// 實際載入的一律是 dev-build 的副本 dev-build-loaded（每次執行重新同步），
+// 三個環境共用這一個路徑:同一個擴充 ID 不能並存兩個 unpacked 路徑，載入
+// 路徑跟著環境走就代表每次切環境都得關掉重開 Chrome。副本的 manifest 只有
+// --env local 會多注入 http://localhost:8787/*，其餘環境與 dev-build 的
+// 逐字相同;dev-build worktree 本身永遠不被改動，商店版 manifest 也就不會
+// 夾帶開發用權限。
+//
 // --env local 另外需要開發機自己跑著後端(wrangler dev，port 8787):啟動前
-// 先探 /health，不通就直接非 0 結束，不碰 Chrome。載入的不是 dev-build 本
-// 身而是它的副本 dev-build-local——localhost 的 host 權限只注入副本的
-// manifest，dev-build worktree 保持與版控一致，商店版 manifest 也就永遠不
-// 會夾帶開發用權限。
+// 先探 /health，不通就直接非 0 結束，不碰 Chrome。
 //
 // Chrome 152 起 --load-extension 命令列參數被忽略，改用 CDP
 // Extensions.loadUnpacked 載入未封裝擴充;重開 Chrome 後先前載入的擴充不會
@@ -144,17 +148,21 @@ function parseArgs(argv) {
   resolveEnv(opts.env);
 
   if (opts.port !== null && (!Number.isInteger(opts.port) || opts.port <= 0)) {
-    throw new Error(`--port 必須是正整數，收到:${argv}`);
+    throw new Error(`--port 必須是正整數，收到:${opts.port}`);
   }
 
   return opts;
 }
 
-// dev-build 的副本目錄:與 dev-build 同層、名字加 -local 後綴。--build 換
-// 路徑時副本跟著換，兩者不會分家。
-function localBuildDirFor(buildDir) {
+// 實際載入的副本目錄:與 dev-build 同層、名字加 -loaded 後綴。--build 換
+// 路徑時副本跟著換，兩者不會分家。三個環境共用這一個路徑——同一個擴充 ID
+// 不能並存兩個 unpacked 路徑，載入路徑跟著環境走的話，每次切環境都得關掉
+// 重開 Chrome。
+function loadedBuildDirFor(buildDir) {
   const normalized = buildDir.replace(/[\\/]+$/, '');
-  return path.join(path.dirname(normalized), `${path.basename(normalized)}-local`);
+  const basename = path.basename(normalized);
+  if (!basename) throw new Error(`--build 路徑取不出目錄名:${buildDir}`);
+  return path.join(path.dirname(normalized), `${basename}-loaded`);
 }
 
 // 純函式:回傳追加 host 權限後的新 manifest，不改動輸入物件。已含同一項時
@@ -179,20 +187,39 @@ async function probeHealth(apiBase, timeoutMs = HEALTH_TIMEOUT_MS) {
   }
 }
 
-// 以 dev-build 的內容重建副本，再把 localhost 權限注入副本的 manifest。
+// rmSync 是這支腳本唯一會刪東西的地方，刪之前先確認目標真的是「dev-build
+// 的兄弟目錄」:呼叫端傳錯路徑（例如把 --build 指到磁碟根目錄）時，遞迴
+// 刪除的後果無法挽回。
+function assertSiblingCopy(buildDir, loadedDir) {
+  const from = path.resolve(buildDir);
+  const to = path.resolve(loadedDir);
+  if (!path.basename(to)) throw new Error(`副本路徑的目錄名不得為空:${loadedDir}`);
+  if (from === to) throw new Error(`副本路徑不得等於 dev-build 本身:${loadedDir}`);
+  if (path.dirname(from) !== path.dirname(to)) {
+    throw new Error(`副本路徑必須與 dev-build 同層:${loadedDir}（dev-build:${buildDir}）`);
+  }
+}
+
+// 以 dev-build 的內容重建副本。hostPattern 有給才把該 host 注入副本的
+// manifest（只有 --env local 會給）；不給時副本的 manifest 與 dev-build
+// 的逐字相同。
+//
 // 每次先刪再整包複製:dev-build 刪掉的檔案不該在副本裡陰魂不散。.git 排除
 // 在外——那是 worktree 的中繼資料，複製過去只會讓副本被當成另一個 worktree。
-function syncLocalBuild(buildDir, localBuildDir, hostPattern = LOCAL_HOST_PERMISSION) {
-  rmSync(localBuildDir, { recursive: true, force: true });
-  cpSync(buildDir, localBuildDir, {
+function syncLoadedBuild(buildDir, loadedDir, hostPattern = null) {
+  assertSiblingCopy(buildDir, loadedDir);
+  rmSync(loadedDir, { recursive: true, force: true });
+  cpSync(buildDir, loadedDir, {
     recursive: true,
     filter: (src) => path.basename(src) !== '.git',
   });
-  const manifestPath = path.join(localBuildDir, 'manifest.json');
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const json = JSON.stringify(withHostPermission(manifest, hostPattern), null, 2);
-  writeFileSync(manifestPath, json + '\n');
-  return localBuildDir;
+  if (hostPattern) {
+    const manifestPath = path.join(loadedDir, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const json = JSON.stringify(withHostPermission(manifest, hostPattern), null, 2);
+    writeFileSync(manifestPath, json + '\n');
+  }
+  return loadedDir;
 }
 
 // 讀 profile 裡 Chrome 記下的「這個擴充 ID 目前載自哪個路徑」。同一個 ID
@@ -274,15 +301,20 @@ function helpText() {
     --env <local|staging|production>
         連線目標環境，沒有預設值，必須指定。
 
+載入的產物:
+    三個環境都載 dev-build 的副本(${'<--build>'}-loaded)，每次執行以
+    dev-build 的內容重新同步。共用同一個載入路徑是刻意的——同一個擴充 ID
+    不能並存兩個 unpacked 路徑，載入路徑跟著環境走就代表每次切環境都要關掉
+    重開 Chrome。
+
 環境說明:
     local
         連開發機自己跑的後端(${API_BASE.local})，對應 npm run dev。
         前置:先在另一個終端機跑起後端——
             cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787
         啟動前會先探 /health，不通就非 0 結束，不會啟動 Chrome。
-        載入的是 dev-build 的副本 dev-build-local(每次執行重新同步)，副本
-        的 manifest 會注入 ${LOCAL_HOST_PERMISSION} 權限;dev-build 本身
-        與商店版 manifest 都不受影響。
+        副本的 manifest 會多注入 ${LOCAL_HOST_PERMISSION} 權限;dev-build
+        本身與商店版 manifest 都不受影響。
     staging
         寫入 chrome.storage.local.syncApiBase 指向 staging API(${API_BASE.staging})。
         對應 npm run dev:staging。
@@ -302,7 +334,9 @@ function helpText() {
                         結尾印出路徑，之後可用 --profile <路徑> 重複使用
     --restart          目標載入路徑與 Chrome 目前載入的不同時，先關閉 Chrome
                         再重開(同一個擴充 ID 的兩個 unpacked 路徑不能並存)。
-                        不帶此旗標時只印訊息並非 0 結束，不會動使用者的視窗
+                        三個環境共用副本路徑之後，只有「Chrome 裡還載著舊版
+                        直接指向 dev-build 的擴充」這個一次性過渡用得到。
+                        不帶此旗標時只印建議並非 0 結束，不會動使用者的視窗
     --yes              跳過 production 的互動確認(仍會印警告)
     --help, -h         顯示這份說明並結束(結束碼 0)
 
@@ -421,6 +455,16 @@ async function ensureChromeRunning(opts) {
 
 const CDP_COMMAND_TIMEOUT_MS = 10000;
 
+// 連線層斷掉（endpoint 已死）與對端不回覆（endpoint 活著但卡住）是兩件事:
+// 前者換一個 target 重試就好，後者重試只是再等一輪逾時。用 code 區分。
+const CDP_DISCONNECTED = 'CDP_DISCONNECTED';
+
+function disconnected(message) {
+  const err = new Error(message);
+  err.code = CDP_DISCONNECTED;
+  return err;
+}
+
 // reload 後等舊 service worker target 退場的上限。等不到就照常往下走——
 // 後續步驟自己也有逾時，不值得為此中斷整個流程。
 const SW_RETIRE_TIMEOUT_MS = 5000;
@@ -466,7 +510,14 @@ function sendCdpCommand(wsUrl, method, params, timeoutMs = CDP_COMMAND_TIMEOUT_M
       }
     });
     ws.addEventListener('error', (event) => {
-      finish(reject, new Error(`CDP WebSocket 錯誤:${event.message || event}`));
+      finish(reject, disconnected(`${method} 的 CDP WebSocket 連不上:${event.message || event.type}`));
+    });
+    // 對端在回覆前把連線切掉（target 被關、擴充 reload 掉整個 service
+    // worker）時只會收到 close，沒有 error;不接這一則就要空等到逾時。
+    // 已經結算過的 finish 是 no-op，因此自家 ws.close() 觸發的 close
+    // 不會蓋掉正常結果。
+    ws.addEventListener('close', () => {
+      finish(reject, disconnected(`${method} 的 CDP 連線在收到回覆前就關閉了`));
     });
   });
 }
@@ -531,9 +582,11 @@ async function wakeServiceWorker(port, extensionId) {
   }
 }
 
-// 讀回擴充目前指向的後端。沒有 syncApiBase 這個鍵時等同 production(擴充
-// 的預設值)，讀不到字串一律當 production，寧可誤判成「需要切換」而多清一次
-// 舊狀態，也不要把舊 token 留給新後端。
+// 讀回擴充目前指向的後端。三種結果分得很清楚:
+//   - 讀到字串     → 就是那個值
+//   - 讀到 null    → 鍵不存在，等同擴充的預設值 production
+//   - 回傳形狀不對 → null，代表「讀不出來」，呼叫端一律當成必須清舊狀態
+// 最後一種寧可誤判成需要切換而多清一次，也不要把舊 token 留給新後端。
 async function readCurrentApiBase(swWsUrl, timeoutMs) {
   const result = await sendCdpCommand(
     swWsUrl,
@@ -546,8 +599,10 @@ async function readCurrentApiBase(swWsUrl, timeoutMs) {
     },
     timeoutMs
   );
-  const value = result && result.result && result.result.value;
-  return typeof value === 'string' && value ? value : API_BASE.production;
+  if (!result || !result.result || !('value' in result.result)) return null;
+  const value = result.result.value;
+  if (typeof value === 'string' && value) return value;
+  return value === null ? API_BASE.production : null;
 }
 
 // 清掉上一個環境留下的登入與同步狀態(storage.local 四鍵 ＋ storage.session
@@ -576,15 +631,64 @@ async function ensureServiceWorker(port, extensionId) {
   return wakeServiceWorker(port, extensionId);
 }
 
+// 等指定的 service worker target 從 /json 清單退場（消失或換了 id）。
+//
+// 終止一個 SW 之後它不會立刻從清單消失，而那段期間連上去的 endpoint 已經
+// 死了:輕則收到 close，重則接受連線但永遠不回覆，呼叫端只能等到逾時。
+// 現場兩次都踩到——一次在 chrome.runtime.reload() 之後，一次在對已載入的
+// 擴充再跑一次 Extensions.loadUnpacked（那等同重載）之後。
+//
+// old 為 null（本來就沒有 SW）時直接回。等不到就照常往下走，後續步驟自己
+// 也有逾時與重試，不值得為此中斷整個流程。
+async function waitForServiceWorkerRetire(port, extensionId, old) {
+  if (!old) return;
+  const deadline = Date.now() + SW_RETIRE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const current = await findServiceWorkerTarget(port, extensionId);
+    if (!current || current.id !== old.id) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+// 取得一個「真的連得上」的 service worker endpoint，並解除它的除錯暫停。
+//
+// /json 清單可能還留著剛被 loadUnpacked／reload 終止的舊 target:連上去會
+// 當場被切斷（現場踩過:連跑兩次時第二次直接炸在 WebSocket 錯誤）。連線層
+// 斷掉就重查一次拿新的;對端活著但不回覆則照原樣往上丟，重試只是再等一輪
+// 逾時。
+async function attachToServiceWorker(port, extensionId, timeoutMs, attempts = 3) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    const attached = await ensureServiceWorker(port, extensionId);
+    try {
+      // CDP 對「剛啟動」的 service worker 預設會暫停等除錯器接手(即使沒人
+      // 真的要下中斷點)，之後送的指令全部卡在佇列裡，直到收到這道指令才會
+      // 繼續執行——對「原本就在線」的 SW 則是無害的 no-op。
+      await sendCdpCommand(
+        attached.sw.webSocketDebuggerUrl,
+        'Runtime.runIfWaitingForDebugger',
+        {},
+        timeoutMs
+      );
+      return attached;
+    } catch (err) {
+      if (attached.wakeTargetId) await closeTarget(port, attached.wakeTargetId).catch(() => {});
+      if (err.code !== CDP_DISCONNECTED) throw err;
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw lastErr;
+}
+
 // Extensions.loadUnpacked 會讓 Chrome 重讀 manifest，但 service worker 以
 // importScripts 拉進來的檔案(tcl-core.js／auth.js／sync.js)吃的是腳本快取，
 // 換過 --ref 之後 manifest 是新的、SW 裡的模組卻還是舊版——現場驗證踩過這
 // 個坑，而且它安靜到會讓人以為程式碼沒生效是自己寫錯。chrome.runtime.reload()
 // 重建註冊，快取才真的失效。
 async function reloadExtension(port, extensionId, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
-  const { sw, wakeTargetId } = await ensureServiceWorker(port, extensionId);
+  const { sw, wakeTargetId } = await attachToServiceWorker(port, extensionId, timeoutMs);
   try {
-    await sendCdpCommand(sw.webSocketDebuggerUrl, 'Runtime.runIfWaitingForDebugger', {}, timeoutMs);
     // reload() 當場終止這個 SW，回覆多半收不到;收不到不算失敗。
     await sendCdpCommand(
       sw.webSocketDebuggerUrl,
@@ -597,30 +701,15 @@ async function reloadExtension(port, extensionId, timeoutMs = CDP_COMMAND_TIMEOU
     if (wakeTargetId) await closeTarget(port, wakeTargetId).catch(() => {});
   }
 
-  // 等舊的 SW target 退場再回。它的 debugger endpoint 在 reload 後就死了，
-  // 接手的步驟若連上去，指令送出去永遠等不到回覆(現場踩過:下一步的
-  // Runtime.runIfWaitingForDebugger 直接逾時)。
-  const deadline = Date.now() + SW_RETIRE_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const current = await findServiceWorkerTarget(port, extensionId);
-    if (!current || current.id !== sw.id) break;
-    await new Promise((r) => setTimeout(r, 200));
-  }
+  await waitForServiceWorkerRetire(port, extensionId, sw);
 
   console.log('已重新載入擴充(清掉 service worker 的舊腳本快取)。');
 }
 
 async function configureApiEnv(port, extensionId, env, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
-  const { sw, wakeTargetId } = await ensureServiceWorker(port, extensionId);
+  const { sw, wakeTargetId } = await attachToServiceWorker(port, extensionId, timeoutMs);
 
   try {
-    // CDP 對「剛啟動」的 service worker 預設會暫停等除錯器接手(即使沒人真
-    // 的要下中斷點)，之後送的指令(含 Runtime.evaluate)全部卡在佇列裡，直到
-    // 收到 Runtime.runIfWaitingForDebugger 才會繼續執行——這是 sendCdpCommand
-    // 逐次開關連線也不受影響的目標層級狀態，對「原本就在線」的 SW 呼叫則是
-    // 無害的 no-op，因此不論是否剛喚醒都送一次。
-    await sendCdpCommand(sw.webSocketDebuggerUrl, 'Runtime.runIfWaitingForDebugger', {}, timeoutMs);
-
     // 寫新的 syncApiBase 之前先比對舊值:換了環境就把舊登入狀態清乾淨。
     const current = await readCurrentApiBase(sw.webSocketDebuggerUrl, timeoutMs);
     if (current !== API_BASE[env]) {
@@ -722,14 +811,17 @@ function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, lo
   console.log(`Profile:     ${profile}`);
   console.log(`CDP 埠:      ${port}`);
   console.log(`擴充 ID:     ${extensionId}`);
-  console.log(`載入路徑:    ${loadPath}`);
+  console.log(`載入路徑:    ${loadPath}（dev-build 的副本）`);
   console.log(`dev-build:   ${buildCommit}`);
   console.log('====================================================');
 }
 
 // 同一個擴充 ID 不能同時從兩個 unpacked 路徑載入:Chrome 已經在跑、而且它
 // 記著的載入路徑與這次要載的不同時，得先關掉 Chrome 才能換過去。
-// --restart 才會真的關;否則印出指令並設 exitCode，不動使用者的視窗。
+//
+// 三個環境共用副本路徑之後，這只會在「Chrome 裡還載著舊版直接指向 dev-build
+// 的擴充」這個一次性過渡發生，日常切環境不會再撞上。--restart 才會真的關;
+// 否則印出建議並設 exitCode，不動使用者的視窗。
 async function ensureLoadPathSwitchable(opts, loadPath) {
   const alreadyUp = await cdpVersion(opts.port).then(
     () => true,
@@ -741,10 +833,11 @@ async function ensureLoadPathSwitchable(opts, loadPath) {
   if (!loaded || samePath(loaded, loadPath)) return;
 
   if (!opts.restart) {
-    console.error('錯誤:Chrome 目前載入的擴充路徑與這次要載的不同，同一個擴充 ID 不能並存兩個路徑。');
+    console.error('提示:Chrome 目前載入的擴充路徑與這次要載的不同，同一個擴充 ID 不能並存兩個路徑。');
     console.error(`  目前載入:${loaded}`);
     console.error(`  這次要載:${loadPath}`);
-    console.error('請關閉這個除錯用 Chrome 後重跑，或加上 --restart 讓本腳本代為關閉再重開。');
+    console.error('建議加上 --restart 讓本腳本關閉 Chrome 再重開，或自己關掉這個除錯用 Chrome 後重跑。');
+    console.error('這是切到共用副本路徑的一次性過渡，之後三個環境都載同一個路徑，不會再要求重啟。');
     process.exitCode = 1;
     return;
   }
@@ -815,22 +908,31 @@ async function main() {
     await switchDevBuildRef(opts.build, opts.ref);
   }
 
-  // local 載副本(dev-build 內容 ＋ 注入的 localhost 權限)，其餘環境直接載
-  // dev-build。--ref 永遠作用在 dev-build worktree，同步到副本是這一步。
-  let loadPath = opts.build;
-  if (opts.env === 'local') {
-    const localBuild = localBuildDirFor(opts.build);
-    syncLocalBuild(opts.build, localBuild);
-    console.log(`已同步 dev-build 至副本並注入 ${LOCAL_HOST_PERMISSION}:${localBuild}`);
-    loadPath = localBuild;
-  }
+  // 三個環境都載同一份副本，只有 local 這一次會多注入 localhost 權限。
+  // 共用路徑是刻意的:同一個擴充 ID 不能並存兩個 unpacked 路徑，載入路徑
+  // 跟著環境走就代表每次切環境都得關掉重開 Chrome。實測(Chrome 151)確認
+  // 同路徑就地重載時，已授予的 identity 與其他 host 權限完整保留;只有
+  // 「manifest 不再宣告」的那一項會被撤銷（切回 local 時重按一次授權）。
+  // --ref 永遠作用在 dev-build worktree，同步到副本是這一步。
+  const loadPath = loadedBuildDirFor(opts.build);
+  syncLoadedBuild(opts.build, loadPath, opts.env === 'local' ? LOCAL_HOST_PERMISSION : null);
+  console.log(
+    opts.env === 'local'
+      ? `已同步 dev-build 至副本並注入 ${LOCAL_HOST_PERMISSION}:${loadPath}`
+      : `已同步 dev-build 至副本（manifest 未改動）:${loadPath}`
+  );
 
   await ensureLoadPathSwitchable(opts, loadPath);
   if (process.exitCode) return;
 
   await ensureChromeRunning(opts);
 
+  // 對「已載入」的擴充再跑一次 loadUnpacked 等同重載，舊的 SW 當場被終止。
+  // 先記下它，載完等它退場，否則下一步會連上一個已死的 endpoint。
+  const previousSw = await findServiceWorkerTarget(opts.port, EXPECTED_EXTENSION_ID);
   const extensionId = await loadUnpackedExtension(opts.port, loadPath);
+  await waitForServiceWorkerRetire(opts.port, extensionId, previousSw);
+
   await reloadExtension(opts.port, extensionId);
   await configureApiEnvAndCleanup(opts.port, extensionId, opts.env, opts.open);
 
@@ -884,7 +986,8 @@ export {
   parseArgs,
   productionGuard,
   withHostPermission,
-  localBuildDirFor,
+  loadedBuildDirFor,
+  syncLoadedBuild,
   samePath,
   probeHealth,
   readLoadedExtensionPath,
