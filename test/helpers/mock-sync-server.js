@@ -239,15 +239,25 @@ function eventTimeOf(item) {
  * @param {string} [options.apiBase]          只接受這個 base 的請求（預設 production）
  * @param {string} [options.userId]
  * @param {string} [options.email]
+ * @param {string|null} [options.name]         登入／get-session 回應的 user.name（車道 A，D15）。
+ *   顯式傳 `null` 表示這次回應完全不帶這個鍵（供「後端缺席、退回 id_token
+ *   payload」的測試情境），省略則用假值。
+ * @param {string|null} [options.image]        同上，user.image（頭像網址）。
  * @param {'free'|'pro'} [options.plan]       free 才做配額淘汰（api-spec 7.1）
  * @param {number} [options.quota]            覆寫 free 配額（預設 1000）
  */
 function createMockSyncServer(options = {}) {
   const now = options.now || (() => Date.now());
   const apiBase = (options.apiBase || 'https://api.metalinkclearer.workers.dev').replace(/\/$/, '');
+  const includeName = options.name !== null;
+  const includeImage = options.image !== null;
   const user = {
     id: options.userId || 'user-abc',
     email: options.email || 'someone@example.com',
+    // D15：假值，供「syncState 記錄名字與大頭照」的測試使用。image 預設就是
+    // 白名單接受的 googleusercontent.com 網域，非白名單案例由測試顯式覆寫。
+    name: includeName ? options.name || 'Fake User' : undefined,
+    image: includeImage ? options.image || 'https://lh3.googleusercontent.com/a/fake-mock-user' : undefined,
     plan: options.plan || 'free',
   };
   const quota = options.quota || FREE_QUOTA;
@@ -540,6 +550,17 @@ function createMockSyncServer(options = {}) {
     return jsonResponse(200, { ok: true });
   }
 
+  // D15（車道 A）：回應內 user 物件的公開視圖。name／image 缺席（options 顯
+  // 式傳 null）時整個鍵不輸出，讓插件端「後端缺席、退回 id_token payload」
+  // 的分支測得到。
+  function publicUser(withPlan) {
+    const out = { id: user.id, email: user.email };
+    if (user.name !== undefined) out.name = user.name;
+    if (user.image !== undefined) out.image = user.image;
+    if (withPlan) out.plan = user.plan;
+    return out;
+  }
+
   // ---- 認證端點（api-spec 2.1:92-105、2.2:121-124） ----
   function handleSignIn(headers, body) {
     if (!isJsonContentType(headers['content-type'])) {
@@ -551,7 +572,7 @@ function createMockSyncServer(options = {}) {
     state.accountDeleted = false;
     const token = issueToken();
     // 插件端契約第 3 點：token 從 `set-auth-token` 回應標頭取得。
-    return jsonResponse(200, { user: { id: user.id, email: user.email }, redirect: false }, {
+    return jsonResponse(200, { user: publicUser(false), redirect: false }, {
       'set-auth-token': token,
     });
   }
@@ -561,7 +582,7 @@ function createMockSyncServer(options = {}) {
     if (!authed(headers)) return jsonResponse(200, null);
     return jsonResponse(200, {
       session: { userId: user.id, expiresAt: now() + 90 * 24 * 60 * 60 * 1000 },
-      user: { id: user.id, email: user.email, plan: user.plan },
+      user: publicUser(true),
     });
   }
 

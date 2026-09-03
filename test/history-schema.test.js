@@ -619,6 +619,9 @@ test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
   assert.deepEqual(C.DEFAULT_SYNC_STATE, {
     userId: null,
     email: null,
+    // D15（車道 A）:帳號入口顯示用的名字與大頭照，見下方 sanitize 測試。
+    displayName: null,
+    avatarUrl: null,
     cursor: null,
     lastSyncedAt: null,
     clearedAt: null,
@@ -666,6 +669,147 @@ test('S5 normalizeSyncState:垃圾輸入回全預設，且每次回傳新物件�
   // 未知鍵不得夾帶進來（同步狀態會整包寫回 storage，夾帶的鍵會一路長存）。
   const extra = C.normalizeSyncState({ userId: 'u', evil: 'x' });
   assert.deepEqual(Object.keys(extra).sort(), Object.keys(C.DEFAULT_SYNC_STATE).sort());
+});
+
+// S5（車道 A，D15）：normalizeSyncState 對 displayName／avatarUrl 的垃圾輸入
+// 一律回 null——這兩欄的合法值檢查（trim／80 字元上限／googleusercontent.com
+// 白名單）委派給 sanitizeDisplayName／sanitizeAvatarUrl，這裡只驗 normalizeSyncState
+// 確實把它們接進整形流程。
+test('S5 normalizeSyncState:displayName／avatarUrl 型別錯誤或不合法值一律回 null', () => {
+  const bad = C.normalizeSyncState({
+    userId: 'user-1',
+    displayName: 42,
+    avatarUrl: ['https://lh3.googleusercontent.com/a/x'],
+  });
+  assert.equal(bad.displayName, null, '非字串回 null');
+  assert.equal(bad.avatarUrl, null, '非字串回 null');
+
+  const rejected = C.normalizeSyncState({
+    displayName: '   ',
+    avatarUrl: 'http://lh3.googleusercontent.com/a/x', // 非 https
+  });
+  assert.equal(rejected.displayName, null, '去頭尾空白後為空字串回 null');
+  assert.equal(rejected.avatarUrl, null, '非 https 一律拒收');
+
+  const ok = C.normalizeSyncState({
+    displayName: '  Alice  ',
+    avatarUrl: 'https://lh3.googleusercontent.com/a/legit',
+  });
+  assert.equal(ok.displayName, 'Alice', '合法值原樣（去空白後）保留');
+  assert.equal(ok.avatarUrl, 'https://lh3.googleusercontent.com/a/legit');
+});
+
+// S5（車道 A，D15）：sanitizeDisplayName 純函式——去頭尾空白、上限 80 字元、
+// 非字串或空字串一律回 null。
+test('S5 sanitizeDisplayName:去頭尾空白、上限 80 字元、空字串與非字串回 null', () => {
+  assert.equal(C.sanitizeDisplayName('  Alice  '), 'Alice');
+  assert.equal(C.sanitizeDisplayName(''), null);
+  assert.equal(C.sanitizeDisplayName('   '), null, '純空白去除後為空字串');
+  assert.equal(C.sanitizeDisplayName(null), null);
+  assert.equal(C.sanitizeDisplayName(undefined), null);
+  assert.equal(C.sanitizeDisplayName(42), null);
+  assert.equal(C.sanitizeDisplayName({}), null);
+
+  const long = 'A'.repeat(120);
+  const capped = C.sanitizeDisplayName(long);
+  assert.equal(capped.length, 80, '超過上限要截斷，不是整欄丟棄');
+  assert.equal(capped, 'A'.repeat(80));
+});
+
+// S5（車道 A，D15，審查追加）：換行/tab 等空白摺成單一半形空白，不是整
+// 欄丟棄或原樣保留——顯示名字是帳號入口的單行 UI 元素。
+test('S5 sanitizeDisplayName:內部換行/連續空白摺成單一半形空白', () => {
+  assert.equal(C.sanitizeDisplayName('Ali\nce'), 'Ali ce');
+  assert.equal(C.sanitizeDisplayName('Ali\r\nce'), 'Ali ce');
+  assert.equal(C.sanitizeDisplayName('Ali\tce'), 'Ali ce');
+  assert.equal(C.sanitizeDisplayName('Ali   ce'), 'Ali ce', '連續空白摺成一個');
+  assert.equal(C.sanitizeDisplayName('  Ali\nce  '), 'Ali ce', '摺行與去頭尾空白疊加');
+});
+
+// S5（車道 A，D15，審查追加）：80 字元上限的截斷點若剛好落在 surrogate
+// pair(例如 emoji)中間，不得留下孤立高位代理——用 String.isWellFormed()
+// 驗證截斷結果是合法的 UTF-16 字串，不會被渲染成 U+FFFD 替代字元。
+test('S5 sanitizeDisplayName:截斷不得留下孤立的高位代理(emoji 不切半)', () => {
+  const long = 'A' + '\u{1F600}'.repeat(50); // 'A' + 50 個 😀(各佔 2 個 code unit)
+  const capped = C.sanitizeDisplayName(long);
+  assert.ok(capped.length <= 80, '截斷後長度不得超過上限');
+  assert.equal(typeof capped.isWellFormed === 'function' ? capped.isWellFormed() : true, true, '不得含孤立代理');
+  assert.equal(capped.indexOf('�'), -1, '不得含替代字元');
+});
+
+// S5（車道 A，D15）：sanitizeAvatarUrl 白名單——只接受 https 且 host 為
+// googleusercontent.com 本身或其子網域，其餘一律回 null。含「@ 偽裝網址」
+// 案例：new URL() 會把 `https://<誘餌>@evil.com/x` 解析成 hostname=evil.com，
+// 判準必須是解析後的 hostname，不能是整串字串比對。
+test('S5 sanitizeAvatarUrl:白名單只接受 https 的 googleusercontent.com（含子網域），其餘回 null', () => {
+  assert.equal(
+    C.sanitizeAvatarUrl('https://lh3.googleusercontent.com/a/ACg8ocJ'),
+    'https://lh3.googleusercontent.com/a/ACg8ocJ',
+    '合法子網域原樣保留'
+  );
+  assert.equal(
+    C.sanitizeAvatarUrl('https://googleusercontent.com/a/x'),
+    'https://googleusercontent.com/a/x',
+    'apex 網域本身也接受'
+  );
+
+  assert.equal(
+    C.sanitizeAvatarUrl('http://lh3.googleusercontent.com/a/x'),
+    null,
+    '非 https 一律拒收'
+  );
+  assert.equal(
+    C.sanitizeAvatarUrl('https://evil.example.com/avatar.png'),
+    null,
+    '其他網域一律拒收'
+  );
+  assert.equal(
+    C.sanitizeAvatarUrl('javascript:alert(1)'),
+    null,
+    '偽協定一律拒收'
+  );
+  assert.equal(
+    C.sanitizeAvatarUrl('https://lh3.googleusercontent.com.evil.com/x'),
+    null,
+    '字尾偽裝(host 實際是 evil.com 的子網域)一律拒收'
+  );
+  assert.equal(
+    C.sanitizeAvatarUrl('https://lh3.googleusercontent.com@evil.com/x'),
+    null,
+    '@ 偽裝(userinfo 塞合法網域，真正 host 是 evil.com)一律拒收'
+  );
+  assert.equal(C.sanitizeAvatarUrl('not a url'), null, '無法解析的字串回 null');
+  assert.equal(C.sanitizeAvatarUrl(''), null);
+  assert.equal(C.sanitizeAvatarUrl(null), null);
+  assert.equal(C.sanitizeAvatarUrl(42), null);
+});
+
+// S5（車道 A，D15，審查追加）：長度上限——超長字串在丟進 new URL() 之前
+// 就要被擋下，沿用 LIMITS.ORIGINAL_MAX 當同一把尺（防呆，不是嚴謹的網址
+// 長度標準）。
+test('S5 sanitizeAvatarUrl:超過長度上限一律回 null', () => {
+  const okLength = 'https://lh3.googleusercontent.com/a/' + 'x'.repeat(C.LIMITS.ORIGINAL_MAX - 40);
+  assert.ok(okLength.length <= C.LIMITS.ORIGINAL_MAX, '測資本身要落在上限內才有意義');
+  assert.notEqual(C.sanitizeAvatarUrl(okLength), null, '上限內的合法網址仍應通過');
+
+  const tooLong = 'https://lh3.googleusercontent.com/a/' + 'x'.repeat(2 * 1024 * 1024);
+  assert.equal(C.sanitizeAvatarUrl(tooLong), null, '2MB 網址一律拒收，不進 new URL() 解析');
+});
+
+// S5（車道 A，D15，審查追加）：回傳值是 new URL(value).href（正規化後的網
+// 址），不是原始輸入——WHATWG URL 解析會剝掉 ASCII tab/newline，並把 bidi
+// 控制字元等落在路徑段的字元百分比編碼，兩者都不會原樣留在回傳值裡。
+test('S5 sanitizeAvatarUrl:回傳值為 new URL(value).href，不含 CRLF／bidi 控制字元原文', () => {
+  const withCrlf = 'https://lh3.googleusercontent.com/a/x\r\ny';
+  const outCrlf = C.sanitizeAvatarUrl(withCrlf);
+  assert.equal(outCrlf, new URL(withCrlf).href, '回傳值等於 new URL(...).href');
+  assert.equal(outCrlf.indexOf('\r'), -1);
+  assert.equal(outCrlf.indexOf('\n'), -1);
+
+  const withBidi = 'https://lh3.googleusercontent.com/a/x‮y'; // U+202E RLO
+  const outBidi = C.sanitizeAvatarUrl(withBidi);
+  assert.equal(outBidi, new URL(withBidi).href, '回傳值等於 new URL(...).href');
+  assert.equal(outBidi.indexOf('‮'), -1, 'bidi 控制字元不得以原始碼位留在回傳值');
 });
 
 // S5：entry → SyncItem（計劃 4.3）。seen[].source 依 D4 映射：share→share，

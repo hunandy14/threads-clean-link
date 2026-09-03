@@ -85,6 +85,11 @@
     SEEN_MAX: 50,
   };
 
+  // D15:帳號入口顯示名字的長度上限(去頭尾空白後)。獨立常數而非併入
+  // LIMITS——LIMITS 的完整鍵集合另有測試逐鍵斷言(車道 A 範圍外的檔案)，混
+  // 進去會連動改到不該碰的測試。
+  var DISPLAY_NAME_MAX = 80;
+
   // 三顆開關的預設值全量集合(單一權威)。各端挑自己要的:background 取
   // autoClean/saveHistory;popup 取 autoClean/postCopyEnabled;options 取三顆全
   // 部。bridge.js 是 content script，範圍外，自帶 SETTINGS_DEFAULTS。
@@ -213,6 +218,10 @@
   var DEFAULT_SYNC_STATE = {
     userId: null,
     email: null,
+    // D15:帳號入口顯示用——已登入時秀名字與 Google 大頭照，備援 email 前段
+    // 與首字母。兩欄一律經下方 sanitize 函式把關，不直接存後端/id_token 原文。
+    displayName: null,
+    avatarUrl: null,
     cursor: null,
     lastSyncedAt: null,
     clearedAt: null,
@@ -229,6 +238,63 @@
     return typeof value === 'number' && isFinite(value) ? value : null;
   }
 
+  // D15:帳號入口的顯示名字。去頭尾空白、上限 DISPLAY_NAME_MAX 字元;非字串
+  // 或去空白後為空字串一律回 null(空字串會讓 UI 誤判成「有名字但顯示空
+  // 白」)。剝控制字元的規則與其他文字欄位一致(先剝後截)。
+  //
+  // 【摺成單行】\n/\r/tab 等空白字元(stripControlChars 刻意保留 tab/
+  // newline,見該函式註解)一律摺成單一半形空白再 trim——顯示名字是帳號入
+  // 口的單行 UI 元素,換行會被瀏覽器渲染成看不出來的怪異間距或直接破版。
+  //
+  // 【slice 後補一刀】String.slice 以 UTF-16 code unit 計數，80 這一刀可能
+  // 剛好切在 surrogate pair(例如 emoji)中間，留下孤立的高位代理——多數渲
+  // 染器會畫成 U+FFFD 替代字元,是使用者看得到的亂碼。截斷後若最後一個
+  // code unit 落在高位代理範圍(U+D800-U+DBFF)就整顆代理對一起丟掉,寧可
+  // 短一個字也不留半個 emoji。
+  function sanitizeDisplayName(value) {
+    if (typeof value !== 'string') return null;
+    var stripped = stripControlChars(value).replace(/\s+/g, ' ').trim();
+    if (stripped.length === 0) return null;
+    var truncated = stripped.slice(0, DISPLAY_NAME_MAX);
+    var lastCode = truncated.charCodeAt(truncated.length - 1);
+    if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+      truncated = truncated.slice(0, -1);
+    }
+    return truncated.length > 0 ? truncated : null;
+  }
+
+  // D15:頭像網址白名單。只接受 https 且 host 為 googleusercontent.com 本身
+  // 或其子網域(Google 個人頭像走這個 CDN，例如 lh3.googleusercontent.com)，
+  // 其餘一律回 null——後端資料一旦被污染，UI 不該把任意網址當成 <img src>
+  // 載入(可能觸發外部請求外洩 IP、或塞 data:/javascript: 之類的偽協定)。
+  //
+  // 【比對 hostname，不比對整串網址】new URL() 會把 "https://real.host@evil.
+  // com/x" 解析成 hostname = evil.com(real.host 只是 userinfo);用 indexOf/
+  // includes 對整串字比對會被這種偽裝網址騙過，用解析後的 hostname 才是可
+  // 信的判準。
+  //
+  // 【長度上限先於解析】超長字串丟進 new URL() 一樣會被吃掉記憶體/CPU 才拋
+  // 錯，沿用既有 ORIGINAL_MAX(貼文網址的長度上限)當同一把尺，這裡不是嚴謹
+  // 的網址長度標準,只是防呆。
+  //
+  // 【回傳 parsed.href，不回傳原始 value】new URL() 解析時已經正規化過(百
+  // 分比編碼、預設埠等)，href 不含控制字元/前後空白/bidi 標記——這些字元合
+  // 法落在 URL 的某些位置(例如 query/fragment)但夾帶控制字元的頭像網址本
+  // 身就是可疑輸入，讓 UI 拿到解析後的乾淨字串比對照抄使用者輸入更安全。
+  function sanitizeAvatarUrl(value) {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    if (value.length > LIMITS.ORIGINAL_MAX) return null;
+    var parsed;
+    try {
+      parsed = new URL(value);
+    } catch (e) {
+      return null;
+    }
+    if (parsed.protocol !== 'https:') return null;
+    if (!hostnameEndsWith(parsed.hostname, 'googleusercontent.com')) return null;
+    return parsed.href;
+  }
+
   // syncState 防禦性整形:缺席欄位補預設、型別不對的欄位回該欄預設、未知鍵
   // 一律丟棄(整包會寫回 storage，夾帶的鍵會一路長存)。**每次回傳全新物件**
   // ——回傳共用的 DEFAULT_SYNC_STATE 參照時，呼叫端一改就污染全域預設值。
@@ -237,6 +303,8 @@
     return {
       userId: optionalString(raw.userId),
       email: optionalString(raw.email),
+      displayName: sanitizeDisplayName(raw.displayName),
+      avatarUrl: sanitizeAvatarUrl(raw.avatarUrl),
       cursor: optionalString(raw.cursor),
       lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
       clearedAt: optionalFiniteNumber(raw.clearedAt),
@@ -485,6 +553,8 @@
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
     DEFAULT_SYNC_AUTH: DEFAULT_SYNC_AUTH,
     normalizeSyncState: normalizeSyncState,
+    sanitizeDisplayName: sanitizeDisplayName,
+    sanitizeAvatarUrl: sanitizeAvatarUrl,
     randomUuid: randomUuid,
     toSyncItem: toSyncItem,
     fromSyncItem: fromSyncItem,
