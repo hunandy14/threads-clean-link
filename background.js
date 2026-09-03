@@ -337,6 +337,9 @@ const SYNC_MESSAGE_HANDLERS = {
 // ——content script 的 sender.url 是它所在網頁的網址(https://www.threads.com/...)，
 // 其他擴充走的是 onMessageExternal 進不了這個 listener，兩者都構不出
 // chrome-extension://<自己的 id>/ 這個前綴。
+// 本判準假設 manifest 沒有 web_accessible_resources 與 externally_connectable；
+// 若日後新增 WAR，被網頁 iframe 的 WAR 頁面也會帶本擴充前綴，需回頭把判準收窄成
+// 具名頁面(options.html／popup.html)或改用 sender.origin。
 function isExtensionPageSender(sender) {
   if (!sender) return false;
   const selfId = chrome.runtime && chrome.runtime.id;
