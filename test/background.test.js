@@ -2621,10 +2621,10 @@ test('遷移(postKeyOf):舊資料兩筆分別為「帶 query」與「m. 子網�
 // ============================================================================
 // 雲端同步的 background 訊息入口（車道 D，T6）
 //
-// 契約：docs/cloud-sync-plan.md 第 5.1／5.2 節的五個訊息，只接受擴充頁
-// （`sender.id === chrome.runtime.id` 且 `!sender.tab`）；content script 送來
-// 一律忽略。同步引擎本體在 sync.js（見 test/sync.test.js），這裡只驗路由與
-// 接線——因此注入 TCLSync 替身，不載入真的引擎。
+// 契約：docs/cloud-sync-plan.md 第 5.1／5.2 節的五個訊息，只接受本擴充自己的頁面
+// （`sender.id === chrome.runtime.id` 且 `sender.url` 為 `chrome-extension://<id>/`
+// 開頭）；content script 送來一律忽略。同步引擎本體在 sync.js（見 test/sync.test.js），
+// 這裡只驗路由與接線——因此注入 TCLSync 替身，不載入真的引擎。
 // ============================================================================
 
 const SYNC_STATE_KEYS = ['apiBase', 'email', 'lastError', 'lastSyncedAt', 'pendingCount', 'status'];
@@ -2749,7 +2749,8 @@ function loadBackgroundForSync(opts = {}) {
   };
 }
 
-const EXT_PAGE_SENDER = { id: EXTENSION_ID };
+// popup 形狀：擴充頁面，沒有 tab。options 形狀（本身就是分頁）另見下方回歸測試。
+const EXT_PAGE_SENDER = { id: EXTENSION_ID, url: `chrome-extension://${EXTENSION_ID}/popup.html` };
 const CONTENT_SCRIPT_SENDER = { id: EXTENSION_ID, tab: { id: 12, url: 'https://www.threads.com/' } };
 const OTHER_EXTENSION_SENDER = { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
 
