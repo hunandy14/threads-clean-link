@@ -13,12 +13,17 @@
 // 夾帶開發用權限。
 //
 // --env local 需要開發機自己跑著後端(wrangler dev，port 8787):啟動前先探
-// /health，通了就沿用既有;不通且未帶 --no-backend 時，自動在後端目錄(預設
-// ~/.threads-clean-link/api-local/api，可用環境變數 TCL_API_LOCAL_DIR 覆寫)
-// 背景執行 npm run dev，等到 /health 通過(最多 60 秒)才繼續，逾時就殺掉剛
-// 啟動的行程樹並非 0 結束。啟動的後端本腳本結束不會關掉(常駐)，之後重跑
-// --env local 會直接沿用;要關閉用 --stop-backend(獨立旗標，不需要 --env)。
-// --no-backend 維持舊行為:探活失敗就印手動啟動提示並非 0 結束，不碰後端。
+// /health，通了就沿用既有，做完 Chrome 的步驟後正常結束;不通且未帶
+// --no-backend 時，預設在後端目錄(預設 ~/.threads-clean-link/api-local/api，
+// 可用環境變數 TCL_API_LOCAL_DIR 覆寫)於**前景**啟動 npm run dev，比照一般
+// 網站的 dev server:輸出直接印在目前這個終端機，等到 /health 通過(最多
+// 60 秒)才繼續做 Chrome 的步驟，之後本腳本卡在前景，Ctrl+C(SIGINT/SIGTERM)
+// 會把後端整棵一併關掉再結束;後端自己先掛掉(未按 Ctrl+C)則印結束碼並非 0
+// 結束。--detach-backend 改回背景常駐:不佔用終端機、輸出導向固定 log 檔
+// (每次啟動覆寫，PID 記在固定 PID 檔)，本腳本結束不會關掉後端，之後重跑
+// --env local 會直接沿用既有;要關閉用 --stop-backend(獨立旗標，不需要
+// --env，也用來救回被強制關閉父行程後留下的孤兒行程)。--no-backend 維持
+// 舊行為:探活失敗就印手動啟動提示並非 0 結束，不碰後端。
 //
 // Chrome 152 起 --load-extension 命令列參數被忽略，改用 CDP
 // Extensions.loadUnpacked 載入未封裝擴充;重開 Chrome 後先前載入的擴充不會
@@ -34,7 +39,7 @@
 //     node tools/dev-browser.mjs --env <local|staging|production> [--ref <git ref>]
 //                                 [--no-open] [--port <port>] [--profile <dir>]
 //                                 [--build <dir>] [--fresh] [--restart] [--yes]
-//                                 [--no-backend] [--help]
+//                                 [--no-backend] [--detach-backend] [--help]
 //     node tools/dev-browser.mjs --stop-backend
 import { execFile, spawn } from 'node:child_process';
 import {
@@ -140,6 +145,7 @@ function parseArgs(argv) {
     fresh: false,
     restart: false,
     noBackend: false,
+    detachBackend: false,
     stopBackend: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -178,6 +184,9 @@ function parseArgs(argv) {
         break;
       case '--no-backend':
         opts.noBackend = true;
+        break;
+      case '--detach-backend':
+        opts.detachBackend = true;
         break;
       case '--stop-backend':
         opts.stopBackend = true;
@@ -344,6 +353,11 @@ function isPortOpen(port, host = '127.0.0.1', timeoutMs = 1000) {
 // (行程仍會正常啟動，只是萬一逾時，log 尾段可能是空的)。npmCliExists 由
 // 呼叫端查好餵進來，這裡不做任何 I/O。其他平台 npm 本身就是可直接執行的
 // 檔案，不需要外殼，也不受這個問題影響。
+//
+// ensureLocalBackend 的前景與背景(--detach-backend)兩種模式共用這支函式:
+// 前景模式雖然不 detach、也不透過 fd 重導向(stdio 是 'inherit')，不會踩到
+// 上述那個 bug，但沿用同一套目標解析邏輯比為兩種模式各寫一套判斷簡單，也
+// 讓兩種模式在「怎麼找到 npm」這件事上行為一致。
 function resolveBackendSpawnTarget({ command, args, plat, execPath, npmCliExists }) {
   if (command === 'npm' && plat === 'win32') {
     if (npmCliExists) {
@@ -359,7 +373,26 @@ function resolveBackendSpawnTarget({ command, args, plat, execPath, npmCliExists
 // 就用 npm run dev 帶起來，等到 /health 通過再回傳。所有 I/O 都走注入的
 // deps，預設值是真正的 node:fs／node:child_process／probeHealth，測試可以
 // 整組換成假的，不必真的 spawn 一個行程或寫檔案。
-async function ensureLocalBackend({ apiBase, noBackend, backendDir, logPath, pidPath, deps = {} }) {
+//
+// detachBackend 決定啟動出來的後端是前景還是背景:
+// - false(預設，比照一般網站 dev server):不 detach、stdio 全部 inherit 到
+//   目前這個終端機(wrangler 的顏色與互動提示原樣顯示)，不開 log 檔——輸出
+//   本來就看得到，沒必要再多寫一份。呼叫端(main())要在健康之後掛上
+//   attachForegroundBackendLifecycle，讓 Ctrl+C 能把後端一併收掉。
+// - true:維持原本的背景常駐設計——detached + fd 重導向到固定 log 檔
+//   (每次啟動覆寫)。windowsHide:true 是必要的:Windows 上 detached 子行程
+//   預設仍會彈出自己的主控台視窗(即使輸出已導到 log 檔，視窗本身還是會
+//   顯示，只是全黑)，這個選項讓子行程不建立主控台視窗，跟 detached 疊加不
+//   影響行程確實脫離父行程;非 Windows 平台這個選項無作用，不需要另外分支。
+async function ensureLocalBackend({
+  apiBase,
+  noBackend,
+  detachBackend = false,
+  backendDir,
+  logPath,
+  pidPath,
+  deps = {},
+}) {
   const {
     probeHealthFn = probeHealth,
     spawnFn = spawn,
@@ -413,19 +446,32 @@ async function ensureLocalBackend({ apiBase, noBackend, backendDir, logPath, pid
     npmCliExists,
   });
 
-  const logFd = openSyncFn(logPath, 'w');
   let child;
-  try {
+  if (detachBackend) {
+    const logFd = openSyncFn(logPath, 'w');
+    try {
+      child = spawnFn(target.file, target.args, {
+        cwd: plan.cwd,
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+        shell: target.shell,
+        windowsHide: true,
+      });
+    } finally {
+      closeSyncFn(logFd);
+    }
+    child.unref();
+  } else {
+    // 前景:stdio 全部交給目前這個終端機，不經過 Node 的 JS 層轉印——沒有
+    // 額外的行過濾／加前綴邏輯，wrangler 的顏色與互動提示（例如按 x 結束）
+    // 都原樣可用。不 detach、不 unref:子行程存在期間本身就會讓事件迴圈保持
+    // 運作，main() 結尾不會呼叫 process.exit()，行程自然卡在這裡等 Ctrl+C。
     child = spawnFn(target.file, target.args, {
       cwd: plan.cwd,
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
+      stdio: 'inherit',
       shell: target.shell,
     });
-  } finally {
-    closeSyncFn(logFd);
   }
-  child.unref();
   writeFileSyncFn(pidPath, String(child.pid));
 
   const deadline = Date.now() + pollTimeoutMs;
@@ -439,16 +485,21 @@ async function ensureLocalBackend({ apiBase, noBackend, backendDir, logPath, pid
   }
 
   if (up) {
-    return { status: 'started', pid: child.pid, log: logPath };
+    return detachBackend
+      ? { status: 'started', pid: child.pid, log: logPath }
+      : { status: 'started', pid: child.pid, child };
   }
 
   // 逾時:後端沒救了，把剛起的行程樹連根殺掉，不留下一個半死不活佔著埠的
-  // wrangler，也不留下指向它的 PID 檔誤導下一次 --stop-backend。
+  // wrangler，也不留下指向它的 PID 檔誤導下一次 --stop-backend。前景模式
+  // 沒有 log 檔可讀——輸出已經直接印在終端機上了。
   let tail = '';
-  try {
-    tail = tailLines(readFileSyncFn(logPath, 'utf8'), BACKEND_LOG_TAIL_LINES);
-  } catch {
-    // log 檔讀不到就算了，逾時本身已經是要回報的錯誤，缺一段尾巴不致命。
+  if (detachBackend) {
+    try {
+      tail = tailLines(readFileSyncFn(logPath, 'utf8'), BACKEND_LOG_TAIL_LINES);
+    } catch {
+      // log 檔讀不到就算了，逾時本身已經是要回報的錯誤，缺一段尾巴不致命。
+    }
   }
   await killTreeRunner(child.pid, plat).catch(() => {});
   try {
@@ -457,7 +508,80 @@ async function ensureLocalBackend({ apiBase, noBackend, backendDir, logPath, pid
     // 清不掉就算了，不能蓋掉原本要回報的逾時錯誤。
   }
 
-  return { status: 'timeout', log: logPath, tail, pid: child.pid };
+  return detachBackend
+    ? { status: 'timeout', log: logPath, tail, pid: child.pid }
+    : { status: 'timeout', tail: '', pid: child.pid };
+}
+
+// --env local 前景模式(預設)用:健康確認通過、Chrome 也接上後，main() 掛上
+// 這支函式讓 Ctrl+C(SIGINT/SIGTERM)能把前景啟動的後端一併收掉，而不是只
+// 關掉本腳本、留下 wrangler 孤兒繼續佔著埠。收到訊號或子行程自己先結束
+// (例如 wrangler 崩潰)都只處理一次——shuttingDown 旗標避免兩條路徑搶著收尾。
+//
+// signalSource 預設是 process，測試注入假的 EventEmitter 手動觸發，不必真的
+// 送系統訊號；exitFn 預設是 process.exit，測試注入假的以斷言收到的結束碼，
+// 不必真的終止測試行程。
+function attachForegroundBackendLifecycle({ child, pidPath, port, deps = {} }) {
+  const {
+    signalSource = process,
+    exitFn = process.exit,
+    existsSyncFn = existsSync,
+    unlinkSyncFn = unlinkSync,
+    isPortOpenFn = isPortOpen,
+    platformFn = platform,
+    killTreeRunner = runKillTree,
+    pollTimeoutMs = BACKEND_STOP_POLL_TIMEOUT_MS,
+    pollIntervalMs = BACKEND_STOP_POLL_INTERVAL_MS,
+    sleep = defaultSleep,
+    log = console.log,
+    error = console.error,
+  } = deps;
+
+  let shuttingDown = false;
+
+  const cleanupPidFile = () => {
+    try {
+      if (existsSyncFn(pidPath)) unlinkSyncFn(pidPath);
+    } catch {
+      // 刪不掉不影響「後端已關閉」這個結論，不因此中斷收尾流程。
+    }
+  };
+
+  const onSignal = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log('');
+    log('收到中斷信號，正在關閉本機後端 ...');
+
+    const plat = platformFn();
+    await killTreeRunner(child.pid, plat).catch((err) => {
+      if (!isProcessNotFoundError(err, plat)) {
+        error(`關閉後端行程樹失敗:${err && err.message ? err.message : String(err)}`);
+      }
+    });
+
+    const deadline = Date.now() + pollTimeoutMs;
+    while (Date.now() < deadline) {
+      if (!(await isPortOpenFn(port))) break;
+      await sleep(pollIntervalMs);
+    }
+
+    cleanupPidFile();
+    exitFn(0);
+  };
+
+  signalSource.on('SIGINT', onSignal);
+  signalSource.on('SIGTERM', onSignal);
+
+  // 後端不是被我們自己的訊號處理關掉，而是自己先結束(例如崩潰)——視為失敗，
+  // 印結束碼並以非 0 收尾;結束碼剛好是 0(正常結束)才跟著回 0。
+  child.on('exit', (code) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    error(`後端已結束（結束碼 ${code}），本腳本一併結束。`);
+    cleanupPidFile();
+    exitFn(code === 0 ? 0 : 1);
+  });
 }
 
 // 純函式:判斷 killTreeRunner 丟出的例外是不是「行程本來就不存在」。這種
@@ -659,14 +783,19 @@ function helpText() {
 環境說明:
     local
         連開發機自己跑的後端(${API_BASE.local})，對應 npm run dev。
-        啟動前會先探 /health;探不到且未帶 --no-backend 時，本腳本會自動用
-        npm run dev 在後端目錄(預設 ~/.threads-clean-link/api-local/api，
-        可用環境變數 TCL_API_LOCAL_DIR 覆寫)背景啟動 wrangler dev，等到
-        /health 通過(最多 60 秒)才繼續;逾時會印出 log 檔最後 ${BACKEND_LOG_TAIL_LINES} 行、
-        殺掉剛啟動的行程樹並非 0 結束。輸出導向 ${'~/.threads-clean-link/api-local.log'}
-        (每次啟動覆寫)，PID 記在 ${'~/.threads-clean-link/api-local.pid'}。
-        後端啟動後是常駐的:本腳本結束不會關掉它，之後重跑 --env local
-        會直接探到 /health 沿用既有;要關閉用 npm run dev -- --stop-backend。
+        啟動前會先探 /health;探到就沿用既有，做完以下步驟後正常結束。
+        探不到且未帶 --no-backend 時，預設在後端目錄(預設
+        ~/.threads-clean-link/api-local/api，可用環境變數 TCL_API_LOCAL_DIR
+        覆寫)於**前景**啟動 wrangler dev(比照一般網站的 dev server:輸出直接
+        印在目前這個終端機，不寫 log 檔)，等到 /health 通過(最多 60 秒)才
+        繼續;之後本腳本卡在前景轉印輸出，按 Ctrl+C(SIGINT/SIGTERM)會把後端
+        一併關掉再結束，後端自己先掛掉(未按 Ctrl+C)則印結束碼並非 0 結束。
+        逾時會提示往上檢查終端機輸出、殺掉剛啟動的行程樹並非 0 結束。
+        帶 --detach-backend 改回背景常駐:不佔用終端機，輸出導向
+        ${'~/.threads-clean-link/api-local.log'}(每次啟動覆寫)，PID 記在
+        ${'~/.threads-clean-link/api-local.pid'}，本腳本結束不會關掉它，之後
+        重跑 --env local 會直接探到 /health 沿用既有;要關閉用
+        npm run dev -- --stop-backend。
         找不到後端目錄或其 package.json 時，印現有的手動啟動提示並非 0 結束，
         不會啟動 Chrome。
         副本的 manifest 會多注入 ${LOCAL_HOST_PERMISSION} 權限;dev-build
@@ -696,13 +825,19 @@ function helpText() {
     --yes              跳過 production 的互動確認(仍會印警告)
     --no-backend       --env local 探活失敗時不自動啟動後端，維持舊行為:
                         印現有的手動啟動提示並非 0 結束，不會啟動 Chrome
-    --stop-backend     關閉本腳本先前用 --env local 啟動的後端(讀 PID 檔、
-                        Windows 用 taskkill /T 連子行程一起殺，其他平台對整
-                        個行程群組送信號)，等埠釋放後印結果並結束(結束碼 0)。
-                        獨立旗標，不需要搭配 --env，也不會啟動 Chrome。找不到
-                        PID 檔但埠仍有人在聽，代表後端不是本腳本啟動的，印
-                        提示並以非 0 結束，不會動那個行程。PID 檔內容損毀
-                        (非合法 PID)時視同找不到 PID 檔，不會殺任何行程，
+    --detach-backend   --env local 自動啟動後端時改成背景常駐(不佔用終端機、
+                        寫 log 檔、本腳本結束不關掉它)，而不是預設的前景模式
+                        (卡在終端機轉印輸出，Ctrl+C 一併關閉)。想讓終端機空
+                        出來做別的事時用這個
+    --stop-backend     關閉本機後端(讀 PID 檔、Windows 用 taskkill /T 連子
+                        行程一起殺，其他平台對整個行程群組送信號)，等埠釋放
+                        後印結果並結束(結束碼 0)。獨立旗標，不需要搭配
+                        --env，也不會啟動 Chrome。用於 --detach-backend 啟動
+                        的後端，或前景模式被強制關閉父行程(例如 kill -9)後
+                        留下的孤兒行程——正常按 Ctrl+C 結束前景模式不需要它。
+                        找不到 PID 檔但埠仍有人在聽，代表後端不是本腳本啟動
+                        的，印提示並以非 0 結束，不會動那個行程。PID 檔內容
+                        損毀(非合法 PID)時視同找不到 PID 檔，不會殺任何行程，
                         會印提示要求手動處理
     --help, -h         顯示這份說明並結束(結束碼 0)
 
@@ -721,6 +856,7 @@ function helpText() {
     node tools/dev-browser.mjs --env local
     node tools/dev-browser.mjs --env local --restart --no-open
     node tools/dev-browser.mjs --env local --no-backend
+    node tools/dev-browser.mjs --env local --detach-backend
     node tools/dev-browser.mjs --stop-backend
     node tools/dev-browser.mjs --env staging
     node tools/dev-browser.mjs --env staging --ref my-branch --no-open
@@ -1186,15 +1322,20 @@ function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, lo
   console.log(`擴充 ID:     ${extensionId}`);
   console.log(`載入路徑:    ${loadPath}（dev-build 的副本）`);
   console.log(`dev-build:   ${buildCommit}`);
-  // 只有 --env local 才有後端這一行(見 ensureLocalBackend)。不管是沿用既
-  // 有還是本腳本剛啟動的，本腳本結束時都不會關掉它——這是刻意的常駐設計，
-  // 讓後端跨多次 dev-browner 執行留著，需要關閉時用 --stop-backend。
+  // 只有 --env local 才有後端這一行(見 ensureLocalBackend)，三種模式各自
+  // 印一行:沿用既有(不歸本腳本管)、背景常駐(--detach-backend，結束後仍會
+  // 留著，關閉用 --stop-backend)、前景執行中(預設，本視窗 Ctrl+C 會一併
+  // 關閉)。
   if (backend) {
-    console.log(
-      backend.mode === 'existing'
-        ? `後端:        沿用既有（未由本腳本啟動，結束後也不會關閉）`
-        : `後端:        已啟動（PID ${backend.pid}，log:${backend.log}；結束後仍會留著，關閉用 npm run dev -- --stop-backend）`
-    );
+    let line;
+    if (backend.mode === 'existing') {
+      line = `後端:        沿用既有（未由本腳本啟動，結束後也不會關閉）`;
+    } else if (backend.mode === 'detached') {
+      line = `後端:        已在背景啟動（PID ${backend.pid}，log:${backend.log}；結束後仍會留著，關閉用 npm run dev -- --stop-backend）`;
+    } else {
+      line = `後端:        前景執行中（PID ${backend.pid}；本視窗按 Ctrl+C 會一併關閉）`;
+    }
+    console.log(line);
   }
   console.log('====================================================');
 }
@@ -1309,13 +1450,17 @@ async function main() {
   // 本機後端探活擺在最前面:不通的話後面每一步都是白做，而且不該為此動到
   // 使用者的 Chrome。--no-backend 維持舊行為(探活失敗就印提示、非 0 結束、
   // 不碰後端)；否則沒帶 --no-backend 時自動用 npm run dev 帶起來，等到
-  // /health 通過才繼續。啟動的後端本腳本結束時不會關掉(常駐)，見 printBanner
-  // 與 --stop-backend。
+  // /health 通過才繼續。預設是前景模式(比照一般 dev server，本腳本結尾會
+  // 卡住轉印輸出，Ctrl+C 一併關閉，見下面 foregroundBackend)；帶
+  // --detach-backend 才是背景常駐(結束後仍留著，見 printBanner 與
+  // --stop-backend)。
   let backendBannerInfo = null;
+  let foregroundBackend = null;
   if (opts.env === 'local') {
     const result = await ensureLocalBackend({
       apiBase: API_BASE.local,
       noBackend: opts.noBackend,
+      detachBackend: opts.detachBackend,
       backendDir: resolveBackendDir(process.env, homedir()),
       logPath: BACKEND_LOG_PATH,
       pidPath: BACKEND_PID_PATH,
@@ -1339,15 +1484,25 @@ async function main() {
       console.error(
         `錯誤:自動啟動的本機後端在 ${BACKEND_HEALTH_POLL_TIMEOUT_MS / 1000} 秒內未回應 ${API_BASE.local}/health。`
       );
-      console.error(`log 檔（${result.log}）最後 ${BACKEND_LOG_TAIL_LINES} 行:`);
-      console.error(result.tail);
+      if (opts.detachBackend) {
+        console.error(`log 檔（${result.log}）最後 ${BACKEND_LOG_TAIL_LINES} 行:`);
+        console.error(result.tail);
+      } else {
+        console.error('請往上檢查終端機輸出的後端訊息以判斷卡在哪一步。');
+      }
       console.error(START_LOCAL_BACKEND_HINT);
       process.exitCode = 1;
       return;
+    } else if (opts.detachBackend) {
+      // started，背景常駐
+      console.log(`已在背景自動啟動本機後端（PID ${result.pid}，log:${result.log}），已等到 ${API_BASE.local}/health 回應。`);
+      backendBannerInfo = { mode: 'detached', pid: result.pid, log: result.log };
     } else {
-      // started
-      console.log(`已自動啟動本機後端（PID ${result.pid}，log:${result.log}），已等到 ${API_BASE.local}/health 回應。`);
-      backendBannerInfo = { mode: 'started', pid: result.pid, log: result.log };
+      // started，前景——main() 結尾要掛上 attachForegroundBackendLifecycle
+      // 並卡住等 Ctrl+C，不能像其他分支一樣做完就正常結束。
+      console.log(`已在前景自動啟動本機後端（PID ${result.pid}），已等到 ${API_BASE.local}/health 回應。`);
+      backendBannerInfo = { mode: 'foreground', pid: result.pid };
+      foregroundBackend = { child: result.child, pidPath: BACKEND_PID_PATH, port: LOCAL_BACKEND_PORT };
     }
   }
 
@@ -1407,6 +1562,17 @@ async function main() {
 
   console.log('');
   console.log('完成。');
+
+  // 前景後端:掛上訊號處理後直接回傳 keepAlive，不落回下面隱含的
+  // `undefined`——外層的 isMainModule 分支要看到這個旗標才知道不能像平常
+  // 一樣結束時呼叫 process.exit()。子行程本身(stdio 未 unref)就會讓事件
+  // 迴圈保持運作，接下來就是單純等 Ctrl+C 或後端自己結束。
+  if (foregroundBackend) {
+    console.log('');
+    console.log('後端在前景執行中，Ctrl+C 結束（會一併關閉後端）。');
+    attachForegroundBackendLifecycle(foregroundBackend);
+    return { keepAlive: true };
+  }
 }
 
 const isMainModule =
@@ -1414,7 +1580,11 @@ const isMainModule =
 
 if (isMainModule) {
   main()
-    .then(() => {
+    .then((result) => {
+      // 前景模式啟動了後端就不能在這裡收尾——行程要一直卡著轉印輸出，
+      // 直到 attachForegroundBackendLifecycle 的訊號處理或子行程結束事件
+      // 自己呼叫 process.exit()。
+      if (result && result.keepAlive) return;
       // Node 在某些版本關閉 WebSocket 後偶爾觸發底層 assertion，
       // 延遲一拍再結束程序以避開。
       setTimeout(() => process.exit(process.exitCode ?? 0), 100);
@@ -1471,6 +1641,7 @@ export {
   tailLines,
   isPortOpen,
   ensureLocalBackend,
+  attachForegroundBackendLifecycle,
   stopBackend,
   printBanner,
 };

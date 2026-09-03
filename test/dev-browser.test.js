@@ -33,9 +33,16 @@
 //     的真實 bug，見函式註解)——找得到 npm-cli.js 就改用 node.exe 直接
 //     執行它跳過外殼，找不到才退回舊行為；非 win32 不受影響
 //   - ensureLocalBackend:注入假的 spawn／fetch／fs 驗多條路徑——探活成功
-//     跳過、--no-backend 不啟動、後端目錄缺失、啟動後等到 /health 通過
-//     (win32 找得到／找不到 npm-cli.js 兩種、非 win32 一種)、逾時要清 log
+//     跳過、--no-backend 不啟動、後端目錄缺失、啟動後等到 /health 通過。
+//     預設(不帶 detachBackend)是前景模式:spawn 不 detach、stdio 為
+//     'inherit'、不開 log 檔，逾時也沒有 log 尾段可清;detachBackend:true
+//     是背景模式，維持原本 detached + fd 重導向 + windowsHide 的斷言
+//     (win32 找得到／找不到 npm-cli.js 兩種、非 win32 一種)，逾時要清 log
 //     尾段並殺掉剛起的行程樹
+//   - attachForegroundBackendLifecycle:前景模式收到 SIGINT/SIGTERM 時殺
+//     行程樹、等埠釋放、刪 PID 檔、以 0 結束;子行程自己先結束(未收到訊號)
+//     則印結束碼、刪 PID 檔，結束碼非 0 才跟著非 0 結束；兩條路徑互斥
+//     (shuttingDown 旗標)，不會搶著收尾兩次
 //   - stopBackend:--stop-backend 的三種狀態(有 PID 檔、無 PID 檔且埠仍活著、
 //     無 PID 檔且埠已死)，以及殺行程樹失敗時依 isProcessNotFoundError 分流
 //     ——行程本來就不存在則不中斷、照樣清 PID 檔收尾;真正失敗(權限不足等)
@@ -46,6 +53,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -836,12 +844,18 @@ test('sendCdpCommand:逾時會 reject，不會永遠掛住', async () => {
   );
 });
 
-// ---- parseArgs:--no-backend／--stop-backend ----
+// ---- parseArgs:--no-backend／--detach-backend／--stop-backend ----
 
 test('parseArgs:--no-backend 解析為 true，預設 false', () => {
   const opts = devBrowser.parseArgs(['--env', 'local', '--no-backend']);
   assert.equal(opts.noBackend, true);
   assert.equal(devBrowser.parseArgs(['--env', 'local']).noBackend, false);
+});
+
+test('parseArgs:--detach-backend 解析為 true，預設 false(預設走前景模式)', () => {
+  const opts = devBrowser.parseArgs(['--env', 'local', '--detach-backend']);
+  assert.equal(opts.detachBackend, true);
+  assert.equal(devBrowser.parseArgs(['--env', 'local']).detachBackend, false);
 });
 
 test('parseArgs:--stop-backend 是獨立旗標，不需要 --env 也能解析', () => {
@@ -1101,13 +1115,14 @@ test('ensureLocalBackend:探活失敗且後端目錄不存在時回 missing-dir�
   assert.equal(spawnCalled, false);
 });
 
-test('ensureLocalBackend:探活失敗且未帶 --no-backend 時自動啟動，等到 /health 回應即回 started(win32 找得到 npm-cli.js，走 node.exe 直接執行，不經外殼)', async () => {
+test('ensureLocalBackend:帶 --detach-backend 時，探活失敗且未帶 --no-backend 自動背景啟動，等到 /health 回應即回 started(win32 找得到 npm-cli.js，走 node.exe 直接執行，不經外殼)', async () => {
   const events = {};
   let probeCallCount = 0;
   const npmCliPath = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
   const result = await devBrowser.ensureLocalBackend({
     apiBase: 'http://localhost:8787',
     noBackend: false,
+    detachBackend: true,
     backendDir: '/api-local/api',
     logPath: '/tmp/api-local.log',
     pidPath: '/tmp/api-local.pid',
@@ -1146,19 +1161,21 @@ test('ensureLocalBackend:探活失敗且未帶 --no-backend 時自動啟動，�
   assert.equal(events.spawnArgs.opts.cwd, '/api-local/api');
   assert.equal(events.spawnArgs.opts.detached, true, '不 detach 的話本腳本結束時後端會被一起收掉');
   assert.equal(events.spawnArgs.opts.shell, false, '單一層直達 node.exe，不需要外殼');
+  assert.equal(events.spawnArgs.opts.windowsHide, true, 'Windows 上不彈出空白主控台視窗');
   assert.deepEqual(events.spawnArgs.opts.stdio, ['ignore', 99, 99]);
   assert.deepEqual(events.opened, { p: '/tmp/api-local.log', flag: 'w' }, 'log 檔要覆寫，不是續寫');
   assert.equal(events.closedFd, 99);
   assert.deepEqual(events.pidWritten, { p: '/tmp/api-local.pid', data: '5555' });
 });
 
-test('ensureLocalBackend:win32 上找不到 npm-cli.js 時，退回 npm + shell:true', async () => {
+test('ensureLocalBackend:帶 --detach-backend 時，win32 上找不到 npm-cli.js 就退回 npm + shell:true', async () => {
   const events = {};
   let probeCallCount = 0;
   const npmCliPath = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
   const result = await devBrowser.ensureLocalBackend({
     apiBase: 'http://localhost:8787',
     noBackend: false,
+    detachBackend: true,
     backendDir: '/api-local/api',
     logPath: '/tmp/api-local.log',
     pidPath: '/tmp/api-local.pid',
@@ -1185,15 +1202,17 @@ test('ensureLocalBackend:win32 上找不到 npm-cli.js 時，退回 npm + shell:
   assert.equal(events.spawnArgs.cmd, 'npm');
   assert.deepEqual(events.spawnArgs.args, ['run', 'dev']);
   assert.equal(events.spawnArgs.opts.shell, true, '找不到 npm-cli.js 時退回舊行為，靠 shell 解析 npm.cmd');
+  assert.equal(events.spawnArgs.opts.windowsHide, true, 'shell:true 分支也不彈出空白主控台視窗');
 });
 
-test('ensureLocalBackend:非 win32 平台一律直接 spawn npm，不查 npm-cli.js、不用 shell', async () => {
+test('ensureLocalBackend:帶 --detach-backend 時，非 win32 平台一律直接 spawn npm，不查 npm-cli.js、不用 shell', async () => {
   const events = {};
   let probeCallCount = 0;
   let existsSyncCalls = 0;
   const result = await devBrowser.ensureLocalBackend({
     apiBase: 'http://localhost:8787',
     noBackend: false,
+    detachBackend: true,
     backendDir: '/api-local/api',
     logPath: '/tmp/api-local.log',
     pidPath: '/tmp/api-local.pid',
@@ -1222,9 +1241,99 @@ test('ensureLocalBackend:非 win32 平台一律直接 spawn npm，不查 npm-cli
   assert.equal(events.spawnArgs.cmd, 'npm');
   assert.deepEqual(events.spawnArgs.args, ['run', 'dev']);
   assert.equal(events.spawnArgs.opts.shell, false, '非 win32 的 npm 本身就是可執行檔，不需要外殼');
+  assert.equal(events.spawnArgs.opts.detached, true);
+  assert.equal(events.spawnArgs.opts.windowsHide, true, '非 Windows 平台這個選項無作用，但一律帶上不需要另外分支');
   // existsSyncFn 只該為了查後端目錄／package.json 被呼叫兩次，不該多查
   // npm-cli.js(那是 win32 專屬的分支)。
   assert.equal(existsSyncCalls, 2);
+});
+
+// ---- ensureLocalBackend:前景模式(預設，不帶 --detach-backend) ----
+
+test('ensureLocalBackend:預設(不帶 --detach-backend)是前景模式——spawn 不 detach、stdio 為 inherit、不開不關 log 檔，回傳帶 child 而不是 log', async () => {
+  const events = {};
+  let probeCallCount = 0;
+  let openCalled = false;
+  let closeCalled = false;
+  const fakeChild = { pid: 8123 };
+
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: '/api-local/api',
+    logPath: '/tmp/api-local.log',
+    pidPath: '/tmp/api-local.pid',
+    deps: {
+      probeHealthFn: async () => {
+        probeCallCount += 1;
+        return probeCallCount > 1;
+      },
+      existsSyncFn: () => true,
+      openSyncFn: () => {
+        openCalled = true;
+        return 99;
+      },
+      closeSyncFn: () => {
+        closeCalled = true;
+      },
+      spawnFn: (cmd, args, opts) => {
+        events.spawnArgs = { cmd, args, opts };
+        return fakeChild;
+      },
+      writeFileSyncFn: (p, data) => {
+        events.pidWritten = { p, data };
+      },
+      platformFn: () => 'linux',
+      pollIntervalMs: 1,
+    },
+  });
+
+  assert.deepEqual(result, { status: 'started', pid: 8123, child: fakeChild });
+  assert.equal(events.spawnArgs.cmd, 'npm');
+  assert.deepEqual(events.spawnArgs.args, ['run', 'dev']);
+  assert.equal(events.spawnArgs.opts.cwd, '/api-local/api');
+  assert.equal(events.spawnArgs.opts.stdio, 'inherit', '前景模式輸出直接印在目前這個終端機，不經過 Node 轉印');
+  assert.equal('detached' in events.spawnArgs.opts, false, '前景模式不 detach，子行程隨父行程一起結束');
+  assert.equal('windowsHide' in events.spawnArgs.opts, false, '前景模式沒有主控台視窗被彈出的問題，不需要這個選項');
+  assert.equal(openCalled, false, '前景模式不寫 log 檔');
+  assert.equal(closeCalled, false);
+  assert.deepEqual(events.pidWritten, { p: '/tmp/api-local.pid', data: '8123' }, '前景模式仍要寫 PID 檔，供 --stop-backend 救孤兒');
+});
+
+test('ensureLocalBackend:前景模式逾時——沒有 log 檔可讀，tail 是空字串，仍照樣殺行程樹、刪 PID 檔', async () => {
+  const killCalls = [];
+  const unlinkCalls = [];
+  let readFileCalled = false;
+
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: '/api-local/api',
+    logPath: '/tmp/api-local.log',
+    pidPath: '/tmp/api-local.pid',
+    deps: {
+      probeHealthFn: async () => false,
+      existsSyncFn: () => true,
+      spawnFn: () => ({ pid: 8888 }),
+      writeFileSyncFn: () => {},
+      readFileSyncFn: () => {
+        readFileCalled = true;
+        return 'unused';
+      },
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      platformFn: () => 'linux',
+      killTreeRunner: async (pid, plat) => {
+        killCalls.push([pid, plat]);
+      },
+      pollTimeoutMs: 5,
+      pollIntervalMs: 1,
+    },
+  });
+
+  assert.deepEqual(result, { status: 'timeout', tail: '', pid: 8888 });
+  assert.equal(readFileCalled, false, '前景模式沒有 log 檔，不該嘗試讀取');
+  assert.deepEqual(killCalls, [[8888, 'linux']]);
+  assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid']);
 });
 
 // ---- resolveBackendSpawnTarget(純函式) ----
@@ -1277,7 +1386,7 @@ test('resolveBackendSpawnTarget:command 不是 npm 時(理論上不會發生，�
   assert.deepEqual(target, { file: 'something-else', args: ['x'], shell: true });
 });
 
-test('ensureLocalBackend:啟動後 /health 一直不通，逾時要清 log 尾段、殺行程樹、刪 PID 檔', async () => {
+test('ensureLocalBackend:帶 --detach-backend 時，啟動後 /health 一直不通，逾時要清 log 尾段、殺行程樹、刪 PID 檔', async () => {
   const killCalls = [];
   const unlinkCalls = [];
   const logLines = Array.from({ length: 30 }, (_, i) => `line${i}`).join('\n');
@@ -1285,6 +1394,7 @@ test('ensureLocalBackend:啟動後 /health 一直不通，逾時要清 log 尾�
   const result = await devBrowser.ensureLocalBackend({
     apiBase: 'http://localhost:8787',
     noBackend: false,
+    detachBackend: true,
     backendDir: '/api-local/api',
     logPath: '/tmp/api-local.log',
     pidPath: '/tmp/api-local.pid',
@@ -1313,6 +1423,154 @@ test('ensureLocalBackend:啟動後 /health 一直不通，逾時要清 log 尾�
   assert.ok(result.tail.endsWith('line29'), '要是最新的尾段，不是頭段');
   assert.deepEqual(killCalls, [[7777, 'win32']], '逾時要把剛起的行程樹連根殺掉');
   assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid'], '殺掉後不留誤導下次執行的 PID 檔');
+});
+
+// ---- attachForegroundBackendLifecycle:前景模式的訊號與子行程結束處理 ----
+// signalSource／child 都用假的 EventEmitter 手動觸發，不必真的送系統訊號或
+// spawn 一個行程；exitFn 用假的把結束碼收進一個 Promise，不必真的終止測試
+// 行程。
+
+test('attachForegroundBackendLifecycle:收到 SIGINT 時殺行程樹、等埠釋放、刪 PID 檔、以 0 結束', async () => {
+  const signalSource = new EventEmitter();
+  const child = new EventEmitter();
+  child.pid = 9001;
+  const killCalls = [];
+  const unlinkCalls = [];
+  let portOpenCallCount = 0;
+  let resolveExit;
+  const exitPromise = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+
+  devBrowser.attachForegroundBackendLifecycle({
+    child,
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      signalSource,
+      exitFn: (code) => resolveExit(code),
+      existsSyncFn: () => true,
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      isPortOpenFn: async () => {
+        portOpenCallCount += 1;
+        // 殺完的瞬間埠可能還沒真的放掉，第二次輪詢才放。
+        return portOpenCallCount === 1;
+      },
+      platformFn: () => 'win32',
+      killTreeRunner: async (pid, plat) => {
+        killCalls.push([pid, plat]);
+      },
+      pollIntervalMs: 1,
+      log: () => {},
+      error: () => {},
+    },
+  });
+
+  signalSource.emit('SIGINT');
+  const code = await exitPromise;
+
+  assert.equal(code, 0);
+  assert.deepEqual(killCalls, [[9001, 'win32']]);
+  assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid']);
+});
+
+test('attachForegroundBackendLifecycle:子行程自己先結束(未收到訊號)時，印結束碼、刪 PID 檔，非 0 結束碼就以非 0 收尾，且不再多殺一次行程樹', async () => {
+  const unlinkCalls = [];
+  let killCalled = false;
+  const child = new EventEmitter();
+  child.pid = 9002;
+  let resolveExit;
+  const exitPromise = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+
+  devBrowser.attachForegroundBackendLifecycle({
+    child,
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      signalSource: new EventEmitter(),
+      exitFn: (code) => resolveExit(code),
+      existsSyncFn: () => true,
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      killTreeRunner: async () => {
+        killCalled = true;
+      },
+      log: () => {},
+      error: () => {},
+    },
+  });
+
+  child.emit('exit', 1);
+  const code = await exitPromise;
+
+  assert.equal(code, 1, '後端自己非 0 結束，本腳本也非 0 結束');
+  assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid']);
+  assert.equal(killCalled, false, '後端已經自己結束，不必再殺一次行程樹');
+});
+
+test('attachForegroundBackendLifecycle:子行程自己以 0 結束(例如使用者在 wrangler 互動介面按 x)時，本腳本也以 0 收尾', async () => {
+  const child = new EventEmitter();
+  child.pid = 9003;
+  let resolveExit;
+  const exitPromise = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+
+  devBrowser.attachForegroundBackendLifecycle({
+    child,
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      signalSource: new EventEmitter(),
+      exitFn: (code) => resolveExit(code),
+      existsSyncFn: () => false,
+      unlinkSyncFn: () => {},
+      log: () => {},
+      error: () => {},
+    },
+  });
+
+  child.emit('exit', 0);
+  const code = await exitPromise;
+  assert.equal(code, 0);
+});
+
+test('attachForegroundBackendLifecycle:子行程結束事件與 SIGINT 幾乎同時發生時互斥，只有一條路徑真正收尾', async () => {
+  const signalSource = new EventEmitter();
+  const child = new EventEmitter();
+  child.pid = 9004;
+  let exitCallCount = 0;
+  let killCallCount = 0;
+
+  devBrowser.attachForegroundBackendLifecycle({
+    child,
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      signalSource,
+      exitFn: () => {
+        exitCallCount += 1;
+      },
+      existsSyncFn: () => true,
+      unlinkSyncFn: () => {},
+      isPortOpenFn: async () => false,
+      killTreeRunner: async () => {
+        killCallCount += 1;
+      },
+      pollIntervalMs: 1,
+      log: () => {},
+      error: () => {},
+    },
+  });
+
+  child.emit('exit', 0); // 後端先自己結束(同步收尾)
+  signalSource.emit('SIGINT'); // 使用者幾乎同時按下 Ctrl+C
+  // 讓 onSignal 的非同步流程有機會跑完(若沒被 shuttingDown 擋下的話)。
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(exitCallCount, 1, '兩條路徑只該有一條真正跑完收尾');
+  assert.equal(killCallCount, 0, '後端已經自己結束，SIGINT 那條路徑不該再殺一次行程樹');
 });
 
 // ---- stopBackend:--stop-backend 的三種狀態 ----
