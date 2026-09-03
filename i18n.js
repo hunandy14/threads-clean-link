@@ -139,26 +139,32 @@
       opRelYesterday: '昨天',
       opRelDays: '{n} 天前',
 
-      // ---- options:雲端同步卡片(車道 E，消費 docs/cloud-sync.md
-      // 第 5 節的 state 形狀;background 尚未實作前，任何無回應/形狀不對
-      // 的狀態一律當 signed_out 顯示) ----
-      opSyncTitle: '雲端同步',
-      opSyncSignedOutDesc: '預設關閉，登入 Google 帳號後才會連線；同步內容為清理紀錄的時間、來源與淨化後連結。',
-      opSyncSignInBtn: '使用 Google 帳號登入',
+      // ---- options:頁首帳號入口(車道 B，消費 docs/cloud-sync.md 第 5
+      // 節的 state 形狀;background 尚未實作前，任何無回應/形狀不對的
+      // 狀態一律當 signed_out 顯示) ----
+      opAccountSignIn: '登入',
+      opAccountMenuLabel: '帳號選單',
       // D3:首次綁定全量上傳並告知 free 方案雲端保留上限，{n} 為登入當下
-      // 本機紀錄筆數。
+      // 本機紀錄筆數。登入確認框與刪除雲端資料確認框沿用既有的共用
+      // confirmOverlay，文案鍵維持原名不動。
       opSyncSignInConfirmDesc: '登入後將立即上傳本機目前的 {n} 筆紀錄。免費方案雲端僅保留最新 1000 筆，本機仍完整保留全部紀錄，可隨時登出或刪除雲端資料。',
       opSyncSignInConfirmDo: '確認登入',
-      opSyncAccountLabel: '帳號',
-      opSyncLastSyncedLabel: '上次同步',
-      opSyncPendingLabel: '待上傳',
-      opSyncPendingValue: '{n} 筆',
       opSyncNever: '尚未同步',
-      opSyncNowBtn: '立即同步',
-      opSyncSyncingBtn: '同步中…',
-      opSyncSignOutBtn: '登出',
-      opSyncDeleteBtn: '刪除雲端資料',
-      opSyncDeleteConfirmDesc: '只會刪除雲端保存的紀錄，本機紀錄不受影響。確定要繼續嗎？',
+      opAccountSyncNow: '立即同步',
+      opAccountSyncing: '同步中…',
+      opAccountSignOut: '登出',
+      opAccountDeleteCloud: '刪除雲端資料',
+      opAccountLastSync: '上次同步 {t}',
+      opAccountPending: '待上傳 {n} 筆',
+      opAccountErrorPrefix: '同步失敗：',
+      opAccountRetry: '重試',
+      opAccountExpired: '登入已過期，請重新登入',
+      opAccountReSignIn: '重新登入',
+      opAccountStatusSynced: '已同步',
+      opAccountStatusError: '同步錯誤',
+      opAccountStatusExpired: '登入已過期',
+      // 三件事講清楚:無法復原、本機紀錄保留、重新登入會再次上傳。
+      opSyncDeleteConfirmDesc: '雲端保存的紀錄將永久刪除，無法復原。這台裝置上的紀錄不受影響，下次登入時會再次上傳到雲端。',
       opSyncDeleteConfirmDo: '確定刪除',
       // 使用者在瀏覽器的權限對話框按了拒絕:登入流程就此中止，需要讓他知道
       // 為什麼什麼都沒發生。
@@ -280,21 +286,27 @@
       opRelYesterday: 'yesterday',
       opRelDays: '{n} days ago',
 
-      opSyncTitle: 'Cloud sync',
-      opSyncSignedOutDesc: 'Off by default. Connects only after you sign in with Google; syncs each record’s time, source, and cleaned link.',
-      opSyncSignInBtn: 'Sign in with Google',
+      opAccountSignIn: 'Sign in',
+      opAccountMenuLabel: 'Account menu',
       opSyncSignInConfirmDesc: 'Signing in uploads your {n} local records right away. The free plan keeps only the latest 1000 in the cloud, and your device keeps every record. You can sign out or delete your cloud data anytime.',
       opSyncSignInConfirmDo: 'Confirm sign-in',
-      opSyncAccountLabel: 'Account',
-      opSyncLastSyncedLabel: 'Last synced',
-      opSyncPendingLabel: 'Pending upload',
-      opSyncPendingValue: '{n}',
       opSyncNever: 'Not synced yet',
-      opSyncNowBtn: 'Sync now',
-      opSyncSyncingBtn: 'Syncing…',
-      opSyncSignOutBtn: 'Sign out',
-      opSyncDeleteBtn: 'Delete cloud data',
-      opSyncDeleteConfirmDesc: 'This only deletes the copy stored in the cloud — your local history is unaffected. Continue?',
+      opAccountSyncNow: 'Sync now',
+      opAccountSyncing: 'Syncing…',
+      opAccountSignOut: 'Sign out',
+      opAccountDeleteCloud: 'Delete cloud data',
+      opAccountLastSync: 'Last synced {t}',
+      opAccountPending: '{n} pending',
+      opAccountErrorPrefix: 'Sync failed: ',
+      opAccountRetry: 'Retry',
+      opAccountExpired: 'Your sign-in has expired. Please sign in again.',
+      opAccountReSignIn: 'Sign in again',
+      opAccountStatusSynced: 'Synced',
+      opAccountStatusError: 'Sync error',
+      opAccountStatusExpired: 'Sign-in expired',
+      // Three things spelled out: cannot be undone, local history is kept,
+      // signing in again will re-upload it.
+      opSyncDeleteConfirmDesc: 'Records stored in the cloud will be permanently deleted and cannot be recovered. Your local history on this device is unaffected, and will be uploaded again the next time you sign in.',
       opSyncDeleteConfirmDo: 'Delete',
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opDeviceNoteSynced: 'Synced to your Google account',
