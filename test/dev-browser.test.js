@@ -13,7 +13,7 @@
 //     用完即關
 //   - sendCdpCommand:逾時會 reject，不永遠掛住
 //   - configureApiEnvAndCleanup:喚醒 SW 用的暫時分頁，--no-open 時要關掉、
-//     --open 時要沿用成 options 頁而非開兩個(用 mock CDP transport 斷言,
+//     --open 時要沿用成 options 頁而非開兩個(用 mock CDP transport 斷言，
 //     不需要真 Chrome)
 //   - configureApiEnv:剛喚醒的 SW 在 CDP 裡處於暫停狀態(真實環境驗證發現
 //     的 bug，不送 Runtime.runIfWaitingForDebugger 就會卡死)要先解除暫停;
@@ -356,7 +356,7 @@ function createMockCdp({ port, extensionId, currentApiBase = null, wakeSw = true
       let result = {};
       if (msg.method === 'Runtime.evaluate') {
         evaluated.push(msg.params.expression);
-        // 真實 Chrome 收到 chrome.runtime.reload() 會當場終止這個 SW,
+        // 真實 Chrome 收到 chrome.runtime.reload() 會當場終止這個 SW，
         // 它的 target 隨即從 /json 清單消失;呼叫端要等的正是這一刻。
         if (msg.params.expression.includes('chrome.runtime.reload()')) {
           targets = targets.filter((t) => t.type !== 'service_worker');

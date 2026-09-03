@@ -696,6 +696,20 @@ test('T2/D9 apiBase：預設 production；syncApiBase 為 staging／local 時採
     PRODUCTION_BASE,
     'production／staging／local 以外的值一律忽略，不得跟著打過去'
   );
+
+  // 白名單是逐字比對，不是前綴或子字串比對。以下三個都長得很像 local 的
+  // 合法值:換個埠、把 localhost 當成攻擊者網域的一段、換成等價的迴圈位址。
+  // 只要有一個被放行，bearer token 就會被送去那個 origin。
+  const nearMisses = ['http://localhost:8788', 'http://localhost.evil', 'http://127.0.0.1:8787'];
+  for (const value of nearMisses) {
+    const near = makeEnv({ signedIn: true, local: { syncApiBase: value } });
+    const engine = TCLSync.create(near.deps);
+    assert.equal(
+      (await engine.getState()).apiBase,
+      PRODUCTION_BASE,
+      `${value} 只是長得像白名單值，必須落回 production`
+    );
+  }
 });
 
 test('T2 每個請求都是 credentials:"omit" ＋ Bearer ＋ application/json', async () => {

@@ -427,7 +427,7 @@ const SW_RETIRE_TIMEOUT_MS = 5000;
 
 // 對指定的 CDP WebSocket endpoint(browser 層級或單一 target 自己的
 // webSocketDebuggerUrl)開一條連線，送出一個指令並等對應 id 的回覆，然後關閉。
-// WebSocket 開了但對端不回覆(target 已消失、CDP 卡住)時，逾時強制 reject,
+// WebSocket 開了但對端不回覆(target 已消失、CDP 卡住)時，逾時強制 reject，
 // 不讓呼叫端永遠掛住。
 function sendCdpCommand(wsUrl, method, params, timeoutMs = CDP_COMMAND_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
@@ -562,11 +562,11 @@ async function clearStaleSyncState(swWsUrl, timeoutMs) {
   await sendCdpCommand(swWsUrl, 'Runtime.evaluate', { expression, awaitPromise: true }, timeoutMs);
 }
 
-// 連到 service worker target 自己的 webSocketDebuggerUrl 執行 Runtime.evaluate,
+// 連到 service worker target 自己的 webSocketDebuggerUrl 執行 Runtime.evaluate，
 // 不需要額外走 Target.attachToTarget(每個 target 在 /json 裡自帶專屬 debugger
 // endpoint，連上去即等同已 attach)。
 //
-// 回傳值:若本次為了喚醒 SW 開了暫時分頁，回傳該分頁的 target id,讓呼叫端
+// 回傳值:若本次為了喚醒 SW 開了暫時分頁，回傳該分頁的 target id，讓呼叫端
 // 決定是收尾關掉(--no-open)還是沿用成 options 頁;SW 原本就在線則回傳
 // undefined。
 async function ensureServiceWorker(port, extensionId) {
@@ -577,7 +577,7 @@ async function ensureServiceWorker(port, extensionId) {
 }
 
 // Extensions.loadUnpacked 會讓 Chrome 重讀 manifest，但 service worker 以
-// importScripts 拉進來的檔案(tcl-core.js／auth.js／sync.js)吃的是腳本快取,
+// importScripts 拉進來的檔案(tcl-core.js／auth.js／sync.js)吃的是腳本快取，
 // 換過 --ref 之後 manifest 是新的、SW 裡的模組卻還是舊版——現場驗證踩過這
 // 個坑，而且它安靜到會讓人以為程式碼沒生效是自己寫錯。chrome.runtime.reload()
 // 重建註冊，快取才真的失效。
@@ -597,7 +597,7 @@ async function reloadExtension(port, extensionId, timeoutMs = CDP_COMMAND_TIMEOU
     if (wakeTargetId) await closeTarget(port, wakeTargetId).catch(() => {});
   }
 
-  // 等舊的 SW target 退場再回。它的 debugger endpoint 在 reload 後就死了,
+  // 等舊的 SW target 退場再回。它的 debugger endpoint 在 reload 後就死了，
   // 接手的步驟若連上去，指令送出去永遠等不到回覆(現場踩過:下一步的
   // Runtime.runIfWaitingForDebugger 直接逾時)。
   const deadline = Date.now() + SW_RETIRE_TIMEOUT_MS;
@@ -669,7 +669,7 @@ async function closeTarget(port, targetId) {
 //   - open === true:照常開 options 頁。若本次喚醒 SW 已經開了一個
 //     options.html 分頁，openOptionsPage 會在 /json 清單裡找到它並直接
 //     沿用，不會重複開兩個。
-//   - open === false:不開頁。若本次為了喚醒 SW 開了暫時分頁，用完即關,
+//   - open === false:不開頁。若本次為了喚醒 SW 開了暫時分頁，用完即關，
 //     維持「不開頁就不留任何多的分頁」的承諾。
 async function configureApiEnvAndCleanup(port, extensionId, env, open) {
   const wakeTargetId = await configureApiEnv(port, extensionId, env);
@@ -861,7 +861,7 @@ const isMainModule =
 if (isMainModule) {
   main()
     .then(() => {
-      // Node 在某些版本關閉 WebSocket 後偶爾觸發底層 assertion,
+      // Node 在某些版本關閉 WebSocket 後偶爾觸發底層 assertion，
       // 延遲一拍再結束程序以避開。
       setTimeout(() => process.exit(process.exitCode ?? 0), 100);
     })
