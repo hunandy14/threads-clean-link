@@ -107,6 +107,30 @@ test('parseArgs:不明旗標報錯', () => {
   assert.throws(() => devBrowser.parseArgs(['--env', 'staging', '--nope']));
 });
 
+// ---- helpText ----
+
+test('helpText:不拋例外，且涵蓋每個旗標名稱(新增旗標忘了寫進說明就紅燈)', () => {
+  let text;
+  assert.doesNotThrow(() => {
+    text = devBrowser.helpText();
+  });
+  const flags = [
+    '--env',
+    '--ref',
+    '--no-open',
+    '--port',
+    '--profile',
+    '--build',
+    '--fresh',
+    '--yes',
+    '--restart',
+    '--help',
+  ];
+  flags.forEach((flag) => {
+    assert.ok(text.includes(flag), `helpText() 缺少旗標說明:${flag}`);
+  });
+});
+
 // ---- productionGuard ----
 
 test('productionGuard:非 production 環境一律通過，不呼叫 readLine', async () => {
