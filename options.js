@@ -506,9 +506,14 @@
 
   // background 尚未實作同步引擎(車道 D)前的安全預設:未登入。也是
   // sync.getState 無回應／回應形狀不對時的退回值(見 fetchSyncState)。
+  // displayName/avatarUrl 為車道 A 新增的兩欄(docs/cloud-sync.md 第 5.2
+  // 節)，缺席一律視為 null——帳號入口的頭像/名字渲染需要備援到
+  // email，見 renderAccount。
   var DEFAULT_SYNC_STATE = {
     status: 'signed_out',
     email: null,
+    displayName: null,
+    avatarUrl: null,
     lastSyncedAt: null,
     pendingCount: 0,
     lastError: null,
@@ -546,11 +551,22 @@
     return {
       status: state.status,
       email: typeof state.email === 'string' ? state.email : null,
+      displayName: typeof state.displayName === 'string' ? state.displayName : null,
+      avatarUrl: typeof state.avatarUrl === 'string' ? state.avatarUrl : null,
       lastSyncedAt: typeof state.lastSyncedAt === 'number' && isFinite(state.lastSyncedAt) ? state.lastSyncedAt : null,
       pendingCount: typeof state.pendingCount === 'number' && isFinite(state.pendingCount) ? state.pendingCount : 0,
       lastError: typeof state.lastError === 'string' ? state.lastError : null,
       apiBase: typeof state.apiBase === 'string' ? state.apiBase : '',
     };
+  }
+
+  // avatarUrl 縱深防禦(引擎端 sync.js 存入 syncState 前已用同一份 TCLCore
+  // sanitize 過，這裡不信任那一層、自己在渲染端(DOM sink)再把關一次)。直接
+  // 複用 TCLCore.sanitizeAvatarUrl(單一權威:https:// + host 以
+  // googleusercontent.com 結尾，見 tcl-core.js)，不在本檔另養一份等價
+  // 邏輯——兩處各自實作最容易在其中一處修正網釣變體時漏改另一處。
+  function isTrustedAvatarUrl(url) {
+    return TCLCore.sanitizeAvatarUrl(url) !== null;
   }
 
   // ---- 控制器 ----
@@ -1056,12 +1072,12 @@
       restoreFocus('confirm');
     }
 
-    // ---- 雲端同步卡片 ----
+    // ---- 頁首帳號入口 ----
 
     // 跟 background 要一次目前狀態(頁面載入時呼叫一次)。runtime 未注入、
     // sendMessage 拋例外、或 background 端沒有對應 handler(MV3 對無人接聽
     // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_STATE，
-    // 讓卡片優雅顯示未登入態，不因車道 D 還沒做完就卡住整頁。
+    // 讓帳號入口優雅顯示未登入態，不因車道 D 還沒做完就卡住整頁。
     function fetchSyncState() {
       if (!runtime || typeof runtime.sendMessage !== 'function') {
         return Promise.resolve(DEFAULT_SYNC_STATE);
@@ -1091,53 +1107,176 @@
       }
     }
 
+    // 顯示名字:displayName 優先，缺席退回 email 的 @ 前段;兩者皆缺回
+    // 空字串(理論上不會發生——已登入態至少會有其中一個，防禦性寫法)。
+    function accountDisplayName(s) {
+      var name = nonEmptyString(s.displayName);
+      if (name !== null) return name;
+      var email = nonEmptyString(s.email);
+      if (email === null) return '';
+      var at = email.indexOf('@');
+      return at > 0 ? email.slice(0, at) : email;
+    }
+
+    // 頭像首字母備援:優先取名字首字，缺席退回 email 首字，全域大寫。
+    function accountInitial(s) {
+      var name = accountDisplayName(s);
+      if (name) return name.slice(0, 1).toUpperCase();
+      var email = nonEmptyString(s.email);
+      return email ? email.slice(0, 1).toUpperCase() : '';
+    }
+
+    // 三處頭像(頁首觸發鈕/選單頂部帳號列)共用同一份切換邏輯:img 與字母
+    // 互斥顯示，img 只在 avatarUrl 通過白名單時才設 src(縱深防禦，引擎端
+    // 也會白名單，見 isTrustedAvatarUrl)。img 載入失敗(onerror)一律退回
+    // 字母，不留一顆破圖示。
+    var AVATAR_INSTANCES = [
+      { circle: 'avatarCircle', letter: 'avatarLetter', photo: 'avatarPhoto' },
+      { circle: 'acctMenuAvatarCircle', letter: 'acctMenuAvatarLetter', photo: 'acctMenuAvatarPhoto' },
+    ];
+    function renderAvatars(initial, avatarUrl) {
+      // 取 TCLCore 解析後的 href(已正規化，不含控制字元/前後空白)當實際要
+      // 設進 img.src 的值，不是呼叫端傳進來的原始字串——通過驗證跟拿什麼值
+      // 落地是同一次判斷，兩處各自取值容易在其中一處漏改。
+      var safeUrl = TCLCore.sanitizeAvatarUrl(avatarUrl);
+      var usePhoto = safeUrl !== null;
+      AVATAR_INSTANCES.forEach(function (a) {
+        var letterEl = byId(a.letter);
+        var photoEl = byId(a.photo);
+        var circleEl = byId(a.circle);
+        if (letterEl) {
+          letterEl.textContent = initial;
+          letterEl.hidden = usePhoto;
+        }
+        if (photoEl) {
+          photoEl.hidden = !usePhoto;
+          photoEl.onerror = function () {
+            // 大頭照載入失敗(網路問題/連結失效):退回字母，不留破圖。順手清
+            // 掉 src——同一顆失效網址若原封不動再次指派給 img.src，瀏覽器
+            // 會判定「值沒變」而不重新發起請求、onerror 也就不會再觸發，下
+            // 次 renderAvatars 想重試就卡住;清空後下次指派必為一次真正的
+            // 新賦值。
+            photoEl.hidden = true;
+            if (letterEl) letterEl.hidden = false;
+            if (circleEl) circleEl.classList.remove('has-photo');
+            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+          };
+          if (usePhoto) photoEl.src = safeUrl;
+          else if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+        }
+        if (circleEl) circleEl.classList.toggle('has-photo', usePhoto);
+      });
+    }
+
+    // 帳號入口五態的顯示模式:登入過期是從 signed_out + lastError 推導出
+    // 的 UI 概念(docs/cloud-sync.md 5.2 節的 status 枚舉本身沒有 expired)，
+    // 且必須有 email/displayName 其中之一才能分辨——沒有這兩者，畫面上
+    // 沒有帳號資訊可顯示「重新登入哪個帳號」，退回未登入外觀。
+    function accountMode(s) {
+      var hasIdentity = nonEmptyString(s.email) !== null || nonEmptyString(s.displayName) !== null;
+      if (s.status === 'signed_out' && s.lastError === 'session_expired' && hasIdentity) return 'expired';
+      if (s.status === 'signed_out') return 'signedOut';
+      if (s.status === 'syncing') return 'syncing';
+      if (s.status === 'error') return 'error';
+      return 'signedIn';
+    }
+
     // 純函式風格的更新器:只依 state 決定畫面，不讀寫其他外部狀態(entries
-    // 除外——僅在登入確認框組文案時讀取，不在這裡改動)。簽入/簽出兩個
-    // view 用 hidden 切換;deviceNote 那一列(紀錄清單卡片頁尾)也在此一併
-    // 更新，因為它的文案同樣隨登入態切換(見 options.html 的 #deviceNote
-    // 註解)。
-    function renderSyncCard(state) {
+    // 除外——僅在登入確認框組文案時讀取，不在這裡改動)。未登入/其餘四態
+    // 共用同一份觸發鈕與選單 DOM，用 hidden 切換;deviceNote 那一列(紀錄
+    // 清單卡片頁尾)也在此一併更新，因為它的文案同樣隨登入態切換(見
+    // options.html 的 #deviceNote 註解)。
+    function renderAccount(state) {
       var s = state || DEFAULT_SYNC_STATE;
-      var isSignedOut = s.status === 'signed_out';
+      var mode = accountMode(s);
+      var signedOut = mode === 'signedOut';
 
-      var signedOutEl = byId('syncSignedOut');
-      var signedInEl = byId('syncSignedIn');
-      if (signedOutEl) signedOutEl.hidden = !isSignedOut;
-      if (signedInEl) signedInEl.hidden = isSignedOut;
+      var signInBtn = byId('acctSignInBtn');
+      var trigger = byId('acctTrigger');
+      if (signInBtn) signInBtn.hidden = !signedOut;
+      if (trigger) trigger.hidden = signedOut;
 
-      if (!isSignedOut) {
-        var emailEl = byId('syncEmail');
-        if (emailEl) emailEl.textContent = s.email || '';
-
-        var lastSyncedEl = byId('syncLastSynced');
-        if (lastSyncedEl) {
-          lastSyncedEl.textContent = s.lastSyncedAt !== null ? relTime(s.lastSyncedAt) : tt('opSyncNever');
-        }
-
-        var pendingEl = byId('syncPendingCount');
-        if (pendingEl) pendingEl.textContent = tf('opSyncPendingValue', { n: s.pendingCount });
-
-        var syncing = s.status === 'syncing';
-        var nowBtn = byId('syncNowBtn');
-        if (nowBtn) {
-          nowBtn.disabled = syncing;
-          nowBtn.textContent = tt(syncing ? 'opSyncSyncingBtn' : 'opSyncNowBtn');
-        }
-        var signOutBtn = byId('syncSignOutBtn');
-        if (signOutBtn) signOutBtn.disabled = syncing;
-        var deleteBtn = byId('syncDeleteBtn');
-        if (deleteBtn) deleteBtn.disabled = syncing;
-
-        // error 狀態才顯示 lastError 一行;立即同步鈕維持可點(重試路徑)。
-        var hasError = s.status === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
-        var errorRow = byId('syncErrorRow');
-        var errorText = byId('syncErrorText');
-        if (errorRow) errorRow.hidden = !hasError;
-        if (errorText) errorText.textContent = hasError ? s.lastError : '';
+      if (signedOut) {
+        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        var menuEl = byId('acctMenu');
+        if (menuEl) menuEl.hidden = true;
+        var deviceNoteEl0 = byId('deviceNote');
+        if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
+        return;
       }
 
+      var name = accountDisplayName(s);
+      renderAvatars(accountInitial(s), s.avatarUrl);
+
+      var headerNameEl = byId('acctHeaderName');
+      if (headerNameEl) headerNameEl.textContent = name;
+      var menuNameEl = byId('acctMenuName');
+      if (menuNameEl) menuNameEl.textContent = name;
+      var menuEmailEl = byId('acctMenuEmail');
+      if (menuEmailEl) menuEmailEl.textContent = s.email || '';
+
+      var wrap = byId('avatarWrap');
+      if (wrap) wrap.classList.toggle('is-syncing', mode === 'syncing');
+
+      var dot = byId('statusDot');
+      if (dot) {
+        dot.classList.remove('is-danger', 'is-warning');
+        var statusAriaKey = null;
+        if (mode === 'error') {
+          dot.hidden = false;
+          dot.classList.add('is-danger');
+          statusAriaKey = 'opAccountStatusError';
+        } else if (mode === 'expired') {
+          dot.hidden = false;
+          dot.classList.add('is-warning');
+          statusAriaKey = 'opAccountStatusExpired';
+        } else if (mode === 'signedIn') {
+          dot.hidden = false;
+          statusAriaKey = 'opAccountStatusSynced';
+        } else {
+          // syncing:規格只要求外圈轉圈，不疊角標小圓點，避免視覺過雜。
+          dot.hidden = true;
+        }
+        if (statusAriaKey) dot.setAttribute('aria-label', tt(statusAriaKey));
+        else dot.removeAttribute('aria-label');
+      }
+
+      var hasError = mode === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
+      var errorRow = byId('acctErrorRow');
+      var errorText = byId('acctErrorText');
+      if (errorRow) errorRow.hidden = !hasError;
+      if (errorText) errorText.textContent = hasError ? tt('opAccountErrorPrefix') + s.lastError : '';
+
+      var expiredRow = byId('acctExpiredRow');
+      var expiredText = byId('acctExpiredText');
+      if (expiredRow) expiredRow.hidden = mode !== 'expired';
+      // 靜態文案理論上靠 data-i18n 就會套上，這裡仍顯式覆寫一次:此列剛從
+      // hidden 切到顯示時不需要等下一輪語言切換才補上正確文字。
+      if (expiredText) expiredText.textContent = tt('opAccountExpired');
+
+      var subEl = byId('acctMenuSub');
+      if (subEl) {
+        var timeText = s.lastSyncedAt !== null ? relTime(s.lastSyncedAt) : tt('opSyncNever');
+        subEl.textContent = tf('opAccountLastSync', { t: timeText }) + ' · ' + tf('opAccountPending', { n: s.pendingCount });
+      }
+
+      var syncBtn = byId('acctSyncNowBtn');
+      var syncLabel = byId('acctSyncLabel');
+      // 登入過期時必須先重新登入，「立即同步」停用，逼使用者走上方的
+      // 「重新登入」;同步中本來就在跑，同樣停用避免重複觸發。
+      var syncDisabled = mode === 'syncing' || mode === 'expired';
+      if (syncBtn) syncBtn.disabled = syncDisabled;
+      if (syncLabel) {
+        syncLabel.textContent = tt(
+          mode === 'syncing' ? 'opAccountSyncing' : mode === 'error' ? 'opAccountRetry' : 'opAccountSyncNow'
+        );
+      }
+
+      // deviceNote:expired 態的同步實質上沒在跑(等待重新登入)，比照
+      // signedOut 顯示「僅保存於這台裝置」，避免謊報已同步。
+      var deviceSynced = mode === 'signedIn' || mode === 'syncing' || mode === 'error';
       var deviceNoteEl = byId('deviceNote');
-      if (deviceNoteEl) deviceNoteEl.textContent = tt(isSignedOut ? 'opDeviceNote' : 'opDeviceNoteSynced');
+      if (deviceNoteEl) deviceNoteEl.textContent = tt(deviceSynced ? 'opDeviceNoteSynced' : 'opDeviceNote');
     }
 
     // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫
@@ -1145,7 +1284,7 @@
     // 訊息監聽掛在 -init.js)。
     function setSyncState(state) {
       syncState = normalizeSyncState(state);
-      renderSyncCard(syncState);
+      renderAccount(syncState);
     }
 
     // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
@@ -1165,43 +1304,184 @@
       });
     }
 
-    function bindSyncCard() {
-      // 登入先跳確認框(複用 confirmOverlay):內容依 D3 告知本機現有筆數、
-      // free 方案雲端保留上限、本機仍完整保留、可隨時登出或刪除。
-      on('syncSignInBtn', 'click', function () {
-        openConfirm({
-          titleKey: 'opSyncSignInBtn',
-          okKey: 'opSyncSignInConfirmDo',
-          desc: tf('opSyncSignInConfirmDesc', { n: visibleEntries().length }),
-          action: function () {
-            // 沒有注入 permissions 時維持原本的直接送出(權限由 SW 端把關)。
-            if (!permissionsApi || typeof permissionsApi.contains !== 'function') {
-              sendSyncAction({ type: 'sync.signIn' });
+    // 登入/重新登入共用的入口:一律從共用確認框(#confirmOverlay)重新
+    // 開始，內容依 D3 告知本機現有筆數、free 方案雲端保留上限、可隨時
+    // 登出或刪除，確認後才走權限關卡送出 sync.signIn。
+    function startSignInFlow() {
+      openConfirm({
+        titleKey: 'opAccountSignIn',
+        okKey: 'opSyncSignInConfirmDo',
+        desc: tf('opSyncSignInConfirmDesc', { n: visibleEntries().length }),
+        action: function () {
+          // 沒有注入 permissions 時維持原本的直接送出(權限由 SW 端把關)。
+          if (!permissionsApi || typeof permissionsApi.contains !== 'function') {
+            sendSyncAction({ type: 'sync.signIn' });
+            return;
+          }
+          ensureSyncPermissions().then(function (granted) {
+            if (!granted) {
+              // 使用者在權限對話框按了拒絕:沒有這一則 toast，畫面就是「按了
+              // 確定但什麼都沒發生」，使用者會以為是壞掉。
+              toast(tt('opSyncPermissionDenied'));
               return;
             }
-            ensureSyncPermissions().then(function (granted) {
-              if (!granted) {
-                // 使用者在權限對話框按了拒絕:沒有這一則 toast，畫面就是「按了
-                // 確定但什麼都沒發生」，使用者會以為是壞掉。
-                toast(tt('opSyncPermissionDenied'));
-                return;
-              }
-              sendSyncAction({ type: 'sync.signIn' });
-            });
-          },
-        });
+            sendSyncAction({ type: 'sync.signIn' });
+          });
+        },
       });
-      on('syncNowBtn', 'click', function () {
+    }
+
+    // ---- 帳號選單開合(a11y):[hidden] 是唯一的無障礙開關來源(從可及性
+    // 樹移除、不能被 Tab 到);動畫只發生在 [hidden] 被移除之後、加上
+    // .is-open 之前那一小段時間窗(見 options.html 的 .acct-menu 註解，
+    // reduced-motion 由 CSS 媒體查詢負責讓過渡瞬間完成，這裡不用 JS 另外
+    // 偵測)。開啟時焦點進第一個可用項目，關閉一律回觸發鈕(不論何種
+    // 關閉方式:點外/Esc/選單內動作)。 ----
+    var ACCT_MENU_ANIM_MS = 120;
+
+    // 目前可見且可操作的選單項目，依 DOM 順序——錯誤/過期提示列的按鈕
+    // 靠自己所在列的 hidden 判斷(按鈕本身不帶 hidden)，其餘靠自身
+    // disabled/hidden。用節點參照比對，不比對 el.id(避免依賴瀏覽器把
+    // HTML id 屬性反射到 .id 屬性這件事——一律走 getElementById 拿到的
+    // 同一個節點參照才是唯一可信來源)。
+    function acctMenuFocusableItems() {
+      var errorRow = byId('acctErrorRow');
+      var expiredRow = byId('acctExpiredRow');
+      var retryBtn = byId('acctRetryBtn');
+      var reSignInBtn = byId('acctReSignInBtn');
+      var syncBtn = byId('acctSyncNowBtn');
+      var signOutBtn = byId('acctSignOutBtn');
+      var deleteBtn = byId('acctDeleteBtn');
+      var list = [];
+      if (retryBtn && errorRow && !errorRow.hidden) list.push(retryBtn);
+      if (reSignInBtn && expiredRow && !expiredRow.hidden) list.push(reSignInBtn);
+      if (syncBtn && !syncBtn.disabled) list.push(syncBtn);
+      if (signOutBtn) list.push(signOutBtn);
+      if (deleteBtn) list.push(deleteBtn);
+      return list;
+    }
+
+    function openAcctMenu() {
+      var menu = byId('acctMenu');
+      if (!menu) return;
+      menu.hidden = false;
+      menu.classList.remove('is-open'); // 保險:萬一上一輪關閉動畫還沒清掉。
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(function () { menu.classList.add('is-open'); });
+      } else {
+        menu.classList.add('is-open');
+      }
+      var trigger = byId('acctTrigger');
+      if (trigger) trigger.setAttribute('aria-expanded', 'true');
+      var items = acctMenuFocusableItems();
+      if (items[0] && typeof items[0].focus === 'function') {
+        try { items[0].focus(); } catch (e) {}
+      }
+    }
+    function closeAcctMenu() {
+      var menu = byId('acctMenu');
+      if (!menu || menu.hidden) return;
+      menu.classList.remove('is-open');
+      setTimeout(function () { menu.hidden = true; }, ACCT_MENU_ANIM_MS);
+      var trigger = byId('acctTrigger');
+      if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (typeof trigger.focus === 'function') {
+          try { trigger.focus(); } catch (e) {}
+        }
+      }
+    }
+
+    // popup 導向的 #cloud-sync hash 舊行為是捲到雲端同步卡片;卡片已移除，
+    // 改為捲回頁首並嘗試開啟帳號選單(未登入時沒有選單可開，退回聚焦登入
+    // 鈕)，接線層在 init() resolve 後呼叫(見 options-init.js)。
+    function focusAccountArea() {
+      var area = byId('acctArea');
+      if (area && typeof area.scrollIntoView === 'function') {
+        area.scrollIntoView({ block: 'start' });
+      }
+      var trigger = byId('acctTrigger');
+      if (trigger && !trigger.hidden) {
+        openAcctMenu();
+        return;
+      }
+      var signInBtn = byId('acctSignInBtn');
+      if (signInBtn && typeof signInBtn.focus === 'function') {
+        try { signInBtn.focus(); } catch (e) {}
+      }
+    }
+
+    function bindAccount() {
+      on('acctTrigger', 'click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        var menu = byId('acctMenu');
+        if (!menu) return;
+        if (menu.hidden) openAcctMenu();
+        else closeAcctMenu();
+      });
+
+      // 方向鍵在選單項目間移動(Tab 走瀏覽器原生順序，這裡只補方向鍵)。
+      on('acctMenu', 'keydown', function (ev) {
+        if (!ev || (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp')) return;
+        var items = acctMenuFocusableItems();
+        if (!items.length) return;
+        if (ev.preventDefault) ev.preventDefault();
+        var active = document && document.activeElement;
+        var idx = items.indexOf(active);
+        var nextIdx;
+        if (ev.key === 'ArrowDown') nextIdx = idx < 0 ? 0 : (idx + 1) % items.length;
+        else nextIdx = idx <= 0 ? items.length - 1 : idx - 1;
+        var next = items[nextIdx];
+        if (next && typeof next.focus === 'function') {
+          try { next.focus(); } catch (e) {}
+        }
+      });
+
+      if (typeof document.addEventListener === 'function') {
+        // 點選單以外的地方關閉(比照 moreMenu/chipsRow 的既有模式)。
+        document.addEventListener('click', function (ev) {
+          var menu = byId('acctMenu');
+          if (!menu || menu.hidden) return;
+          var area = byId('acctArea');
+          var target = ev && ev.target;
+          var inside = !!area && typeof area.contains === 'function' && !!target && area.contains(target);
+          if (!inside) closeAcctMenu();
+        });
+        // Esc 關閉選單(與既有對話框的 Esc 處理是獨立的兩條監聽，互不影響)。
+        document.addEventListener('keydown', function (ev) {
+          if (!ev || ev.key !== 'Escape') return;
+          var menu = byId('acctMenu');
+          if (menu && !menu.hidden) closeAcctMenu();
+        });
+      }
+
+      on('acctSignInBtn', 'click', function () {
+        startSignInFlow();
+      });
+      on('acctReSignInBtn', 'click', function () {
+        closeAcctMenu();
+        startSignInFlow();
+      });
+      on('acctRetryBtn', 'click', function () {
+        closeAcctMenu();
         sendSyncAction({ type: 'sync.now' });
       });
-      on('syncSignOutBtn', 'click', function () {
+      on('acctSyncNowBtn', 'click', function () {
+        var btn = byId('acctSyncNowBtn');
+        if (btn && btn.disabled) return;
+        closeAcctMenu();
+        sendSyncAction({ type: 'sync.now' });
+      });
+      on('acctSignOutBtn', 'click', function () {
+        closeAcctMenu();
         sendSyncAction({ type: 'sync.signOut' });
       });
-      // 刪除雲端資料一樣走確認框，措辭明講只刪雲端、本機保留(避免與清除
-      // 全部紀錄的本機刪除混淆)。
-      on('syncDeleteBtn', 'click', function () {
+      // 刪除雲端資料一樣走確認框，措辭明講三件事:無法復原、本機保留、
+      // 重新登入會再次上傳(避免與清除全部紀錄的本機刪除混淆)。
+      on('acctDeleteBtn', 'click', function () {
+        closeAcctMenu();
         openConfirm({
-          titleKey: 'opSyncDeleteBtn',
+          titleKey: 'opAccountDeleteCloud',
           okKey: 'opSyncDeleteConfirmDo',
           desc: tt('opSyncDeleteConfirmDesc'),
           action: function () {
@@ -1765,9 +2045,9 @@
       var stats = renderStats();
       renderChart(stats);
       renderList();
-      // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderSyncCard
+      // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderAccount
       // 必須排在它後面才能把已登入態的文案蓋回去。
-      renderSyncCard(syncState);
+      renderAccount(syncState);
     }
 
     // ---- 選單/對話框/工具列佈線 ----
@@ -2031,7 +2311,7 @@
         bindToolbar();
         bindDetailDialog();
         bindChartTooltip();
-        bindSyncCard();
+        bindAccount();
         renderAll();
 
         // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_STATE(未登入)完成首次
@@ -2041,7 +2321,7 @@
         // fetchSyncState 立即 resolve(見該函式)，不會拖慢 init()。
         return fetchSyncState().then(function (state) {
           syncState = state;
-          renderSyncCard(syncState);
+          renderAccount(syncState);
         });
       });
     }
@@ -2150,6 +2430,7 @@
       setSyncSettings: setSyncSettings,
       refresh: refresh,
       setSyncState: setSyncState,
+      focusAccountArea: focusAccountArea,
     };
   }
 
@@ -2157,6 +2438,7 @@
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
     normalizeSyncState: normalizeSyncState,
+    isTrustedAvatarUrl: isTrustedAvatarUrl,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,
     buildExportPayload: buildExportPayload,

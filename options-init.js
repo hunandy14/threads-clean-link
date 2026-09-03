@@ -81,13 +81,11 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 
   controller.init().then(function () {
-    // popup 的雲端同步狀態列會導向 options.html#cloud-sync；載入時若帶
-    // 這個 hash 就捲到卡片(卡片本身 id="cloud-sync"，見 options.html)。
+    // popup 的雲端同步狀態列會導向 options.html#cloud-sync；雲端同步卡片
+    // 已移除(車道 B)，改為捲回頁首並嘗試開啟帳號選單(見 options.js 的
+    // focusAccountArea:已登入才有選單可開，未登入退回聚焦登入鈕)。
     if (typeof location !== 'undefined' && location.hash === '#cloud-sync') {
-      var target = document.getElementById('cloud-sync');
-      if (target && typeof target.scrollIntoView === 'function') {
-        target.scrollIntoView({ block: 'start' });
-      }
+      controller.focusAccountArea();
     }
   });
 
