@@ -516,17 +516,21 @@
   };
 
   // 權限描述子的 origin 來源:state.apiBase 尚未從 background 回來時的退回值。
-  // 兩個環境的 host 都已宣告在 manifest 的 optional_host_permissions。
+  // production／staging 的 host 宣告在商店版 manifest 的
+  // optional_host_permissions;local 只宣告在 tools/dev-browser.mjs 產出的
+  // 開發用 manifest 副本裡，商店版沒有這一項，request 自然拿不到。
   var SYNC_API_BASE_FALLBACK = 'https://api.metalinkclearer.workers.dev';
   var SYNC_API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
+  var SYNC_API_BASE_LOCAL = 'http://localhost:8787';
 
-  // apiBase 只有這兩個合法值（D9）。這個值唯一的去處是權限描述子的 origin，
+  // apiBase 只有這三個合法值（D9）。這個值唯一的去處是權限描述子的 origin，
   // 照單全收等於讓 background 的任何一次形狀走樣（或訊息被冒名）變成「對任意
-  // 網域請求權限」;兩個環境的 host 都已宣告在 manifest 的
-  // optional_host_permissions，夾到白名單內既安全，也不會讓 request 因為
-  // origin 不在宣告內而直接失敗。
+  // 網域請求權限」;夾到白名單內既安全，也不會讓 request 因為 origin 不在
+  // 宣告內而直接失敗。
   function clampApiBase(value) {
-    return value === SYNC_API_BASE_STAGING ? SYNC_API_BASE_STAGING : SYNC_API_BASE_FALLBACK;
+    if (value === SYNC_API_BASE_STAGING) return SYNC_API_BASE_STAGING;
+    if (value === SYNC_API_BASE_LOCAL) return SYNC_API_BASE_LOCAL;
+    return SYNC_API_BASE_FALLBACK;
   }
 
   function isValidSyncState(state) {
@@ -1207,7 +1211,7 @@
       });
     }
 
-    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
+    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode，
     // 網址內容源頭是頁面可控管道，禁 innerHTML。紀錄卡片降級顯示(無
     // author/excerpt 時)靠這份拆解邏輯。
     function buildUrlNode(url, cls) {

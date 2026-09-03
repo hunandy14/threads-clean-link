@@ -2799,10 +2799,49 @@ test('雲端同步權限:使用者拒絕授權時顯示 toast 說明，不留下
   );
 });
 
-test('雲端同步權限:origin 一律夾到兩個合法的後端 host，不跟著 background 傳來的值走', async () => {
+test('雲端同步權限:apiBase 為 local 時，origin 夾成 http://localhost:8787/*', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: true });
+  const ctx = makeSyncPermissionCtx(permissions, 'http://localhost:8787');
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.syncSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(permissions.requestCalls[0], {
+    permissions: ['identity'],
+    origins: ['http://localhost:8787/*'],
+  });
+});
+
+test('雲端同步權限:長得像 local 的近似值一律夾回 production，不逐前綴放行', async () => {
+  // 夾值是逐字比對，不是前綴或子字串比對。換個埠、把 localhost 當成攻擊者
+  // 網域的一段、換成等價的迴圈位址——任何一個被放行，都會變成向那個 origin
+  // 要權限。
+  const nearMisses = ['http://localhost:8788', 'http://localhost.evil', 'http://127.0.0.1:8787'];
+  for (const value of nearMisses) {
+    const permissions = makeFakePermissions({ granted: false, accepted: true });
+    const ctx = makeSyncPermissionCtx(permissions, value);
+    await ctx.controller.init();
+    await settle();
+
+    ctx.doc.ids.syncSignInBtn.fire('click');
+    ctx.doc.ids.confirmOk.fire('click');
+    await settle();
+
+    assert.deepEqual(
+      permissions.requestCalls[0],
+      { permissions: ['identity'], origins: ['https://api.metalinkclearer.workers.dev/*'] },
+      `${value} 只是長得像白名單值，必須夾回 production`
+    );
+  }
+});
+
+test('雲端同步權限:origin 一律夾到三個合法的後端 host，不跟著 background 傳來的值走', async () => {
   const permissions = makeFakePermissions({ granted: false, accepted: true });
   // background 若被冒名或形狀走樣傳來任意 apiBase，這個值會直接變成
-  // permissions.request 的 origin;必須夾回 manifest 宣告過的兩個之一。
+  // permissions.request 的 origin;必須夾回白名單裡的三個之一。
   const ctx = makeSyncPermissionCtx(permissions, 'https://evil.example');
   await ctx.controller.init();
   await settle();

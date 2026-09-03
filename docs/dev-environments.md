@@ -16,7 +16,7 @@
 
 | 環境 | 捷徑 | 打字量 |
 |---|---|---|
-| local | `npm run dev` | 最短，預設捷徑 |
+| local | `npm run dev` | 最短，預設捷徑(需先自行啟動本機後端，見 §3) |
 | staging | `npm run dev:staging` | 冒號子指令，一步到位 |
 | production | `npm run dev -- --env production` | 沒有捷徑，得手打完整旗標 |
 
@@ -40,12 +40,54 @@ npm scripts(本專案 `package.json` 原文):
 - `--env <local|staging|production>`:必填，連線目標，無預設值——沒給就印 help 並非 0 退出，逼使用者每次都明確選。
 - `--yes`:跳過 production 的互動確認，供 CI／腳本呼叫；警告文字仍照印，不悄悄跳過。
 - `--fresh`:建全新臨時 profile／state，不沿用既有登入或快取，用於重現「全新使用者」情境。
+- `--restart`:目標載入路徑與執行環境目前載入的不同時，先把它關掉再重開;不帶此旗標只印訊息並非 0 退出，不擅自關使用者手上開著的視窗。
 - `--ref <git ref>`:切換要載入的建置版本(worktree HEAD)，跟 `--env` 正交——可以拿 staging build 連 local，也可以拿某個 PR 分支連 staging。
 - `--no-open`:跑完不自動開啟畫面，供背景／CI 呼叫。
 - `--profile <dir>`:指定要重複使用的 profile 路徑，通常搭配 `--fresh` 印出的路徑回填。
 - `--build <dir>`:指定建置產物所在目錄。
 - `--port <port>`:指定除錯協定埠，供多開實例時避免衝突。
 - `--help` / `-h`:列出所有旗標、環境說明、範例，隨時可查，不必翻原始碼。
+
+### local 的兩個額外要求
+
+**(a) 前置探活。** local 依賴開發機自己跑著的後端，這件事工具無法代勞，但可以在動任何東西之前先確認。`--env local` 啟動前先 `GET http://localhost:8787/health`;不通就印出啟動指令並非 0 退出，**不碰瀏覽器**——後端沒起來的話後面每一步都是白做，還會留下一個連錯環境的瀏覽器要收拾。
+
+```
+錯誤:本機後端 http://localhost:8787/health 沒有回應。
+請先啟動本機後端：cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787
+```
+
+**(b) 開發用權限與正式產物分家。** local 的後端是 `http://localhost:8787`，瀏覽器擴充要連它就得在 manifest 宣告該 host 權限;但這一項絕不能混進上架版。作法是**不改建置產物本身，而是複製一份**:`dev-build` 保持與版控一致，每次執行以它的內容重新同步出副本，只在 local 這一次於副本的 manifest 追加 `http://localhost:8787/*`。注入是純函式(輸入 manifest 物件與 host、輸出新物件、冪等、不動 `key` 與既有 host)，因此可以單獨測，不必啟動瀏覽器。
+
+### 載入路徑要固定，不能跟著環境換
+
+**三個環境載同一個路徑**(`<dev-build>-loaded`)，不是「local 載副本、其餘載原目錄」。理由是同一個擴充 ID 不能同時從兩個未封裝路徑載入:載入路徑跟著環境走，就等於每次切環境都得關掉重開瀏覽器。固定路徑之後，切環境只剩「重新同步副本 ＋ 就地重載」。
+
+實測(Chrome 152，同一個 profile)的權限行為:
+
+| 動作 | 已授予的 `identity` | 已授予的其他 host | 該次被移除宣告的 host |
+|---|---|---|---|
+| 換載入路徑（dev-build → 副本） | 保留 | 保留 | — |
+| 同路徑重載、manifest **多**一項 host | 保留 | 保留 | — |
+| 同路徑重載、manifest **少**一項 host | 保留 | 保留 | **撤銷** |
+
+被撤銷的授權不會因為之後 manifest 再度宣告就自動回來——切回 local 時要重按一次授權對話框。這是可接受的代價:真正不能掉的是 `identity` 與正在用的那個後端 host，而它們在三種情況下都保留。
+
+因此原則是:**環境差異只准體現在產物內容，不准體現在載入路徑。** 非 local 時副本與 `dev-build` 逐字相同（含 `key`——它決定擴充 ID，動到就等於換一個擴充，OAuth redirect URI 會全部對不上），local 時恰好只多那一項 host。
+
+載入路徑仍會印進狀態橫幅;偵測到瀏覽器載的是別的路徑（例如舊版留下的），工具會建議加 `--restart` 走一次過渡，之後不再要求重啟。
+
+### 載入新產物後要強制重載一次
+
+把新的產物指給執行環境，不等於它真的跑新的程式碼。瀏覽器擴充這邊的具體形態是:`Extensions.loadUnpacked` 讓 Chrome 重讀了 manifest，但 service worker 用 `importScripts` 拉進來的模組吃的是腳本快取，換過 `--ref` 之後 manifest 是新的、SW 裡的模組還是舊版。這個坑安靜到會讓人以為是自己程式碼寫錯，因此載入後固定再送一次 `chrome.runtime.reload()` 把註冊重建。
+
+通則:凡是「換了產物路徑或內容」的步驟，後面就補一次該平台的強制重載，不要相信載入指令本身會連快取一起換掉。
+
+### 切換環境必須清掉上一個環境的狀態
+
+寫入新的連線目標之前，若目前指向的是另一個環境，先清掉舊的登入憑證與同步狀態(本專案是 `storage.local` 的 `syncAuth`／`syncState`／`syncVerifiedAt`／`syncBackoff`，加上 `storage.session` 的單飛旗標、去抖、nonce)，並印一行「已切換環境，清除舊登入狀態」。
+
+理由是這些狀態全都綁在特定後端上:token 是另一台伺服器簽的，同步游標與清除水位線指向另一份資料庫。留著不會讓人「省一次登入」，只會讓同步一直失敗，而失敗訊息看起來像新環境的問題，於是查錯查半天。三個環境互切都適用，不是只有進出 local 才清。
 
 ## 4. production 守門範本
 
@@ -84,6 +126,7 @@ async function productionGuard({ env, yes, isTTY, readLine }) {
 API 網址:    <這次連的完整網址>
 Profile/State: <用的是哪個 profile 或 state 目錄>
 連線埠/連線資訊: <CDP 埠、DB 連線字串代稱等>
+載入路徑:    <這次載的是哪個目錄的產物>
 建置版本:    <目前程式碼是哪個 commit/ref>
 ========================================
 ```

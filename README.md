@@ -101,9 +101,15 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 一鍵啟動除錯用 Chrome 並載入開發版擴充，連線目標用 `--env` 三選一(local/staging/production)，慣例說明見 `docs/dev-environments.md`:
 
-- `npm run dev`:目前會提示 local 環境尚未建置，非 0 退出(需要後端 wrangler dev 等前置工作，見指令輸出)。
+- `npm run dev`:連本機後端(`http://localhost:8787`)。前置是自行在另一個終端機把後端跑起來(`npx wrangler dev --port 8787`);沒跑起來的話指令會印出啟動方式並非 0 退出，不會啟動 Chrome。這個環境會在副本的 manifest 多注入 `http://localhost:8787/*` 權限，商店版 manifest 不受影響。
 - `npm run dev:staging`:連 staging API，日常開發用這個。
 - `npm run dev -- --env production`:連正式環境，會先印警告並要求互動輸入完整字串 `production` 確認才會繼續，`--yes` 可跳過確認(仍會印警告)，非互動環境(non-TTY)一律拒絕。
+
+三個環境載入的都是 `dev-build` 的副本 `~/.threads-clean-link/dev-build-loaded`(每次執行以 `dev-build` 的內容重新同步)。共用同一個載入路徑是刻意的:同一個擴充 ID 不能並存兩個未封裝路徑，載入路徑跟著環境走就代表每次切環境都要關掉重開 Chrome。若 Chrome 裡還載著舊版直接指向 `dev-build` 的擴充，指令會建議加 `--restart` 走一次過渡，之後不再要求重啟。
+
+切到 local 會讓副本的 manifest 多宣告一項 host、切回去則少一項。實測 Chrome 只會撤銷「這次不再宣告」的那一項，`identity` 與其他已授予的 host 都保留;因此回到 local 時要重按一次 localhost 的授權對話框，其餘不受影響。
+
+切換環境時會清掉上一個環境的登入與同步狀態(舊 token 是另一台伺服器簽的，留著只會讓同步一直失敗)。
 
 需先手動建立 `~/.threads-clean-link/dev-build`(本 repo 的另一個 git worktree)與 `~/.threads-clean-link/debug-profile`(已登入 Google 測試帳號的 Chrome profile)，細節見 `tools/dev-browser.mjs` 檔頭註解與 `node tools/dev-browser.mjs --help`。
 

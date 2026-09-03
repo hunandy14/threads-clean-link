@@ -25,11 +25,15 @@
   // D5:Google Web client(公開值)，後端 aud 陣列已含此 client。
   var CLIENT_ID = '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com';
 
-  // D9:apiBase 只有這兩個合法值，syncApiBase 覆寫成其他值一律忽略——
+  // D9:apiBase 只有這三個合法值，syncApiBase 覆寫成其他值一律忽略——
   // 覆寫鍵是 storage.local 的普通鍵，被寫入任意 origin 就等於把 bearer
-  // token 送去別人家。
+  // token 送去別人家。local 指向開發機自己跑的 wrangler dev，只有
+  // tools/dev-browser.mjs 產出的 manifest 副本才宣告 localhost 的 host
+  // 權限，商店版連要求該權限都做不到，因此白名單多這一項不擴大攻擊面。
   var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
   var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
+  var API_BASE_LOCAL = 'http://localhost:8787';
+  var API_BASE_ALLOWED = [API_BASE_PRODUCTION, API_BASE_STAGING, API_BASE_LOCAL];
 
   // D12:週期 alarm 不低於 1 分鐘(MV3 硬性下限)，新紀錄去抖 2 秒。
   var ALARM_NAME = 'tcl-sync';
@@ -276,7 +280,10 @@
             authRecord && typeof authRecord.token === 'string' && authRecord.token
               ? authRecord.token
               : null,
-          apiBase: got[API_BASE_KEY] === API_BASE_STAGING ? API_BASE_STAGING : API_BASE_PRODUCTION,
+          apiBase:
+            API_BASE_ALLOWED.indexOf(got[API_BASE_KEY]) === -1
+              ? API_BASE_PRODUCTION
+              : got[API_BASE_KEY],
           failures: backoff && typeof backoff.failures === 'number' ? backoff.failures : 0,
           verifiedAt: finiteNumber(got[VERIFIED_AT_KEY]) ? got[VERIFIED_AT_KEY] : null,
         };
@@ -1101,6 +1108,7 @@
     SYNC_PERIOD_MINUTES: SYNC_PERIOD_MINUTES,
     API_BASE_PRODUCTION: API_BASE_PRODUCTION,
     API_BASE_STAGING: API_BASE_STAGING,
+    API_BASE_LOCAL: API_BASE_LOCAL,
     CLIENT_ID: CLIENT_ID,
     MAX_UPSERTS: MAX_UPSERTS,
     MAX_DELETES: MAX_DELETES,
