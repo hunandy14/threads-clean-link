@@ -5,6 +5,12 @@
 // ~/.threads-clean-link/dev-build)是主 repo 的另一個 git worktree，本腳本
 // 只在指定 --ref 時切換其 HEAD，不建立或初始化該 worktree。
 //
+// --env local 另外需要開發機自己跑著後端(wrangler dev，port 8787):啟動前
+// 先探 /health，不通就直接非 0 結束，不碰 Chrome。載入的不是 dev-build 本
+// 身而是它的副本 dev-build-local——localhost 的 host 權限只注入副本的
+// manifest，dev-build worktree 保持與版控一致，商店版 manifest 也就永遠不
+// 會夾帶開發用權限。
+//
 // Chrome 152 起 --load-extension 命令列參數被忽略，改用 CDP
 // Extensions.loadUnpacked 載入未封裝擴充;重開 Chrome 後先前載入的擴充不會
 // 自動恢復，因此每次啟動都會再載一次(對已載入的擴充重複 loadUnpacked 回同一
@@ -18,9 +24,10 @@
 // 用法:
 //     node tools/dev-browser.mjs --env <local|staging|production> [--ref <git ref>]
 //                                 [--no-open] [--port <port>] [--profile <dir>]
-//                                 [--build <dir>] [--fresh] [--yes] [--help]
+//                                 [--build <dir>] [--fresh] [--restart] [--yes]
+//                                 [--help]
 import { execFile, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -31,14 +38,30 @@ const execFileAsync = promisify(execFile);
 
 const EXPECTED_EXTENSION_ID = 'hehokicokbgajpanjcajhmflaennnmdj';
 
-// 連線目標三選一。local 本波尚未建置，但在解析/help/橫幅裡都當成正式枚舉值
-// 列出——之後補齊 local 只需拿掉執行階段的擋下，不必改任何介面。
+// 連線目標三選一，與 sync.js 的 apiBase 白名單(D9)逐字對應。
 const ENVIRONMENTS = ['local', 'staging', 'production'];
 
 const API_BASE = {
+  local: 'http://localhost:8787',
   staging: 'https://api-staging.metalinkclearer.workers.dev',
   production: 'https://api.metalinkclearer.workers.dev',
 };
+
+// 只注入 dev-build-local 副本 manifest 的 host 權限。商店版 manifest 不含
+// 這一項，上架版因此連向本機請求權限都做不到。
+const LOCAL_HOST_PERMISSION = 'http://localhost:8787/*';
+
+// 本機後端探活的逾時:localhost 不通就是不通，不值得久等。
+const HEALTH_TIMEOUT_MS = 3000;
+
+const START_LOCAL_BACKEND_HINT =
+  `請先啟動本機後端：cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787`;
+
+// 切換環境時要清掉的舊狀態。token 是另一台伺服器簽的，游標與水位線指向
+// 另一份資料庫，留著只會讓同步拿舊憑證去打新後端，再把失敗當成新環境的
+// 問題查半天。
+const STALE_LOCAL_KEYS = ['syncAuth', 'syncState', 'syncVerifiedAt', 'syncBackoff'];
+const STALE_SESSION_KEYS = ['syncInflight', 'syncNonce', 'syncDebounce'];
 
 const DEFAULT_PORT = 9222;
 const FRESH_DEFAULT_PORT = 9223;
@@ -72,6 +95,7 @@ function parseArgs(argv) {
     build: path.join(homedir(), '.threads-clean-link', 'dev-build'),
     yes: false,
     fresh: false,
+    restart: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -104,6 +128,9 @@ function parseArgs(argv) {
       case '--fresh':
         opts.fresh = true;
         break;
+      case '--restart':
+        opts.restart = true;
+        break;
       default:
         throw new Error(`不明參數:${arg}`);
     }
@@ -123,16 +150,73 @@ function parseArgs(argv) {
   return opts;
 }
 
-// local 環境本波尚未建置:後端沒有 wrangler dev、dev-build 的 manifest 沒
-// 注入 localhost 權限、擴充的 apiBase 白名單也還沒加 local。回傳帶 code 的
-// Error，呼叫端據以非 0 結束，不觸碰 Chrome。
-function localNotBuiltError() {
-  const err = new Error(
-    'local 環境尚未建置（需後端 wrangler dev、dev-build manifest 注入 localhost 權限、' +
-      '擴充 apiBase 白名單加 local），請先用 `npm run dev:staging`'
-  );
-  err.code = 'ENV_NOT_BUILT';
-  return err;
+// dev-build 的副本目錄:與 dev-build 同層、名字加 -local 後綴。--build 換
+// 路徑時副本跟著換，兩者不會分家。
+function localBuildDirFor(buildDir) {
+  const normalized = buildDir.replace(/[\\/]+$/, '');
+  return path.join(path.dirname(normalized), `${path.basename(normalized)}-local`);
+}
+
+// 純函式:回傳追加 host 權限後的新 manifest，不改動輸入物件。已含同一項時
+// 只回傳淺複製(冪等)，key 與既有 host 一律原樣保留——ID 由 key 推導，動到
+// 就等於換一個擴充，OAuth redirect URI 會全部對不上。
+function withHostPermission(manifest, hostPattern) {
+  const existing = Array.isArray(manifest.optional_host_permissions)
+    ? manifest.optional_host_permissions
+    : [];
+  if (existing.indexOf(hostPattern) !== -1) return { ...manifest };
+  return { ...manifest, optional_host_permissions: [...existing, hostPattern] };
+}
+
+// 探本機後端是否已就緒。逾時／連不上／非 2xx 一律視為未就緒，錯誤細節對
+// 使用者沒有意義——要做的事都是同一件:先把 wrangler dev 跑起來。
+async function probeHealth(apiBase, timeoutMs = HEALTH_TIMEOUT_MS) {
+  try {
+    const res = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    return res.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+// 以 dev-build 的內容重建副本，再把 localhost 權限注入副本的 manifest。
+// 每次先刪再整包複製:dev-build 刪掉的檔案不該在副本裡陰魂不散。.git 排除
+// 在外——那是 worktree 的中繼資料，複製過去只會讓副本被當成另一個 worktree。
+function syncLocalBuild(buildDir, localBuildDir, hostPattern = LOCAL_HOST_PERMISSION) {
+  rmSync(localBuildDir, { recursive: true, force: true });
+  cpSync(buildDir, localBuildDir, {
+    recursive: true,
+    filter: (src) => path.basename(src) !== '.git',
+  });
+  const manifestPath = path.join(localBuildDir, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const json = JSON.stringify(withHostPermission(manifest, hostPattern), null, 2);
+  writeFileSync(manifestPath, json + '\n');
+  return localBuildDir;
+}
+
+// 讀 profile 裡 Chrome 記下的「這個擴充 ID 目前載自哪個路徑」。同一個 ID
+// 的兩個 unpacked 路徑不能同時載入，換路徑前得先知道現在載的是哪一個。
+// 讀不到(檔案不存在／格式變了／該 ID 沒載過)一律回 null，交由呼叫端當成
+// 「無從判斷」放行——這是輔助檢查，不是守門。
+function readLoadedExtensionPath(profileDir, extensionId) {
+  for (const file of ['Secure Preferences', 'Preferences']) {
+    try {
+      const prefs = JSON.parse(readFileSync(path.join(profileDir, 'Default', file), 'utf8'));
+      const entry = prefs.extensions && prefs.extensions.settings && prefs.extensions.settings[extensionId];
+      if (entry && typeof entry.path === 'string' && entry.path) return entry.path;
+    } catch {
+      // 檔案不存在或不是合法 JSON:換下一個候選，全部落空就回 null。
+    }
+  }
+  return null;
+}
+
+// 路徑比較前的正規化:大小寫、分隔符與尾隨斜線的差異都不算換路徑。
+function samePath(a, b) {
+  if (!a || !b) return false;
+  const norm = (p) => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  return norm(a) === norm(b);
 }
 
 // production 守門:純邏輯，isTTY/readLine 由呼叫端注入以便測試。
@@ -192,10 +276,16 @@ function helpText() {
 
 環境說明:
     local
-        本波尚未建置。指定後直接印訊息並以非 0 結束，不會啟動 Chrome。
+        連開發機自己跑的後端(${API_BASE.local})，對應 npm run dev。
+        前置:先在另一個終端機跑起後端——
+            cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787
+        啟動前會先探 /health，不通就非 0 結束，不會啟動 Chrome。
+        載入的是 dev-build 的副本 dev-build-local(每次執行重新同步)，副本
+        的 manifest 會注入 ${LOCAL_HOST_PERMISSION} 權限;dev-build 本身
+        與商店版 manifest 都不受影響。
     staging
         寫入 chrome.storage.local.syncApiBase 指向 staging API(${API_BASE.staging})。
-        目前唯一可直接跑的環境，對應 npm run dev:staging。
+        對應 npm run dev:staging。
     production
         連正式環境(${API_BASE.production})。啟動前印醒目警告，並要求互動
         輸入完整字串 "production" 確認(比照 terraform apply 的 yes 確認)；
@@ -210,10 +300,21 @@ function helpText() {
     --build <dir>      指定 dev-build worktree 路徑(預設 ~/.threads-clean-link/dev-build)
     --fresh            在系統暫存目錄建立全新 profile(不沿用既有登入狀態)，
                         結尾印出路徑，之後可用 --profile <路徑> 重複使用
+    --restart          目標載入路徑與 Chrome 目前載入的不同時，先關閉 Chrome
+                        再重開(同一個擴充 ID 的兩個 unpacked 路徑不能並存)。
+                        不帶此旗標時只印訊息並非 0 結束，不會動使用者的視窗
     --yes              跳過 production 的互動確認(仍會印警告)
     --help, -h         顯示這份說明並結束(結束碼 0)
 
+切換環境的副作用:
+    寫入新的 syncApiBase 之前，若擴充目前指向的是另一個環境，會清掉舊的
+    登入與同步狀態(syncAuth／syncState／syncVerifiedAt／syncBackoff 與
+    session 的單飛旗標、去抖、nonce)並印一行提示。舊 token 是另一台伺服器
+    簽的，留著只會讓同步一直失敗。三個環境互切都適用。
+
 範例:
+    node tools/dev-browser.mjs --env local
+    node tools/dev-browser.mjs --env local --restart --no-open
     node tools/dev-browser.mjs --env staging
     node tools/dev-browser.mjs --env staging --ref my-branch --no-open
     node tools/dev-browser.mjs --env production
@@ -265,6 +366,27 @@ async function waitForCdp(port, timeoutMs) {
     }
   }
   return false;
+}
+
+// --restart:透過 CDP 請 Chrome 自己收工(Browser.close 是正常關閉流程，不會
+// 留下「Chrome 未正確關閉」的還原提示)，再等 CDP 埠真的斷線。只在使用者明
+// 確帶 --restart 時呼叫——關掉的是使用者手上開著的除錯瀏覽器。
+async function closeChrome(port, timeoutMs = 15000) {
+  const version = await cdpVersion(port);
+  // Browser.close 會在瀏覽器結束前後把連線切掉，回覆常常收不到;這裡不把
+  // 「沒等到回覆」當失敗，真正的判準是下面的 CDP 是否斷線。
+  await sendCdpCommand(version.webSocketDebuggerUrl, 'Browser.close', {}, timeoutMs).catch(() => {});
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const stillUp = await cdpVersion(port).then(
+      () => true,
+      () => false
+    );
+    if (!stillUp) return true;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  throw new Error(`等待 Chrome(port ${port})關閉逾時(${timeoutMs / 1000} 秒)`);
 }
 
 async function ensureChromeRunning(opts) {
@@ -389,19 +511,56 @@ async function wakeServiceWorker(port, extensionId) {
   if (!res.ok) throw new Error(`喚醒 service worker 用的分頁開啟失敗:${res.status}`);
   const wakeTarget = await res.json();
 
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    const sw = await findServiceWorkerTarget(port, extensionId);
-    if (sw) return { sw, wakeTargetId: wakeTarget.id };
-    await new Promise((r) => setTimeout(r, 200));
+  // 分頁已經開出來了，從這裡開始的任何失敗都得自己收掉它;等待逾時是最常
+  // 見的一條——SW 沒上線時把分頁留著，--no-open 形同虛設。
+  try {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const sw = await findServiceWorkerTarget(port, extensionId);
+      if (sw) return { sw, wakeTargetId: wakeTarget.id };
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    throw new Error('等待擴充 service worker 上線逾時(5 秒)');
+  } catch (err) {
+    await closeTarget(port, wakeTarget.id).catch(() => {});
+    throw err;
   }
-  throw new Error('等待擴充 service worker 上線逾時(5 秒)');
+}
+
+// 讀回擴充目前指向的後端。沒有 syncApiBase 這個鍵時等同 production(擴充
+// 的預設值)，讀不到字串一律當 production，寧可誤判成「需要切換」而多清一次
+// 舊狀態，也不要把舊 token 留給新後端。
+async function readCurrentApiBase(swWsUrl, timeoutMs) {
+  const result = await sendCdpCommand(
+    swWsUrl,
+    'Runtime.evaluate',
+    {
+      expression:
+        '(async () => { const got = await chrome.storage.local.get({ syncApiBase: null }); return got.syncApiBase; })()',
+      awaitPromise: true,
+      returnByValue: true,
+    },
+    timeoutMs
+  );
+  const value = result && result.result && result.result.value;
+  return typeof value === 'string' && value ? value : API_BASE.production;
+}
+
+// 清掉上一個環境留下的登入與同步狀態(storage.local 四鍵 ＋ storage.session
+// 的單飛旗標／去抖／nonce)。三個環境互切都適用。
+async function clearStaleSyncState(swWsUrl, timeoutMs) {
+  const expression = [
+    '(async () => {',
+    `  await chrome.storage.local.remove(${JSON.stringify(STALE_LOCAL_KEYS)});`,
+    `  if (chrome.storage.session) await chrome.storage.session.remove(${JSON.stringify(STALE_SESSION_KEYS)});`,
+    '})()',
+  ].join('\n');
+  await sendCdpCommand(swWsUrl, 'Runtime.evaluate', { expression, awaitPromise: true }, timeoutMs);
 }
 
 // 連到 service worker target 自己的 webSocketDebuggerUrl 執行 Runtime.evaluate,
 // 不需要額外走 Target.attachToTarget(每個 target 在 /json 裡自帶專屬 debugger
-// endpoint，連上去即等同已 attach)。env 只會是 staging 或 production——local
-// 在 main() 更早就已經擋下，不會流到這裡。
+// endpoint，連上去即等同已 attach)。
 //
 // 回傳值:若本次為了喚醒 SW 開了暫時分頁，回傳該分頁的 target id,讓呼叫端
 // 決定是收尾關掉(--no-open)還是沿用成 options 頁;SW 原本就在線則回傳
@@ -422,6 +581,13 @@ async function configureApiEnv(port, extensionId, env, timeoutMs = CDP_COMMAND_T
     // 無害的 no-op，因此不論是否剛喚醒都送一次。
     await sendCdpCommand(sw.webSocketDebuggerUrl, 'Runtime.runIfWaitingForDebugger', {}, timeoutMs);
 
+    // 寫新的 syncApiBase 之前先比對舊值:換了環境就把舊登入狀態清乾淨。
+    const current = await readCurrentApiBase(sw.webSocketDebuggerUrl, timeoutMs);
+    if (current !== API_BASE[env]) {
+      await clearStaleSyncState(sw.webSocketDebuggerUrl, timeoutMs);
+      console.log('已切換環境，清除舊登入狀態。');
+    }
+
     const expression =
       env === 'production'
         ? "chrome.storage.local.remove('syncApiBase')"
@@ -436,8 +602,8 @@ async function configureApiEnv(port, extensionId, env, timeoutMs = CDP_COMMAND_T
 
     console.log(
       env === 'production'
-        ? '已設定 API 環境:production(移除 syncApiBase，使用預設值)'
-        : `已設定 API 環境:staging(${API_BASE.staging})`
+        ? `已設定 API 環境:production(移除 syncApiBase，使用預設值 ${API_BASE.production})`
+        : `已設定 API 環境:${env}(${API_BASE[env]})`
     );
   } catch (err) {
     // 喚醒後的步驟失敗，暫時分頁沒人會再用到，盡量收尾關掉，不讓錯誤路徑
@@ -507,7 +673,7 @@ async function getBuildCommit(buildDir) {
   }
 }
 
-function printBanner({ env, apiBase, profile, port, extensionId, buildCommit }) {
+function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, loadPath }) {
   const envLabel = env === 'production' ? '!! PRODUCTION !!' : env;
   console.log('');
   console.log('================ dev-browser 狀態 ================');
@@ -516,13 +682,41 @@ function printBanner({ env, apiBase, profile, port, extensionId, buildCommit }) 
   console.log(`Profile:     ${profile}`);
   console.log(`CDP 埠:      ${port}`);
   console.log(`擴充 ID:     ${extensionId}`);
+  console.log(`載入路徑:    ${loadPath}`);
   console.log(`dev-build:   ${buildCommit}`);
   console.log('====================================================');
 }
 
-// 主流程。help / 缺 --env / local / production 守門拒絕都只設定
-// process.exitCode 並提早 return，不丟例外——只有真正非預期的失敗
-// (找不到 dev-build、Chrome 啟動失敗等)才用 throw 交給外層 catch。
+// 同一個擴充 ID 不能同時從兩個 unpacked 路徑載入:Chrome 已經在跑、而且它
+// 記著的載入路徑與這次要載的不同時，得先關掉 Chrome 才能換過去。
+// --restart 才會真的關;否則印出指令並設 exitCode，不動使用者的視窗。
+async function ensureLoadPathSwitchable(opts, loadPath) {
+  const alreadyUp = await cdpVersion(opts.port).then(
+    () => true,
+    () => false
+  );
+  if (!alreadyUp) return;
+
+  const loaded = readLoadedExtensionPath(opts.profile, EXPECTED_EXTENSION_ID);
+  if (!loaded || samePath(loaded, loadPath)) return;
+
+  if (!opts.restart) {
+    console.error('錯誤:Chrome 目前載入的擴充路徑與這次要載的不同，同一個擴充 ID 不能並存兩個路徑。');
+    console.error(`  目前載入:${loaded}`);
+    console.error(`  這次要載:${loadPath}`);
+    console.error('請關閉這個除錯用 Chrome 後重跑，或加上 --restart 讓本腳本代為關閉再重開。');
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`載入路徑改變(${loaded} → ${loadPath})，--restart:關閉 Chrome 後重開 ...`);
+  await closeChrome(opts.port);
+  console.log('Chrome 已關閉。');
+}
+
+// 主流程。help / 缺 --env / production 守門拒絕 / local 後端未就緒 / 載入
+// 路徑衝突都只設定 process.exitCode 並提早 return，不丟例外——只有真正非
+// 預期的失敗(找不到 dev-build、Chrome 啟動失敗等)才用 throw 交給外層 catch。
 async function main() {
   let opts;
   try {
@@ -538,13 +732,6 @@ async function main() {
   if (opts.help) {
     console.log(helpText());
     process.exitCode = 0;
-    return;
-  }
-
-  if (opts.env === 'local') {
-    const err = localNotBuiltError();
-    console.error(`錯誤:${err.message}`);
-    process.exitCode = 1;
     return;
   }
 
@@ -567,6 +754,19 @@ async function main() {
     opts.port = opts.fresh ? FRESH_DEFAULT_PORT : DEFAULT_PORT;
   }
 
+  // 本機後端探活擺在最前面:不通的話後面每一步都是白做，而且不該為此動到
+  // 使用者的 Chrome。
+  if (opts.env === 'local') {
+    const healthy = await probeHealth(API_BASE.local);
+    if (!healthy) {
+      console.error(`錯誤:本機後端 ${API_BASE.local}/health 沒有回應。`);
+      console.error(START_LOCAL_BACKEND_HINT);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`本機後端就緒:${API_BASE.local}/health`);
+  }
+
   if (!existsSync(opts.build)) {
     throw new Error(`找不到 dev-build 目錄:${opts.build}`);
   }
@@ -575,9 +775,22 @@ async function main() {
     await switchDevBuildRef(opts.build, opts.ref);
   }
 
+  // local 載副本(dev-build 內容 ＋ 注入的 localhost 權限)，其餘環境直接載
+  // dev-build。--ref 永遠作用在 dev-build worktree，同步到副本是這一步。
+  let loadPath = opts.build;
+  if (opts.env === 'local') {
+    const localBuild = localBuildDirFor(opts.build);
+    syncLocalBuild(opts.build, localBuild);
+    console.log(`已同步 dev-build 至副本並注入 ${LOCAL_HOST_PERMISSION}:${localBuild}`);
+    loadPath = localBuild;
+  }
+
+  await ensureLoadPathSwitchable(opts, loadPath);
+  if (process.exitCode) return;
+
   await ensureChromeRunning(opts);
 
-  const extensionId = await loadUnpackedExtension(opts.port, opts.build);
+  const extensionId = await loadUnpackedExtension(opts.port, loadPath);
   await configureApiEnvAndCleanup(opts.port, extensionId, opts.env, opts.open);
 
   const buildCommit = await getBuildCommit(opts.build);
@@ -588,6 +801,7 @@ async function main() {
     port: opts.port,
     extensionId,
     buildCommit,
+    loadPath,
   });
 
   if (opts.fresh) {
@@ -622,10 +836,17 @@ export {
   DEFAULT_PORT,
   FRESH_DEFAULT_PORT,
   CDP_COMMAND_TIMEOUT_MS,
+  LOCAL_HOST_PERMISSION,
+  STALE_LOCAL_KEYS,
+  STALE_SESSION_KEYS,
   resolveEnv,
   parseArgs,
   productionGuard,
-  localNotBuiltError,
+  withHostPermission,
+  localBuildDirFor,
+  samePath,
+  probeHealth,
+  readLoadedExtensionPath,
   freshProfileDir,
   helpText,
   sendCdpCommand,

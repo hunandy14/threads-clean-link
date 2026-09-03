@@ -3,17 +3,20 @@
 // dev-browser.mjs 是 ESM，主流程(啟動真正的 Chrome、CDP 連線)只在
 // `import.meta.url === 直接執行的檔案` 時跑，import 進來不會有任何副作用。
 // 本檔只測可 import 的純函式:
-//   - parseArgs:三個環境、缺/未知 --env 報錯、--yes/--fresh/--no-open 解析、
-//     同一旗標重複出現時後者覆蓋前者
+//   - parseArgs:三個環境、缺/未知 --env 報錯、
+//     --yes/--fresh/--restart/--no-open 解析、同一旗標重複出現時後者覆蓋前者
 //   - productionGuard:TTY/非 TTY、--yes、輸入相符/不符
-//   - localNotBuiltError:local 回傳帶 code 的「尚未建置」錯誤
+//   - withHostPermission／localBuildDirFor／samePath:--env local 的
+//     manifest 副本注入是純函式(冪等、不動 key 與既有 host)
+//   - probeHealth:本機後端探活的失敗路徑一律回 false
 //   - sendCdpCommand:逾時會 reject，不永遠掛住
 //   - configureApiEnvAndCleanup:喚醒 SW 用的暫時分頁，--no-open 時要關掉、
 //     --open 時要沿用成 options 頁而非開兩個(用 mock CDP transport 斷言,
 //     不需要真 Chrome)
 //   - configureApiEnv:剛喚醒的 SW 在 CDP 裡處於暫停狀態(真實環境驗證發現
 //     的 bug，不送 Runtime.runIfWaitingForDebugger 就會卡死)要先解除暫停;
-//     失敗路徑(如逾時)也要把喚醒分頁關掉，不能只有成功路徑會清
+//     失敗路徑(如逾時)也要把喚醒分頁關掉，不能只有成功路徑會清;切換環境
+//     時要在寫入新 apiBase 之前清掉舊環境的登入與同步狀態
 // 另外靜態檢查 package.json 的 scripts 清單，以及沿用 test/package.test.js
 // 既有邏輯確認打包白名單不誤收 docs/、test/、package.json。
 'use strict';
@@ -61,15 +64,24 @@ test('parseArgs:--help 不需要 --env 也能解析', () => {
   assert.equal(opts2.help, true);
 });
 
-test('parseArgs:--yes、--fresh、--no-open 解析為 true/false', () => {
-  const opts = devBrowser.parseArgs(['--env', 'production', '--yes', '--fresh', '--no-open']);
+test('parseArgs:--yes、--fresh、--restart、--no-open 解析為 true/false', () => {
+  const opts = devBrowser.parseArgs([
+    '--env',
+    'production',
+    '--yes',
+    '--fresh',
+    '--restart',
+    '--no-open',
+  ]);
   assert.equal(opts.yes, true);
   assert.equal(opts.fresh, true);
+  assert.equal(opts.restart, true);
   assert.equal(opts.open, false);
 
   const defaults = devBrowser.parseArgs(['--env', 'staging']);
   assert.equal(defaults.yes, false);
   assert.equal(defaults.fresh, false);
+  assert.equal(defaults.restart, false);
   assert.equal(defaults.open, true);
 });
 
@@ -163,12 +175,92 @@ test('productionGuard:--yes → 通過，且不呼叫 readLine', async () => {
   assert.equal(called, false);
 });
 
-// ---- local ----
+// ---- local:manifest 副本注入(純函式) ----
 
-test('localNotBuiltError:回傳帶 code 的「尚未建置」錯誤', () => {
-  const err = devBrowser.localNotBuiltError();
-  assert.equal(err.code, 'ENV_NOT_BUILT');
-  assert.match(err.message, /尚未建置/);
+test('withHostPermission:追加 host 權限，key 與既有 host 原樣保留', () => {
+  const manifest = {
+    key: 'FAKE-KEY',
+    optional_host_permissions: [
+      'https://api.metalinkclearer.workers.dev/*',
+      'https://api-staging.metalinkclearer.workers.dev/*',
+    ],
+  };
+  const out = devBrowser.withHostPermission(manifest, devBrowser.LOCAL_HOST_PERMISSION);
+
+  assert.equal(out.key, 'FAKE-KEY', 'key 動到就等於換一個擴充 ID');
+  assert.deepEqual(out.optional_host_permissions, [
+    'https://api.metalinkclearer.workers.dev/*',
+    'https://api-staging.metalinkclearer.workers.dev/*',
+    'http://localhost:8787/*',
+  ]);
+  assert.deepEqual(
+    manifest.optional_host_permissions,
+    [
+      'https://api.metalinkclearer.workers.dev/*',
+      'https://api-staging.metalinkclearer.workers.dev/*',
+    ],
+    '純函式:輸入的 manifest 不得被就地改動'
+  );
+});
+
+test('withHostPermission:冪等，重複套用不會出現兩份同樣的 host', () => {
+  const manifest = { key: 'FAKE-KEY', optional_host_permissions: [] };
+  const once = devBrowser.withHostPermission(manifest, devBrowser.LOCAL_HOST_PERMISSION);
+  const twice = devBrowser.withHostPermission(once, devBrowser.LOCAL_HOST_PERMISSION);
+  assert.deepEqual(twice, once);
+  assert.deepEqual(twice.optional_host_permissions, ['http://localhost:8787/*']);
+});
+
+test('withHostPermission:manifest 沒有 optional_host_permissions 也能注入', () => {
+  const out = devBrowser.withHostPermission({ key: 'K' }, devBrowser.LOCAL_HOST_PERMISSION);
+  assert.deepEqual(out.optional_host_permissions, ['http://localhost:8787/*']);
+  assert.equal(out.key, 'K');
+});
+
+test('localBuildDirFor:副本與 dev-build 同層，名字加 -local 後綴', () => {
+  const out = devBrowser.localBuildDirFor(path.join('C:', 'x', 'dev-build'));
+  assert.equal(path.basename(out), 'dev-build-local');
+  assert.equal(path.dirname(out), path.join('C:', 'x'));
+
+  const trailing = devBrowser.localBuildDirFor(path.join('C:', 'x', 'dev-build') + path.sep);
+  assert.equal(path.basename(trailing), 'dev-build-local', '尾隨分隔符不該讓 basename 落空');
+});
+
+test('samePath:大小寫與尾隨分隔符的差異不算換路徑;缺值一律視為不同', () => {
+  const base = path.resolve(path.join('C:', 'x', 'dev-build'));
+  assert.equal(devBrowser.samePath(base, base.toUpperCase()), true);
+  assert.equal(devBrowser.samePath(base, base + path.sep), true);
+  assert.equal(devBrowser.samePath(base, base + '-local'), false);
+  assert.equal(devBrowser.samePath(null, base), false);
+});
+
+// ---- local:本機後端探活 ----
+
+test('probeHealth:200 回 true;非 2xx、連線失敗一律回 false，不丟例外', async () => {
+  const saved = global.fetch;
+  try {
+    const seen = [];
+    global.fetch = async (url) => {
+      seen.push(url);
+      return { ok: true };
+    };
+    assert.equal(await devBrowser.probeHealth('http://localhost:8787'), true);
+    assert.deepEqual(seen, ['http://localhost:8787/health']);
+
+    global.fetch = async () => ({ ok: false, status: 503 });
+    assert.equal(await devBrowser.probeHealth('http://localhost:8787'), false);
+
+    global.fetch = async () => {
+      throw new Error('ECONNREFUSED');
+    };
+    assert.equal(
+      await devBrowser.probeHealth('http://localhost:8787'),
+      false,
+      '後端沒起來時要安靜回 false，讓呼叫端印啟動指令，而不是往上炸'
+    );
+  } finally {
+    global.fetch = saved;
+  }
 });
 
 // ---- package.json scripts ----
@@ -208,13 +300,16 @@ test('打包白名單:不收 docs/、test/、package.json', () => {
 // 兩者都是呼叫當下才查找的全域，不是 import 時就綁死——測試可以整個蓋掉，
 // 不需要真 Chrome。
 
-function createMockCdp({ port, extensionId }) {
+function createMockCdp({ port, extensionId, currentApiBase = null, wakeSw = true }) {
   const browserWsUrl = `ws://mock-browser:${port}`;
   const swWsUrl = `ws://mock-sw:${port}`;
   let targets = [];
   let nextWakeId = 1;
   let newTargetCalls = 0;
   const closedTargetIds = [];
+  // 側錄送進 SW 的每一段 Runtime.evaluate 原文:切換環境的清鍵動作沒有其他
+  // 可觀測的外部效果，只能從送出的指令序列驗。
+  const evaluated = [];
   // 真實 Chrome 對「剛啟動」的 service worker 會暫停等除錯器接手，直到收到
   // Runtime.runIfWaitingForDebugger 才會處理其他指令(含 Runtime.evaluate)；
   // 這裡用一個旗標模擬同一份行為，讓測試能重現「不送這道指令就永遠卡住」。
@@ -257,6 +352,14 @@ function createMockCdp({ port, extensionId }) {
       }
 
       let result = {};
+      if (msg.method === 'Runtime.evaluate') {
+        evaluated.push(msg.params.expression);
+        // 讀「目前的 syncApiBase」那一段:回傳測試設定的值，模擬擴充現在
+        // 指向哪個環境。
+        if (msg.params.expression.includes('got.syncApiBase')) {
+          result = { result: { type: 'string', value: currentApiBase } };
+        }
+      }
       if (msg.method === 'Target.closeTarget') {
         const targetId = msg.params.targetId;
         closedTargetIds.push(targetId);
@@ -292,7 +395,7 @@ function createMockCdp({ port, extensionId }) {
       // mock 簡化:喚醒分頁一開就視為 SW 隨即上線(剛啟動、處於暫停狀態)，
       // 不模擬真正的載入延遲(真實流程裡 wakeServiceWorker 本來就是輪詢等它
       // 出現)。
-      if (!targets.some((t) => t.type === 'service_worker')) {
+      if (wakeSw && !targets.some((t) => t.type === 'service_worker')) {
         targets.push(swTarget());
         swPaused = true;
       }
@@ -308,6 +411,7 @@ function createMockCdp({ port, extensionId }) {
     fetchImpl,
     WebSocketImpl: MockWebSocket,
     closedTargetIds,
+    evaluated,
     get newTargetCalls() {
       return newTargetCalls;
     },
@@ -395,6 +499,95 @@ test('configureApiEnv:失敗時(例如 Runtime.evaluate 逾時)也要把喚醒�
   global.WebSocket = mock.WebSocketImpl;
 
   await assert.rejects(() => devBrowser.configureApiEnv(port, extensionId, 'staging', 50));
+
+  assert.deepEqual(
+    mock.closedTargetIds,
+    ['wake-1'],
+    '失敗路徑也要恰好關掉那一個喚醒用的暫時分頁'
+  );
+  assert.ok(
+    !mock.targets.some((t) => t.id === 'wake-1'),
+    '關閉後 /json 清單裡不該再看到喚醒用的暫時分頁'
+  );
+});
+
+test('configureApiEnv:SW 始終不上線(wakeServiceWorker 自己逾時)時，也要關掉喚醒分頁', async () => {
+  const port = 9408;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId, wakeSw: false });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await assert.rejects(() => devBrowser.configureApiEnv(port, extensionId, 'staging'), /逾時/);
+
+  assert.deepEqual(
+    mock.closedTargetIds,
+    ['wake-1'],
+    '等待 SW 上線逾時是最常見的失敗;分頁是這一步開的，就得由這一步收掉'
+  );
+});
+
+// ---- 切換環境時清掉舊登入狀態 ----
+
+test('configureApiEnv:目前指向別的環境時，先清舊登入狀態再寫新的 apiBase', async () => {
+  const port = 9405;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({
+    port,
+    extensionId,
+    currentApiBase: 'https://api-staging.metalinkclearer.workers.dev',
+  });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.configureApiEnv(port, extensionId, 'local');
+
+  const readIdx = mock.evaluated.findIndex((e) => e.includes('got.syncApiBase'));
+  const clearIdx = mock.evaluated.findIndex((e) => e.includes('chrome.storage.local.remove'));
+  const writeIdx = mock.evaluated.findIndex((e) => e.includes('chrome.storage.local.set'));
+
+  assert.ok(readIdx !== -1, '應先讀回目前的 syncApiBase');
+  assert.ok(clearIdx !== -1, '換了環境就該清掉舊登入狀態');
+  assert.ok(writeIdx !== -1, '應寫入新環境的 syncApiBase');
+  assert.ok(readIdx < clearIdx && clearIdx < writeIdx, '順序必須是讀 → 清 → 寫');
+
+  for (const key of devBrowser.STALE_LOCAL_KEYS) {
+    assert.ok(mock.evaluated[clearIdx].includes(key), `storage.local 的 ${key} 要被清掉`);
+  }
+  for (const key of devBrowser.STALE_SESSION_KEYS) {
+    assert.ok(mock.evaluated[clearIdx].includes(key), `storage.session 的 ${key} 要被清掉`);
+  }
+  assert.ok(
+    mock.evaluated[writeIdx].includes('http://localhost:8787'),
+    '寫入的必須是 local 的 apiBase'
+  );
+});
+
+test('configureApiEnv:目前已指向同一個環境時，不清舊登入狀態', async () => {
+  const port = 9406;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId, currentApiBase: 'http://localhost:8787' });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.configureApiEnv(port, extensionId, 'local');
+
+  assert.ok(
+    !mock.evaluated.some((e) => e.includes('syncAuth')),
+    '同一個環境重跑一次不該把使用者的登入狀態洗掉'
+  );
+});
+
+test('configureApiEnv:沒有 syncApiBase(等同 production)時切到 local，一樣要清', async () => {
+  const port = 9407;
+  const extensionId = 'hehokicokbgajpanjcajhmflaennnmdj';
+  const mock = createMockCdp({ port, extensionId, currentApiBase: null });
+  global.fetch = mock.fetchImpl;
+  global.WebSocket = mock.WebSocketImpl;
+
+  await devBrowser.configureApiEnv(port, extensionId, 'local');
+
+  assert.ok(mock.evaluated.some((e) => e.includes('syncAuth')));
 });
 
 test('sendCdpCommand:逾時會 reject，不會永遠掛住', async () => {
