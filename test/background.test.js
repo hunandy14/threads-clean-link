@@ -2805,6 +2805,90 @@ test('T6 其他擴充/未知 sender 送來的 sync.* 一律忽略', async () => 
   assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
 });
 
+// manifest 的 options_ui.open_in_tab 為 true，設定頁本身就是一個分頁：真機實測
+// 它送來的 sender 帶 tab，url 是 chrome-extension://<自己的 id>/options.html。
+// 舊判準的 `!sender.tab` 會把五個 sync.* 全擋掉，同步卡片整片按不動。
+const OPTIONS_TAB_SENDER = {
+  id: EXTENSION_ID,
+  tab: { id: 1 },
+  url: `chrome-extension://${EXTENSION_ID}/options.html`,
+};
+
+test('T6 回歸:options 分頁(open_in_tab)送來的五個 sync.* 都要被處理', async () => {
+  const bg = loadBackgroundForSync();
+
+  await bg.send({ type: 'sync.getState' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.signIn' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.signOut' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.now' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.deleteCloud' }, OPTIONS_TAB_SENDER);
+
+  const names = bg.sync.names();
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud'].forEach((m) => {
+    assert.ok(names.includes(m), `設定頁是分頁不代表是外人，${m} 必須照常轉呼叫引擎`);
+  });
+});
+
+test('T6 popup 形狀(無 tab、url 為 popup.html)送來的 sync.* 要被處理', async () => {
+  const bg = loadBackgroundForSync();
+
+  const result = await bg.send(
+    { type: 'sync.getState' },
+    { id: EXTENSION_ID, url: `chrome-extension://${EXTENSION_ID}/popup.html` }
+  );
+
+  assert.equal(result.responded, true, 'popup 是擴充頁面，必須回應');
+  assert.ok(bg.sync.names().includes('getState'));
+});
+
+test('T6 content script 形狀(url 為所在網頁)送來的 sync.* 一律忽略', async () => {
+  const bg = loadBackgroundForSync();
+  // content script 的 sender.id 就是本擴充，唯一分得出來的是 sender.url——
+  // 那是它注入的那個網頁的網址，不會是 chrome-extension:// 前綴。
+  const sender = {
+    id: EXTENSION_ID,
+    tab: { id: 12, url: 'https://www.threads.com/@a/post/b' },
+    url: 'https://www.threads.com/@a/post/b',
+  };
+
+  for (const type of ['sync.getState', 'sync.signIn', 'sync.signOut', 'sync.now', 'sync.deleteCloud']) {
+    const result = await bg.send({ type }, sender);
+    assert.equal(result.responded, false, `${type} 來自 content script 時不得回應`);
+  }
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
+test('T6 url 前綴對不上的 sender 一律忽略(不得只比子字串)', async () => {
+  const bg = loadBackgroundForSync();
+
+  // 別的擴充的 options 頁：id 與 url 都不是自己的。
+  const foreignPage = await bg.send(
+    { type: 'sync.signIn' },
+    { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', url: 'chrome-extension://other-id/options.html' }
+  );
+  assert.equal(foreignPage.responded, false, '別的擴充的頁面不是自己人');
+
+  // id 對得上但 url 只是把前綴藏在網址中段，前綴比對必須從第 0 位起算。
+  const spoofedUrl = await bg.send(
+    { type: 'sync.signIn' },
+    { id: EXTENSION_ID, url: `https://evil.example/chrome-extension://${EXTENSION_ID}/` }
+  );
+  assert.equal(spoofedUrl.responded, false, 'chrome-extension:// 必須是 url 的開頭，不是出現過就算');
+
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
+test('T6 sender 缺 url 時一律忽略', async () => {
+  const bg = loadBackgroundForSync();
+
+  const noUrl = await bg.send({ type: 'sync.signIn' }, { id: EXTENSION_ID });
+  assert.equal(noUrl.responded, false, '認不出來源頁面就不放行');
+  const nullSender = await bg.send({ type: 'sync.signIn' }, null);
+  assert.equal(nullSender.responded, false, 'sender 為 null 不得炸也不得放行');
+
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
 test('T6 auth.spike 入口已移除', async () => {
   const bg = loadBackgroundForSync();
 
