@@ -8,44 +8,83 @@
 // Chrome 152 起 --load-extension 命令列參數被忽略，改用 CDP
 // Extensions.loadUnpacked 載入未封裝擴充;重開 Chrome 後先前載入的擴充不會
 // 自動恢復，因此每次啟動都會再載一次(對已載入的擴充重複 loadUnpacked 回同一
-// 個 id 無害)。全程只印狀態，不印任何 chrome.storage 內容(可能含登入
+// 個 id 無害)。全程只印狀態，不印任何 chrome.storage 內容或憑證(可能含登入
 // token)。
 //
+// 連線目標用 --env 這一個必填旗標(local/staging/production 三選一)，
+// 與擴充是否重新建置(--build/--ref)是兩個正交維度——理由與其他專案的套用
+// 方式見 docs/dev-environments.md。
+//
 // 用法:
-//     node tools/dev-browser.mjs [--ref <git ref>] [--api staging|production]
+//     node tools/dev-browser.mjs --env <local|staging|production> [--ref <git ref>]
 //                                 [--no-open] [--port <port>] [--profile <dir>]
-//                                 [--build <dir>]
+//                                 [--build <dir>] [--fresh] [--yes] [--help]
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
 const EXPECTED_EXTENSION_ID = 'hehokicokbgajpanjcajhmflaennnmdj';
+
+// 連線目標三選一。local 本波尚未建置，但在解析/help/橫幅裡都當成正式枚舉值
+// 列出——之後補齊 local 只需拿掉執行階段的擋下，不必改任何介面。
+const ENVIRONMENTS = ['local', 'staging', 'production'];
+
 const API_BASE = {
   staging: 'https://api-staging.metalinkclearer.workers.dev',
   production: 'https://api.metalinkclearer.workers.dev',
 };
 
+const DEFAULT_PORT = 9222;
+const FRESH_DEFAULT_PORT = 9223;
+
+const PRODUCTION_WARNING = [
+  '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!',
+  '!! 警告:即將連線 production 環境。',
+  '!! 這會連上正式資料庫——同步的清理紀錄會寫入正式 D1，並出現在使用者手機上。',
+  '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!',
+].join('\n');
+
+// 驗證 --env 的值是三個合法環境之一，否則丟出可讀的錯誤訊息。
+function resolveEnv(name) {
+  if (!ENVIRONMENTS.includes(name)) {
+    throw new Error(`--env 只接受 ${ENVIRONMENTS.join('、')}，收到:${name}`);
+  }
+  return name;
+}
+
+// 純函式:只解析與驗證，不做任何 I/O，方便測試 import 後直接呼叫。
+// 同一旗標出現多次時後者覆蓋前者(對應 `npm run dev -- --env production`
+// 這種在既有 script 的 --env local 後面再疊加旗標的用法)。
 function parseArgs(argv) {
   const opts = {
+    help: false,
+    env: null,
     ref: null,
-    api: 'staging',
     open: true,
-    port: 9222,
+    port: null,
     profile: path.join(homedir(), '.threads-clean-link', 'debug-profile'),
     build: path.join(homedir(), '.threads-clean-link', 'dev-build'),
+    yes: false,
+    fresh: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
+      case '--help':
+      case '-h':
+        opts.help = true;
+        break;
+      case '--env':
+        opts.env = argv[++i];
+        break;
       case '--ref':
         opts.ref = argv[++i];
-        break;
-      case '--api':
-        opts.api = argv[++i];
         break;
       case '--no-open':
         opts.open = false;
@@ -59,17 +98,128 @@ function parseArgs(argv) {
       case '--build':
         opts.build = argv[++i];
         break;
+      case '--yes':
+        opts.yes = true;
+        break;
+      case '--fresh':
+        opts.fresh = true;
+        break;
       default:
         throw new Error(`不明參數:${arg}`);
     }
   }
-  if (opts.api !== 'staging' && opts.api !== 'production') {
-    throw new Error(`--api 只接受 staging 或 production，收到:${opts.api}`);
+
+  if (opts.help) return opts;
+
+  if (!opts.env) {
+    throw new Error('缺少必填旗標 --env(local|staging|production)');
   }
-  if (!Number.isInteger(opts.port) || opts.port <= 0) {
+  resolveEnv(opts.env);
+
+  if (opts.port !== null && (!Number.isInteger(opts.port) || opts.port <= 0)) {
     throw new Error(`--port 必須是正整數，收到:${argv}`);
   }
+
   return opts;
+}
+
+// local 環境本波尚未建置:後端沒有 wrangler dev、dev-build 的 manifest 沒
+// 注入 localhost 權限、擴充的 apiBase 白名單也還沒加 local。回傳帶 code 的
+// Error，呼叫端據以非 0 結束，不觸碰 Chrome。
+function localNotBuiltError() {
+  const err = new Error(
+    'local 環境尚未建置（需後端 wrangler dev、dev-build manifest 注入 localhost 權限、' +
+      '擴充 apiBase 白名單加 local），請先用 `npm run dev:staging`'
+  );
+  err.code = 'ENV_NOT_BUILT';
+  return err;
+}
+
+// production 守門:純邏輯，isTTY/readLine 由呼叫端注入以便測試。
+// 回傳 { ok: true } 或 { ok: false, reason }，不做任何 process.exit。
+async function productionGuard({ env, yes, isTTY, readLine: ask }) {
+  if (env !== 'production') return { ok: true };
+
+  console.warn(PRODUCTION_WARNING);
+
+  if (yes) return { ok: true };
+
+  if (!isTTY) {
+    return {
+      ok: false,
+      reason: '非互動環境(non-TTY)且未提供 --yes，拒絕連線 production。',
+    };
+  }
+
+  const answer = await ask('請輸入完整字串 "production" 以確認: ');
+  if (answer !== 'production') {
+    return {
+      ok: false,
+      reason: `輸入不符(收到:${JSON.stringify(answer)})，已取消。`,
+    };
+  }
+  return { ok: true };
+}
+
+// 真正互動用的 readLine 實作，包成注入函式讓 productionGuard 保持純邏輯。
+function createReadLine() {
+  return (promptText) =>
+    new Promise((resolve) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(promptText, (answer) => {
+        rl.close();
+        resolve(answer);
+      });
+    });
+}
+
+// --fresh:在系統暫存目錄建立一個帶時間戳的新 profile 目錄，不沿用既有登入
+// 狀態。目錄本身由 Chrome 啟動時的 --user-data-dir 建立，這裡只給路徑。
+function freshProfileDir() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return path.join(tmpdir(), `threads-clean-link-profile-${stamp}`);
+}
+
+function helpText() {
+  return `一鍵啟動除錯用 Chrome 並載入開發版擴充。
+
+用法:
+    node tools/dev-browser.mjs --env <local|staging|production> [其他旗標]
+
+必填旗標:
+    --env <local|staging|production>
+        連線目標環境，沒有預設值，必須指定。
+
+環境說明:
+    local
+        本波尚未建置。指定後直接印訊息並以非 0 結束，不會啟動 Chrome。
+    staging
+        寫入 chrome.storage.local.syncApiBase 指向 staging API(${API_BASE.staging})。
+        目前唯一可直接跑的環境，對應 npm run dev:staging。
+    production
+        連正式環境(${API_BASE.production})。啟動前印醒目警告，並要求互動
+        輸入完整字串 "production" 確認(比照 terraform apply 的 yes 確認)；
+        非 TTY 或輸入不符則中止，不會啟動 Chrome。--yes 可跳過互動確認，
+        但警告仍會印出。
+
+其他旗標:
+    --ref <git ref>    切換 dev-build worktree 的 HEAD 到指定 ref 再啟動
+    --no-open          不自動開啟擴充的 options 頁
+    --port <port>      指定 CDP 埠(預設 ${DEFAULT_PORT}，--fresh 時預設 ${FRESH_DEFAULT_PORT})
+    --profile <dir>    指定 Chrome user-data-dir(預設 ~/.threads-clean-link/debug-profile)
+    --build <dir>      指定 dev-build worktree 路徑(預設 ~/.threads-clean-link/dev-build)
+    --fresh            在系統暫存目錄建立全新 profile(不沿用既有登入狀態)，
+                        結尾印出路徑，之後可用 --profile <路徑> 重複使用
+    --yes              跳過 production 的互動確認(仍會印警告)
+    --help, -h         顯示這份說明並結束(結束碼 0)
+
+範例:
+    node tools/dev-browser.mjs --env staging
+    node tools/dev-browser.mjs --env staging --ref my-branch --no-open
+    node tools/dev-browser.mjs --env production
+    node tools/dev-browser.mjs --env production --yes
+    node tools/dev-browser.mjs --env staging --fresh
+`;
 }
 
 // 依平台常見安裝路徑找 chrome 執行檔，找不到就丟出清楚錯誤。
@@ -241,8 +391,9 @@ async function wakeServiceWorker(port, extensionId) {
 
 // 連到 service worker target 自己的 webSocketDebuggerUrl 執行 Runtime.evaluate,
 // 不需要額外走 Target.attachToTarget(每個 target 在 /json 裡自帶專屬 debugger
-// endpoint，連上去即等同已 attach)。
-async function configureApiEnv(port, extensionId, api) {
+// endpoint，連上去即等同已 attach)。env 只會是 staging 或 production——local
+// 在 main() 更早就已經擋下，不會流到這裡。
+async function configureApiEnv(port, extensionId, env) {
   let sw = await findServiceWorkerTarget(port, extensionId);
   if (!sw) {
     console.log('擴充 service worker 尚未上線，開啟 options 頁喚醒 ...');
@@ -250,9 +401,9 @@ async function configureApiEnv(port, extensionId, api) {
   }
 
   const expression =
-    api === 'production'
+    env === 'production'
       ? "chrome.storage.local.remove('syncApiBase')"
-      : `chrome.storage.local.set({syncApiBase: ${JSON.stringify(API_BASE[api])}})`;
+      : `chrome.storage.local.set({syncApiBase: ${JSON.stringify(API_BASE[env])}})`;
 
   await sendCdpCommand(sw.webSocketDebuggerUrl, 'Runtime.evaluate', {
     expression: `(async () => { ${expression}; })()`,
@@ -260,7 +411,7 @@ async function configureApiEnv(port, extensionId, api) {
   });
 
   console.log(
-    api === 'production'
+    env === 'production'
       ? '已設定 API 環境:production(移除 syncApiBase，使用預設值)'
       : `已設定 API 環境:staging(${API_BASE.staging})`
   );
@@ -283,8 +434,76 @@ async function openOptionsPage(port, extensionId) {
   console.log('已開啟 options 頁。');
 }
 
+// dev-build worktree 目前指向的 commit，只用於狀態橫幅顯示，取不到就標
+// unknown，不因此中斷主流程。
+async function getBuildCommit(buildDir) {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', buildDir, 'rev-parse', '--short', 'HEAD']);
+    return stdout.trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function printBanner({ env, apiBase, profile, port, extensionId, buildCommit }) {
+  const envLabel = env === 'production' ? '!! PRODUCTION !!' : env;
+  console.log('');
+  console.log('================ dev-browser 狀態 ================');
+  console.log(`環境:        ${envLabel}`);
+  console.log(`API 網址:    ${apiBase}`);
+  console.log(`Profile:     ${profile}`);
+  console.log(`CDP 埠:      ${port}`);
+  console.log(`擴充 ID:     ${extensionId}`);
+  console.log(`dev-build:   ${buildCommit}`);
+  console.log('====================================================');
+}
+
+// 主流程。help / 缺 --env / local / production 守門拒絕都只設定
+// process.exitCode 並提早 return，不丟例外——只有真正非預期的失敗
+// (找不到 dev-build、Chrome 啟動失敗等)才用 throw 交給外層 catch。
 async function main() {
-  const opts = parseArgs(process.argv.slice(2));
+  let opts;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(`錯誤:${err.message}`);
+    console.error('');
+    console.error(helpText());
+    process.exitCode = 1;
+    return;
+  }
+
+  if (opts.help) {
+    console.log(helpText());
+    process.exitCode = 0;
+    return;
+  }
+
+  if (opts.env === 'local') {
+    const err = localNotBuiltError();
+    console.error(`錯誤:${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const guard = await productionGuard({
+    env: opts.env,
+    yes: opts.yes,
+    isTTY: Boolean(process.stdin.isTTY),
+    readLine: createReadLine(),
+  });
+  if (!guard.ok) {
+    console.error(`錯誤:${guard.reason}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (opts.fresh) {
+    opts.profile = freshProfileDir();
+  }
+  if (opts.port === null) {
+    opts.port = opts.fresh ? FRESH_DEFAULT_PORT : DEFAULT_PORT;
+  }
 
   if (!existsSync(opts.build)) {
     throw new Error(`找不到 dev-build 目錄:${opts.build}`);
@@ -297,22 +516,57 @@ async function main() {
   await ensureChromeRunning(opts);
 
   const extensionId = await loadUnpackedExtension(opts.port, opts.build);
-  await configureApiEnv(opts.port, extensionId, opts.api);
+  await configureApiEnv(opts.port, extensionId, opts.env);
 
   if (opts.open) {
     await openOptionsPage(opts.port, extensionId);
   }
 
+  const buildCommit = await getBuildCommit(opts.build);
+  printBanner({
+    env: opts.env,
+    apiBase: API_BASE[opts.env],
+    profile: opts.profile,
+    port: opts.port,
+    extensionId,
+    buildCommit,
+  });
+
+  if (opts.fresh) {
+    console.log('');
+    console.log(`已使用全新 profile:${opts.profile}`);
+    console.log('之後可用 --profile <上面路徑> 重複使用此 profile(免重新登入)。');
+  }
+
+  console.log('');
   console.log('完成。');
 }
 
-main()
-  .then(() => {
-    // Node 在某些版本關閉 WebSocket 後偶爾觸發底層 assertion,
-    // 延遲一拍再結束程序以避開。
-    setTimeout(() => process.exit(0), 100);
-  })
-  .catch((err) => {
-    console.error(`錯誤:${err.message}`);
-    setTimeout(() => process.exit(1), 100);
-  });
+const isMainModule =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMainModule) {
+  main()
+    .then(() => {
+      // Node 在某些版本關閉 WebSocket 後偶爾觸發底層 assertion,
+      // 延遲一拍再結束程序以避開。
+      setTimeout(() => process.exit(process.exitCode ?? 0), 100);
+    })
+    .catch((err) => {
+      console.error(`錯誤:${err.message}`);
+      setTimeout(() => process.exit(1), 100);
+    });
+}
+
+export {
+  ENVIRONMENTS,
+  API_BASE,
+  DEFAULT_PORT,
+  FRESH_DEFAULT_PORT,
+  resolveEnv,
+  parseArgs,
+  productionGuard,
+  localNotBuiltError,
+  freshProfileDir,
+  helpText,
+};
