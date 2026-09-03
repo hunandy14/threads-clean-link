@@ -1151,10 +1151,15 @@
         if (photoEl) {
           photoEl.hidden = !usePhoto;
           photoEl.onerror = function () {
-            // 大頭照載入失敗(網路問題/連結失效):退回字母，不留破圖。
+            // 大頭照載入失敗(網路問題/連結失效):退回字母，不留破圖。順手清
+            // 掉 src——同一顆失效網址若原封不動再次指派給 img.src，瀏覽器
+            // 會判定「值沒變」而不重新發起請求、onerror 也就不會再觸發，下
+            // 次 renderAvatars 想重試就卡住;清空後下次指派必為一次真正的
+            // 新賦值。
             photoEl.hidden = true;
             if (letterEl) letterEl.hidden = false;
             if (circleEl) circleEl.classList.remove('has-photo');
+            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
           };
           if (usePhoto) photoEl.src = safeUrl;
           else if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
@@ -1261,7 +1266,11 @@
       // 「重新登入」;同步中本來就在跑，同樣停用避免重複觸發。
       var syncDisabled = mode === 'syncing' || mode === 'expired';
       if (syncBtn) syncBtn.disabled = syncDisabled;
-      if (syncLabel) syncLabel.textContent = tt(mode === 'syncing' ? 'opAccountSyncing' : 'opAccountSyncNow');
+      if (syncLabel) {
+        syncLabel.textContent = tt(
+          mode === 'syncing' ? 'opAccountSyncing' : mode === 'error' ? 'opAccountRetry' : 'opAccountSyncNow'
+        );
+      }
 
       // deviceNote:expired 態的同步實質上沒在跑(等待重新登入)，比照
       // signedOut 顯示「僅保存於這台裝置」，避免謊報已同步。

@@ -2842,6 +2842,11 @@ test('帳號入口:status 為 error 時選單顯示 lastError 一行(含前綴)�
   assert.equal(doc.ids.acctErrorRow.hidden, false);
   assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'rate_limited');
   assert.equal(doc.ids.acctSyncNowBtn.disabled, false, '錯誤態的一般同步鈕不因此停用');
+  assert.equal(
+    doc.ids.acctSyncLabel.textContent,
+    i18n.t('zh', 'opAccountRetry'),
+    '錯誤態選單裡的「立即同步」項目文字比照 demo 改為「重試」'
+  );
 
   doc.ids.acctTrigger.fire('click');
   const callsBefore = runtime.calls.length;
@@ -3099,6 +3104,90 @@ test('帳號選單:開啟時焦點進第一個可用項目，方向鍵在項目�
 
   ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowUp', preventDefault() {} });
   assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctDeleteBtn, 'ArrowUp 從第一項循環到最後一項');
+});
+
+function makeMenuCtxWithState(state) {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({ 'sync.getState': () => state });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+test('帳號選單:syncing／expired 態下「立即同步」停用，方向鍵導覽應跳過它，不落焦點也不循環經過', async () => {
+  // syncing:可用項目只剩登出/刪除雲端資料兩顆，開啟時第一個可用項目
+  // 應直接是登出(略過停用的立即同步)。
+  const syncingCtx = makeMenuCtxWithState({
+    status: 'syncing',
+    email: 'user@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: null,
+    apiBase: '',
+  });
+  await syncingCtx.controller.init();
+  await settle();
+
+  syncingCtx.doc.ids.acctTrigger.fire('click');
+  assert.equal(
+    syncingCtx.doc.activeElement,
+    syncingCtx.doc.ids.acctSignOutBtn,
+    'syncing 態開啟選單應直接聚焦登出(立即同步停用，不落焦點)'
+  );
+
+  syncingCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(syncingCtx.doc.activeElement, syncingCtx.doc.ids.acctDeleteBtn, 'ArrowDown 移到下一項(刪除雲端資料)');
+
+  syncingCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(
+    syncingCtx.doc.activeElement,
+    syncingCtx.doc.ids.acctSignOutBtn,
+    '循環回第一個可用項目，中途不曾停在停用的立即同步'
+  );
+
+  // expired:多一個「重新登入」可用項目(過期提示列)，立即同步仍停用、
+  // 不在方向鍵導覽的循環內。
+  const expiredCtx = makeMenuCtxWithState({
+    status: 'signed_out',
+    email: 'hong@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'session_expired',
+    apiBase: '',
+  });
+  await expiredCtx.controller.init();
+  await settle();
+
+  expiredCtx.doc.ids.acctTrigger.fire('click');
+  assert.equal(
+    expiredCtx.doc.activeElement,
+    expiredCtx.doc.ids.acctReSignInBtn,
+    'expired 態開啟選單應聚焦「重新登入」(立即同步停用，不落焦點)'
+  );
+
+  expiredCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(expiredCtx.doc.activeElement, expiredCtx.doc.ids.acctSignOutBtn);
+
+  expiredCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(expiredCtx.doc.activeElement, expiredCtx.doc.ids.acctDeleteBtn);
+
+  expiredCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(
+    expiredCtx.doc.activeElement,
+    expiredCtx.doc.ids.acctReSignInBtn,
+    '循環回第一個可用項目，立即同步全程不在導覽序列內'
+  );
 });
 
 // ============================================================
