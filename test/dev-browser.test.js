@@ -40,8 +40,11 @@
 //     (win32 找得到／找不到 npm-cli.js 兩種、非 win32 一種)，逾時要清 log
 //     尾段並殺掉剛起的行程樹
 //   - attachForegroundBackendLifecycle:前景模式收到 SIGINT/SIGTERM 時殺
-//     行程樹、等埠釋放、刪 PID 檔、以 0 結束;子行程自己先結束(未收到訊號)
-//     則印結束碼、刪 PID 檔，結束碼非 0 才跟著非 0 結束；兩條路徑互斥
+//     行程樹、等埠釋放、刪 PID 檔、以 0 結束;殺樹真正失敗(非
+//     isProcessNotFoundError)時不刪 PID 檔、以非 0 結束，提示還能用
+//     --stop-backend 救回來;殺樹成功但埠遲遲不放，逾時仍要刪 PID 檔
+//     (行程已經殺過)但以非 0 結束;子行程自己先結束(未收到訊號)則印
+//     結束碼、刪 PID 檔，結束碼非 0 才跟著非 0 結束；以上路徑互斥
 //     (shuttingDown 旗標)，不會搶著收尾兩次
 //   - stopBackend:--stop-backend 的三種狀態(有 PID 檔、無 PID 檔且埠仍活著、
 //     無 PID 檔且埠已死)，以及殺行程樹失敗時依 isProcessNotFoundError 分流
@@ -1472,6 +1475,90 @@ test('attachForegroundBackendLifecycle:收到 SIGINT 時殺行程樹、等埠釋
   assert.equal(code, 0);
   assert.deepEqual(killCalls, [[9001, 'win32']]);
   assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid']);
+});
+
+test('attachForegroundBackendLifecycle:殺行程樹真正失敗(非「行程本來就不存在」)時，不刪 PID 檔、印提示、以非 0 結束', async () => {
+  const signalSource = new EventEmitter();
+  const child = new EventEmitter();
+  child.pid = 9005;
+  const unlinkCalls = [];
+  const errors = [];
+  let isPortOpenCalled = false;
+  let resolveExit;
+  const exitPromise = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+
+  devBrowser.attachForegroundBackendLifecycle({
+    child,
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      signalSource,
+      exitFn: (code) => resolveExit(code),
+      existsSyncFn: () => true,
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      isPortOpenFn: async () => {
+        isPortOpenCalled = true;
+        return false;
+      },
+      platformFn: () => 'win32',
+      killTreeRunner: async () => {
+        // 比照 stopBackend 測試裡「權限不足」的重現方式:丟一個不含
+        // isProcessNotFoundError 會辨識的訊息的例外。
+        throw new Error('Access denied');
+      },
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    },
+  });
+
+  signalSource.emit('SIGINT');
+  const code = await exitPromise;
+
+  assert.equal(code, 1, '殺不掉不能假裝收尾成功');
+  assert.deepEqual(unlinkCalls, [], 'PID 檔不能刪——刪了 --stop-backend 會誤判成不是本腳本啟動的，救不回還在跑的行程');
+  assert.equal(isPortOpenCalled, false, '殺樹都失敗了，不必再等埠釋放');
+  assert.ok(errors.some((m) => /Access denied/.test(m)), '要印出殺樹失敗的原因');
+  assert.ok(errors.some((m) => /--stop-backend|手動處理/.test(m)), '要提示還能怎麼救');
+});
+
+test('attachForegroundBackendLifecycle:殺樹成功但埠遲遲不放(isPortOpen 一路回 true)，逾時仍要刪 PID 檔(行程已殺過)並以非 0 結束', async () => {
+  const signalSource = new EventEmitter();
+  const child = new EventEmitter();
+  child.pid = 9006;
+  const unlinkCalls = [];
+  const errors = [];
+  let resolveExit;
+  const exitPromise = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+
+  devBrowser.attachForegroundBackendLifecycle({
+    child,
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      signalSource,
+      exitFn: (code) => resolveExit(code),
+      existsSyncFn: () => true,
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      isPortOpenFn: async () => true, // 永遠佔著，逼出逾時路徑
+      platformFn: () => 'win32',
+      killTreeRunner: async () => {},
+      pollTimeoutMs: 5,
+      pollIntervalMs: 1,
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    },
+  });
+
+  signalSource.emit('SIGINT');
+  const code = await exitPromise;
+
+  assert.equal(code, 1, '埠沒真的放掉，不能以 0 收尾');
+  assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid'], '殺樹本身成功，行程已經不在了，PID 檔還是要清掉');
+  assert.ok(errors.some((m) => /逾時|自行確認/.test(m)), '要提示埠釋放逾時，請自行確認');
 });
 
 test('attachForegroundBackendLifecycle:子行程自己先結束(未收到訊號)時，印結束碼、刪 PID 檔，非 0 結束碼就以非 0 收尾，且不再多殺一次行程樹', async () => {

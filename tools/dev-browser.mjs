@@ -554,19 +554,40 @@ function attachForegroundBackendLifecycle({ child, pidPath, port, deps = {} }) {
     log('收到中斷信號，正在關閉本機後端 ...');
 
     const plat = platformFn();
-    await killTreeRunner(child.pid, plat).catch((err) => {
+    try {
+      await killTreeRunner(child.pid, plat);
+    } catch (err) {
       if (!isProcessNotFoundError(err, plat)) {
+        // 真正殺不掉(例如權限不足)——不能假裝已經收尾:PID 檔留著，讓
+        // --stop-backend 或使用者自己還救得回來;假裝成功清掉 PID 檔的話，
+        // 埠其實還被佔著，之後 --stop-backend 會誤判成「不是本腳本啟動的」
+        // 而放著不管。
         error(`關閉後端行程樹失敗:${err && err.message ? err.message : String(err)}`);
+        error('行程可能還在跑，PID 檔未清除，請用 --stop-backend 或手動處理。');
+        exitFn(1);
+        return;
       }
-    });
+      // 行程本來就不存在，視同已經清乾淨，繼續往下等埠釋放。
+    }
 
     const deadline = Date.now() + pollTimeoutMs;
+    let released = false;
     while (Date.now() < deadline) {
-      if (!(await isPortOpenFn(port))) break;
+      if (!(await isPortOpenFn(port))) {
+        released = true;
+        break;
+      }
       await sleep(pollIntervalMs);
     }
 
+    // 殺樹本身成功(或行程本來就不存在)，PID 檔可以清掉了——不管埠是否真的
+    // 準時釋放，指向它的行程都已經不在了。
     cleanupPidFile();
+    if (!released) {
+      error('等待埠釋放逾時，請自行確認。');
+      exitFn(1);
+      return;
+    }
     exitFn(0);
   };
 
