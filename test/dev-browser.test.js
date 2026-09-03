@@ -359,6 +359,20 @@ test('probeHealth:200 回 true;非 2xx、連線失敗一律回 false，不丟例
   }
 });
 
+// ---- clientIdPrefixFor ----
+
+test('clientIdPrefixFor:staging 與 production 的橫幅字串不同(回歸:曾經只切 12 碼，兩者都落在共用的 project number 裡看起來一樣)', () => {
+  const stagingPrefix = devBrowser.clientIdPrefixFor(devBrowser.API_BASE.staging);
+  const productionPrefix = devBrowser.clientIdPrefixFor(devBrowser.API_BASE.production);
+  assert.notEqual(stagingPrefix, productionPrefix);
+  assert.match(stagingPrefix, /^17054024593-846tl3\.\.\.$/);
+  assert.match(productionPrefix, /^17054024593-p003rp\.\.\.$/);
+});
+
+test('clientIdPrefixFor:找不到對應 apiBase 時回報找不到，不丟例外', () => {
+  assert.equal(devBrowser.clientIdPrefixFor('https://not-a-real-api-base.example'), '(找不到對應)');
+});
+
 // ---- package.json scripts ----
 
 test('package.json:scripts 恰為 test/dev/dev:staging/verify-id 四個', () => {

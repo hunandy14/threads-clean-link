@@ -932,8 +932,11 @@ function makeNode(tag, ownerDoc) {
     title: '',
     checked: false,
     classList: {
-      add: (c) => classes.add(c),
-      remove: (c) => classes.delete(c),
+      // 比照真實 DOM 的 classList.add/remove:可變參數，一次收多個
+      // class(options.js 的 statusDot 重設就是 remove('is-danger',
+      // 'is-warning') 一次兩個，只認單一參數會漏清第二個)。
+      add: (...cs) => cs.forEach((c) => classes.add(c)),
+      remove: (...cs) => cs.forEach((c) => classes.delete(c)),
       toggle: (c, force) => {
         const next = force === undefined ? !classes.has(c) : force;
         if (next) classes.add(c);
@@ -2661,6 +2664,37 @@ test('帳號入口:登入鈕先跳確認框，文案帶本機現有筆數(D3)，
   assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.signIn' });
 });
 
+test('帳號入口:登入確認框不是破壞性操作，不該長得像刪除(回歸:曾經 OK 鈕與圖示寫死垃圾桶/紅色，登入跟刪除長一樣)', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctSignInBtn.fire('click');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-danger-solid'), false, 'OK 鈕不該是破壞性紅色實心鈕');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-primary'), true, 'OK 鈕應改為品牌色實心鈕');
+  assert.notEqual(doc.ids.confirmIconUse.getAttribute('href'), '#i-trash', '標題圖示不該是垃圾桶');
+  assert.equal(doc.ids.confirmIcon.classList.contains('danger-ink'), false, '標題圖示不該是危險紅');
+
+  // 「清除全部」等既有的破壞性操作要維持原本外觀不變。
+  doc.ids.confirmCancel.fire('click');
+  doc.ids.clearBtn.fire('click');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-danger-solid'), true, '清除全部應維持紅色實心鈕');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-primary'), false);
+  assert.equal(doc.ids.confirmIconUse.getAttribute('href'), '#i-trash', '清除全部應維持垃圾桶圖示');
+  assert.equal(doc.ids.confirmIcon.classList.contains('danger-ink'), true);
+});
+
 test('帳號入口:取消登入確認框不送出 sync.signIn', async () => {
   const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
   const doc = makeDocumentStub();
@@ -2898,6 +2932,65 @@ test('帳號入口:登入過期(signed_out + lastError=session_expired 且有 em
   assert.ok(runtime.calls.slice(callsBefore).some((c) => c.type === 'sync.signIn'));
 });
 
+test('帳號入口:從登入過期切到真正登出時，狀態點/錯誤過期列/姓名信箱等節點全部重設乾淨(回歸:曾提早 return，殘留上一態內容)', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  // 先進入登入過期態(status: signed_out + session_expired + 有身分資訊)，
+  // 讓狀態點變黃、過期列顯示、姓名信箱等節點都填上內容。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: 'hong@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'session_expired',
+    apiBase: '',
+  });
+  assert.equal(doc.ids.statusDot.classList.contains('is-warning'), true, '前置條件:過期態應先是黃色狀態點');
+  assert.equal(doc.ids.acctExpiredRow.hidden, false, '前置條件:過期列應先顯示');
+  assert.equal(doc.ids.acctHeaderName.textContent, 'Hong', '前置條件:姓名應先被填入');
+  assert.equal(doc.ids.acctMenuEmail.textContent, 'hong@example.com', '前置條件:信箱應先被填入');
+
+  // 再切到真正登出(沒有 email/displayName，lastError 也清空)。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '真正登出應顯示登入鈕');
+  assert.equal(doc.ids.acctTrigger.hidden, true);
+  assert.equal(doc.ids.statusDot.classList.contains('is-warning'), false, '登出後狀態點不應殘留過期的黃色');
+  assert.equal(doc.ids.statusDot.classList.contains('is-danger'), false, '登出後狀態點不應殘留錯誤的紅色');
+  assert.equal(doc.ids.statusDot.hidden, true);
+  assert.equal(doc.ids.statusDot.getAttribute('aria-label'), null, '登出後狀態點不應殘留過期/錯誤的 aria-label');
+  assert.equal(doc.ids.acctErrorRow.hidden, true);
+  assert.equal(doc.ids.acctExpiredRow.hidden, true, '登出後過期列應重新隱藏');
+  assert.equal(doc.ids.acctHeaderName.textContent, '', '登出後姓名不應殘留上一態的內容');
+  assert.equal(doc.ids.acctMenuName.textContent, '');
+  assert.equal(doc.ids.acctMenuEmail.textContent, '', '登出後信箱不應殘留上一態的內容');
+  assert.equal(doc.ids.acctMenuSub.textContent, '');
+});
+
 test('帳號入口:登入過期但沒有 email/displayName 可辨識時，退回未登入外觀', async () => {
   const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
   const doc = makeDocumentStub();
@@ -3008,6 +3101,21 @@ test('帳號入口:寬度切換——options.html 在 720px 斷點以 CSS 隱藏
     html,
     /@media \(max-width:\s*720px\)\s*\{[^}]*\.acc-name\s*\{[^}]*display:\s*none/,
     '寬度斷點應以 CSS 隱藏 .acc-name，不需要 JS 讀取 window 寬度即可測'
+  );
+});
+
+test('menu-item:disabled 有停用樣式(回歸:曾經完全沒有 :disabled 規則，同步中的 acctSyncNowBtn 看起來跟平常一樣可點)', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(
+    html,
+    /\.menu-item:disabled\s*\{[^}]*opacity:\s*0(\.\d+)?[^}]*cursor:\s*not-allowed/,
+    '.menu-item:disabled 應同時降低透明度並改成禁用游標'
+  );
+  assert.match(
+    html,
+    /\.menu-item:disabled:hover\s*\{[^}]*background:\s*none/,
+    '停用時 hover 不應換底色，否則看起來還能點'
   );
 });
 

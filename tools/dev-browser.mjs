@@ -814,14 +814,17 @@ async function getBuildCommit(buildDir) {
   }
 }
 
-// 只印前綴(12 碼)，不印整串:橫幅是操作時常盯著的輸出，整串 client_id 沒有
-// 肉眼辨識價值，只會讓行變長；前綴已足夠分辨 production 與 staging 是兩組
-// 不同的 client(見 sync.js 的 CLIENT_ID_BY_API_BASE，D5)。
+// 只印前綴，不印整串:橫幅是操作時常盯著的輸出，整串 client_id 沒有肉眼辨識
+// 價值，只會讓行變長。所有 client id 開頭都是同一組 project number(見 sync.js
+// 的 CLIENT_ID_BY_API_BASE，D5)，只切到那裡(12 碼)分不出 production 與
+// staging；改印到連字號後 6 碼，兩組 client 才不會印出一樣的前綴。
 function clientIdPrefixFor(apiBase) {
   const TCLSync = require('../sync.js');
   const clientId = TCLSync.CLIENT_ID_BY_API_BASE[apiBase];
   if (typeof clientId !== 'string' || !clientId) return '(找不到對應)';
-  return clientId.slice(0, 12) + '...';
+  const hyphenIndex = clientId.indexOf('-');
+  const cut = hyphenIndex === -1 ? 12 : hyphenIndex + 1 + 6;
+  return clientId.slice(0, cut) + '...';
 }
 
 function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, loadPath }) {
@@ -1022,4 +1025,5 @@ export {
   configureApiEnv,
   configureApiEnvAndCleanup,
   openOptionsPage,
+  clientIdPrefixFor,
 };
