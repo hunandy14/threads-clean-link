@@ -101,10 +101,7 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 一鍵啟動除錯用 Chrome 並載入開發版擴充，連線目標用 `--env` 三選一(local/staging/production)，慣例說明見 `docs/dev-environments.md`:
 
-- `npm run dev`:連本機後端(`http://localhost:8787`)。一個指令就夠:探活失敗時會自動在後端目錄(預設 `~/.threads-clean-link/api-local/api`，可用環境變數 `TCL_API_LOCAL_DIR` 指到其他路徑，不必是本 repo 的子目錄)背景執行 `npm run dev`，等到 `/health` 通過(最多 60 秒)才繼續載入擴充;逾時會印出 log 檔最後 20 行並清掉剛啟動的行程。這個環境會在副本的 manifest 多注入 `http://localhost:8787/*` 權限，商店版 manifest 不受影響。
-  - 後端啟動後**常駐**，本指令結束不會關掉它，之後再跑 `npm run dev` 會直接沿用既有後端。要關閉用 `npm run dev -- --stop-backend`(獨立指令，不需要搭配 `--env`)。
-  - `npm run dev -- --no-backend`:維持舊行為，探活失敗就印手動啟動提示並非 0 結束，不自動帶起後端。
-  - 後端輸出寫在 `~/.threads-clean-link/api-local.log`(每次啟動覆寫)，PID 記在 `~/.threads-clean-link/api-local.pid`。
+- `npm run dev`:連本機後端(`http://localhost:8787`)。前置是自行在另一個終端機把後端跑起來(`npx wrangler dev --port 8787`);沒跑起來的話指令會印出啟動方式並非 0 退出，不會啟動 Chrome。這個環境會在副本的 manifest 多注入 `http://localhost:8787/*` 權限，商店版 manifest 不受影響。
 - `npm run dev:staging`:連 staging API，日常開發用這個。
 - `npm run dev -- --env production`:連正式環境，會先印警告並要求互動輸入完整字串 `production` 確認才會繼續，`--yes` 可跳過確認(仍會印警告)，非互動環境(non-TTY)一律拒絕。
 
