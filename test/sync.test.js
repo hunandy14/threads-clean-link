@@ -66,6 +66,12 @@ const PRODUCTION_BASE = 'https://api.metalinkclearer.workers.dev';
 const STAGING_BASE = 'https://api-staging.metalinkclearer.workers.dev';
 const LOCAL_BASE = 'http://localhost:8787';
 
+// 後端把 staging 與 production 的 Google Web client 分家了，三個 apiBase
+// 各自對應的 client_id（local 沒有自己的 client，併到 production 那組—— 本
+// 機後端的 .dev.vars 仍設定舊 client）。
+const CLIENT_ID_PRODUCTION = '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com';
+const CLIENT_ID_STAGING = '17054024593-846tl3brfgd5f09ouavituflf5b7v6qi.apps.googleusercontent.com';
+
 const POST_A = 'https://www.threads.com/@alice/post/AAAAAAAAAAA';
 const POST_B = 'https://www.threads.com/@bob/post/BBBBBBBBBBB';
 const POST_C = 'https://www.threads.com/@carol/post/CCCCCCCCCCC';
@@ -458,15 +464,19 @@ test('T1 常數：alarm 名稱固定、去抖 2 秒、週期不低於 1 分鐘�
   assert.ok(TCLSync.SYNC_PERIOD_MINUTES >= 1, '週期 alarm 不低於 1 分鐘');
 });
 
-test('T1 常數：apiBase 三個環境與 Google client id 為模組常數（D5／D9）', () => {
+test('T1 常數：apiBase 三個環境與 Google client id 對照表為模組常數（D5／D9）', () => {
   const TCLSync = loadSync();
   assert.equal(TCLSync.API_BASE_PRODUCTION, PRODUCTION_BASE);
   assert.equal(TCLSync.API_BASE_STAGING, STAGING_BASE);
   assert.equal(TCLSync.API_BASE_LOCAL, LOCAL_BASE);
-  assert.equal(
-    TCLSync.CLIENT_ID,
-    '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com'
-  );
+  assert.equal(TCLSync.CLIENT_ID_PRODUCTION, CLIENT_ID_PRODUCTION);
+  assert.equal(TCLSync.CLIENT_ID_STAGING, CLIENT_ID_STAGING);
+  assert.deepEqual(TCLSync.CLIENT_ID_BY_API_BASE, {
+    [PRODUCTION_BASE]: CLIENT_ID_PRODUCTION,
+    [STAGING_BASE]: CLIENT_ID_STAGING,
+    // local 沒有自己的 client：本機後端的 .dev.vars 仍設定舊(production)client。
+    [LOCAL_BASE]: CLIENT_ID_PRODUCTION,
+  });
 });
 
 test('T1 打包白名單：sync.js 必須進 build-release.ps1 的 $includeFiles', () => {
@@ -539,6 +549,33 @@ test('T2 signIn：nonce 落 chrome.storage.session，並與送給後端的 nonce
   );
   assert.ok(written.length >= 1, 'nonce 必須寫進 chrome.storage.session（SW 回收後仍可比對）');
   assert.equal(env.auth.calls.exchange[0].nonce, 'nonce-xyz', '換 token 時要帶同一枚 nonce');
+});
+
+test('T2 signIn：三個環境各自送出對應的 Google client_id（D5，staging 已分家）', async () => {
+  const TCLSync = loadSync();
+  const cases = [
+    { apiBase: PRODUCTION_BASE, clientId: CLIENT_ID_PRODUCTION, local: {} },
+    { apiBase: STAGING_BASE, clientId: CLIENT_ID_STAGING, local: { syncApiBase: STAGING_BASE } },
+    // local 沒有自己的 client：本機後端的 .dev.vars 仍設定舊(production)client。
+    { apiBase: LOCAL_BASE, clientId: CLIENT_ID_PRODUCTION, local: { syncApiBase: LOCAL_BASE } },
+  ];
+  for (const c of cases) {
+    const env = makeEnv({ local: c.local });
+    const engine = TCLSync.create(env.deps);
+    await engine.signIn();
+    await settle();
+
+    assert.equal(env.auth.calls.signIn.length, 1, `${c.apiBase}：應呼叫一次 signInWithGoogle`);
+    // 這一個 clientId 同時餵給 auth.js 的 authorize URL(client_id 參數)與
+    // id_token 的 aud 驗證(expected.clientId)——兩者是同一個變數，見
+    // auth.js signInWithGoogle，這裡只需確認送對環境的值。
+    assert.equal(
+      env.auth.calls.signIn[0].clientId,
+      c.clientId,
+      `${c.apiBase} 應送出對應的 client_id`
+    );
+    assert.equal(env.auth.calls.signIn[0].apiBase, c.apiBase);
+  }
 });
 
 test('T2 signIn：成功後立刻觸發一次同步', async () => {

@@ -32,6 +32,7 @@
 //                                 [--help]
 import { execFile, spawn } from 'node:child_process';
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -39,6 +40,11 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+
+// sync.js 是 CommonJS／UMD 雙棲模組(見該檔檔頭)，這裡用 createRequire 借道
+// 讀它的 CLIENT_ID_BY_API_BASE 對照表，橫幅才不會與 sync.js 的常數各存一份、
+// 改一邊漏改另一邊。
+const require = createRequire(import.meta.url);
 
 const EXPECTED_EXTENSION_ID = 'hehokicokbgajpanjcajhmflaennnmdj';
 
@@ -808,12 +814,23 @@ async function getBuildCommit(buildDir) {
   }
 }
 
+// 只印前綴(12 碼)，不印整串:橫幅是操作時常盯著的輸出，整串 client_id 沒有
+// 肉眼辨識價值，只會讓行變長；前綴已足夠分辨 production 與 staging 是兩組
+// 不同的 client(見 sync.js 的 CLIENT_ID_BY_API_BASE，D5)。
+function clientIdPrefixFor(apiBase) {
+  const TCLSync = require('../sync.js');
+  const clientId = TCLSync.CLIENT_ID_BY_API_BASE[apiBase];
+  if (typeof clientId !== 'string' || !clientId) return '(找不到對應)';
+  return clientId.slice(0, 12) + '...';
+}
+
 function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, loadPath }) {
   const envLabel = env === 'production' ? '!! PRODUCTION !!' : env;
   console.log('');
   console.log('================ dev-browser 狀態 ================');
   console.log(`環境:        ${envLabel}`);
   console.log(`API 網址:    ${apiBase}`);
+  console.log(`Google client：${clientIdPrefixFor(apiBase)}`);
   console.log(`Profile:     ${profile}`);
   console.log(`CDP 埠:      ${port}`);
   console.log(`擴充 ID:     ${extensionId}`);
