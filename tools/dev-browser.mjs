@@ -12,8 +12,13 @@
 // 逐字相同;dev-build worktree 本身永遠不被改動，商店版 manifest 也就不會
 // 夾帶開發用權限。
 //
-// --env local 另外需要開發機自己跑著後端(wrangler dev，port 8787):啟動前
-// 先探 /health，不通就直接非 0 結束，不碰 Chrome。
+// --env local 需要開發機自己跑著後端(wrangler dev，port 8787):啟動前先探
+// /health，通了就沿用既有;不通且未帶 --no-backend 時，自動在後端目錄(預設
+// ~/.threads-clean-link/api-local/api，可用環境變數 TCL_API_LOCAL_DIR 覆寫)
+// 背景執行 npm run dev，等到 /health 通過(最多 60 秒)才繼續，逾時就殺掉剛
+// 啟動的行程樹並非 0 結束。啟動的後端本腳本結束不會關掉(常駐)，之後重跑
+// --env local 會直接沿用;要關閉用 --stop-backend(獨立旗標，不需要 --env)。
+// --no-backend 維持舊行為:探活失敗就印手動啟動提示並非 0 結束，不碰後端。
 //
 // Chrome 152 起 --load-extension 命令列參數被忽略，改用 CDP
 // Extensions.loadUnpacked 載入未封裝擴充;重開 Chrome 後先前載入的擴充不會
@@ -29,9 +34,20 @@
 //     node tools/dev-browser.mjs --env <local|staging|production> [--ref <git ref>]
 //                                 [--no-open] [--port <port>] [--profile <dir>]
 //                                 [--build <dir>] [--fresh] [--restart] [--yes]
-//                                 [--help]
+//                                 [--no-backend] [--help]
+//     node tools/dev-browser.mjs --stop-backend
 import { execFile, spawn } from 'node:child_process';
-import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  cpSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import net from 'node:net';
 import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -60,6 +76,29 @@ const HEALTH_TIMEOUT_MS = 3000;
 
 const START_LOCAL_BACKEND_HINT =
   `請先啟動本機後端：cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787`;
+
+// --env local 自動帶起本機後端用的固定路徑與逾時參數。後端目錄本身可用
+// TCL_API_LOCAL_DIR 環境變數覆寫(見 resolveBackendDir)——這三個路徑則固定
+// 在使用者家目錄下，跨專案／跨 repo 都認得同一組 log／PID 檔。
+const BACKEND_STATE_DIR = path.join(homedir(), '.threads-clean-link');
+const BACKEND_LOG_PATH = path.join(BACKEND_STATE_DIR, 'api-local.log');
+const BACKEND_PID_PATH = path.join(BACKEND_STATE_DIR, 'api-local.pid');
+
+// wrangler dev 的預設埠，與 API_BASE.local 保持一致，不重複寫死一次。
+const LOCAL_BACKEND_PORT = Number(new URL(API_BASE.local).port);
+
+// 等後端 /health 回應的輪詢參數:60 秒內每 500ms 探一次。npm run dev(內部
+// 跑 wrangler dev)首次啟動要編譯，比純 fetch 探活慢得多，因此逾時給得比
+// HEALTH_TIMEOUT_MS 寬鬆非常多。
+const BACKEND_HEALTH_POLL_TIMEOUT_MS = 60000;
+const BACKEND_HEALTH_POLL_INTERVAL_MS = 500;
+
+// --stop-backend 殺掉行程樹後，等埠真的釋放的輪詢參數。
+const BACKEND_STOP_POLL_TIMEOUT_MS = 10000;
+const BACKEND_STOP_POLL_INTERVAL_MS = 300;
+
+// log 檔尾端要印的行數，逾時時給使用者判斷卡在哪一步用。
+const BACKEND_LOG_TAIL_LINES = 20;
 
 // 切換環境時要清掉的舊狀態。token 是另一台伺服器簽的，游標與水位線指向
 // 另一份資料庫，留著只會讓同步拿舊憑證去打新後端，再把失敗當成新環境的
@@ -100,6 +139,8 @@ function parseArgs(argv) {
     yes: false,
     fresh: false,
     restart: false,
+    noBackend: false,
+    stopBackend: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -135,12 +176,22 @@ function parseArgs(argv) {
       case '--restart':
         opts.restart = true;
         break;
+      case '--no-backend':
+        opts.noBackend = true;
+        break;
+      case '--stop-backend':
+        opts.stopBackend = true;
+        break;
       default:
         throw new Error(`不明參數:${arg}`);
     }
   }
 
   if (opts.help) return opts;
+
+  // --stop-backend 是獨立動作(關掉本腳本先前啟動的後端)，跟「連線目標」
+  // 這個維度無關，不需要 --env 也能單獨執行。
+  if (opts.stopBackend) return opts;
 
   if (!opts.env) {
     throw new Error('缺少必填旗標 --env(local|staging|production)');
@@ -185,6 +236,302 @@ async function probeHealth(apiBase, timeoutMs = HEALTH_TIMEOUT_MS) {
   } catch {
     return false;
   }
+}
+
+// ---- --env local 自動帶起本機後端 ----
+
+// 純函式:後端目錄的解析順序——環境變數 TCL_API_LOCAL_DIR 優先(跨 repo 的
+// 後端路徑本來就因人而異，不該寫死)，否則預設 ~/.threads-clean-link/api-local/api。
+// env 與 home 由呼叫端注入(process.env、homedir())，方便測試不必真的設
+// 環境變數或動使用者家目錄。TCL_API_LOCAL_DIR 的值經 path.resolve()，與
+// --build 相關路徑的處理一致——相對路徑(例如 '../api-local/api')會被解析成
+// 相對於目前工作目錄的絕對路徑，之後不管以哪個 cwd 執行本腳本都不跑位。
+function resolveBackendDir(env, home) {
+  const override = env && typeof env.TCL_API_LOCAL_DIR === 'string' ? env.TCL_API_LOCAL_DIR.trim() : '';
+  if (override) return path.resolve(override);
+  return path.join(home, '.threads-clean-link', 'api-local', 'api');
+}
+
+// 純函式:根據探活結果與旗標，決定要不要啟動後端、用什麼指令。目錄是否
+// 存在(dirExists／pkgJsonExists)由呼叫端查好再餵進來，這裡不做任何 I/O，
+// 方便測試不必真的建立或刪除任何檔案。
+function backendStartPlan({ healthy, noBackend, dirExists, pkgJsonExists, backendDir }) {
+  if (healthy) return { action: 'skip', reason: 'healthy' };
+  if (noBackend) return { action: 'skip', reason: 'no-backend' };
+  if (!dirExists || !pkgJsonExists) return { action: 'missing-dir', dir: backendDir };
+  return { action: 'start', command: 'npm', args: ['run', 'dev'], cwd: backendDir };
+}
+
+// 純函式:解析 PID 檔內容。格式不合法(非數字、非正整數、超出合法 PID 上界)
+// 一律回 null，交由呼叫端當成「PID 檔壞掉／不存在」處理，不丟例外。上界取
+// 2147483647(32 位元帶號整數上限，Windows／Linux 的 PID 都不會超過這個
+// 範圍)——沒有這道上界檢查，PID 檔若被寫壞成超大數字，會被當成合法 PID
+// 一路傳進 taskkill／process.kill，行為未定義。
+const MAX_PID = 2147483647;
+function parsePidFile(content) {
+  const n = Number(String(content).trim());
+  return Number.isSafeInteger(n) && n > 0 && n <= MAX_PID ? n : null;
+}
+
+// 純函式:依平台決定關閉行程樹的方式。Windows 用 taskkill /T 連子行程一起
+// 殺(npm/npx 啟動 wrangler 是父子兩層，只殺父行程子行程會被留下並重新把
+// 埠佔住)；其他平台用負的 pid 對整個行程群組送信號，等同 process.kill(-pid)。
+// 回傳描述而不是直接執行，方便測試斷言「該怎麼殺」而不必真的殺一個行程。
+function killTreeCommand(pid, plat) {
+  if (plat === 'win32') {
+    return { type: 'exec', command: 'taskkill', args: ['/PID', String(pid), '/T', '/F'] };
+  }
+  return { type: 'signal', pid: -pid, signal: 'SIGKILL' };
+}
+
+// 依 killTreeCommand 的描述真正執行關閉。exec 分支呼叫外部指令(taskkill)，
+// signal 分支直接呼叫 process.kill(-pid)——注入 execFileFn／killFn 讓測試
+// 能夠斷言呼叫發生過，不必真的動任何行程。
+async function runKillTree(pid, plat, { execFileFn = execFileAsync, killFn = process.kill } = {}) {
+  const info = killTreeCommand(pid, plat);
+  if (info.type === 'exec') {
+    await execFileFn(info.command, info.args);
+  } else {
+    killFn(info.pid, info.signal);
+  }
+}
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 純函式:取文字最後 n 行，不論混用 \n／\r\n。結尾的換行不算多一空行。
+function tailLines(text, n) {
+  const lines = String(text).split(/\r\n|\r|\n/);
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(-n).join('\n');
+}
+
+// 探本機端口是否有人在聽(不看回應內容，只看 TCP 連得上與否)。--stop-backend
+// 用它輪詢埠是否真的釋放——比對 /health 更直接，行程被殺的瞬間 fetch 可能
+// 收到連線重置以外的各種暫時性錯誤，容易誤判。
+function isPortOpen(port, host = '127.0.0.1', timeoutMs = 1000) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(port, host);
+  });
+}
+
+// 純函式:決定實際要 spawn 的執行檔／參數／要不要外殼。
+//
+// Windows 上 npm 是 .cmd 批次檔，直接 spawn 需要 shell:true 才能解析；但
+// 現場實測發現 shell:true 疊加 detached:true 時，log 檔永遠是空的——行程
+// 本身正常在跑、/health 真的會通，但外殼(cmd.exe)轉手給 npm.cmd、npm.cmd
+// 再轉手給實際執行 wrangler 的 node 行程，這兩層轉手讓我們傳給 spawn 的
+// stdio 檔案描述子在 Windows 上跟丟(換過 fd 直傳與 cmd.exe 原生 `>` 重導向
+// 兩種寫法結果一樣)。反覆比對之後，只有「不經過任何外殼、單一層 spawn 直達
+// 目標執行檔」時，detached + fd 重導向才會正常運作(node.exe 本身、或
+// cmd.exe 執行內建指令都算單一層，node.exe 再轉手一層 npm.cmd 就不算)。
+//
+// 因此 Windows 上改成直接用目前這顆 node.exe 執行 npm 自帶的 npm-cli.js
+// (跳過 npm.cmd 這層外殼)，找得到才套用;找不到就退回原本的 npm + shell:true
+// (行程仍會正常啟動，只是萬一逾時，log 尾段可能是空的)。npmCliExists 由
+// 呼叫端查好餵進來，這裡不做任何 I/O。其他平台 npm 本身就是可直接執行的
+// 檔案，不需要外殼，也不受這個問題影響。
+function resolveBackendSpawnTarget({ command, args, plat, execPath, npmCliExists }) {
+  if (command === 'npm' && plat === 'win32') {
+    if (npmCliExists) {
+      const npmCli = path.join(path.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+      return { file: execPath, args: [npmCli, ...args], shell: false };
+    }
+    return { file: command, args, shell: true };
+  }
+  return { file: command, args, shell: plat === 'win32' };
+}
+
+// --env local 主流程用:探活成功就沿用既有後端；失敗且未帶 --no-backend
+// 就用 npm run dev 帶起來，等到 /health 通過再回傳。所有 I/O 都走注入的
+// deps，預設值是真正的 node:fs／node:child_process／probeHealth，測試可以
+// 整組換成假的，不必真的 spawn 一個行程或寫檔案。
+async function ensureLocalBackend({ apiBase, noBackend, backendDir, logPath, pidPath, deps = {} }) {
+  const {
+    probeHealthFn = probeHealth,
+    spawnFn = spawn,
+    existsSyncFn = existsSync,
+    openSyncFn = openSync,
+    closeSyncFn = closeSync,
+    writeFileSyncFn = writeFileSync,
+    readFileSyncFn = readFileSync,
+    unlinkSyncFn = unlinkSync,
+    platformFn = platform,
+    killTreeRunner = runKillTree,
+    pollTimeoutMs = BACKEND_HEALTH_POLL_TIMEOUT_MS,
+    pollIntervalMs = BACKEND_HEALTH_POLL_INTERVAL_MS,
+    sleep = defaultSleep,
+  } = deps;
+
+  const healthy = await probeHealthFn(apiBase);
+
+  // 健康或帶 --no-backend 時不必查後端目錄存不存在——省一次不必要的 I/O，
+  // 測試也不必為這兩條路徑另外準備假目錄。
+  let dirExists = true;
+  let pkgJsonExists = true;
+  const pkgPath = path.join(backendDir, 'package.json');
+  if (!healthy && !noBackend) {
+    dirExists = existsSyncFn(backendDir);
+    pkgJsonExists = dirExists && existsSyncFn(pkgPath);
+  }
+
+  const plan = backendStartPlan({ healthy, noBackend, dirExists, pkgJsonExists, backendDir });
+
+  if (plan.action === 'skip') {
+    return { status: plan.reason === 'healthy' ? 'existing' : 'no-backend' };
+  }
+  if (plan.action === 'missing-dir') {
+    return { status: 'missing-dir', dir: plan.dir };
+  }
+
+  const plat = platformFn();
+  // npmCliExists 只在「命令是 npm 且平台是 win32」才有意義查，其他情況
+  // 不必多一次不必要的 existsSyncFn 呼叫(見 resolveBackendSpawnTarget)。
+  let npmCliExists = false;
+  if (plan.command === 'npm' && plat === 'win32') {
+    const npmCliPath = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    npmCliExists = existsSyncFn(npmCliPath);
+  }
+  const target = resolveBackendSpawnTarget({
+    command: plan.command,
+    args: plan.args,
+    plat,
+    execPath: process.execPath,
+    npmCliExists,
+  });
+
+  const logFd = openSyncFn(logPath, 'w');
+  let child;
+  try {
+    child = spawnFn(target.file, target.args, {
+      cwd: plan.cwd,
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      shell: target.shell,
+    });
+  } finally {
+    closeSyncFn(logFd);
+  }
+  child.unref();
+  writeFileSyncFn(pidPath, String(child.pid));
+
+  const deadline = Date.now() + pollTimeoutMs;
+  let up = false;
+  while (Date.now() < deadline) {
+    if (await probeHealthFn(apiBase)) {
+      up = true;
+      break;
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  if (up) {
+    return { status: 'started', pid: child.pid, log: logPath };
+  }
+
+  // 逾時:後端沒救了，把剛起的行程樹連根殺掉，不留下一個半死不活佔著埠的
+  // wrangler，也不留下指向它的 PID 檔誤導下一次 --stop-backend。
+  let tail = '';
+  try {
+    tail = tailLines(readFileSyncFn(logPath, 'utf8'), BACKEND_LOG_TAIL_LINES);
+  } catch {
+    // log 檔讀不到就算了，逾時本身已經是要回報的錯誤，缺一段尾巴不致命。
+  }
+  await killTreeRunner(child.pid, plat).catch(() => {});
+  try {
+    if (existsSyncFn(pidPath)) unlinkSyncFn(pidPath);
+  } catch {
+    // 清不掉就算了，不能蓋掉原本要回報的逾時錯誤。
+  }
+
+  return { status: 'timeout', log: logPath, tail, pid: child.pid };
+}
+
+// 純函式:判斷 killTreeRunner 丟出的例外是不是「行程本來就不存在」。這種
+// 不算失敗——目標早就死透了，「後端不在跑」這個目的已經達成，繼續收尾即可;
+// 真正的失敗(例如權限不足、taskkill 找不到可執行檔)不能被靜默吞掉當成功，
+// 得讓呼叫端知道並非 0 退出。
+//
+// win32 的 taskkill 對「PID 不存在」印的訊息含 "not found" 或
+// "ERROR: The process"(依語系與 Windows 版本用字略有差異，兩種都比對)；
+// 其他平台 process.kill 對不存在的 pid 丟的例外 code 是 ESRCH。
+function isProcessNotFoundError(err, plat) {
+  if (!err) return false;
+  if (plat === 'win32') {
+    const text = `${err.message || ''} ${err.stderr || ''} ${err.stdout || ''}`;
+    return /not found|ERROR: The process/i.test(text);
+  }
+  return err.code === 'ESRCH';
+}
+
+// --stop-backend 主流程用:讀 PID 檔關掉本腳本先前啟動的後端，並等埠真的
+// 釋放。PID 檔不存在時分兩種情況——埠還活著代表後端是別的方式起的，不歸
+// 本腳本管；埠已經死了代表本來就沒在跑，兩者都不動任何行程。
+async function stopBackend({ pidPath, port, deps = {} }) {
+  const {
+    existsSyncFn = existsSync,
+    readFileSyncFn = readFileSync,
+    unlinkSyncFn = unlinkSync,
+    isPortOpenFn = isPortOpen,
+    platformFn = platform,
+    killTreeRunner = runKillTree,
+    pollTimeoutMs = BACKEND_STOP_POLL_TIMEOUT_MS,
+    pollIntervalMs = BACKEND_STOP_POLL_INTERVAL_MS,
+    sleep = defaultSleep,
+  } = deps;
+
+  const pidFileExists = existsSyncFn(pidPath);
+  const pid = pidFileExists ? parsePidFile(readFileSyncFn(pidPath, 'utf8')) : null;
+
+  if (pid === null) {
+    const portAlive = await isPortOpenFn(port);
+    return portAlive ? { status: 'not-owned' } : { status: 'already-stopped' };
+  }
+
+  const plat = platformFn();
+  try {
+    await killTreeRunner(pid, plat);
+  } catch (err) {
+    if (!isProcessNotFoundError(err, plat)) {
+      // 不是「行程本來就不存在」——真的失敗了(例如權限不足)，不能靜默吞掉
+      // 當成功，得讓呼叫端印出來並非 0 退出。PID 檔與埠狀態都不動，維持
+      // 原樣，讓使用者知道現況、自行判斷下一步。
+      return { status: 'kill-failed', pid, error: err && err.message ? err.message : String(err) };
+    }
+    // pid 可能早就不存在(行程自己結束過，PID 檔沒來得及清)，視為已經達成
+    // 「後端不在跑」這個目的，不當成失敗。
+  }
+
+  try {
+    if (existsSyncFn(pidPath)) unlinkSyncFn(pidPath);
+  } catch {
+    // 刪不掉不影響「後端已關閉」這個結論，不因此中斷。
+  }
+
+  const deadline = Date.now() + pollTimeoutMs;
+  let released = false;
+  while (Date.now() < deadline) {
+    if (!(await isPortOpenFn(port))) {
+      released = true;
+      break;
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  return { status: released ? 'stopped' : 'stop-timeout', pid };
 }
 
 // rmSync 是這支腳本唯一會刪東西的地方，刪之前先確認目標真的是「dev-build
@@ -312,9 +659,16 @@ function helpText() {
 環境說明:
     local
         連開發機自己跑的後端(${API_BASE.local})，對應 npm run dev。
-        前置:先在另一個終端機跑起後端——
-            cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787
-        啟動前會先探 /health，不通就非 0 結束，不會啟動 Chrome。
+        啟動前會先探 /health;探不到且未帶 --no-backend 時，本腳本會自動用
+        npm run dev 在後端目錄(預設 ~/.threads-clean-link/api-local/api，
+        可用環境變數 TCL_API_LOCAL_DIR 覆寫)背景啟動 wrangler dev，等到
+        /health 通過(最多 60 秒)才繼續;逾時會印出 log 檔最後 ${BACKEND_LOG_TAIL_LINES} 行、
+        殺掉剛啟動的行程樹並非 0 結束。輸出導向 ${'~/.threads-clean-link/api-local.log'}
+        (每次啟動覆寫)，PID 記在 ${'~/.threads-clean-link/api-local.pid'}。
+        後端啟動後是常駐的:本腳本結束不會關掉它，之後重跑 --env local
+        會直接探到 /health 沿用既有;要關閉用 npm run dev -- --stop-backend。
+        找不到後端目錄或其 package.json 時，印現有的手動啟動提示並非 0 結束，
+        不會啟動 Chrome。
         副本的 manifest 會多注入 ${LOCAL_HOST_PERMISSION} 權限;dev-build
         本身與商店版 manifest 都不受影響。
     staging
@@ -340,7 +694,22 @@ function helpText() {
                         直接指向 dev-build 的擴充」這個一次性過渡用得到。
                         不帶此旗標時只印建議並非 0 結束，不會動使用者的視窗
     --yes              跳過 production 的互動確認(仍會印警告)
+    --no-backend       --env local 探活失敗時不自動啟動後端，維持舊行為:
+                        印現有的手動啟動提示並非 0 結束，不會啟動 Chrome
+    --stop-backend     關閉本腳本先前用 --env local 啟動的後端(讀 PID 檔、
+                        Windows 用 taskkill /T 連子行程一起殺，其他平台對整
+                        個行程群組送信號)，等埠釋放後印結果並結束(結束碼 0)。
+                        獨立旗標，不需要搭配 --env，也不會啟動 Chrome。找不到
+                        PID 檔但埠仍有人在聽，代表後端不是本腳本啟動的，印
+                        提示並以非 0 結束，不會動那個行程。PID 檔內容損毀
+                        (非合法 PID)時視同找不到 PID 檔，不會殺任何行程，
+                        會印提示要求手動處理
     --help, -h         顯示這份說明並結束(結束碼 0)
+
+環境變數:
+    TCL_API_LOCAL_DIR  覆寫 --env local 自動啟動後端時使用的目錄(預設
+                        ~/.threads-clean-link/api-local/api)，供跨 repo 或
+                        自訂路徑使用，不必修改本腳本
 
 切換環境的副作用:
     寫入新的 syncApiBase 之前，若擴充目前指向的是另一個環境，會清掉舊的
@@ -351,6 +720,8 @@ function helpText() {
 範例:
     node tools/dev-browser.mjs --env local
     node tools/dev-browser.mjs --env local --restart --no-open
+    node tools/dev-browser.mjs --env local --no-backend
+    node tools/dev-browser.mjs --stop-backend
     node tools/dev-browser.mjs --env staging
     node tools/dev-browser.mjs --env staging --ref my-branch --no-open
     node tools/dev-browser.mjs --env production
@@ -804,7 +1175,7 @@ async function getBuildCommit(buildDir) {
   }
 }
 
-function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, loadPath }) {
+function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, loadPath, backend }) {
   const envLabel = env === 'production' ? '!! PRODUCTION !!' : env;
   console.log('');
   console.log('================ dev-browser 狀態 ================');
@@ -815,6 +1186,16 @@ function printBanner({ env, apiBase, profile, port, extensionId, buildCommit, lo
   console.log(`擴充 ID:     ${extensionId}`);
   console.log(`載入路徑:    ${loadPath}（dev-build 的副本）`);
   console.log(`dev-build:   ${buildCommit}`);
+  // 只有 --env local 才有後端這一行(見 ensureLocalBackend)。不管是沿用既
+  // 有還是本腳本剛啟動的，本腳本結束時都不會關掉它——這是刻意的常駐設計，
+  // 讓後端跨多次 dev-browner 執行留著，需要關閉時用 --stop-backend。
+  if (backend) {
+    console.log(
+      backend.mode === 'existing'
+        ? `後端:        沿用既有（未由本腳本啟動，結束後也不會關閉）`
+        : `後端:        已啟動（PID ${backend.pid}，log:${backend.log}；結束後仍會留著，關閉用 npm run dev -- --stop-backend）`
+    );
+  }
   console.log('====================================================');
 }
 
@@ -849,9 +1230,10 @@ async function ensureLoadPathSwitchable(opts, loadPath) {
   console.log('Chrome 已關閉。');
 }
 
-// 主流程。help / 缺 --env / production 守門拒絕 / local 後端未就緒 / 載入
-// 路徑衝突都只設定 process.exitCode 並提早 return，不丟例外——只有真正非
-// 預期的失敗(找不到 dev-build、Chrome 啟動失敗等)才用 throw 交給外層 catch。
+// 主流程。help / --stop-backend / 缺 --env / production 守門拒絕 / local
+// 後端未就緒 / 載入路徑衝突都只設定 process.exitCode 並提早 return，不丟
+// 例外——只有真正非預期的失敗(找不到 dev-build、Chrome 啟動失敗等)才用
+// throw 交給外層 catch。
 async function main() {
   let opts;
   try {
@@ -867,6 +1249,41 @@ async function main() {
   if (opts.help) {
     console.log(helpText());
     process.exitCode = 0;
+    return;
+  }
+
+  // --stop-backend 是獨立動作，跟 Chrome／production 守門都無關，最先處理
+  // 並直接結束，不往下走連線流程。
+  if (opts.stopBackend) {
+    const result = await stopBackend({ pidPath: BACKEND_PID_PATH, port: LOCAL_BACKEND_PORT });
+    if (result.status === 'not-owned') {
+      console.error(
+        `後端不是本腳本啟動的，請自行關閉（找不到 PID 檔 ${BACKEND_PID_PATH}，但埠 ${LOCAL_BACKEND_PORT} 仍有服務在監聽）。`
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (result.status === 'already-stopped') {
+      console.log('本機後端目前沒有在執行，無需關閉。');
+      process.exitCode = 0;
+      return;
+    }
+    if (result.status === 'kill-failed') {
+      console.error(`關閉 PID ${result.pid} 失敗:${result.error}`);
+      console.error('行程可能還在跑，PID 檔與埠狀態都未變動，請自行確認並處理。');
+      process.exitCode = 1;
+      return;
+    }
+    if (result.status === 'stopped') {
+      console.log(`已關閉本機後端（PID ${result.pid}），埠 ${LOCAL_BACKEND_PORT} 已釋放。`);
+      process.exitCode = 0;
+      return;
+    }
+    // stop-timeout:已經送出關閉指令，但埠遲遲沒放開。
+    console.error(
+      `已對 PID ${result.pid} 送出關閉指令，但等待埠 ${LOCAL_BACKEND_PORT} 釋放逾時（${BACKEND_STOP_POLL_TIMEOUT_MS / 1000} 秒）。`
+    );
+    process.exitCode = 1;
     return;
   }
 
@@ -890,16 +1307,48 @@ async function main() {
   }
 
   // 本機後端探活擺在最前面:不通的話後面每一步都是白做，而且不該為此動到
-  // 使用者的 Chrome。
+  // 使用者的 Chrome。--no-backend 維持舊行為(探活失敗就印提示、非 0 結束、
+  // 不碰後端)；否則沒帶 --no-backend 時自動用 npm run dev 帶起來，等到
+  // /health 通過才繼續。啟動的後端本腳本結束時不會關掉(常駐)，見 printBanner
+  // 與 --stop-backend。
+  let backendBannerInfo = null;
   if (opts.env === 'local') {
-    const healthy = await probeHealth(API_BASE.local);
-    if (!healthy) {
+    const result = await ensureLocalBackend({
+      apiBase: API_BASE.local,
+      noBackend: opts.noBackend,
+      backendDir: resolveBackendDir(process.env, homedir()),
+      logPath: BACKEND_LOG_PATH,
+      pidPath: BACKEND_PID_PATH,
+    });
+
+    if (result.status === 'existing') {
+      console.log(`本機後端就緒:${API_BASE.local}/health（沿用既有，非本腳本啟動）`);
+      backendBannerInfo = { mode: 'existing' };
+    } else if (result.status === 'no-backend') {
       console.error(`錯誤:本機後端 ${API_BASE.local}/health 沒有回應。`);
       console.error(START_LOCAL_BACKEND_HINT);
       process.exitCode = 1;
       return;
+    } else if (result.status === 'missing-dir') {
+      console.error(`錯誤:本機後端 ${API_BASE.local}/health 沒有回應，且找不到後端目錄:${result.dir}`);
+      console.error(START_LOCAL_BACKEND_HINT);
+      console.error('也可用環境變數 TCL_API_LOCAL_DIR 指向正確的 api-local/api 目錄。');
+      process.exitCode = 1;
+      return;
+    } else if (result.status === 'timeout') {
+      console.error(
+        `錯誤:自動啟動的本機後端在 ${BACKEND_HEALTH_POLL_TIMEOUT_MS / 1000} 秒內未回應 ${API_BASE.local}/health。`
+      );
+      console.error(`log 檔（${result.log}）最後 ${BACKEND_LOG_TAIL_LINES} 行:`);
+      console.error(result.tail);
+      console.error(START_LOCAL_BACKEND_HINT);
+      process.exitCode = 1;
+      return;
+    } else {
+      // started
+      console.log(`已自動啟動本機後端（PID ${result.pid}，log:${result.log}），已等到 ${API_BASE.local}/health 回應。`);
+      backendBannerInfo = { mode: 'started', pid: result.pid, log: result.log };
     }
-    console.log(`本機後端就緒:${API_BASE.local}/health`);
   }
 
   if (!existsSync(opts.build)) {
@@ -947,6 +1396,7 @@ async function main() {
     extensionId,
     buildCommit,
     loadPath,
+    backend: backendBannerInfo,
   });
 
   if (opts.fresh) {
@@ -984,6 +1434,15 @@ export {
   LOCAL_HOST_PERMISSION,
   STALE_LOCAL_KEYS,
   STALE_SESSION_KEYS,
+  BACKEND_STATE_DIR,
+  BACKEND_LOG_PATH,
+  BACKEND_PID_PATH,
+  LOCAL_BACKEND_PORT,
+  BACKEND_HEALTH_POLL_TIMEOUT_MS,
+  BACKEND_HEALTH_POLL_INTERVAL_MS,
+  BACKEND_STOP_POLL_TIMEOUT_MS,
+  BACKEND_STOP_POLL_INTERVAL_MS,
+  BACKEND_LOG_TAIL_LINES,
   resolveEnv,
   parseArgs,
   productionGuard,
@@ -1001,4 +1460,17 @@ export {
   configureApiEnv,
   configureApiEnvAndCleanup,
   openOptionsPage,
+  resolveBackendDir,
+  backendStartPlan,
+  parsePidFile,
+  MAX_PID,
+  killTreeCommand,
+  runKillTree,
+  isProcessNotFoundError,
+  resolveBackendSpawnTarget,
+  tailLines,
+  isPortOpen,
+  ensureLocalBackend,
+  stopBackend,
+  printBanner,
 };

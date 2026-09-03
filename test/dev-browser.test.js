@@ -21,6 +21,25 @@
 //     的 bug，不送 Runtime.runIfWaitingForDebugger 就會卡死)要先解除暫停;
 //     失敗路徑(如逾時)也要把喚醒分頁關掉，不能只有成功路徑會清;切換環境
 //     時要在寫入新 apiBase 之前清掉舊環境的登入與同步狀態
+//   - resolveBackendDir／backendStartPlan／parsePidFile／killTreeCommand:
+//     --env local 自動帶起本機後端的純函式決策(目錄解析——含 TCL_API_LOCAL_DIR
+//     相對路徑經 path.resolve() 解析成絕對路徑、要不要啟動、PID 檔解析——
+//     含超出合法 PID 上界一律回 null、依平台選關閉行程樹的方式)
+//   - isProcessNotFoundError:區分 killTreeRunner 的例外是「行程本來就不
+//     存在」(win32 訊息含 not found／ERROR: The process，其他平台 ESRCH)
+//     還是真正的失敗(例如權限不足)，後者不能被靜默吞掉當成功
+//   - resolveBackendSpawnTarget:win32 上 npm 是 .cmd，直接 spawn 需要
+//     shell:true，但那疊加 detached:true 時 log 檔會是空的(現場實測發現
+//     的真實 bug，見函式註解)——找得到 npm-cli.js 就改用 node.exe 直接
+//     執行它跳過外殼，找不到才退回舊行為；非 win32 不受影響
+//   - ensureLocalBackend:注入假的 spawn／fetch／fs 驗多條路徑——探活成功
+//     跳過、--no-backend 不啟動、後端目錄缺失、啟動後等到 /health 通過
+//     (win32 找得到／找不到 npm-cli.js 兩種、非 win32 一種)、逾時要清 log
+//     尾段並殺掉剛起的行程樹
+//   - stopBackend:--stop-backend 的三種狀態(有 PID 檔、無 PID 檔且埠仍活著、
+//     無 PID 檔且埠已死)，以及殺行程樹失敗時依 isProcessNotFoundError 分流
+//     ——行程本來就不存在則不中斷、照樣清 PID 檔收尾;真正失敗(權限不足等)
+//     則回 kill-failed、保留 PID 檔、不靜默當成功
 // 另外靜態檢查 package.json 的 scripts 清單，以及沿用 test/package.test.js
 // 既有邏輯確認打包白名單不誤收 docs/、test/、package.json。
 'use strict';
@@ -815,4 +834,666 @@ test('sendCdpCommand:逾時會 reject，不會永遠掛住', async () => {
     () => devBrowser.sendCdpCommand('ws://mock-stuck', 'Runtime.evaluate', {}, 50),
     /逾時/
   );
+});
+
+// ---- parseArgs:--no-backend／--stop-backend ----
+
+test('parseArgs:--no-backend 解析為 true，預設 false', () => {
+  const opts = devBrowser.parseArgs(['--env', 'local', '--no-backend']);
+  assert.equal(opts.noBackend, true);
+  assert.equal(devBrowser.parseArgs(['--env', 'local']).noBackend, false);
+});
+
+test('parseArgs:--stop-backend 是獨立旗標，不需要 --env 也能解析', () => {
+  const opts = devBrowser.parseArgs(['--stop-backend']);
+  assert.equal(opts.stopBackend, true);
+  assert.equal(opts.env, null, '沒帶 --env 不該報錯');
+});
+
+// ---- resolveBackendDir ----
+
+test('resolveBackendDir:TCL_API_LOCAL_DIR 有值時優先採用，空白視同未設定', () => {
+  const home = path.join('C:', 'Users', 'someone');
+  assert.equal(
+    devBrowser.resolveBackendDir({ TCL_API_LOCAL_DIR: 'D:\\custom\\api' }, home),
+    'D:\\custom\\api'
+  );
+  assert.equal(
+    devBrowser.resolveBackendDir({}, home),
+    path.join(home, '.threads-clean-link', 'api-local', 'api'),
+    '沒設環境變數時回預設路徑'
+  );
+  assert.equal(
+    devBrowser.resolveBackendDir({ TCL_API_LOCAL_DIR: '   ' }, home),
+    path.join(home, '.threads-clean-link', 'api-local', 'api'),
+    '純空白視同未設定'
+  );
+});
+
+test('resolveBackendDir:TCL_API_LOCAL_DIR 是相對路徑時，經 path.resolve() 解析成絕對路徑(與 --build 的路徑處理一致)', () => {
+  const home = path.join('C:', 'Users', 'someone');
+  const relative = path.join('..', 'custom-api-local', 'api');
+  const resolved = devBrowser.resolveBackendDir({ TCL_API_LOCAL_DIR: relative }, home);
+
+  assert.equal(
+    resolved,
+    path.resolve(relative),
+    '相對路徑應該被解析成相對於目前工作目錄的絕對路徑'
+  );
+  assert.notEqual(resolved, relative, '不能原樣回傳沒解析過的相對路徑');
+  assert.ok(path.isAbsolute(resolved), '結果必須是絕對路徑');
+});
+
+// ---- backendStartPlan ----
+
+test('backendStartPlan:健康時跳過，理由 healthy，不查目錄', () => {
+  const plan = devBrowser.backendStartPlan({
+    healthy: true,
+    noBackend: false,
+    dirExists: false,
+    pkgJsonExists: false,
+    backendDir: 'x',
+  });
+  assert.deepEqual(plan, { action: 'skip', reason: 'healthy' });
+});
+
+test('backendStartPlan:不健康但帶 --no-backend 時跳過，理由 no-backend', () => {
+  const plan = devBrowser.backendStartPlan({
+    healthy: false,
+    noBackend: true,
+    dirExists: true,
+    pkgJsonExists: true,
+    backendDir: 'x',
+  });
+  assert.deepEqual(plan, { action: 'skip', reason: 'no-backend' });
+});
+
+test('backendStartPlan:目錄不存在或缺 package.json 時回 missing-dir', () => {
+  assert.deepEqual(
+    devBrowser.backendStartPlan({
+      healthy: false,
+      noBackend: false,
+      dirExists: false,
+      pkgJsonExists: false,
+      backendDir: 'x',
+    }),
+    { action: 'missing-dir', dir: 'x' }
+  );
+  assert.deepEqual(
+    devBrowser.backendStartPlan({
+      healthy: false,
+      noBackend: false,
+      dirExists: true,
+      pkgJsonExists: false,
+      backendDir: 'x',
+    }),
+    { action: 'missing-dir', dir: 'x' },
+    '目錄在但沒有 package.json，一樣視為缺失'
+  );
+});
+
+test('backendStartPlan:目錄與 package.json 都在時回 start 計畫(npm run dev)', () => {
+  const plan = devBrowser.backendStartPlan({
+    healthy: false,
+    noBackend: false,
+    dirExists: true,
+    pkgJsonExists: true,
+    backendDir: 'x/api-local/api',
+  });
+  assert.deepEqual(plan, { action: 'start', command: 'npm', args: ['run', 'dev'], cwd: 'x/api-local/api' });
+});
+
+// ---- parsePidFile ----
+
+test('parsePidFile:合法正整數字串回數字(含前後空白／換行)，其餘一律回 null', () => {
+  assert.equal(devBrowser.parsePidFile('12345'), 12345);
+  assert.equal(devBrowser.parsePidFile('12345\n'), 12345);
+  assert.equal(devBrowser.parsePidFile('  67  '), 67);
+  assert.equal(devBrowser.parsePidFile(''), null);
+  assert.equal(devBrowser.parsePidFile('abc'), null);
+  assert.equal(devBrowser.parsePidFile('-5'), null, '負數不是合法 PID');
+  assert.equal(devBrowser.parsePidFile('0'), null, '0 不是合法 PID');
+  assert.equal(devBrowser.parsePidFile('12.5'), null, '非整數不是合法 PID');
+});
+
+test('parsePidFile:超出合法 PID 上界一律回 null，PID 檔壞掉不會被當成真 PID 拿去殺行程', () => {
+  assert.equal(devBrowser.parsePidFile(String(devBrowser.MAX_PID)), devBrowser.MAX_PID, '上界本身仍合法');
+  assert.equal(
+    devBrowser.parsePidFile('4294967296'),
+    null,
+    '2^32，超過 32 位元帶號整數上限，不是合法 PID'
+  );
+  assert.equal(
+    devBrowser.parsePidFile('99999999999999999999999'),
+    null,
+    '遠超 Number.isSafeInteger 範圍，PID 檔寫壞成這樣也不能放行'
+  );
+});
+
+// ---- killTreeCommand／runKillTree ----
+
+test('killTreeCommand:win32 用 taskkill /PID <pid> /T /F', () => {
+  assert.deepEqual(devBrowser.killTreeCommand(4242, 'win32'), {
+    type: 'exec',
+    command: 'taskkill',
+    args: ['/PID', '4242', '/T', '/F'],
+  });
+});
+
+test('killTreeCommand:非 win32 用負 pid 送 SIGKILL(對應 process.kill(-pid))', () => {
+  assert.deepEqual(devBrowser.killTreeCommand(4242, 'darwin'), {
+    type: 'signal',
+    pid: -4242,
+    signal: 'SIGKILL',
+  });
+  assert.deepEqual(devBrowser.killTreeCommand(4242, 'linux'), {
+    type: 'signal',
+    pid: -4242,
+    signal: 'SIGKILL',
+  });
+});
+
+test('runKillTree:win32 呼叫注入的 execFileFn(taskkill)', async () => {
+  const calls = [];
+  await devBrowser.runKillTree(111, 'win32', {
+    execFileFn: async (cmd, args) => {
+      calls.push([cmd, args]);
+    },
+  });
+  assert.deepEqual(calls, [['taskkill', ['/PID', '111', '/T', '/F']]]);
+});
+
+test('runKillTree:非 win32 呼叫注入的 killFn(對應 process.kill(-pid))', async () => {
+  const calls = [];
+  await devBrowser.runKillTree(111, 'linux', {
+    killFn: (pid, signal) => {
+      calls.push([pid, signal]);
+    },
+  });
+  assert.deepEqual(calls, [[-111, 'SIGKILL']]);
+});
+
+// ---- tailLines／isPortOpen ----
+
+test('tailLines:取最後 n 行，混用 \\n／\\r\\n 皆正確，結尾換行不算多一空行', () => {
+  assert.equal(devBrowser.tailLines('a\nb\nc\nd\n', 2), 'c\nd');
+  assert.equal(devBrowser.tailLines('a\r\nb\r\nc\r\n', 2), 'b\nc');
+  assert.equal(devBrowser.tailLines('only one line', 20), 'only one line');
+});
+
+test('isPortOpen:埠有人監聽回 true，關閉後回 false', async (t) => {
+  const net = require('node:net');
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  t.after(() => new Promise((resolve) => server.close(() => resolve())));
+
+  assert.equal(await devBrowser.isPortOpen(port), true);
+
+  await new Promise((resolve) => server.close(() => resolve()));
+  assert.equal(await devBrowser.isPortOpen(port), false);
+});
+
+// ---- ensureLocalBackend:注入假 spawn／fetch／fs，涵蓋 --env local 自動帶
+// 起後端的每一條路徑 ----
+
+test('ensureLocalBackend:探活成功時跳過啟動，回 existing，不呼叫 spawn 或查目錄', async () => {
+  let spawnCalled = false;
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: 'unused',
+    logPath: 'unused.log',
+    pidPath: 'unused.pid',
+    deps: {
+      probeHealthFn: async () => true,
+      spawnFn: () => {
+        spawnCalled = true;
+      },
+      existsSyncFn: () => {
+        throw new Error('健康時不該查後端目錄');
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'existing' });
+  assert.equal(spawnCalled, false);
+});
+
+test('ensureLocalBackend:探活失敗且帶 --no-backend 時不啟動，回 no-backend', async () => {
+  let spawnCalled = false;
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: true,
+    backendDir: 'unused',
+    logPath: 'unused.log',
+    pidPath: 'unused.pid',
+    deps: {
+      probeHealthFn: async () => false,
+      spawnFn: () => {
+        spawnCalled = true;
+      },
+      existsSyncFn: () => {
+        throw new Error('--no-backend 時不該查後端目錄');
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'no-backend' });
+  assert.equal(spawnCalled, false);
+});
+
+test('ensureLocalBackend:探活失敗且後端目錄不存在時回 missing-dir，不呼叫 spawn', async () => {
+  let spawnCalled = false;
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: '/no/such/dir',
+    logPath: 'unused.log',
+    pidPath: 'unused.pid',
+    deps: {
+      probeHealthFn: async () => false,
+      existsSyncFn: () => false,
+      spawnFn: () => {
+        spawnCalled = true;
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'missing-dir', dir: '/no/such/dir' });
+  assert.equal(spawnCalled, false);
+});
+
+test('ensureLocalBackend:探活失敗且未帶 --no-backend 時自動啟動，等到 /health 回應即回 started(win32 找得到 npm-cli.js，走 node.exe 直接執行，不經外殼)', async () => {
+  const events = {};
+  let probeCallCount = 0;
+  const npmCliPath = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: '/api-local/api',
+    logPath: '/tmp/api-local.log',
+    pidPath: '/tmp/api-local.pid',
+    deps: {
+      probeHealthFn: async () => {
+        probeCallCount += 1;
+        // 第一次是啟動前的探活(失敗)，第二次(輪詢的第一次)就通過。
+        return probeCallCount > 1;
+      },
+      existsSyncFn: () => true,
+      openSyncFn: (p, flag) => {
+        events.opened = { p, flag };
+        return 99;
+      },
+      closeSyncFn: (fd) => {
+        events.closedFd = fd;
+      },
+      spawnFn: (cmd, args, opts) => {
+        events.spawnArgs = { cmd, args, opts };
+        return { pid: 5555, unref() {} };
+      },
+      writeFileSyncFn: (p, data) => {
+        events.pidWritten = { p, data };
+      },
+      platformFn: () => 'win32',
+      pollIntervalMs: 1,
+    },
+  });
+
+  assert.deepEqual(result, { status: 'started', pid: 5555, log: '/tmp/api-local.log' });
+  // 見 resolveBackendSpawnTarget 的註解:win32 上找得到 npm-cli.js 時，改成
+  // 用目前這顆 node.exe 直接執行它，不經過 npm.cmd 這層外殼——實測 shell:true
+  // 疊加 detached:true 會讓 log 檔案永遠是空的。
+  assert.equal(events.spawnArgs.cmd, process.execPath);
+  assert.deepEqual(events.spawnArgs.args, [npmCliPath, 'run', 'dev']);
+  assert.equal(events.spawnArgs.opts.cwd, '/api-local/api');
+  assert.equal(events.spawnArgs.opts.detached, true, '不 detach 的話本腳本結束時後端會被一起收掉');
+  assert.equal(events.spawnArgs.opts.shell, false, '單一層直達 node.exe，不需要外殼');
+  assert.deepEqual(events.spawnArgs.opts.stdio, ['ignore', 99, 99]);
+  assert.deepEqual(events.opened, { p: '/tmp/api-local.log', flag: 'w' }, 'log 檔要覆寫，不是續寫');
+  assert.equal(events.closedFd, 99);
+  assert.deepEqual(events.pidWritten, { p: '/tmp/api-local.pid', data: '5555' });
+});
+
+test('ensureLocalBackend:win32 上找不到 npm-cli.js 時，退回 npm + shell:true', async () => {
+  const events = {};
+  let probeCallCount = 0;
+  const npmCliPath = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: '/api-local/api',
+    logPath: '/tmp/api-local.log',
+    pidPath: '/tmp/api-local.pid',
+    deps: {
+      probeHealthFn: async () => {
+        probeCallCount += 1;
+        return probeCallCount > 1;
+      },
+      // 後端目錄／package.json 都在，唯獨查不到 npm-cli.js。
+      existsSyncFn: (p) => p !== npmCliPath,
+      openSyncFn: () => 99,
+      closeSyncFn: () => {},
+      spawnFn: (cmd, args, opts) => {
+        events.spawnArgs = { cmd, args, opts };
+        return { pid: 6666, unref() {} };
+      },
+      writeFileSyncFn: () => {},
+      platformFn: () => 'win32',
+      pollIntervalMs: 1,
+    },
+  });
+
+  assert.equal(result.status, 'started');
+  assert.equal(events.spawnArgs.cmd, 'npm');
+  assert.deepEqual(events.spawnArgs.args, ['run', 'dev']);
+  assert.equal(events.spawnArgs.opts.shell, true, '找不到 npm-cli.js 時退回舊行為，靠 shell 解析 npm.cmd');
+});
+
+test('ensureLocalBackend:非 win32 平台一律直接 spawn npm，不查 npm-cli.js、不用 shell', async () => {
+  const events = {};
+  let probeCallCount = 0;
+  let existsSyncCalls = 0;
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: '/api-local/api',
+    logPath: '/tmp/api-local.log',
+    pidPath: '/tmp/api-local.pid',
+    deps: {
+      probeHealthFn: async () => {
+        probeCallCount += 1;
+        return probeCallCount > 1;
+      },
+      existsSyncFn: () => {
+        existsSyncCalls += 1;
+        return true;
+      },
+      openSyncFn: () => 99,
+      closeSyncFn: () => {},
+      spawnFn: (cmd, args, opts) => {
+        events.spawnArgs = { cmd, args, opts };
+        return { pid: 7000, unref() {} };
+      },
+      writeFileSyncFn: () => {},
+      platformFn: () => 'linux',
+      pollIntervalMs: 1,
+    },
+  });
+
+  assert.equal(result.status, 'started');
+  assert.equal(events.spawnArgs.cmd, 'npm');
+  assert.deepEqual(events.spawnArgs.args, ['run', 'dev']);
+  assert.equal(events.spawnArgs.opts.shell, false, '非 win32 的 npm 本身就是可執行檔，不需要外殼');
+  // existsSyncFn 只該為了查後端目錄／package.json 被呼叫兩次，不該多查
+  // npm-cli.js(那是 win32 專屬的分支)。
+  assert.equal(existsSyncCalls, 2);
+});
+
+// ---- resolveBackendSpawnTarget(純函式) ----
+
+test('resolveBackendSpawnTarget:win32 且找得到 npm-cli.js 時，改用 execPath 直接執行它，不需要外殼', () => {
+  const target = devBrowser.resolveBackendSpawnTarget({
+    command: 'npm',
+    args: ['run', 'dev'],
+    plat: 'win32',
+    execPath: 'C:\\App\\node\\node.exe',
+    npmCliExists: true,
+  });
+  assert.deepEqual(target, {
+    file: 'C:\\App\\node\\node.exe',
+    args: [path.join('C:\\App\\node', 'node_modules', 'npm', 'bin', 'npm-cli.js'), 'run', 'dev'],
+    shell: false,
+  });
+});
+
+test('resolveBackendSpawnTarget:win32 但找不到 npm-cli.js 時，退回 npm + shell:true', () => {
+  const target = devBrowser.resolveBackendSpawnTarget({
+    command: 'npm',
+    args: ['run', 'dev'],
+    plat: 'win32',
+    execPath: 'C:\\App\\node\\node.exe',
+    npmCliExists: false,
+  });
+  assert.deepEqual(target, { file: 'npm', args: ['run', 'dev'], shell: true });
+});
+
+test('resolveBackendSpawnTarget:非 win32 一律直接執行 command，不需要外殼', () => {
+  const target = devBrowser.resolveBackendSpawnTarget({
+    command: 'npm',
+    args: ['run', 'dev'],
+    plat: 'darwin',
+    execPath: '/usr/local/bin/node',
+    npmCliExists: false,
+  });
+  assert.deepEqual(target, { file: 'npm', args: ['run', 'dev'], shell: false });
+});
+
+test('resolveBackendSpawnTarget:command 不是 npm 時(理論上不會發生，但函式本身不假設)，win32 仍照原樣搭配 shell', () => {
+  const target = devBrowser.resolveBackendSpawnTarget({
+    command: 'something-else',
+    args: ['x'],
+    plat: 'win32',
+    execPath: 'C:\\App\\node\\node.exe',
+    npmCliExists: true,
+  });
+  assert.deepEqual(target, { file: 'something-else', args: ['x'], shell: true });
+});
+
+test('ensureLocalBackend:啟動後 /health 一直不通，逾時要清 log 尾段、殺行程樹、刪 PID 檔', async () => {
+  const killCalls = [];
+  const unlinkCalls = [];
+  const logLines = Array.from({ length: 30 }, (_, i) => `line${i}`).join('\n');
+
+  const result = await devBrowser.ensureLocalBackend({
+    apiBase: 'http://localhost:8787',
+    noBackend: false,
+    backendDir: '/api-local/api',
+    logPath: '/tmp/api-local.log',
+    pidPath: '/tmp/api-local.pid',
+    deps: {
+      probeHealthFn: async () => false, // 永遠探不到，逼出逾時路徑
+      existsSyncFn: () => true,
+      openSyncFn: () => 1,
+      closeSyncFn: () => {},
+      spawnFn: () => ({ pid: 7777, unref() {} }),
+      writeFileSyncFn: () => {},
+      readFileSyncFn: () => logLines,
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      platformFn: () => 'win32',
+      killTreeRunner: async (pid, plat) => {
+        killCalls.push([pid, plat]);
+      },
+      pollTimeoutMs: 5,
+      pollIntervalMs: 1,
+    },
+  });
+
+  assert.equal(result.status, 'timeout');
+  assert.equal(result.pid, 7777);
+  assert.equal(result.log, '/tmp/api-local.log');
+  assert.equal(result.tail.split('\n').length, 20, '只留最後 20 行');
+  assert.ok(result.tail.endsWith('line29'), '要是最新的尾段，不是頭段');
+  assert.deepEqual(killCalls, [[7777, 'win32']], '逾時要把剛起的行程樹連根殺掉');
+  assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid'], '殺掉後不留誤導下次執行的 PID 檔');
+});
+
+// ---- stopBackend:--stop-backend 的三種狀態 ----
+
+test('stopBackend:有 PID 檔時，關閉行程樹、刪 PID 檔、等埠釋放後回 stopped', async () => {
+  const killCalls = [];
+  const unlinkCalls = [];
+  let portOpenCallCount = 0;
+
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '4321',
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      isPortOpenFn: async () => {
+        portOpenCallCount += 1;
+        // 殺完的瞬間埠可能還沒真的放掉，第二次輪詢才放。
+        return portOpenCallCount === 1;
+      },
+      platformFn: () => 'win32',
+      killTreeRunner: async (pid, plat) => {
+        killCalls.push([pid, plat]);
+      },
+      pollIntervalMs: 1,
+    },
+  });
+
+  assert.deepEqual(result, { status: 'stopped', pid: 4321 });
+  assert.deepEqual(killCalls, [[4321, 'win32']]);
+  assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid']);
+});
+
+test('stopBackend:PID 檔不存在但埠仍有服務在聽時，回 not-owned，不動任何行程', async () => {
+  const killCalls = [];
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => false,
+      isPortOpenFn: async () => true,
+      killTreeRunner: async (...args) => killCalls.push(args),
+    },
+  });
+  assert.deepEqual(result, { status: 'not-owned' });
+  assert.equal(killCalls.length, 0, '不是本腳本啟動的行程，不能動它');
+});
+
+test('stopBackend:PID 檔不存在且埠也沒人聽時，回 already-stopped', async () => {
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => false,
+      isPortOpenFn: async () => false,
+    },
+  });
+  assert.deepEqual(result, { status: 'already-stopped' });
+});
+
+test('stopBackend:殺完行程樹但埠遲遲不放，逾時回 stop-timeout', async () => {
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '999',
+      unlinkSyncFn: () => {},
+      isPortOpenFn: async () => true, // 永遠佔著，逼出逾時路徑
+      killTreeRunner: async () => {},
+      pollTimeoutMs: 5,
+      pollIntervalMs: 1,
+    },
+  });
+  assert.deepEqual(result, { status: 'stop-timeout', pid: 999 });
+});
+
+test('stopBackend:killTreeRunner 失敗且是「行程本來就不存在」(win32 taskkill 訊息含 not found)時不中斷，照樣清 PID 檔並回 stopped', async () => {
+  const unlinkCalls = [];
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '123',
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      isPortOpenFn: async () => false,
+      platformFn: () => 'win32',
+      killTreeRunner: async () => {
+        throw new Error('ERROR: The process "123" not found.');
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'stopped', pid: 123 });
+  assert.deepEqual(unlinkCalls, ['/tmp/api-local.pid']);
+});
+
+test('stopBackend:killTreeRunner 失敗且不是「行程本來就不存在」時(例如權限不足)，回 kill-failed 並保留 PID 檔，不靜默當成功', async () => {
+  const unlinkCalls = [];
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '123',
+      unlinkSyncFn: (p) => unlinkCalls.push(p),
+      isPortOpenFn: async () => true,
+      platformFn: () => 'win32',
+      killTreeRunner: async () => {
+        throw new Error('ERROR: Access is denied.');
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'kill-failed', pid: 123, error: 'ERROR: Access is denied.' });
+  assert.deepEqual(unlinkCalls, [], '殺不掉就不該刪 PID 檔，刪了會讓下一次 --stop-backend 誤判成已經沒在跑');
+});
+
+test('stopBackend:非 win32 平台 killTreeRunner 丟 ESRCH 時視為行程本來就不存在，照樣回 stopped', async () => {
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '456',
+      unlinkSyncFn: () => {},
+      isPortOpenFn: async () => false,
+      platformFn: () => 'linux',
+      killTreeRunner: async () => {
+        const err = new Error('kill ESRCH');
+        err.code = 'ESRCH';
+        throw err;
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'stopped', pid: 456 });
+});
+
+test('stopBackend:非 win32 平台 killTreeRunner 丟非 ESRCH 錯誤時(例如 EPERM)，回 kill-failed', async () => {
+  const result = await devBrowser.stopBackend({
+    pidPath: '/tmp/api-local.pid',
+    port: 8787,
+    deps: {
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '456',
+      unlinkSyncFn: () => {},
+      isPortOpenFn: async () => true,
+      platformFn: () => 'linux',
+      killTreeRunner: async () => {
+        const err = new Error('kill EPERM');
+        err.code = 'EPERM';
+        throw err;
+      },
+    },
+  });
+  assert.deepEqual(result, { status: 'kill-failed', pid: 456, error: 'kill EPERM' });
+});
+
+// ---- isProcessNotFoundError(純函式) ----
+
+test('isProcessNotFoundError:win32 訊息含 not found 或 ERROR: The process 時視為行程不存在', () => {
+  assert.equal(
+    devBrowser.isProcessNotFoundError(new Error('ERROR: The process "123" not found.'), 'win32'),
+    true
+  );
+  assert.equal(
+    devBrowser.isProcessNotFoundError(new Error('some prefix ERROR: The process blah'), 'win32'),
+    true
+  );
+  assert.equal(
+    devBrowser.isProcessNotFoundError(new Error('ERROR: Access is denied.'), 'win32'),
+    false,
+    '權限不足不是行程不存在'
+  );
+  assert.equal(devBrowser.isProcessNotFoundError(null, 'win32'), false, '沒有例外物件時保守回 false');
+});
+
+test('isProcessNotFoundError:非 win32 用例外的 code === ESRCH 判斷', () => {
+  const esrch = Object.assign(new Error('no such process'), { code: 'ESRCH' });
+  const eperm = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+  assert.equal(devBrowser.isProcessNotFoundError(esrch, 'linux'), true);
+  assert.equal(devBrowser.isProcessNotFoundError(eperm, 'linux'), false);
+  assert.equal(devBrowser.isProcessNotFoundError(esrch, 'darwin'), true);
 });
