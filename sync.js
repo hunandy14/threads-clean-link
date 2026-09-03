@@ -22,9 +22,6 @@
 
   // ---- 協定與排程常數 ----
 
-  // D5:Google Web client(公開值)，後端 aud 陣列已含此 client。
-  var CLIENT_ID = '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com';
-
   // D9:apiBase 只有這三個合法值，syncApiBase 覆寫成其他值一律忽略——
   // 覆寫鍵是 storage.local 的普通鍵，被寫入任意 origin 就等於把 bearer
   // token 送去別人家。local 指向開發機自己跑的 wrangler dev，只有
@@ -34,6 +31,17 @@
   var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
   var API_BASE_LOCAL = 'http://localhost:8787';
   var API_BASE_ALLOWED = [API_BASE_PRODUCTION, API_BASE_STAGING, API_BASE_LOCAL];
+
+  // D5:Google Web client(公開值)。後端把 staging 與 production 的 client
+  // 分家了，插件必須依 apiBase 送對應的 client_id，否則 id_token 的 aud
+  // 對不上該環境的驗證清單。local 沒有自己的 client——本機後端的
+  // .dev.vars 仍設定舊(production)client，因此併到 production 那組。
+  var CLIENT_ID_PRODUCTION = '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com';
+  var CLIENT_ID_STAGING = '17054024593-846tl3brfgd5f09ouavituflf5b7v6qi.apps.googleusercontent.com';
+  var CLIENT_ID_BY_API_BASE = {};
+  CLIENT_ID_BY_API_BASE[API_BASE_PRODUCTION] = CLIENT_ID_PRODUCTION;
+  CLIENT_ID_BY_API_BASE[API_BASE_STAGING] = CLIENT_ID_STAGING;
+  CLIENT_ID_BY_API_BASE[API_BASE_LOCAL] = CLIENT_ID_PRODUCTION;
 
   // D12:週期 alarm 不低於 1 分鐘(MV3 硬性下限)，新紀錄去抖 2 秒。
   var ALARM_NAME = 'tcl-sync';
@@ -763,6 +771,16 @@
               return broadcastState('error');
             });
           }
+          // clientId 依 apiBase 對應(D5):白名單只有三個 apiBase，理論上
+          // 這裡不可能找不到，但找不到就代表 CLIENT_ID_BY_API_BASE 漏配，
+          // 拒絕登入好過拿錯 client 的 id_token 去撞後端的 aud 檢查。
+          var clientId = CLIENT_ID_BY_API_BASE[ctx.apiBase];
+          if (typeof clientId !== 'string' || !clientId) {
+            ctx.state.lastError = 'client_id_missing';
+            return saveState(ctx.state).then(function () {
+              return broadcastState('error');
+            });
+          }
           // nonce 由引擎生成並落 chrome.storage.session，授權往返期間 SW 若
           // 被回收，回來仍比對得出這一次的 nonce（擋重放）。
           var nonce = randomUUID();
@@ -770,7 +788,7 @@
           items[NONCE_KEY] = nonce;
           return sessionSet(items)
             .then(function () {
-              return auth.signInWithGoogle({ clientId: CLIENT_ID, apiBase: ctx.apiBase, nonce: nonce });
+              return auth.signInWithGoogle({ clientId: clientId, apiBase: ctx.apiBase, nonce: nonce });
             })
             .then(function (result) {
               // auth 模組是「本次授權實際用了哪枚 nonce」的權威（launch 時傳
@@ -1109,7 +1127,9 @@
     API_BASE_PRODUCTION: API_BASE_PRODUCTION,
     API_BASE_STAGING: API_BASE_STAGING,
     API_BASE_LOCAL: API_BASE_LOCAL,
-    CLIENT_ID: CLIENT_ID,
+    CLIENT_ID_PRODUCTION: CLIENT_ID_PRODUCTION,
+    CLIENT_ID_STAGING: CLIENT_ID_STAGING,
+    CLIENT_ID_BY_API_BASE: CLIENT_ID_BY_API_BASE,
     MAX_UPSERTS: MAX_UPSERTS,
     MAX_DELETES: MAX_DELETES,
     MAX_SEEN_ROWS: MAX_SEEN_ROWS,
