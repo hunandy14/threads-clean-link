@@ -101,7 +101,7 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 一鍵啟動除錯用 Chrome 並載入開發版擴充，連線目標用 `--env` 三選一(local/staging/production)，慣例說明見 `docs/dev-environments.md`:
 
-- `npm run dev`:連本機後端(`http://localhost:8787`)。前置是自行在另一個終端機把後端跑起來(`npx wrangler dev --port 8787`);沒跑起來的話指令會印出啟動方式並非 0 退出，不會啟動 Chrome。這個環境會在副本的 manifest 多注入 `http://localhost:8787/*` 權限，商店版 manifest 不受影響。
+- `npm run dev`:連本機後端(`http://localhost:8787`)。local 需要兩個終端機:終端機 1 在後端目錄 `npm run dev`(wrangler dev，8787，留著別關);終端機 2 在本專案 `npm run dev`。後端目錄:`%USERPROFILE%\.threads-clean-link\api-local\api`。沒探到後端的話指令會印出啟動方式並非 0 退出，不會啟動 Chrome。這個環境會在副本的 manifest 多注入 `http://localhost:8787/*` 權限，商店版 manifest 不受影響。
 - `npm run dev:staging`:連 staging API，日常開發用這個。
 - `npm run dev -- --env production`:連正式環境，會先印警告並要求互動輸入完整字串 `production` 確認才會繼續，`--yes` 可跳過確認(仍會印警告)，非互動環境(non-TTY)一律拒絕。
 

@@ -52,9 +52,13 @@ npm scripts(本專案 `package.json` 原文):
 
 **(a) 前置探活。** local 依賴開發機自己跑著的後端，這件事工具無法代勞，但可以在動任何東西之前先確認。`--env local` 啟動前先 `GET http://localhost:8787/health`;不通就印出啟動指令並非 0 退出，**不碰瀏覽器**——後端沒起來的話後面每一步都是白做，還會留下一個連錯環境的瀏覽器要收拾。
 
+local 需要**兩個終端機**:終端機 1 在後端目錄跑 `npm run dev`(wrangler dev，8787，留著別關);終端機 2 在本專案跑 `npm run dev`。跨 repo 的後端由它自己的 repo 啟動，前端只探活並提示，不代為啟動。
+
 ```
-錯誤:本機後端 http://localhost:8787/health 沒有回應。
-請先啟動本機後端：cd ~/.threads-clean-link/api-local/api && npx wrangler dev --port 8787
+錯誤：本機後端 http://localhost:8787/health 沒有回應。
+請先在另一個終端機啟動本機後端（留著別關）：
+  cd %USERPROFILE%\.threads-clean-link\api-local\api
+  npm run dev
 ```
 
 **(b) 開發用權限與正式產物分家。** local 的後端是 `http://localhost:8787`，瀏覽器擴充要連它就得在 manifest 宣告該 host 權限;但這一項絕不能混進上架版。作法是**不改建置產物本身，而是複製一份**:`dev-build` 保持與版控一致，每次執行以它的內容重新同步出副本，只在 local 這一次於副本的 manifest 追加 `http://localhost:8787/*`。注入是純函式(輸入 manifest 物件與 host、輸出新物件、冪等、不動 `key` 與既有 host)，因此可以單獨測，不必啟動瀏覽器。
