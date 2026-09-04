@@ -1412,8 +1412,11 @@ function compareEntryAtDesc(a, b) {
   return av < bv ? 1 : -1;
 }
 
-// 整平多張卡時必須帶過來的雲端身分欄位(見 mergeHistoryGroup)。
-const MERGE_CARRY_FIELDS = ['id', 'serverUpdatedAt'];
+// 整平多張卡時必須帶過來的雲端身分欄位(見 mergeHistoryGroup)。deletedAt 也在
+// 列:少了它，一組裡混著墓碑與活卡時整平出來的卡永遠沒有 deletedAt 鍵，待上傳
+// 的刪除意圖會在遷移中無聲蒸發(全組皆墓碑時尤其明顯——使用者刪掉的貼文會整批
+// 復活)。實際取值另有墓碑裁決，見 mergeHistoryGroup。
+const MERGE_CARRY_FIELDS = ['id', 'serverUpdatedAt', 'deletedAt'];
 
 // 純函式:把同一組(同合併鍵)的多張卡合成一張。單卡組由呼叫端直接原樣保
 // 留，不會進到這裡。
@@ -1445,6 +1448,25 @@ function mergeHistoryGroup(group) {
       }
     }
   }
+  // 墓碑裁決:同一組裡混著墓碑與活卡時，活卡優先、deletedAt 取 null——墓碑代
+  // 表「當年刪過」，之後又有一張活卡出現代表使用者後來重新淨化過同一篇貼文，
+  // 那是明確的復活意圖(語意與 fromSyncItem 的復活、匯入的 deletedAt 清空一
+  // 致)。全組皆墓碑才保留墓碑身分，deletedAt 取 max——刪除意圖只會往後推移，
+  // 取最舊的那一刻會讓水位線比較時把這張卡誤判成早該被 ack 的殘留。
+  let anyTombstone = false;
+  let anyLive = false;
+  let latestDeletedAt = null;
+  for (let i = 0; i < ordered.length; i++) {
+    if (isTombstoneEntry(ordered[i])) {
+      anyTombstone = true;
+      if (latestDeletedAt === null || ordered[i].deletedAt > latestDeletedAt) {
+        latestDeletedAt = ordered[i].deletedAt;
+      }
+    } else {
+      anyLive = true;
+    }
+  }
+  if (anyTombstone) merged.deletedAt = anyLive ? null : latestDeletedAt;
   merged.seen = unionSeenEvents(ordered.map(entrySeenEvents));
   return merged;
 }
