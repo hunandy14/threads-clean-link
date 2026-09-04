@@ -146,25 +146,29 @@
   /* 盾牌在 40px 透明框裡置中，22px 相對標題字重偏小，放大到 28px 取得平衡。 */
   .logo .icon { width: 28px; height: 28px; }
   .topbar .titles { min-width: 0; flex: 1; }
+  /* h1 改 flex 排列,讓環境標籤跟標題文字同列、垂直置中(文字節點在 flex
+     容器內會自動包成匿名 flex item,不需額外包一層 wrapper)。 */
   .topbar h1 {
     margin: 0;
     font-size: 17px;
     font-weight: 650;
     letter-spacing: 0.1px;
+    display: flex;
+    align-items: center;
   }
   .topbar .sub {
     font-size: 12px;
     color: var(--ink-3);
   }
-  /* 副標的環境標籤(僅 staging/local 顯示,見 options.js renderEnvBadge):
+  /* 標題旁的環境標籤(僅 staging/local 顯示,見 options.js renderEnvBadge):
      跟帳號選單 .acct-warn-row 同一套「主色 + 淡底變體」慣例,深淺主題靠
      既有 --warn/--accent 系列變數自動換色,不寫死色碼。 */
   .env-badge {
     display: inline-block;
-    margin-left: 6px;
+    margin-left: 8px;
     padding: 1px 6px;
     border-radius: 999px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     vertical-align: middle;
   }
@@ -1093,8 +1097,8 @@
   <header class="topbar">
     <div class="logo"><svg class="icon"><use href="#i-brand"/></svg></div>
     <div class="titles">
-      <h1>Threads Clean Link</h1>
-      <div class="sub"><span data-i18n="opSub">脆連結清潔工 · 設定與紀錄</span> · <span id="version"></span><span id="envBadge" class="env-badge" hidden></span></div>
+      <h1>Threads Clean Link<span id="envBadge" class="env-badge" hidden></span></h1>
+      <div class="sub"><span data-i18n="opSub">脆連結清潔工 · 設定與紀錄</span> · <span id="version"></span></div>
     </div>
     <div class="topbar-actions">
       <button class="ghost-btn lang-btn" id="langBtn" data-i18n-title="opLangTitle" title="語言 / Language">中文</button>

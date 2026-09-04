@@ -1191,7 +1191,7 @@
     // 共用同一份觸發鈕與選單 DOM，用 hidden 切換;deviceNote 那一列(紀錄
     // 清單卡片頁尾)也在此一併更新，因為它的文案同樣隨登入態切換(見
     // options.html 的 #deviceNote 註解)。
-    // 頁首副標的環境標籤:狀態來源同 renderAccount 的 state.apiBase(docs/
+    // 頁首標題(h1)旁的環境標籤:狀態來源同 renderAccount 的 state.apiBase(docs/
     // cloud-sync.md 5.2 節),跟登入態無關——未登入也要顯示,讓開發時誤連
     // 正式環境或忘記切換環境一眼可辨。只認 SYNC_API_BASE_STAGING/
     // SYNC_API_BASE_LOCAL 這兩個白名單值,其餘(含正式環境、background 無

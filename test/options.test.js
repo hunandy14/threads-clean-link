@@ -3222,7 +3222,7 @@ test('帳號入口:XSS 縱深——email 含 <img onerror> 字串只當純文字
 });
 
 // ============================================================
-// 頁首副標的環境標籤(envBadge)——只認 staging/local 兩個白名單 apiBase
+// 頁首標題旁的環境標籤(envBadge)——只認 staging/local 兩個白名單 apiBase
 // 值,顯示固定英文小寫;其餘(含正式環境、未知值、background 無回應)
 // 一律隱藏,且不把 apiBase 原始值印進 DOM(見 options.js 的
 // renderEnvBadge)。狀態來源同帳號卡片的 state.apiBase,但跟登入態
