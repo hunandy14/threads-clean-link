@@ -174,11 +174,16 @@
   }
 
   // credentials:'omit' — 工作階段憑證由呼叫端保管，不讓瀏覽器自動夾帶 cookie。
+  // redirect:'error' — 後端不該對這支回 3xx。放任 fetch 自動跟隨的話，轉址後
+  // 那一站的回應照樣會被當成後端回應處理(包含採信它的 set-auth-token 標頭)，
+  // 等於把整個工作階段的來源交給任何能讓後端轉址的人;與 sync.js 的 call()
+  // 同一條紀律，登入這支更是 token 的第一個入口。
   function exchangeWithBackend(options) {
     var url = options.apiBase.replace(/\/+$/, '') + '/api/auth/sign-in/social';
     return fetch(url, {
       method: 'POST',
       credentials: 'omit',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         provider: 'google',

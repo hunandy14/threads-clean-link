@@ -375,6 +375,11 @@ test('exchangeWithBackend:端點、標頭與 body 形狀逐條符合契約', asy
     );
     assert.equal(calls[0].init.method, 'POST');
     assert.equal(calls[0].init.credentials, 'omit', 'D1:一律不夾帶 cookie');
+    assert.equal(
+      calls[0].init.redirect,
+      'error',
+      '跟著轉址走的話，轉址目的地的 set-auth-token 也會被當成後端發的 token'
+    );
     assert.equal(calls[0].init.headers['Content-Type'], 'application/json', '否則後端回 415');
     assert.deepEqual(JSON.parse(calls[0].init.body), {
       provider: 'google',
