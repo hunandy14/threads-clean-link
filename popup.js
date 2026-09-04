@@ -30,9 +30,19 @@
   // background 尚未實作同步引擎(車道 D)前的安全預設，也是 sync.getState
   // 無回應／回應形狀不對時的退回值——與 options.js 的同名邏輯各自獨立
   // 一份(兩檔案不共用模組，見車道 E 派工單的檔案白名單)。
-  var DEFAULT_SYNC_STATE = {
+  //
+  // 命名:DEFAULT_SYNC_CARD_STATE/normalizeSyncCardState 特意不叫
+  // DEFAULT_SYNC_STATE/normalizeSyncState——TCLCore 已有同名的
+  // normalizeSyncState(帳號同步狀態，形狀完全不同)，兩者撞名容易讀岔。
+  // displayName/avatarUrl 兩欄 popup 不渲染(只有 options 頁的帳號入口
+  // 用得到)，但仍一併正規化，跟 options.js 的卡片狀態保持同一個形狀——
+  // 兩檔案各自獨立一份邏輯，形狀不一致的話，日後任一邊改動都得同時想
+  // 兩套規則。
+  var DEFAULT_SYNC_CARD_STATE = {
     status: 'signed_out',
     email: null,
+    displayName: null,
+    avatarUrl: null,
     lastSyncedAt: null,
     pendingCount: 0,
     lastError: null,
@@ -43,11 +53,13 @@
     return !!state && typeof state === 'object' && SYNC_STATUSES.indexOf(state.status) !== -1;
   }
 
-  function normalizeSyncState(state) {
-    if (!isValidSyncState(state)) return DEFAULT_SYNC_STATE;
+  function normalizeSyncCardState(state) {
+    if (!isValidSyncState(state)) return DEFAULT_SYNC_CARD_STATE;
     return {
       status: state.status,
       email: typeof state.email === 'string' ? state.email : null,
+      displayName: typeof state.displayName === 'string' ? state.displayName : null,
+      avatarUrl: typeof state.avatarUrl === 'string' ? state.avatarUrl : null,
       lastSyncedAt: typeof state.lastSyncedAt === 'number' && isFinite(state.lastSyncedAt) ? state.lastSyncedAt : null,
       pendingCount: typeof state.pendingCount === 'number' && isFinite(state.pendingCount) ? state.pendingCount : 0,
       lastError: typeof state.lastError === 'string' ? state.lastError : null,
@@ -88,7 +100,7 @@
     };
 
     var currentLocale = 'en';
-    var syncState = DEFAULT_SYNC_STATE;
+    var syncState = DEFAULT_SYNC_CARD_STATE;
 
     function getCheckbox(id) {
       return document.getElementById(id);
@@ -134,25 +146,25 @@
 
     // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫。
     function setSyncState(state) {
-      syncState = normalizeSyncState(state);
+      syncState = normalizeSyncCardState(state);
       updateSyncRow();
     }
 
     // 頁面載入時跟 background 要一次目前狀態。runtime 未注入、呼叫失敗、
     // 或 background 沒有對應 handler(車道 D 完成前的必然狀態)都退回
-    // DEFAULT_SYNC_STATE，讓狀態列優雅顯示未登入，不卡住 init()。
+    // DEFAULT_SYNC_CARD_STATE，讓狀態列優雅顯示未登入，不卡住 init()。
     function fetchSyncState() {
       if (!runtime || typeof runtime.sendMessage !== 'function') {
-        return Promise.resolve(DEFAULT_SYNC_STATE);
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
       }
       var result;
       try {
         result = runtime.sendMessage({ type: 'sync.getState' });
       } catch (e) {
-        return Promise.resolve(DEFAULT_SYNC_STATE);
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
       }
-      return Promise.resolve(result).then(normalizeSyncState, function () {
-        return DEFAULT_SYNC_STATE;
+      return Promise.resolve(result).then(normalizeSyncCardState, function () {
+        return DEFAULT_SYNC_CARD_STATE;
       });
     }
 
@@ -188,7 +200,7 @@
             openCloudSyncSection();
           });
         }
-        // 先以 DEFAULT_SYNC_STATE(未登入)畫出狀態列，真值回來後才刷新;
+        // 先以 DEFAULT_SYNC_CARD_STATE(未登入)畫出狀態列，真值回來後才刷新;
         // init() 等這步結束才 resolve，呼叫端 await 後畫面已是最終狀態
         // (比照 options.js 的 fetchSyncState 註解)。
         updateSyncRow();
@@ -204,8 +216,8 @@
 
   var api = {
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
-    DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
-    normalizeSyncState: normalizeSyncState,
+    DEFAULT_SYNC_CARD_STATE: DEFAULT_SYNC_CARD_STATE,
+    normalizeSyncCardState: normalizeSyncCardState,
     createPopupController: createPopupController,
   };
 
