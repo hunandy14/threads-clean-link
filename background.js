@@ -1479,13 +1479,20 @@ function migrateHistoryMerge() {
 // 生成等於每次更新都在雲端多開一張卡)與 dirty(dirty:false 代表已同步，重新
 // 標髒會讓整表無謂重傳)。
 //
-// 【冪等】每一筆都已具備七個欄位時，逐筆回傳原物件參照，據此短路、連寫回都
-// 不做。畸形條目(非物件、url 非字串)無從算 postKey，整筆原樣保留。
+// 【seen 一併消毒】seen[] 過 TCLCore.sanitizeSeenList:遷移前的庫存可能是舊
+// 版寫入的、或使用者匯入過的資料，長度不受 SEEN_MAX 約束、也可能夾著髒項。
+// 不在這裡收斂的話，上雲時 toSyncItem 會把超量的 seen 整串送出去，本機的
+// receivedAt 推導也會被髒項牽動。
+//
+// 【冪等】每一筆都已具備七個欄位、seen 也不需要收斂時，逐筆回傳原物件參照，
+// 據此短路、連寫回都不做。畸形條目(非物件、url 非字串)無從算 postKey，整筆
+// 原樣保留。
 //
 // 【競態】與 migrateHistoryMerge／recordHistory 共用 historyWriteChain 串行;
 // 掛在 merge 之後執行，整平產生的新卡才補得到欄位。
 
-// 純函式:補齊單筆條目缺席的 schema 欄位。無缺席時回傳原物件參照。
+// 純函式:補齊單筆條目缺席的 schema 欄位並收斂 seen[]。無事可做時回傳原物件
+// 參照。
 function fillHistorySchema(entry) {
   if (!entry || typeof entry !== 'object' || typeof entry.url !== 'string') return entry;
   let missing = false;
@@ -1495,9 +1502,18 @@ function fillHistorySchema(entry) {
       break;
     }
   }
-  if (!missing) return entry;
+  // 消毒後筆數變少就代表有東西被裁掉/丟掉(超過 SEEN_MAX、at 非有限數字、
+  // kind 不在白名單)，這時才需要換上新的 seen;筆數相同代表原本就每一筆都
+  // 合法，維持原陣列參照讓冪等短路成立。
+  let seen = null;
+  if (Array.isArray(entry.seen)) {
+    const sanitized = TCLCore.sanitizeSeenList(entry.seen);
+    if (sanitized.length !== entry.seen.length) seen = sanitized;
+  }
+  if (!missing && seen === null) return entry;
 
   const next = Object.assign({}, entry);
+  if (seen !== null) next.seen = seen;
   function fill(field, value) {
     if (!Object.prototype.hasOwnProperty.call(next, field)) next[field] = value;
   }

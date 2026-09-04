@@ -1095,3 +1095,42 @@ test('S2 遷移:整平的 seen 聯集對相同 at 去重', async () => {
     'at 相同的兩筆只留較新那張卡的一筆，整串按 at 升序'
   );
 });
+
+// S2：遷移時 seen[] 一併過 sanitizeSeenList。遷移前的庫存可能是舊版寫入或
+// 使用者匯入的資料，長度不受 SEEN_MAX 約束、也可能夾著髒項；不在這裡收斂，
+// 上雲時 toSyncItem 會把超量的 seen 整串送出去。
+test('S2 遷移:51 筆 seen 收斂為 50 筆，髒項一併丟棄', async () => {
+  const base = 1700000000000;
+  // 51 筆合法事件 + 2 筆髒項（at 非有限數字、kind 不在白名單）。
+  const seen = Array.from({ length: 51 }, (_, i) => ({ at: base - 51 + i, kind: 'share' }));
+  seen.push({ at: 'nope', kind: 'share' });
+  seen.push({ at: base, kind: 'not-a-kind' });
+
+  const bg = loadBackgroundForMigration([{ url: CLEAN_URL, kind: 'share', at: base, seen: seen }]);
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].seen.length, C.LIMITS.SEEN_MAX, 'seen 裁到 SEEN_MAX');
+  assert.equal(history[0].seen[0].at, base - 50, '保留最新的一批，最舊那一筆被裁掉');
+  assert.equal(history[0].seen[C.LIMITS.SEEN_MAX - 1].at, base - 1);
+  assert.equal(history[0].receivedAt, base - 50, 'receivedAt 由收斂後的 seen 推導');
+});
+
+// S5：上傳前最後一道 seen 上限。伺服器對超量的事件序列會整筆拒收或截斷，
+// 兩種結果本機都觀測不到，只能在送出前自己裁乾淨。
+test('S5 toSyncItem:seen 上雲前裁到 SEEN_MAX，保留最新的一批', () => {
+  const base = 1700000000000;
+  const entry = {
+    id: 'card-1',
+    url: CLEAN_URL,
+    original: SHARE_URL,
+    receivedAt: base - 60,
+    seen: Array.from({ length: 60 }, (_, i) => ({ at: base - 60 + i, kind: 'share' })),
+  };
+  const item = C.toSyncItem(entry);
+  assert.equal(item.seen.length, C.LIMITS.SEEN_MAX);
+  assert.equal(item.seen[0].at, base - 50);
+  assert.equal(item.seen[C.LIMITS.SEEN_MAX - 1].at, base - 1);
+});

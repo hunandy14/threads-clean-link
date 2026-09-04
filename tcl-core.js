@@ -379,8 +379,11 @@
         return { key: p.key, value: p.value };
       });
     }
+    // seen 上雲前最後裁一次到 SEEN_MAX(取最新的一批)。本機寫入路徑本來就裁
+    // 過，但遷移前的庫存與匯入檔可能帶著更長的 seen——上傳超量的事件序列會被
+    // 伺服器整筆拒收或截斷，兩種結果都不是本機能觀測到的。
     if (Array.isArray(entry.seen) && entry.seen.length > 0) {
-      item.seen = entry.seen.map(function (s) {
+      item.seen = entry.seen.slice(-LIMITS.SEEN_MAX).map(function (s) {
         var source = seenSourceOf(s.kind);
         return source === undefined ? { at: s.at } : { at: s.at, source: source };
       });
