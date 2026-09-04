@@ -87,7 +87,6 @@
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
   var INFLIGHT_KEY = 'syncInflight';
-  var NONCE_KEY = 'syncNonce';
   var DEBOUNCE_KEY = 'syncDebounce';
   var INFLIGHT_TTL_MS = 120000;
 
@@ -868,38 +867,26 @@
               return broadcastState('error');
             });
           }
-          // nonce 由引擎生成並落 chrome.storage.session，授權往返期間 SW 若
-          // 被回收，回來仍比對得出這一次的 nonce（擋重放）。
+          // nonce 由引擎生成、交給 auth 模組帶進授權請求。**不落 storage**:
+          // 重放防護整段在 auth.js 內完成(launch 時送出的那枚與 id_token
+          // payload 的 nonce 逐字比對，見 verifyIdTokenPayload)，那次比對只用
+          // 得到同一個閉包裡的值。SW 若在授權往返途中被回收，這條 promise 鏈
+          // 連同 launchWebAuthFlow 一起消失，回來根本沒有「待比對的登入」——
+          // 存一份到 session 再讀回來只是裝飾，不構成第二道防線。
           var nonce = randomUUID();
-          var items = {};
-          items[NONCE_KEY] = nonce;
-          return sessionSet(items)
+          return Promise.resolve()
             .then(function () {
               return auth.signInWithGoogle({ clientId: clientId, apiBase: ctx.apiBase, nonce: nonce });
             })
             .then(function (result) {
               // auth 模組是「本次授權實際用了哪枚 nonce」的權威（launch 時傳
-              // 進去的那枚已由它比對過 id_token payload），以它回傳的值寫回
-              // session。
+              // 進去的那枚已由它比對過 id_token payload），換 token 時帶它
+              // 回報的值。
               var effective = typeof result.nonce === 'string' && result.nonce ? result.nonce : nonce;
-              var record = {};
-              record[NONCE_KEY] = effective;
-              return sessionSet(record)
-                .then(function () {
-                  // 送出前真的從 session 讀回來對一次。session 是這枚 nonce 的
-                  // 權威存放處;寫進去又沒讀回來的話，這段往返只是裝飾——SW 被
-                  // 回收重建時也是靠這裡的值，讀不回同一枚就代表狀態已經不可信。
-                  var want = {};
-                  want[NONCE_KEY] = null;
-                  return sessionGet(want);
-                })
-                .then(function (stored) {
-                  if (stored[NONCE_KEY] !== effective) throw syncError('nonce_mismatch');
-                  return auth
-                    .exchangeWithBackend({ apiBase: ctx.apiBase, idToken: result.idToken, nonce: stored[NONCE_KEY] })
-                    .then(function (exchange) {
-                      return finishSignIn(ctx, result, exchange);
-                    });
+              return auth
+                .exchangeWithBackend({ apiBase: ctx.apiBase, idToken: result.idToken, nonce: effective })
+                .then(function (exchange) {
+                  return finishSignIn(ctx, result, exchange);
                 });
             })
             .catch(function (err) {
@@ -953,7 +940,6 @@
         })
         .then(function () {
           alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
-          return sessionRemove(NONCE_KEY).catch(function () {});
         })
         .then(function () {
           return broadcastState('signed_in');

@@ -736,18 +736,24 @@ test('T6 deleteCloud：displayName／avatarUrl 清空，但 userId／email 保�
   assert.equal(state.email, 'someone@example.com');
 });
 
-test('T2 signIn：nonce 落 chrome.storage.session，並與送給後端的 nonce 一致', async () => {
+// 【翻轉既有斷言／M2】原斷言要求 nonce 落 chrome.storage.session。那組寫入
+// 讀回是裝飾性的：重放防護整段在 auth.js 內完成（launch 時送出的 nonce 與
+// id_token payload 的 nonce 逐字比對），而 SW 若在授權往返途中被回收，
+// launchWebAuthFlow 的 promise 鏈整條消失，回來根本沒有待比對的登入可接。
+test('T2 signIn：nonce 由引擎生成、原樣帶進授權與換 token，不落 storage（M2）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ auth: { nonce: 'nonce-xyz' } });
   const engine = TCLSync.create(env.deps);
   await engine.signIn();
   await settle();
 
-  const written = env.storage.writes.filter(
-    (w) => w.area === 'session' && !w.removed && JSON.stringify(w.value).includes('nonce-xyz')
+  assert.equal(env.auth.calls.signIn.length, 1);
+  assert.equal(env.auth.calls.signIn[0].nonce, 'uuid-1', '授權請求帶的是引擎生成的那一枚');
+  assert.equal(env.auth.calls.exchange[0].nonce, 'nonce-xyz', '換 token 帶 auth 模組回報的那一枚');
+  const nonceWrites = env.storage.writes.filter(
+    (w) => !w.removed && /nonce/i.test(JSON.stringify(w.keys))
   );
-  assert.ok(written.length >= 1, 'nonce 必須寫進 chrome.storage.session（SW 回收後仍可比對）');
-  assert.equal(env.auth.calls.exchange[0].nonce, 'nonce-xyz', '換 token 時要帶同一枚 nonce');
+  assert.deepEqual(nonceWrites, [], 'nonce 不再落 storage：擋不了重放，只是多一份可竄改的複本');
 });
 
 test('T2 signIn：三個環境各自送出對應的 Google client_id（D5，staging 已分家）', async () => {
@@ -2093,7 +2099,7 @@ test('T2 verifySession：距上次驗證未滿門檻就跳過，過了門檻才�
   );
 });
 
-test('T2 signIn：送給後端的 nonce 是從 session 讀回來的那一枚', async () => {
+test('T2 signIn：送給後端的 nonce 是 auth 模組回報的那一枚（M2）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ auth: { nonce: 'nonce-roundtrip' } });
   const engine = TCLSync.create(env.deps);
@@ -2105,21 +2111,16 @@ test('T2 signIn：送給後端的 nonce 是從 session 讀回來的那一枚', a
   assert.equal(env.storage.syncAuth().token, env.server.currentToken(), '登入應完成');
 });
 
-test('T2 signIn：session 讀不回同一枚 nonce 時整條拒收，不換 token', async () => {
+// 【翻轉既有斷言／M2】原本由 session 讀回值比對，讀不回同一枚就丟
+// nonce_mismatch；那道比對隨 session nonce 一起移除。真正的重放防護在
+// auth.js：signInWithGoogle 用 launch 當下的 nonce 驗 id_token payload，
+// 對不上就整條丟例外，引擎在 catch 記 lastError、不換 token。
+test('T2 signIn：auth 模組的 nonce 比對失敗時整條拒收，不換 token（M2）', async () => {
   const TCLSync = loadSync();
-  const env = makeEnv({ auth: { nonce: 'nonce-good' } });
-  // session 寫得進去卻讀回別的值＝狀態已不可信（被別的流程蓋掉／儲存區異常）。
-  const tamperedDeps = Object.assign({}, env.deps, {
-    storage: {
-      local: env.deps.storage.local,
-      session: Object.assign({}, env.deps.storage.session, {
-        get(keys) {
-          return Promise.resolve({ syncNonce: 'nonce-tampered' });
-        },
-      }),
-    },
-  });
-  const engine = TCLSync.create(tamperedDeps);
+  const err = new Error('nonce 不符');
+  err.code = 'nonce_mismatch';
+  const env = makeEnv({ auth: { signInError: err } });
+  const engine = TCLSync.create(env.deps);
   await engine.signIn();
   await settle(10);
 
