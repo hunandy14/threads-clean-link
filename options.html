@@ -156,6 +156,20 @@
     font-size: 12px;
     color: var(--ink-3);
   }
+  /* 副標的環境標籤(僅 staging/local 顯示,見 options.js renderEnvBadge):
+     跟帳號選單 .acct-warn-row 同一套「主色 + 淡底變體」慣例,深淺主題靠
+     既有 --warn/--accent 系列變數自動換色,不寫死色碼。 */
+  .env-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .env-badge-staging { background: var(--warn-soft); color: var(--warn); }
+  .env-badge-local { background: var(--accent-soft); color: var(--accent); }
   .topbar-actions { display: flex; align-items: center; gap: 8px; }
   .ghost-btn {
     appearance: none;
@@ -1080,7 +1094,7 @@
     <div class="logo"><svg class="icon"><use href="#i-brand"/></svg></div>
     <div class="titles">
       <h1>Threads Clean Link</h1>
-      <div class="sub"><span data-i18n="opSub">脆連結清潔工 · 設定與紀錄</span> · <span id="version"></span></div>
+      <div class="sub"><span data-i18n="opSub">脆連結清潔工 · 設定與紀錄</span> · <span id="version"></span><span id="envBadge" class="env-badge" hidden></span></div>
     </div>
     <div class="topbar-actions">
       <button class="ghost-btn lang-btn" id="langBtn" data-i18n-title="opLangTitle" title="語言 / Language">中文</button>
