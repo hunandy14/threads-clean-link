@@ -77,6 +77,12 @@
   var API_BASE_KEY = 'syncApiBase';
   var BACKOFF_KEY = 'syncBackoff';
   var VERIFIED_AT_KEY = 'syncVerifiedAt';
+  // 自清守衛(D19):本機自己打過 DELETE /api/v1/links 之後，伺服器會把
+  // cleared_at 回給**每一台**裝置，包含發動的這一台。沒有這筆紀錄就分不出
+  // 「別台裝置清空了」與「我自己剛清的」，於是拉回自己的水位線時把本機早於
+  // 它的紀錄全刪。**刻意獨立於 syncState**:登出與 session 過期會把 syncState
+  // 整包重設，守衛跟著沒了，「刪雲端→登出→再登入」就會全滅。
+  var CLEAR_GUARD_KEY = 'syncClearGuard';
 
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
@@ -159,6 +165,20 @@
 
   function finiteNumber(value) {
     return typeof value === 'number' && isFinite(value);
+  }
+
+  /**
+   * 自清守衛的形狀閘門。userId 允許 null(登入回應沒帶 user.id 的邊界)，
+   * clearedAt 必須是有限數字——不是的話整筆當不存在，寧可退回「照別台裝置
+   * 處理」也不要拿壞值當水位線比較。
+   */
+  function normalizeClearGuard(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    if (!finiteNumber(raw.clearedAt)) return null;
+    return {
+      userId: typeof raw.userId === 'string' && raw.userId ? raw.userId : null,
+      clearedAt: raw.clearedAt,
+    };
   }
 
   /**
@@ -279,6 +299,7 @@
       defaults[API_BASE_KEY] = null;
       defaults[BACKOFF_KEY] = null;
       defaults[VERIFIED_AT_KEY] = null;
+      defaults[CLEAR_GUARD_KEY] = null;
       return localGet(defaults).then(function (got) {
         var authRecord = got[AUTH_KEY];
         var backoff = got[BACKOFF_KEY];
@@ -294,6 +315,7 @@
               : got[API_BASE_KEY],
           failures: backoff && typeof backoff.failures === 'number' ? backoff.failures : 0,
           verifiedAt: finiteNumber(got[VERIFIED_AT_KEY]) ? got[VERIFIED_AT_KEY] : null,
+          clearGuard: normalizeClearGuard(got[CLEAR_GUARD_KEY]),
         };
       });
     }
@@ -314,6 +336,42 @@
       var items = {};
       items[BACKOFF_KEY] = { failures: failures };
       return localSet(items);
+    }
+
+    /**
+     * 記下「這一次雲端清空是本機自己發動的」(D19)。水位線優先取伺服器回應的
+     * clearedAt(api-spec 4.4 回 `{ok:true, clearedAt}`);缺席才退回請求發出
+     * 的本機時間——比伺服器實際寫下的時間早，守衛只會更保守，不會誤放。
+     * 同一個鍵直接覆寫:換帳號時 userId 跟著換，舊守衛自然失效。
+     */
+    function rememberSelfClear(ctx, payload, sentAt) {
+      var guard = {
+        userId: ctx.state.userId,
+        clearedAt: payload && finiteNumber(payload.clearedAt) ? payload.clearedAt : sentAt,
+      };
+      ctx.clearGuard = normalizeClearGuard(guard);
+      var items = {};
+      items[CLEAR_GUARD_KEY] = guard;
+      return localSet(items);
+    }
+
+    /** 丟掉守衛(換帳號)。留著會擋掉新帳號真正的清空水位線。 */
+    function forgetSelfClear() {
+      var items = {};
+      items[CLEAR_GUARD_KEY] = null;
+      return localSet(items);
+    }
+
+    /**
+     * 這個 clearedAt 是不是本機自己那一次清空?是的話**不得**硬刪本機紀錄
+     * ——那是使用者「刪雲端但留在這台」的明確意圖(D19)。帳號對不上就當成
+     * 別台裝置(或別的帳號)清的，照常硬刪。
+     */
+    function isSelfCleared(ctx, clearedAt) {
+      var guard = ctx.clearGuard;
+      if (!guard) return false;
+      if (guard.userId !== ctx.state.userId) return false;
+      return clearedAt <= guard.clearedAt;
     }
 
     // ---- 狀態與廣播(計劃 5.2／5.3) ----
@@ -504,7 +562,7 @@
      * 【只清本輪快照】ack 一律以「伺服器回報的 id」比對，往返期間 recordHistory
      * 新寫入的 entry 不在回應裡，自然保持 dirty，下一輪才上雲。
      */
-    function applyResponse(body) {
+    function applyResponse(body, ctx) {
       return writeChain(function () {
         return readHistory().then(function (list) {
           var applied = (body && body.applied) || {};
@@ -557,8 +615,10 @@
 
           var changes = body && body.changes;
           if (changes) {
-            if (typeof changes.clearedAt === 'number' && isFinite(changes.clearedAt)) {
-              // 別台裝置清空了雲端:早於水位線的本機紀錄一併硬刪。
+            if (finiteNumber(changes.clearedAt) && !isSelfCleared(ctx, changes.clearedAt)) {
+              // 別台裝置清空了雲端:早於水位線的本機紀錄一併硬刪。自己剛清的
+              // 那一次由 isSelfCleared 擋下(D19):使用者要的是「雲端沒了、這
+              // 台留著」，把自己的水位線拉回來當別人的會把本機資料清光。
               next = next.filter(function (entry) {
                 return eventTimeOf(entry) > changes.clearedAt;
               });
@@ -621,9 +681,15 @@
       // 「清除全部」的雲端語意就是 DELETE /api/v1/links(api-spec 4.4):伺服器
       // 自己寫 cleared_at。必須早於推送，否則剛推上去的資料立刻被自己清掉。
       if (ctx.state.clearedAt !== null) {
+        var sentAt = now();
         chain = chain
           .then(function () {
             return call(ctx, 'DELETE', '/api/v1/links');
+          })
+          .then(function (payload) {
+            // 自己發動的清空記進守衛，同一輪後面拉回來的 clearedAt 才不會
+            // 被當成別台裝置的水位線(D19)。
+            return rememberSelfClear(ctx, payload, sentAt);
           })
           .then(function () {
             ctx.state.clearedAt = null;
@@ -657,7 +723,7 @@
                 // 寫入失敗（配額、storage 壞掉）時失敗路徑的 saveState 會把已
                 // 前進的游標寫進去，這一頁的增量從此再也拉不回來——伺服器只認
                 // 游標，不會重送。
-                return applyResponse(payload).then(function () {
+                return applyResponse(payload, ctx).then(function () {
                   if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
                   lastChanges = payload ? payload.changes : null;
                 });
@@ -674,7 +740,7 @@
             rounds += 1;
             return call(ctx, 'POST', '/api/v1/links/sync', { since: ctx.state.cursor }).then(function (payload) {
               // 同上:先落地再前進游標。
-              return applyResponse(payload).then(function () {
+              return applyResponse(payload, ctx).then(function () {
                 if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
                 lastChanges = payload ? payload.changes : null;
                 return more();
@@ -856,6 +922,13 @@
       var reset = switched ? resetMirrorFields() : Promise.resolve();
       return reset
         .then(function () {
+          // 自清守衛屬於前一個帳號:換人之後這台裝置對新帳號的雲端沒有做過
+          // 任何清空，留著只會擋掉新帳號真正的清空水位線(D19)。
+          if (!switched) return undefined;
+          ctx.clearGuard = null;
+          return forgetSelfClear();
+        })
+        .then(function () {
           return saveToken(exchange.authToken);
         })
         .then(function () {
@@ -1028,7 +1101,14 @@
     function deleteCloud() {
       return loadContext().then(function (ctx) {
         if (!ctx.token) return undefined;
+        var sentAt = now();
         return call(ctx, 'DELETE', '/api/v1/links')
+          .then(function (payload) {
+            // 先記自清守衛再動 history:伺服器已經寫下 cleared_at 並會回給
+            // 這台裝置自己，沒有這一筆的話下一輪(或重新登入後的首輪)拉回
+            // 自己的水位線就會把要留在本機的紀錄全刪(D19)。
+            return rememberSelfClear(ctx, payload, sentAt);
+          })
           .then(function () {
             // 本機紀錄原樣保留但全部標乾淨:刪完雲端若還留著 dirty，下一輪同步
             // 立刻把資料推回去，使用者的刪除等於完全無效。

@@ -2121,3 +2121,83 @@ test('T4 403 forbidden_origin：連既有的週期 alarm 也要清掉', async ()
   );
   assert.equal(env.storage.syncState().lastError, 'forbidden_origin');
 });
+
+// ============================================================================
+// T9 — 自清守衛（D19）與收尾修正
+// ============================================================================
+//
+// E1（真機實證）：刪除雲端資料 → 登出 → 再登入，本機紀錄全滅。
+// 伺服器對「清空」只有一條廣播管道（`changes.clearedAt`），發動清空的那一台
+// 裝置也會拉回自己寫下的水位線；插件把它一律當成別台裝置清的，於是硬刪本機
+// 早於水位線的紀錄。登出會把 syncState 整包重設，所以守衛必須存在**獨立的**
+// storage key（`syncClearGuard`），才撐得過「登出→再登入」。
+// 手機端沒有對應處理可抄：它的 `deleteAccount` 打的是 `DELETE /api/v1/account`
+// （整個帳號連同 cleared_at 一起消失），沒有插件這條「刪雲端、留本機」的路。
+
+test('T9/E1 deleteCloud → 登出 → 再登入：本機筆數不變（自清守衛）', async () => {
+  const TCLSync = loadSync();
+  const old = T0 - 300_000; // 早於稍後寫下的 clearedAt
+  const env = makeEnv({
+    signedIn: true,
+    history: [
+      entry({ id: 'a', url: POST_A, at: old, receivedAt: old, dirty: false, serverUpdatedAt: old, seen: [{ at: old, kind: 'strip' }] }),
+      entry({ id: 'b', url: POST_B, at: old + 1, receivedAt: old + 1, dirty: false, serverUpdatedAt: old + 1, seen: [{ at: old + 1, kind: 'strip' }] }),
+    ],
+  });
+  const engine = TCLSync.create(env.deps);
+
+  await engine.deleteCloud();
+  await settle(10);
+  assert.equal(env.storage.history().length, 2, '前置：刪雲端不動本機紀錄');
+
+  await engine.signOut();
+  await settle(10);
+  await engine.signIn();
+  await settle(20);
+
+  assert.equal(env.storage.syncState().userId, 'user-abc', '前置：同一個帳號重新登入');
+  assert.ok(env.syncPosts().length >= 1, '前置：登入後跑過一輪同步（since 從 0 重拉）');
+  assert.deepEqual(
+    env.storage.history().map((e) => e.id).sort(),
+    ['a', 'b'],
+    '拉回自己寫下的 cleared_at 不得當成別台裝置清空'
+  );
+});
+
+test('T9/E1 別台裝置清空（clearedAt 比守衛新）照樣硬刪本機舊紀錄', async () => {
+  const TCLSync = loadSync();
+  const mine = T0 - 200_000; // 本機自己那一次清空
+  const theirs = T0 - 100_000; // 別台裝置後來又清了一次
+  const env = makeEnv({
+    signedIn: true,
+    local: { syncClearGuard: { userId: 'user-abc', clearedAt: mine } },
+    history: [
+      entry({ id: 'old', url: POST_A, at: theirs - 10_000, receivedAt: theirs - 10_000, dirty: false, serverUpdatedAt: theirs - 10_000, seen: [{ at: theirs - 10_000, kind: 'strip' }] }),
+      entry({ id: 'new', url: POST_B, at: theirs + 10_000, receivedAt: theirs + 10_000, dirty: false, serverUpdatedAt: theirs + 10_000, seen: [{ at: theirs + 10_000, kind: 'strip' }] }),
+    ],
+  });
+  env.server.seed([], { clearedAt: theirs });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(10);
+
+  assert.deepEqual(env.storage.history().map((e) => e.id), ['new'], '守衛只擋自己那一次，別台的水位線照舊生效');
+});
+
+test('T9/E1 守衛認帳號：換人之後前一位使用者的守衛不得沿用', async () => {
+  const TCLSync = loadSync();
+  const cleared = T0 - 100_000;
+  const env = makeEnv({
+    signedIn: true,
+    local: { syncClearGuard: { userId: 'user-other', clearedAt: cleared + 10_000 } },
+    history: [
+      entry({ id: 'old', url: POST_A, at: cleared - 10_000, receivedAt: cleared - 10_000, dirty: false, serverUpdatedAt: cleared - 10_000, seen: [{ at: cleared - 10_000, kind: 'strip' }] }),
+    ],
+  });
+  env.server.seed([], { clearedAt: cleared });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(10);
+
+  assert.deepEqual(env.storage.history(), [], '守衛的 userId 對不上就當成別人清的');
+});
