@@ -163,14 +163,20 @@
       opAccountStatusSynced: '已同步',
       opAccountStatusError: '同步錯誤',
       opAccountStatusExpired: '登入已過期',
-      // 三件事講清楚:無法復原、本機紀錄保留、重新登入會再次上傳。
-      opSyncDeleteConfirmDesc: '雲端保存的紀錄將永久刪除，無法復原。這台裝置上的紀錄不受影響，下次登入時會再次上傳到雲端。',
+      // 三件事講清楚:無法復原、本機紀錄保留、這些紀錄不會再上傳到雲端
+      // (伺服器對早於 cleared_at 的紀錄一律拒收，見 api-spec 4.4；之後
+      // 新清理的連結則不受影響，仍會正常上傳)。
+      opSyncDeleteConfirmDesc: '雲端保存的紀錄將永久刪除，無法復原。這台裝置上的紀錄不受影響，但不會再上傳到雲端；之後新清理的連結仍會正常同步。',
       opSyncDeleteConfirmDo: '確定刪除',
       // 使用者在瀏覽器的權限對話框按了拒絕:登入流程就此中止，需要讓他知道
       // 為什麼什麼都沒發生。
       opSyncPermissionDenied: '未取得權限，無法登入',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
       opDeviceNoteSynced: '已同步至你的 Google 帳號',
+      // 刪除雲端資料是 fire-and-forget(sendSyncAction 不等回應)，送出當下
+      // 先樂觀提示已完成;若下一次 stateChanged 帶回 lastError，改顯示
+      // 錯誤 toast(沿用 opAccountErrorPrefix + lastError，不另造重複鍵)。
+      opToastCloudDeleted: '已刪除雲端資料',
 
       // ---- popup:雲端同步狀態列(唯讀，點擊導向 options 頁的雲端同步卡片) ----
       ppSyncInactive: '雲端同步：未啟用',
@@ -305,11 +311,18 @@
       opAccountStatusError: 'Sync error',
       opAccountStatusExpired: 'Sign-in expired',
       // Three things spelled out: cannot be undone, local history is kept,
-      // signing in again will re-upload it.
-      opSyncDeleteConfirmDesc: 'Records stored in the cloud will be permanently deleted and cannot be recovered. Your local history on this device is unaffected, and will be uploaded again the next time you sign in.',
+      // and these records will not be re-uploaded (the server rejects any
+      // record older than clearedAt, see api-spec 4.4; newly cleared links
+      // after this point still sync normally).
+      opSyncDeleteConfirmDesc: 'Records stored in the cloud will be permanently deleted and cannot be recovered. Your local history on this device is unaffected, but it will not be re-uploaded; links you clean afterward will still sync normally.',
       opSyncDeleteConfirmDo: 'Delete',
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opDeviceNoteSynced: 'Synced to your Google account',
+      // Delete-cloud is fire-and-forget (sendSyncAction does not await a
+      // reply): show an optimistic toast right away, and if the next
+      // stateChanged carries a lastError, replace it with an error toast
+      // (reuses opAccountErrorPrefix + lastError — no separate key).
+      opToastCloudDeleted: 'Cloud data deleted',
 
       ppSyncInactive: 'Cloud sync: off',
       ppSyncActive: 'Synced · {t}',

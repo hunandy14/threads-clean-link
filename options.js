@@ -615,6 +615,11 @@
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
     var syncState = DEFAULT_SYNC_STATE;
+    // 刪除雲端資料是 fire-and-forget:送出當下就樂觀顯示已完成的 toast，
+    // 這顆旗標記著「下一次 setSyncState 要順便檢查 lastError，非 null
+    // 就把樂觀 toast 蓋成錯誤訊息」，見 acctDeleteBtn 的 click handler 與
+    // setSyncState。
+    var pendingDeleteCloudToast = false;
     // chrome.storage.local.syncState 的帳號同步狀態(計劃 4.2，與上面那顆
     // 卡片狀態是兩回事)。刪除與清除全部依它的 userId 分流(D6:未登入行為與
     // 現況完全一致)。
@@ -1357,6 +1362,13 @@
     function setSyncState(state) {
       syncState = normalizeSyncState(state);
       renderAccount(syncState);
+      // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
+      // 有沒有失敗——deleteCloud 是 fire-and-forget，這裡是唯一能得知
+      // 結果的管道(見 acctDeleteBtn 的 click handler)。
+      if (pendingDeleteCloudToast) {
+        pendingDeleteCloudToast = false;
+        if (syncState.lastError) toast(tt('opAccountErrorPrefix') + syncState.lastError);
+      }
     }
 
     // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
@@ -1551,7 +1563,7 @@
         sendSyncAction({ type: 'sync.signOut' });
       });
       // 刪除雲端資料一樣走確認框，措辭明講三件事:無法復原、本機保留、
-      // 重新登入會再次上傳(避免與清除全部紀錄的本機刪除混淆)。
+      // 這些紀錄不會再上傳到雲端(避免與清除全部紀錄的本機刪除混淆)。
       on('acctDeleteBtn', 'click', function () {
         closeAcctMenu();
         openConfirm({
@@ -1562,6 +1574,11 @@
           desc: tt('opSyncDeleteConfirmDesc'),
           action: function () {
             sendSyncAction({ type: 'sync.deleteCloud' });
+            // deleteCloud 是 fire-and-forget，送出當下先樂觀提示已完成；
+            // 若下一次 stateChanged 帶回 lastError，setSyncState 會把這
+            // 顆 toast 蓋成錯誤訊息(見 pendingDeleteCloudToast)。
+            pendingDeleteCloudToast = true;
+            toast(tt('opToastCloudDeleted'));
           },
         });
       });

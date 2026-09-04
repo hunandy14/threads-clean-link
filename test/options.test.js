@@ -2772,7 +2772,7 @@ test('帳號入口:取消登入確認框不送出 sync.signIn', async () => {
   );
 });
 
-test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原/本機保留/重新登入會再次上傳)，確認後才送 sync.deleteCloud', async () => {
+test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原/本機保留/這些紀錄不會再上傳)，確認後才送 sync.deleteCloud 並顯示已刪除 toast', async () => {
   const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
   const doc = makeDocumentStub();
   const runtime = makeFakeRuntime({
@@ -2807,12 +2807,124 @@ test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原
   assert.equal(desc, i18n.t('zh', 'opSyncDeleteConfirmDesc'));
   assert.match(desc, /無法復原/);
   assert.match(desc, /這台裝置上的紀錄不受影響/);
-  assert.match(desc, /下次登入時會再次上傳/);
+  // 語意修正(伺服器對早於 cleared_at 的紀錄一律拒收，api-spec 4.4):刪除
+  // 雲端後本機紀錄不會再自動上傳，舊文案「下次登入時會再次上傳」與後端
+  // 實際行為矛盾。
+  assert.match(desc, /不會再上傳到雲端/);
 
   const callsBefore = runtime.calls.length;
   doc.ids.confirmOk.fire('click');
   assert.equal(runtime.calls.length, callsBefore + 1);
   assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.deleteCloud' });
+  // deleteCloud 是 fire-and-forget，送出當下先樂觀顯示已完成的 toast。
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'));
+});
+
+test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 若帶回 lastError，樂觀 toast 被改成錯誤 toast', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'), '送出當下先樂觀顯示已完成');
+
+  // 接線層轉呼叫的下一次廣播帶回失敗:樂觀 toast 該被蓋成錯誤訊息，
+  // 不能讓使用者以為刪除已成功。
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'user@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'internal_error',
+    apiBase: '',
+  });
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'internal_error');
+});
+
+test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 沒有 lastError 時，不覆蓋樂觀 toast', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'));
+
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'user@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: 100,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'), '成功時樂觀 toast 維持原樣，不被覆蓋');
+
+  // 再下一次廣播不該重複觸發旗標(pendingDeleteCloudToast 只消費一次)。
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'user@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: 200,
+    pendingCount: 0,
+    lastError: 'rate_limited',
+    apiBase: '',
+  });
+  assert.equal(
+    doc.ids.toast.textContent,
+    i18n.t('zh', 'opToastCloudDeleted'),
+    '旗標只消費一次，往後的 lastError 不再誤蓋刪除 toast'
+  );
 });
 
 test('帳號入口:立即同步/登出從選單點下去直接送出對應訊息，不經確認框，且會關閉選單', async () => {
