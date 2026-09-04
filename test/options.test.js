@@ -17,91 +17,16 @@ const URL_A = 'https://www.threads.com/@usera/post/AbC123_-xyz';
 const URL_B = 'https://www.threads.com/@user.b/post/DeF456';
 const URL_C = 'https://threads.net/@user_c/post/GhI789';
 
-// settle() 原本是固定牆鐘等待:controller 的每一條非同步鏈路(讀設定 → 讀
-// 紀錄 → 渲染;或清除全部的「重讀 syncState → 寫回」)都經 chrome.storage
-// mock 的 setTimeout(0) 落盤，而 Windows 的計時器粒度約 15.6ms,固定 30ms
-// 只夠兩跳。鏈路多一次 storage 往返就會在斷言前還沒跑完，變成與實作細節綁死
-// 的假紅燈。作法逐字移植自 test/background.test.js 的同名 helper。
-//
-// 改用計時器計數:全域 setTimeout/clearTimeout 包一層，同時記錄兩件事——
-// (a)只增不減的「累計排程次數」，(b)「目前尚未觸發」的計時器集合。兩者缺一
-// 不可:
-//   - 只看(a)：一開始就排好、中途不再新增排程的長效計時器(如 toast 自動
-//     隱藏)，兩輪之間次數不會變，會被誤判成「已經沒事在跑」而提早收尾。
-//   - 只看(b)：0ms 延遲的計時器常常在下一輪輪詢前就已觸發並移出集合，只看
-//     「目前存活」會整個錯過那個瞬間、誤判成從未發生過排程。
-// 兩者任一有變化(次數增加，或集合非空)都算「還在動」，連續兩輪都沒有變化
-// 才視為鏈路真正跑完並穩定下來——若整條鏈路在 settle() 開始輪詢前就已跑完
-// (純同步分支、或呼叫端已自行 await 過)，兩輪都天生穩定，一樣算數。同時保
-// 留 ms 的語意:穩定後仍至少等原 ms 的一小部分(吸收未經計時器、純微任務完
-// 成的收尾)，逾時上限則以 ms 為準再留緩衝，超時直接 resolve、不吞錯，讓原
-// 本的斷言自己失敗。
-// 輪詢本身用原生(未被此包裝影響)的 setTimeout 排程，且不可用 setImmediate:
-// check phase 在沒有其他 I/O 時不會真的讓出，會在同一個牆鐘毫秒內狂打數十萬
-// 次、Date.now() 幾乎不動，必須靠 setTimeout 讓每輪真的推進時間。
-//
-// 與 background.test.js 的版本唯一的差別:pendingTimers 連同「當初排定的延遲」
-// 一起記，判定「還在動」時只看延遲不超過本次逾時上限的那些。options.js 的
-// toast 會排一顆 2200ms 的自動隱藏計時器，它比 settle() 的上限還長——等於
-// 保證等不到、只會讓每一個發過 toast 的 settle() 白白吃滿上限（整檔從 4 秒
-// 變 31 秒）。這種計時器本來就不屬於測試在等的那條鏈路，排除它不影響判準:
-// 需要真的等滿長逾時的呼叫點只要把 ms 開大，上限跟著放大就會重新納入。
-let totalTimersScheduled = 0;
-const pendingTimers = new Map();
-const nativeSetTimeout = global.setTimeout;
-const nativeClearTimeout = global.clearTimeout;
-global.setTimeout = function trackedSetTimeout(fn, ms, ...args) {
-  totalTimersScheduled++;
-  const handle = nativeSetTimeout((...cbArgs) => {
-    pendingTimers.delete(handle);
-    return fn(...cbArgs);
-  }, ms, ...args);
-  pendingTimers.set(handle, typeof ms === 'number' && isFinite(ms) ? ms : 0);
-  return handle;
-};
-global.clearTimeout = function trackedClearTimeout(handle) {
-  pendingTimers.delete(handle);
-  return nativeClearTimeout(handle);
-};
-// pendingTimers 是整份檔案共用的單一集合。測試若留下一顆長效計時器(toast
-// 自動隱藏之類)而不等它跑完就結束，下一個測試呼叫 settle() 時會誤把這顆與
-// 自己無關的舊計時器當成「還在動」，白等到它觸發才收尾。每個測試開始前清
-// 空，只保留「這個測試自己造成的排程」。
-test.beforeEach(() => {
-  pendingTimers.clear();
-});
-
-function settle(ms = 30) {
-  return new Promise((resolve) => {
-    const start = Date.now();
-    const floor = Math.max(Math.floor(ms / 5), 20);
-    const cap = Math.max(ms + 500, 2000);
-    let lastCount = totalTimersScheduled;
-    let stableTicks = 0;
-
-    function tick() {
-      const countChanged = totalTimersScheduled !== lastCount;
-      if (countChanged) lastCount = totalTimersScheduled;
-      let stillPending = false;
-      pendingTimers.forEach((delay) => {
-        if (delay <= cap) stillPending = true;
-      });
-      if (countChanged || stillPending) {
-        stableTicks = 0;
-      } else {
-        stableTicks++;
-      }
-      const elapsed = Date.now() - start;
-      const settled = stableTicks >= 2 && elapsed >= floor;
-      if (settled || elapsed >= cap) {
-        resolve();
-        return;
-      }
-      nativeSetTimeout(tick, 4);
-    }
-    nativeSetTimeout(tick, 4);
-  });
-}
+// settle() 原本是本檔逐字維護的一份牆鐘等待邏輯:controller 的每一條非同
+// 步鏈路(讀設定 → 讀紀錄 → 渲染;或清除全部的「重讀 syncState → 寫回」)
+// 都經 chrome.storage mock 的 setTimeout(0) 落盤，而 Windows 的計時器粒度
+// 約 15.6ms，固定 ms 訂太小、鏈路多一次 storage 往返就會在斷言前還沒跑完;
+// 連同其餘五份逐字或近乎逐字相同的版本收斂進 test/support/settle.js 一份
+// 共用實作(原理與各項取捨的完整說明，包含本檔特有的「只等延遲不超過上限
+// 的計時器」——用來排除 options.js toast 那顆 2200ms 自動隱藏計時器——見
+// 該檔頭註解)。
+const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 30 });
+test.beforeEach(reset);
 
 // ---- 純函式 ----
 
