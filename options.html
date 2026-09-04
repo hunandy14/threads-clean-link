@@ -35,6 +35,15 @@
     --good: #006300;
     --danger: #d03b3b;
     --danger-soft: rgba(208, 59, 59, 0.1);
+    /* 帳號入口(車道 B)的「登入過期」語意色，既有色票沒有這個第三態，
+       綠(已同步)/紅(錯誤)之外新增一顆黃供狀態點與選單提示列使用。
+       #d9a441 對 --surface(#fcfcfb)只有約 2.19:1 對比，未達 WCAG 非文字
+       元素 3:1 門檻(狀態點本身就是純色塊，沒有文字襯托);改用 #b8862b，
+       實測約 3.16:1。 */
+    --warn: #b8862b;
+    /* 選單提示列(.acct-warn-row)的淡底色，比照 --accent-soft/--danger-soft
+       同一套「主色 + 淡底變體」慣例，alpha 沿用 --accent-soft 的 0.14。 */
+    --warn-soft: rgba(184, 134, 43, 0.14);
     --switch-track-off: #d0d3d9;
     --switch-thumb: #ffffff;
     --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 4px 16px rgba(11, 11, 11, 0.05);
@@ -58,6 +67,8 @@
       --good: #0ca30c;
       --danger: #e66767;
       --danger-soft: rgba(230, 103, 103, 0.14);
+      --warn: #e6b955;
+      --warn-soft: rgba(230, 185, 85, 0.2);
       --switch-track-off: #55575c;
       --switch-thumb: #e8e8e8;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -81,6 +92,8 @@
     --good: #0ca30c;
     --danger: #e66767;
     --danger-soft: rgba(230, 103, 103, 0.14);
+    --warn: #e6b955;
+    --warn-soft: rgba(230, 185, 85, 0.2);
     --switch-track-off: #55575c;
     --switch-thumb: #e8e8e8;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -133,16 +146,37 @@
   /* 盾牌在 40px 透明框裡置中，22px 相對標題字重偏小，放大到 28px 取得平衡。 */
   .logo .icon { width: 28px; height: 28px; }
   .topbar .titles { min-width: 0; flex: 1; }
+  /* h1 改 flex 排列,讓環境標籤跟標題文字同列、垂直置中(文字節點在 flex
+     容器內會自動包成匿名 flex item,不需額外包一層 wrapper)。 */
   .topbar h1 {
     margin: 0;
     font-size: 17px;
     font-weight: 650;
     letter-spacing: 0.1px;
+    display: flex;
+    align-items: center;
   }
   .topbar .sub {
     font-size: 12px;
     color: var(--ink-3);
   }
+  /* 標題旁的環境標籤(僅 staging/local 顯示,見 options.js renderEnvBadge):
+     跟帳號選單 .acct-warn-row 同一套「主色 + 淡底變體」慣例,深淺主題靠
+     既有 --warn/--accent 系列變數自動換色,不寫死色碼。 */
+  .env-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .env-badge-staging { background: var(--warn-soft); color: var(--warn); }
+  .env-badge-local { background: var(--accent-soft); color: var(--accent); }
+  /* 「紀錄」卡頭旁那顆(#envBadgeHistory)比大標題旁小一號,其餘樣式共用
+     上面的 .env-badge。 */
+  .env-badge-sm { font-size: 11px; }
   .topbar-actions { display: flex; align-items: center; gap: 8px; }
   .ghost-btn {
     appearance: none;
@@ -224,6 +258,8 @@
     margin: 0;
     font-size: 14px;
     font-weight: 650;
+    display: flex;
+    align-items: center;
   }
   .card-head .hint { font-size: 12px; color: var(--ink-3); }
 
@@ -251,6 +287,104 @@
     transition: opacity 0.1s ease;
   }
   .tooltip.show { opacity: 1; }
+
+  /* =========================================================
+     頁首帳號入口(車道 B):觸發鈕依 data-state 概念切換未登入/已登入/
+     同步中/錯誤/登入過期，DOM 結構與動效沿用核准 demo
+     (account-header-demo.html)，見 options.js 的 renderAccount。
+     ========================================================= */
+  .account-area { position: relative; }
+  .signin-btn .g-icon { width: 16px; height: 16px; }
+
+  .account-trigger {
+    appearance: none; border: 1px solid var(--border); background: var(--surface);
+    border-radius: 999px; padding: 3px; padding-right: 10px; display: inline-flex; align-items: center;
+    gap: 8px; cursor: pointer; font: inherit;
+  }
+  /* hover 只用 filter 微調底色亮度，不放大(不加 transform:scale)。 */
+  .account-trigger:hover { border-color: var(--baseline); filter: brightness(1.08); }
+  .account-trigger[aria-expanded="true"] { border-color: var(--accent); }
+  .avatar-wrap { position: relative; width: 32px; height: 32px; flex-shrink: 0; }
+  .avatar-circle {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: var(--accent-contrast);
+    display: grid; place-items: center; font-size: 13px; font-weight: 700; user-select: none;
+    overflow: hidden;
+  }
+  /* 有大頭照時底色透明:img 本來就 100%/100% + overflow:hidden 蓋滿整個
+     圓框，--accent 背景平時被完全遮住看不見，但 img 載入失敗會先
+     onerror 才退回字母(見 options.js 的 renderAvatars)，這段時間縫隙裡
+     露出的應該是透明，不是誤導使用者「這裡本來有色塊」的實色。 */
+  .avatar-circle.has-photo { background: transparent; }
+  /* 下拉選單頂部帳號列用的 40px 大頭像變體，只覆寫尺寸，其餘沿用
+     .avatar-circle。 */
+  .avatar-circle.acct-menu-avatar { width: 40px; height: 40px; flex-shrink: 0; }
+  /* 同步中:外圈疊在頭像外緣的 2px 弧線。預設(含 prefers-reduced-motion:
+     reduce)只畫靜態淡色圓環;轉動效果收進下面的 no-preference 媒體查詢，
+     一併帶出頂色對比，reduce 時保留「正在同步」的視覺提示但不轉動。 */
+  .avatar-wrap.is-syncing::after {
+    content: ""; position: absolute; inset: -3px; border-radius: 50%;
+    border: 2px solid var(--accent-soft);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .avatar-wrap.is-syncing::after {
+      border-top-color: var(--accent);
+      animation: acct-spin 0.85s linear infinite;
+    }
+  }
+  @keyframes acct-spin { to { transform: rotate(360deg); } }
+  .status-dot {
+    position: absolute; right: -1px; bottom: -1px; width: 9px; height: 9px; border-radius: 50%;
+    border: 2px solid var(--surface); background: var(--good);
+  }
+  .status-dot.is-danger { background: var(--danger); }
+  .status-dot.is-warning { background: var(--warn); }
+  .acc-name { font-size: 12px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+  @media (max-width: 720px) {
+    .acc-name { display: none; }
+    .account-trigger { padding-right: 3px; gap: 0; }
+  }
+  /* 頭像大頭照(avatarUrl):img 與字母備援互斥顯示，見 options.js 的
+     renderAvatars。 */
+  .avatar-photo { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+  /* 帳號下拉選單:寬 280px，右對齊頁首，其餘沿用 .menu 圓角/陰影。開合
+     動效:淡入 + 從 0.96 縮放到 1，transform-origin 右上，約 120ms;尊重
+     prefers-reduced-motion，該設定開啟時不套用 transition，瞬間切換。
+     顯示/隱藏仍靠 [hidden] 屬性做無障礙層級的開關，動畫只發生在 [hidden]
+     被移除之後、加上 .is-open 之前那一小段時間窗(見 openAcctMenu/
+     closeAcctMenu)。 */
+  .acct-menu {
+    width: 280px; min-width: 280px; padding: 10px;
+    transform-origin: top right;
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  .acct-menu.is-open { opacity: 1; transform: scale(1); }
+  @media (prefers-reduced-motion: no-preference) {
+    .acct-menu { transition: opacity 0.12s ease, transform 0.12s ease; }
+  }
+  /* 選單頂部的帳號列:頭像 + 名字/email 兩行，純展示、不可點。 */
+  .acct-menu-header { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; cursor: default; }
+  .acct-menu-header-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .acct-menu-header-text .acct-menu-name,
+  .acct-menu-header-text .acct-menu-email {
+    padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .acct-menu-name { font-size: 13px; font-weight: 650; color: var(--ink-1); padding: 2px 4px 0; }
+  .acct-menu-email { font-size: 12px; color: var(--ink-3); word-break: break-all; padding: 0 4px 8px; }
+  .acct-menu-sub { font-size: 12px; color: var(--ink-3); padding: 0 4px 8px; }
+  .acct-menu .menu-sep { margin: 6px 4px; }
+  .acct-error-row, .acct-warn-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    border-radius: 8px; padding: 7px 9px; margin: 0 0 8px; font-size: 12px; font-weight: 600;
+  }
+  .acct-error-row { background: var(--danger-soft); color: var(--danger); }
+  .acct-error-row .link-btn { color: var(--danger); font-size: 12px; flex-shrink: 0; }
+  /* 語意色改用 --warn(登入過期是黃色第三態，跟 --accent 純屬巧合撞色，
+     不是同一件事——狀態點/這一列都該用同一顆 --warn 變數)。 */
+  .acct-warn-row { background: var(--warn-soft); color: var(--warn); }
+  .acct-warn-row .link-btn { color: var(--warn); font-size: 12px; flex-shrink: 0; }
+  .acct-error-row .link-btn:hover, .acct-warn-row .link-btn:hover { text-decoration: underline; }
 
   /* ---- 設定列 ---- */
   .settings-body { padding: 6px 16px 14px; }
@@ -360,6 +494,10 @@
   .menu-item:hover { background: var(--plane); }
   .menu-item.danger, .menu-item.danger .icon { color: var(--danger); }
   .menu-item.danger:hover { background: var(--danger-soft); }
+  /* 停用態(如同步中的 acctSyncNowBtn):維持不可點的視覺訊號，hover 不
+     換底色，免得看起來還能點。 */
+  .menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
+  .menu-item:disabled:hover { background: none; }
   .menu-sep { border: none; border-top: 1px solid var(--grid); margin: 4px 6px; }
   .chips-menu { padding: 8px; min-width: max-content; }
   .chips { display: flex; gap: 6px; flex-wrap: nowrap; }
@@ -944,6 +1082,18 @@
         <path d="M8 12h8"/>
       </g>
     </symbol>
+    <!-- 帳號選單的「立即同步」/「登出」圖示(Lucide refresh-cw / log-out)。 -->
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></symbol>
+    <!-- 登入確認框(車道 C bug B)用，色版與 #acctSignInBtn 裡的 Google G
+         內嵌 SVG 逐字相同，四色路徑不吃 currentColor，不受 .icon 外層色彩
+         影響。 -->
+    <symbol id="i-google" viewBox="0 0 18 18">
+      <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/>
+      <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>
+      <path fill="#FBBC05" d="M3.964 10.706A5.41 5.41 0 0 1 3.68 9c0-.593.102-1.17.284-1.706V4.962H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.038l3.007-2.332z"/>
+      <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.962L3.964 7.294C4.672 5.167 6.656 3.58 9 3.58z"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -952,7 +1102,7 @@
   <header class="topbar">
     <div class="logo"><svg class="icon"><use href="#i-brand"/></svg></div>
     <div class="titles">
-      <h1>Threads Clean Link</h1>
+      <h1>Threads Clean Link<span id="envBadge" class="env-badge" hidden></span></h1>
       <div class="sub"><span data-i18n="opSub">脆連結清潔工 · 設定與紀錄</span> · <span id="version"></span></div>
     </div>
     <div class="topbar-actions">
@@ -960,6 +1110,73 @@
       <button class="ghost-btn" id="themeBtn" data-i18n-title="opThemeTitle" title="切換主題">
         <svg class="icon"><use id="themeIcon" href="#i-monitor"/></svg>
       </button>
+
+      <!-- 帳號入口(車道 B):唯一觸發鈕依 syncState 切換未登入/已登入/
+           同步中/錯誤/登入過期五種外觀，見 options.js 的 renderAccount。
+           取代原本頁面中段的雲端同步卡片。 -->
+      <div class="account-area" id="acctArea">
+        <!-- 未登入:低調外框鈕 + Google G 圖示。點擊走既有登入確認框
+             (複用 #confirmOverlay)→ ensureSyncPermissions → sync.signIn。 -->
+        <button class="btn signin-btn" id="acctSignInBtn" data-i18n-aria="opAccountSignIn" aria-label="登入">
+          <svg class="g-icon" viewBox="0 0 18 18" aria-hidden="true">
+            <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>
+            <path fill="#FBBC05" d="M3.964 10.706A5.41 5.41 0 0 1 3.68 9c0-.593.102-1.17.284-1.706V4.962H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.038l3.007-2.332z"/>
+            <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.962L3.964 7.294C4.672 5.167 6.656 3.58 9 3.58z"/>
+          </svg>
+          <span id="acctSignInLabel" data-i18n="opAccountSignIn">登入</span>
+        </button>
+
+        <!-- 已登入/同步中/錯誤/登入過期:頭像觸發鈕 + 下拉選單，同一份
+             DOM，內容依狀態切換顯隱(renderAccount)。 -->
+        <button class="account-trigger" id="acctTrigger" hidden aria-haspopup="menu" aria-expanded="false" data-i18n-aria="opAccountMenuLabel" aria-label="帳號選單">
+          <span class="avatar-wrap" id="avatarWrap">
+            <span class="avatar-circle" id="avatarCircle">
+              <span id="avatarLetter"></span>
+              <img class="avatar-photo" id="avatarPhoto" alt="" referrerpolicy="no-referrer" hidden />
+            </span>
+            <span class="status-dot" id="statusDot" hidden></span>
+          </span>
+          <span class="acc-name" id="acctHeaderName"></span>
+        </button>
+
+        <div class="menu acct-menu" id="acctMenu" hidden role="menu">
+          <!-- 錯誤態:紅字錯誤訊息 + 重試(直接重試同步 sync.now，不需重新授權)。 -->
+          <div class="acct-error-row" id="acctErrorRow" hidden>
+            <span id="acctErrorText"></span>
+            <button class="link-btn" id="acctRetryBtn" data-i18n="opAccountRetry">重試</button>
+          </div>
+          <!-- 登入過期態:黃字提示 + 重新登入(走完整登入確認框流程)。 -->
+          <div class="acct-warn-row" id="acctExpiredRow" hidden>
+            <span id="acctExpiredText" data-i18n="opAccountExpired">登入已過期，請重新登入</span>
+            <button class="link-btn" id="acctReSignInBtn" data-i18n="opAccountReSignIn">重新登入</button>
+          </div>
+
+          <div class="acct-menu-header">
+            <span class="avatar-circle acct-menu-avatar" id="acctMenuAvatarCircle" aria-hidden="true">
+              <span id="acctMenuAvatarLetter"></span>
+              <img class="avatar-photo" id="acctMenuAvatarPhoto" alt="" referrerpolicy="no-referrer" hidden />
+            </span>
+            <span class="acct-menu-header-text">
+              <span class="acct-menu-name" id="acctMenuName"></span>
+              <span class="acct-menu-email" id="acctMenuEmail"></span>
+            </span>
+          </div>
+          <div class="acct-menu-sub" id="acctMenuSub"></div>
+          <hr class="menu-sep" />
+          <button class="menu-item" id="acctSyncNowBtn" role="menuitem">
+            <svg class="icon"><use href="#i-refresh"/></svg>
+            <span id="acctSyncLabel" data-i18n="opAccountSyncNow">立即同步</span>
+          </button>
+          <button class="menu-item" id="acctSignOutBtn" role="menuitem">
+            <svg class="icon"><use href="#i-logout"/></svg><span data-i18n="opAccountSignOut">登出</span>
+          </button>
+          <hr class="menu-sep" />
+          <button class="menu-item danger" id="acctDeleteBtn" role="menuitem">
+            <svg class="icon"><use href="#i-trash"/></svg><span data-i18n="opAccountDeleteCloud">刪除雲端資料</span>
+          </button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -1041,7 +1258,11 @@
   <!-- 紀錄清單為卡片牆，單一 view 直接顯示，不分頁 tab。 -->
   <section class="card history">
     <div class="card-head">
-      <h2 data-i18n="opHistoryTitle">紀錄</h2>
+      <!-- opHistoryTitle 文字包在自己的 span 裡,不直接掛在 h2 上——
+           applyI18nDom 對 data-i18n 節點做 node.textContent = ...,若掛在
+           h2 本身，語言切換會把巢狀的 envBadgeHistory 一併清空(比照頁首
+           .sub 的 opSub span 同一套避雷寫法)。 -->
+      <h2><span data-i18n="opHistoryTitle">紀錄</span><span id="envBadgeHistory" class="env-badge env-badge-sm" hidden></span></h2>
       <div class="menu-wrap">
         <span class="page-size" id="pageSizeSel"><span data-i18n="opPerPageA">每頁</span>
           <button class="ps on" data-n="20">20</button>
@@ -1092,7 +1313,11 @@
     </div>
     <div class="list-foot">
       <span id="countHint"></span>
-      <span data-i18n="opDeviceNote">紀錄僅保存於這台裝置</span>
+      <!-- 雲端同步狀態切換這一列的文案(options.js 的 renderSyncCard):未
+           登入維持既有「僅保存於這台裝置」承諾，已登入換成「已同步至你的
+           Google 帳號」。data-i18n 提供未登入態的初值，已登入態由 JS
+           顯式覆寫(比照 confirmTitleText 等既有做法)。 -->
+      <span id="deviceNote" data-i18n="opDeviceNote">紀錄僅保存於這台裝置</span>
     </div>
   </section>
 
@@ -1127,7 +1352,7 @@
 <!-- 清除全部:確認對話框 -->
 <div class="overlay" id="confirmOverlay" hidden>
   <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmDesc">
-    <h3 id="confirmTitle"><svg class="icon danger-ink"><use href="#i-trash"/></svg><span id="confirmTitleText" data-i18n="opClearAll">清除全部紀錄</span></h3>
+    <h3 id="confirmTitle"><svg class="icon danger-ink" id="confirmIcon"><use href="#i-trash" id="confirmIconUse"/></svg><span id="confirmTitleText" data-i18n="opClearAll">清除全部紀錄</span></h3>
     <div class="desc" id="confirmDesc"></div>
     <div class="modal-actions">
       <button class="btn" id="confirmCancel" data-i18n="opCancel">取消</button>

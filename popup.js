@@ -22,6 +22,65 @@
   // checkbox 的 id 與 chrome.storage.sync 的鍵同名。
   var SETTING_IDS = ['autoClean', 'postCopyEnabled'];
 
+  // ---- 雲端同步狀態列(唯讀，車道 E 消費 docs/cloud-sync.md 第 5 節
+  // 的 state 形狀;popup 不放登入按鈕，只讀狀態並導向 options 頁) ----
+
+  var SYNC_STATUSES = ['signed_out', 'signed_in', 'syncing', 'error'];
+
+  // background 尚未實作同步引擎(車道 D)前的安全預設，也是 sync.getState
+  // 無回應／回應形狀不對時的退回值——與 options.js 的同名邏輯各自獨立
+  // 一份(兩檔案不共用模組，見車道 E 派工單的檔案白名單)。
+  //
+  // 命名:DEFAULT_SYNC_CARD_STATE/normalizeSyncCardState 特意不叫
+  // DEFAULT_SYNC_STATE/normalizeSyncState——TCLCore 已有同名的
+  // normalizeSyncState(帳號同步狀態，形狀完全不同)，兩者撞名容易讀岔。
+  // displayName/avatarUrl 兩欄 popup 不渲染(只有 options 頁的帳號入口
+  // 用得到)，但仍一併正規化，跟 options.js 的卡片狀態保持同一個形狀——
+  // 兩檔案各自獨立一份邏輯，形狀不一致的話，日後任一邊改動都得同時想
+  // 兩套規則。
+  var DEFAULT_SYNC_CARD_STATE = {
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  };
+
+  function isValidSyncState(state) {
+    return !!state && typeof state === 'object' && SYNC_STATUSES.indexOf(state.status) !== -1;
+  }
+
+  function normalizeSyncCardState(state) {
+    if (!isValidSyncState(state)) return DEFAULT_SYNC_CARD_STATE;
+    return {
+      status: state.status,
+      email: typeof state.email === 'string' ? state.email : null,
+      displayName: typeof state.displayName === 'string' ? state.displayName : null,
+      avatarUrl: typeof state.avatarUrl === 'string' ? state.avatarUrl : null,
+      lastSyncedAt: typeof state.lastSyncedAt === 'number' && isFinite(state.lastSyncedAt) ? state.lastSyncedAt : null,
+      pendingCount: typeof state.pendingCount === 'number' && isFinite(state.pendingCount) ? state.pendingCount : 0,
+      lastError: typeof state.lastError === 'string' ? state.lastError : null,
+      apiBase: typeof state.apiBase === 'string' ? state.apiBase : '',
+    };
+  }
+
+  // 相對時間，對齊 options.js 的 relTime(同一份 opRel* 字典 key，兩檔各自
+  // 一份純函式，不共用模組)。locale/nowTs 由呼叫端傳入，模組內不留狀態。
+  function formatRelTime(i18n, locale, nowTs, ts) {
+    var diff = Math.max(0, nowTs - ts);
+    var m = Math.floor(diff / 60000);
+    if (m < 1) return i18n.t(locale, 'opRelJust');
+    if (m < 60) return i18n.fmt(locale, 'opRelMin', { n: m });
+    var h = Math.floor(m / 60);
+    if (h < 24) return i18n.fmt(locale, 'opRelHour', { n: h });
+    var d = Math.floor(h / 24);
+    if (d === 1) return i18n.t(locale, 'opRelYesterday');
+    return i18n.fmt(locale, 'opRelDays', { n: d });
+  }
+
   function createPopupController(deps) {
     var document = deps.document;
     var storage = deps.storage;
@@ -30,6 +89,18 @@
     // 兩顆開關的核心行為不受影響。
     var i18n = deps.i18n || null;
     var openOptionsPage = typeof deps.openOptionsPage === 'function' ? deps.openOptionsPage : null;
+    // 雲端同步狀態列點擊時導向 options 頁的雲端同步卡片
+    // (options.html#cloud-sync);未注入專屬導向函式時退回一般的
+    // openOptionsPage(至少能到 options 頁，只是不帶錨點)。
+    var openCloudSyncSection =
+      typeof deps.openCloudSyncSection === 'function' ? deps.openCloudSyncSection : openOptionsPage;
+    var runtime = deps.runtime || null;
+    var now = typeof deps.now === 'function' ? deps.now : function () {
+      return Date.now();
+    };
+
+    var currentLocale = 'en';
+    var syncState = DEFAULT_SYNC_CARD_STATE;
 
     function getCheckbox(id) {
       return document.getElementById(id);
@@ -56,6 +127,47 @@
       }
     }
 
+    // 純函式風格的更新器，比照 options.js 的 renderSyncCard:只依 state 決
+    // 定這一列文字，不讀寫其他外部狀態。i18n 缺席時(理論上不會發生，
+    // popup-init.js 恆注入)保持空白，不丟例外。
+    function updateSyncRow() {
+      var textEl = getCheckbox('syncStatusText');
+      if (!textEl || !i18n) return;
+      if (syncState.status === 'signed_out') {
+        textEl.textContent = i18n.t(currentLocale, 'ppSyncInactive');
+        return;
+      }
+      var t =
+        syncState.lastSyncedAt !== null
+          ? formatRelTime(i18n, currentLocale, now(), syncState.lastSyncedAt)
+          : i18n.t(currentLocale, 'opSyncNever');
+      textEl.textContent = i18n.fmt(currentLocale, 'ppSyncActive', { t: t });
+    }
+
+    // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫。
+    function setSyncState(state) {
+      syncState = normalizeSyncCardState(state);
+      updateSyncRow();
+    }
+
+    // 頁面載入時跟 background 要一次目前狀態。runtime 未注入、呼叫失敗、
+    // 或 background 沒有對應 handler(車道 D 完成前的必然狀態)都退回
+    // DEFAULT_SYNC_CARD_STATE，讓狀態列優雅顯示未登入，不卡住 init()。
+    function fetchSyncState() {
+      if (!runtime || typeof runtime.sendMessage !== 'function') {
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
+      }
+      var result;
+      try {
+        result = runtime.sendMessage({ type: 'sync.getState' });
+      } catch (e) {
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
+      }
+      return Promise.resolve(result).then(normalizeSyncCardState, function () {
+        return DEFAULT_SYNC_CARD_STATE;
+      });
+    }
+
     function init() {
       // 一次讀足:兩顆開關 + 語言偏好(langPref 未設定時為 null，交由
       // resolveLocale 依瀏覽器語言偵測)。
@@ -79,17 +191,33 @@
           });
         }
 
-        if (i18n) {
-          applyI18n(i18n.resolveLocale(settings ? settings.langPref : null));
+        currentLocale = i18n ? i18n.resolveLocale(settings ? settings.langPref : null) : 'en';
+        if (i18n) applyI18n(currentLocale);
+
+        var syncRow = getCheckbox('syncStatusRow');
+        if (syncRow && openCloudSyncSection) {
+          syncRow.addEventListener('click', function () {
+            openCloudSyncSection();
+          });
         }
+        // 先以 DEFAULT_SYNC_CARD_STATE(未登入)畫出狀態列，真值回來後才刷新;
+        // init() 等這步結束才 resolve，呼叫端 await 後畫面已是最終狀態
+        // (比照 options.js 的 fetchSyncState 註解)。
+        updateSyncRow();
+        return fetchSyncState().then(function (state) {
+          syncState = state;
+          updateSyncRow();
+        });
       });
     }
 
-    return { init: init };
+    return { init: init, setSyncState: setSyncState };
   }
 
   var api = {
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
+    DEFAULT_SYNC_CARD_STATE: DEFAULT_SYNC_CARD_STATE,
+    normalizeSyncCardState: normalizeSyncCardState,
     createPopupController: createPopupController,
   };
 

@@ -1,14 +1,20 @@
 {
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwsulpvef7Tggdw39ft9kn/AmboE4U5U+16uEir9kdo2CGvLqe2WbKLWnShqQj0XbDSMqASr8RgsSl6fkhSRfEWt3qEuQ2QA9wQaeftPwoRGBUanuFTwIoeA6sNAoHJ8rhf+WTiwkA6IIBoYBNmNQrVgPHicnkPkATbX2+yYTOD2Zwd78yAW4Wpd9kefIVr9TBVEtvq6xqvifm+tC6Y+/kKPYCFUltUDoq+2ct9Yg1toVM/bWrhSiM+CX5jWEUSmRdFFid8dcjQDZ+HaIp5ALDHHeNuo/xhM/X2bHZbsBLcUNgXQdskVB/D9qn9eIHrQ5l2OEdKOGktmh0KBXA1iCnwIDAQAB",
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "__MSG_extDesc__",
   "default_locale": "en",
   "homepage_url": "https://github.com/hunandy14/threads-clean-link",
-  "permissions": ["contextMenus", "scripting", "notifications", "activeTab", "storage"],
+  "permissions": ["contextMenus", "scripting", "notifications", "activeTab", "storage", "alarms"],
   "host_permissions": [
     "https://*.threads.com/*",
     "https://*.threads.net/*"
+  ],
+  "optional_permissions": ["identity"],
+  "optional_host_permissions": [
+    "https://api.metalinkclearer.workers.dev/*",
+    "https://api-staging.metalinkclearer.workers.dev/*"
   ],
   "background": {
     "service_worker": "background.js"

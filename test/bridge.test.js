@@ -326,9 +326,16 @@ test('event.source 不是本視窗時，忽略訊息且不轉發 chrome.runtime.
 
 const DEFAULT_SETTINGS = { autoClean: false, saveHistory: true };
 
-function settle(ms = 30) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// settle() 原本是本檔逐字維護的一份牆鐘等待邏輯，機器忙時固定 ms 等不到
+// 非同步鏈路(storage get/onChanged、postMessage 皆經 setTimeout(0) 落盤)
+// 跑完就斷言、閒時又白等，兩頭不討好;連同其餘五份逐字或近乎逐字相同的版
+// 本收斂進 test/support/settle.js 一份共用實作(原理與各項取捨的完整說明
+// 見該檔頭註解)。bridge.js 本身不含任何 setTimeout(靠 sandbox 注入的
+// setTimeout 只轉給 storage mock 與 createWindow 的 postMessage 用)，不像
+// background.js 有需要排除的長效逾時計時器，但共用實作已一併過濾延遲超過
+// 上限的計時器，行為不受影響。
+const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 30 });
+test.beforeEach(reset);
 
 // 載入 bridge.js 到一個同時具備 chrome.runtime 與 chrome.storage 的 sandbox，
 // 並側錄它 postMessage 出去的 TCL_SETTINGS_PUSH。

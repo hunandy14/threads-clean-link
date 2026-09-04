@@ -579,9 +579,15 @@ const XMT_URL = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7?xmt=AQG0
 const XMT_URL_CLEANED = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7';
 const SHARE_URL = 'https://www.threads.com/share/DHuf91XTf/';
 
-function settle(ms = 30) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// settle() 原本是本檔逐字維護的一份牆鐘等待邏輯，機器忙時固定 ms 等不到
+// postMessage 橋接鏈路(postMessage 派送與 bridge 模擬回應都經 setTimeout
+// 排程)跑完就斷言、閒時又白等，兩頭不討好;連同其餘五份逐字或近乎逐字相
+// 同的版本收斂進 test/support/settle.js 一份共用實作(原理與各項取捨的完
+// 整說明見該檔頭註解)。本檔另有多處直接 `await new Promise(r =>
+// setTimeout(r, 2500+))` 等內部逾時競速的呼叫點，那些不經過 settle()，
+// 不受此變更影響，只是同樣會被計數、無副作用。
+const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 30 });
+test.beforeEach(reset);
 
 // 記錄 guard 送出的 TCL_RESOLVE_REQ。respond:true 時模擬 bridge 於 5ms 後
 // 回覆一個「會成功」的解析結果——刻意如此:設定關閉卻仍發請求的實作會立刻

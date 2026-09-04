@@ -20,6 +20,12 @@ const SRC =
   '\n' +
   fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
+// 本擴充自己的 id。訊息入口只認 sender.id（見 background.js 的
+// isOwnExtensionSender），mock 與送出的 sender 都以這一枚為準。
+const EXT_ID = 'test-extension-id';
+// 自己人送來的 sender：content script（bridge.js）與擴充頁面都長這樣。
+const OWN_SENDER = { id: EXT_ID };
+
 const SHARE_URL = 'https://www.threads.com/share/DHuf91XTf/';
 const CLEAN_POST_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
 
@@ -30,6 +36,8 @@ function makeChrome() {
     runtime: {
       onInstalled: { addListener: () => {} },
       onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
+      // sender.id 的比對基準：訊息入口只接受本擴充自己送來的訊息。
+      id: EXT_ID,
     },
     contextMenus: {
       removeAll: async () => {},
@@ -100,7 +108,7 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
   };
   // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，vm sandbox
   // 預設不含這個全域，這裡明確注入。
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
   return {
     storage,
@@ -114,12 +122,12 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
     // 器發送請求，並等待回應(callback 形式)。
     sendResolveShare(message) {
       return new Promise((resolve) => {
-        onMessageListeners.slice().forEach((fn) => fn(message, {}, resolve));
+        onMessageListeners.slice().forEach((fn) => fn(message, OWN_SENDER, resolve));
       });
     },
     // 模擬 bridge.js 轉發 cleanedNotice，不需要回應。
     sendCleanedNotice(message) {
-      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+      onMessageListeners.slice().forEach((fn) => fn(message, OWN_SENDER, () => {}));
     },
   };
 }
@@ -160,13 +168,13 @@ function loadBackground() {
   // 的行為與真實瀏覽器/Service Worker 環境一致(兩者原生都有
   // URL/URLSearchParams)。fetchOgFieldsForLocalKind 內部用 setTimeout 做
   // 逾時競速，一併注入。
-  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
-function callListener(listener, message) {
+function callListener(listener, message, sender) {
   return new Promise((resolve) => {
-    const keepAlive = listener(message, {}, resolve);
+    const keepAlive = listener(message, sender || OWN_SENDER, resolve);
     resolve.keepAlive = keepAlive;
   });
 }
@@ -178,14 +186,48 @@ test('onMessage 契約:resolveShare 回傳 true 保持通道，其他類型回�
   const { listener } = loadBackground();
   assert.equal(typeof listener, 'function', '腳本載入時就該註冊 onMessage 監聽器');
 
-  assert.equal(listener({ type: 'resolveShare', url: SHARE_URL }, {}, () => {}), true);
+  assert.equal(listener({ type: 'resolveShare', url: SHARE_URL }, OWN_SENDER, () => {}), true);
 
   let called = false;
-  const keepAlive = listener({ type: 'somethingElse' }, {}, () => {
+  const keepAlive = listener({ type: 'somethingElse' }, OWN_SENDER, () => {
     called = true;
   });
   assert.equal(keepAlive, false);
   assert.equal(called, false);
+});
+
+// 來源把關：兩個既有入口（resolveShare／cleanedNotice）只認 sender.id。
+// 判準刻意不看 sender.url——content script 的 url 是它所在的網頁，比對擴充
+// 前綴會把 clipboard-guard 這條正常路徑整條擋掉（sync.* 那組另有更嚴的
+// isExtensionPageSender）。
+test('來源把關:sender.id 不是本擴充時 resolveShare 不回應、不 fetch', async () => {
+  const { listener, calls } = loadBackground();
+  let responded = false;
+  const keepAlive = listener(
+    { type: 'resolveShare', url: SHARE_URL },
+    { id: 'some-other-extension' },
+    () => {
+      responded = true;
+    }
+  );
+  await settle();
+  assert.equal(keepAlive, false, '不佔用 sendResponse 通道');
+  assert.equal(responded, false);
+  assert.deepEqual(calls, [], '外人送來的短碼一律不解析');
+});
+
+test('來源把關:sender.id 不是本擴充時 cleanedNotice 不寫入紀錄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  bg.sendRuntimeMessage(
+    { type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' },
+    { id: 'some-other-extension' }
+  );
+  await settle();
+  assert.deepEqual(bg.storage.localSnapshot().history, undefined, '紀錄是使用者資料，外人寫不進來');
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+  await settle();
+  assert.equal(bg.storage.localSnapshot().history.length, 1, '自己人送的照樣記錄，把關不得誤傷');
 });
 
 test('合法短碼解析成功時，sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
@@ -245,7 +287,7 @@ function makeAlwaysSucceedFetch(calls) {
 function loadBackgroundAlwaysSucceed() {
   const chrome = makeChrome();
   const calls = [];
-  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -363,12 +405,14 @@ test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對�
 // 根本沒接上卻碰巧通過」。
 // ============================================================
 
-// cleanedNotice 的完整鏈路(讀設定→記錄→讀設定→讀語言→通知)串了約 5 個
-// setTimeout(0) tick;Windows 計時器顆粒 ~15ms,60ms 會偶發性等不完，放寬
-// 到 150ms。
-function settle(ms = 150) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// settle() 原本是本檔逐字維護的一份牆鐘等待邏輯，機器忙時固定 ms 等不到
+// 非同步鏈路(讀設定→記錄→讀設定→讀語言→通知，每一步都經 chrome.storage
+// mock 的 setTimeout(0) 落盤)跑完就斷言、閒時又白等，兩頭不討好;連同其餘
+// 五份逐字或近乎逐字相同的版本收斂進 test/support/settle.js 一份共用實作
+// (原理與各項取捨的完整說明見該檔頭註解)。defaultMs 150 對應本檔 og fetch
+// 補強路徑常見的較長非同步鏈路。
+const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 150 });
+test.beforeEach(reset);
 
 // 載入 background.js，並以指定設定填入 chrome.storage.sync;同時側錄
 // contextMenus.onClicked 監聽器、notifications.create 與 scripting.executeScript。
@@ -388,6 +432,8 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     runtime: {
       onInstalled: { addListener: () => {} },
       onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
+      // sender.id 的比對基準：訊息入口只接受本擴充自己送來的訊息。
+      id: EXT_ID,
     },
     contextMenus: {
       removeAll: async () => {},
@@ -415,7 +461,7 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   // buildMenuHistoryExtra → diffRemovedParams)這條路徑經這個 loader 進
   // 入，同樣需要注入 URL/URLSearchParams。fetchOgFieldsForLocalKind
   // 內部用 setTimeout 做逾時競速，一併注入。
-  const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout };
+  const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto };
   runInSandbox(SRC, sandbox);
 
   return {
@@ -429,8 +475,8 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     },
     // 模擬 bridge 經 chrome.runtime.sendMessage 送訊息給 service worker;
     // 派送給所有已註冊的 onMessage 監聽器，不假設實作註冊了幾支。
-    sendRuntimeMessage(message) {
-      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+    sendRuntimeMessage(message, sender) {
+      onMessageListeners.slice().forEach((fn) => fn(message, sender || OWN_SENDER, () => {}));
     },
   };
 }
@@ -838,7 +884,7 @@ test('紀錄:cleanedNotice 缺席 original/removedParams 時，紀錄照常寫�
 
   const history = bg.storage.localSnapshot().history;
   assert.equal(history.length, 1);
-  assert.equal('original' in history[0], false, '缺席欄位不得寫成 undefined 佔位');
+  assert.equal(history[0].original, CLEANED_NOTICE_CLEAN_URL, 'S1：original 缺席時以 url 補');
   assert.equal('removedParams' in history[0], false);
 });
 
@@ -1244,14 +1290,14 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
     }
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     executeScriptCalls,
     fetchCalls,
     fetchInits,
     sendCleanedNotice(message) {
-      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+      onMessageListeners.slice().forEach((fn) => fn(message, OWN_SENDER, () => {}));
     },
   };
 }
@@ -1440,7 +1486,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
     };
     // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入
     // (此測試雖走右鍵路徑不會觸發，維持一致性)。
-    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
     onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
     await settle(400);
@@ -1605,6 +1651,30 @@ test('紀錄永久合併:post ID 不同的兩篇貼文各自獨立，不因同�
   assert.equal(history.length, 2, '不同 post ID 應各自留一張卡');
   assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, '本次的新卡在最前');
   assert.equal(history[1].url, otherPost, '另一篇貼文的卡原樣保留');
+});
+
+// 合併鍵改用 TCLCore.postKeyOf(手機 src/lib/post-key.ts 逐字移植)後的紅燈
+// 案例:舊 TCLCore.extractPostId 只認 STRICT_POST_URL_PATTERN(無尾斜線、
+// 無 query、僅 www. 可選前綴)，尾斜線變體會直接落回整條 url 當 fallback
+// key，與同一篇貼文的乾淨網址(無尾斜線)算出不同鍵而不合併。postKeyOf 的
+// THREADS_POST 規則容忍尾斜線，兩者應合併為一筆。
+test('紀錄永久合併(postKeyOf):既有卡的 url 帶尾斜線,與本次乾淨網址(同 post ID、無尾斜線)仍應合併為一筆', async () => {
+  const now = Date.now();
+  const existing = {
+    url: `${CLEANED_NOTICE_CLEAN_URL}/`,
+    kind: 'share',
+    at: now - 60 * 1000,
+    seen: [{ at: now - 60 * 1000, kind: 'share' }],
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '尾斜線只是網址形狀差異,同 post ID 應合併,不得分裂成兩張卡');
+  assert.equal(history[0].url, CLEANED_NOTICE_CLEAN_URL, 'url 更新為本次的乾淨網址');
+  assert.equal(history[0].seen.length, 2, 'seen[] 應在既有一筆基礎上再追加一筆');
 });
 
 // ------------------------------------------------------------
@@ -1834,6 +1904,7 @@ function loadBackgroundForReinject(tabs, opts = {}) {
     console,
     URL,
     URLSearchParams,
+    crypto,
   });
 
   return {
@@ -2233,7 +2304,7 @@ function loadBackgroundOgMulti() {
     if (/\/post\//.test(url)) return fetchResult(url, NO_OG_HTML);
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout });
+  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     fetchCalls,
@@ -2241,13 +2312,13 @@ function loadBackgroundOgMulti() {
       return new Promise((resolve) => {
         onMessageListeners
           .slice()
-          .forEach((fn) => fn({ type: 'resolveShare', url: `https://www.threads.com/share/S${i}` }, {}, resolve));
+          .forEach((fn) => fn({ type: 'resolveShare', url: `https://www.threads.com/share/S${i}` }, OWN_SENDER, resolve));
       });
     },
     notice(finalUrl) {
       onMessageListeners
         .slice()
-        .forEach((fn) => fn({ type: 'cleanedNotice', cleanUrl: finalUrl, kind: 'share' }, {}, () => {}));
+        .forEach((fn) => fn({ type: 'cleanedNotice', cleanUrl: finalUrl, kind: 'share' }, OWN_SENDER, () => {}));
     },
   };
 }
@@ -2306,6 +2377,7 @@ function loadBackgroundForMigration(localHistory) {
     URLSearchParams,
     setTimeout,
     clearTimeout,
+    crypto,
   });
 
   return {
@@ -2456,7 +2528,11 @@ test('遷移:冪等——已整平的資料重跑一次不變，且不再寫回 
 
   assert.deepEqual(bg.storage.localSnapshot().history, afterFirst, '重跑結果與第一次完全相同');
   assert.equal(bg.storage.localCalls.set.length, firstWriteCount, '已是永久合併形狀時不再寫回 storage');
-  assert.equal(firstWriteCount, 0, '本來就無可合併的資料，第一次也不該寫回');
+  // S2:onInstalled 現在依序跑兩支遷移(先 migrateHistoryMerge 再
+  // migrateHistorySchema)。這份 fixture 無可合併，但缺 S1 的新欄位，schema
+  // 遷移必須補齊並寫回一次——冪等的判準因此是「第二次執行不再寫」，不是
+  // 「一次都不寫」。
+  assert.equal(firstWriteCount, 1, 'merge 無可合併，但 schema 需補新欄位，第一次應寫回一次');
 });
 
 test('遷移:空表與單卡表無害——不寫回、不損壞既有資料', async () => {
@@ -2470,6 +2546,558 @@ test('遷移:空表與單卡表無害——不寫回、不損壞既有資料', a
   const singleBg = loadBackgroundForMigration([single]);
   singleBg.fireInstalled();
   await settle();
-  assert.deepEqual(singleBg.storage.localSnapshot().history, [single], '單卡表原樣保留');
-  assert.equal(singleBg.storage.localCalls.set.length, 0, '單卡表不寫回');
+  // S2:單卡表仍無可「合併」，但缺新欄位時 schema 遷移會補齊並寫回一次;
+  // 既有欄位必須原樣保留。
+  const singleHistory = singleBg.storage.localSnapshot().history;
+  assert.equal(singleHistory.length, 1, '單卡表不得被合併掉');
+  assert.equal(singleHistory[0].url, single.url, '既有欄位原樣保留');
+  assert.equal(singleHistory[0].kind, single.kind);
+  assert.equal(singleHistory[0].at, single.at);
+  assert.equal(singleBg.storage.localCalls.set.length, 1, 'schema 遷移補齊新欄位，寫回一次');
+});
+
+// 合併鍵改用 TCLCore.postKeyOf 後，遷移分組(mergeHistoryByDedupKey → 內部走
+// historyDedupKey → TCLCore.postKeyOf)也要能整平舊資料裡「同一篇貼文、兩
+// 種網址形狀都不吻合 STRICT_POST_URL_PATTERN」的殘留:一筆帶 query、一筆是
+// m. 子網域。舊 extractPostId 對這兩種形狀都回傳 null，各自以整條 url 字串
+// 為 fallback key，兩條 url 字串不同，遷移分不出是同一篇 → 停留兩筆。
+// postKeyOf 兩者都能抽出同一個 post ID，遷移應整平成一筆。
+test('遷移(postKeyOf):舊資料兩筆分別為「帶 query」與「m. 子網域」的同一篇貼文,應整平為一筆', async () => {
+  const base = 1700000000000;
+  const withQuery = {
+    url: `${CLEANED_NOTICE_CLEAN_URL}?xmt=abc`,
+    kind: 'share',
+    at: base - 2000,
+    seen: [{ at: base - 2000, kind: 'share' }],
+  };
+  const mSubdomain = {
+    url: 'https://m.threads.com/@dafucoding/post/DbezfB0gYvP',
+    kind: 'icon',
+    at: base - 1000,
+    seen: [{ at: base - 1000, kind: 'icon' }],
+  };
+  const bg = loadBackgroundForMigration([mSubdomain, withQuery]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '兩種網址形狀都指向同一個 post ID,遷移應整平為一筆');
+  assert.equal(history[0].kind, 'icon', 'kind 取較新一筆(mSubdomain)');
+  assert.deepEqual(
+    Array.from(history[0].seen, (e) => e.at),
+    [base - 2000, base - 1000],
+    'seen[] 為兩筆的聯集,按 at 升序'
+  );
+});
+
+// ============================================================================
+// 雲端同步的 background 訊息入口（車道 D，T6）
+//
+// 契約：docs/cloud-sync.md 第 5.1／5.2 節的五個訊息，只接受本擴充自己的頁面
+// （`sender.id === chrome.runtime.id` 且 `sender.url` 為 `chrome-extension://<id>/`
+// 開頭）；content script 送來一律忽略。同步引擎本體在 sync.js（見 test/sync.test.js），
+// 這裡只驗路由與接線——因此注入 TCLSync 替身，不載入真的引擎。
+// ============================================================================
+
+const SYNC_STATE_KEYS = ['apiBase', 'email', 'lastError', 'lastSyncedAt', 'pendingCount', 'status'];
+
+// TCLSync 替身：側錄 create() 的注入內容與引擎每一次被呼叫。
+function makeSyncStub() {
+  const createCalls = [];
+  const calls = [];
+  const state = {
+    status: 'signed_out',
+    email: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'https://api.metalinkclearer.workers.dev',
+  };
+  const engine = {};
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud', 'verifySession', 'notifyRecorded', 'onAlarm'].forEach(
+    (name) => {
+      engine[name] = (...args) => {
+        calls.push({ name, args });
+        return Promise.resolve(name === 'getState' ? Object.assign({}, state) : Object.assign({}, state));
+      };
+    }
+  );
+  return {
+    createCalls,
+    calls,
+    engine,
+    state,
+    names() {
+      return calls.map((c) => c.name);
+    },
+    api: {
+      ALARM_NAME: 'tcl-sync',
+      DEBOUNCE_MS: 2000,
+      SYNC_PERIOD_MINUTES: 5,
+      API_BASE_PRODUCTION: 'https://api.metalinkclearer.workers.dev',
+      API_BASE_STAGING: 'https://api-staging.metalinkclearer.workers.dev',
+      CLIENT_ID: '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com',
+      create(deps) {
+        createCalls.push(deps);
+        return engine;
+      },
+    },
+  };
+}
+
+const EXTENSION_ID = 'hehokicokbgajpanjcajhmflaennnmdj';
+
+function loadBackgroundForSync(opts = {}) {
+  const sync = makeSyncStub();
+  const chrome = makeChrome();
+  const onMessageListeners = [];
+  const onAlarmListeners = [];
+  const alarmCalls = [];
+  chrome.runtime.id = EXTENSION_ID;
+  chrome.runtime.onMessage.addListener = (fn) => onMessageListeners.push(fn);
+  chrome.runtime.onInstalled.addListener = () => {};
+  chrome.alarms = {
+    create: (name, info) => alarmCalls.push({ op: 'create', name, info }),
+    clear: async (name) => {
+      alarmCalls.push({ op: 'clear', name });
+      return true;
+    },
+    get: async () => undefined,
+    getAll: async () => [],
+    onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
+  };
+  chrome.permissions = {
+    contains: (descriptor, cb) => cb(true),
+    request: (descriptor, cb) => cb(true),
+  };
+  chrome.tabs = { TAB_ID_NONE: -1, query: async () => [] };
+  chrome.scripting = { executeScript: async () => [{ result: { ok: true } }] };
+  const storage = createChromeStorage(
+    { saveHistory: true },
+    opts.localHistory ? { history: opts.localHistory } : {}
+  );
+  chrome.storage = storage.api;
+
+  runInSandbox(SRC, {
+    chrome,
+    // 沙箱內先放好 TCLSync，background.js 的 importScripts 條件式便不執行。
+    TCLSync: sync.api,
+    fetch: async (url) => fetchResult(url, NO_OG_HTML),
+    console,
+    URL,
+    URLSearchParams,
+    setTimeout,
+    clearTimeout,
+    // TCLCore.randomUuid 缺 crypto 即拋錯(不以 Math.random 補位),recordHistory
+    // 的新建路徑要生 entry id，沙箱少了它整條寫入會失敗。與本檔其他 fixture 一致。
+    crypto,
+  });
+
+  return {
+    sync,
+    storage,
+    alarmCalls,
+    fireAlarm(alarm) {
+      onAlarmListeners.slice().forEach((fn) => fn(alarm));
+    },
+    alarmListenerCount() {
+      return onAlarmListeners.length;
+    },
+    // 送一則 runtime 訊息並等回應；沒有任何監聽器接手時回 responded:false。
+    send(message, sender) {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = (payload) => {
+          if (done) return;
+          done = true;
+          resolve(payload);
+        };
+        onMessageListeners.slice().forEach((fn) => {
+          fn(message, sender, (response) => finish({ responded: true, response }));
+        });
+        setTimeout(() => finish({ responded: false, response: undefined }), 200);
+      });
+    },
+  };
+}
+
+// popup 形狀：擴充頁面，沒有 tab。options 形狀（本身就是分頁）另見下方回歸測試。
+const EXT_PAGE_SENDER = { id: EXTENSION_ID, url: `chrome-extension://${EXTENSION_ID}/popup.html` };
+const CONTENT_SCRIPT_SENDER = { id: EXTENSION_ID, tab: { id: 12, url: 'https://www.threads.com/' } };
+const OTHER_EXTENSION_SENDER = { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+
+test('T6 sync.getState:擴充頁送來時回應計劃 5.2 的 state 形狀', async () => {
+  const bg = loadBackgroundForSync();
+
+  const result = await bg.send({ type: 'sync.getState' }, EXT_PAGE_SENDER);
+
+  assert.equal(result.responded, true, 'sync.getState 必須有人回應');
+  assert.deepEqual(Object.keys(result.response).sort(), SYNC_STATE_KEYS);
+  assert.ok(bg.sync.names().includes('getState'), '應轉呼叫引擎的 getState');
+});
+
+test('T6 五個訊息各自轉呼叫引擎的對應方法', async () => {
+  const bg = loadBackgroundForSync();
+
+  await bg.send({ type: 'sync.getState' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.signIn' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.now' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
+
+  const names = bg.sync.names();
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud'].forEach((m) => {
+    assert.ok(names.includes(m), `sync.* 訊息應轉呼叫引擎的 ${m}`);
+  });
+});
+
+test('T6 content script 送來的 sync.* 一律忽略(sender.tab 存在)', async () => {
+  const bg = loadBackgroundForSync();
+
+  for (const type of ['sync.getState', 'sync.signIn', 'sync.signOut', 'sync.now', 'sync.deleteCloud']) {
+    const result = await bg.send({ type }, CONTENT_SCRIPT_SENDER);
+    assert.equal(result.responded, false, `${type} 來自 content script 時不得回應`);
+  }
+  // 啟動時的 verifySession 是規格必要的呼叫(見「SW 啟動時驗一次 token」)，
+  // 與本條要驗的「頁面來的訊息碰不到引擎」無關，排除後再比對。
+  assert.deepEqual(
+    bg.sync.names().filter((n) => n !== 'verifySession'),
+    [],
+    '頁面來的訊息不得碰到同步引擎(登入態與雲端資料是敏感面)'
+  );
+});
+
+test('T6 其他擴充/未知 sender 送來的 sync.* 一律忽略', async () => {
+  const bg = loadBackgroundForSync();
+
+  const other = await bg.send({ type: 'sync.signIn' }, OTHER_EXTENSION_SENDER);
+  assert.equal(other.responded, false);
+  const anonymous = await bg.send({ type: 'sync.signIn' }, {});
+  assert.equal(anonymous.responded, false, 'sender 缺 id 一律當外人');
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
+// manifest 的 options_ui.open_in_tab 為 true，設定頁本身就是一個分頁：真機實測
+// 它送來的 sender 帶 tab，url 是 chrome-extension://<自己的 id>/options.html。
+// 舊判準的 `!sender.tab` 會把五個 sync.* 全擋掉，同步卡片整片按不動。
+const OPTIONS_TAB_SENDER = {
+  id: EXTENSION_ID,
+  tab: { id: 1 },
+  url: `chrome-extension://${EXTENSION_ID}/options.html`,
+};
+
+test('T6 回歸:options 分頁(open_in_tab)送來的五個 sync.* 都要被處理', async () => {
+  const bg = loadBackgroundForSync();
+
+  await bg.send({ type: 'sync.getState' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.signIn' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.signOut' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.now' }, OPTIONS_TAB_SENDER);
+  await bg.send({ type: 'sync.deleteCloud' }, OPTIONS_TAB_SENDER);
+
+  const names = bg.sync.names();
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud'].forEach((m) => {
+    assert.ok(names.includes(m), `設定頁是分頁不代表是外人，${m} 必須照常轉呼叫引擎`);
+  });
+});
+
+test('T6 popup 形狀(無 tab、url 為 popup.html)送來的 sync.* 要被處理', async () => {
+  const bg = loadBackgroundForSync();
+
+  const result = await bg.send(
+    { type: 'sync.getState' },
+    { id: EXTENSION_ID, url: `chrome-extension://${EXTENSION_ID}/popup.html` }
+  );
+
+  assert.equal(result.responded, true, 'popup 是擴充頁面，必須回應');
+  assert.ok(bg.sync.names().includes('getState'));
+});
+
+test('T6 content script 形狀(url 為所在網頁)送來的 sync.* 一律忽略', async () => {
+  const bg = loadBackgroundForSync();
+  // content script 的 sender.id 就是本擴充，唯一分得出來的是 sender.url——
+  // 那是它注入的那個網頁的網址，不會是 chrome-extension:// 前綴。
+  const sender = {
+    id: EXTENSION_ID,
+    tab: { id: 12, url: 'https://www.threads.com/@a/post/b' },
+    url: 'https://www.threads.com/@a/post/b',
+  };
+
+  for (const type of ['sync.getState', 'sync.signIn', 'sync.signOut', 'sync.now', 'sync.deleteCloud']) {
+    const result = await bg.send({ type }, sender);
+    assert.equal(result.responded, false, `${type} 來自 content script 時不得回應`);
+  }
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
+test('T6 url 前綴對不上的 sender 一律忽略(不得只比子字串)', async () => {
+  const bg = loadBackgroundForSync();
+
+  // 別的擴充的 options 頁：id 與 url 都不是自己的。
+  const foreignPage = await bg.send(
+    { type: 'sync.signIn' },
+    { id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', url: 'chrome-extension://other-id/options.html' }
+  );
+  assert.equal(foreignPage.responded, false, '別的擴充的頁面不是自己人');
+
+  // id 對得上但 url 只是把前綴藏在網址中段，前綴比對必須從第 0 位起算。
+  const spoofedUrl = await bg.send(
+    { type: 'sync.signIn' },
+    { id: EXTENSION_ID, url: `https://evil.example/chrome-extension://${EXTENSION_ID}/` }
+  );
+  assert.equal(spoofedUrl.responded, false, 'chrome-extension:// 必須是 url 的開頭，不是出現過就算');
+
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
+test('T6 sender 缺 url 時一律忽略', async () => {
+  const bg = loadBackgroundForSync();
+
+  const noUrl = await bg.send({ type: 'sync.signIn' }, { id: EXTENSION_ID });
+  assert.equal(noUrl.responded, false, '認不出來源頁面就不放行');
+  const nullSender = await bg.send({ type: 'sync.signIn' }, null);
+  assert.equal(nullSender.responded, false, 'sender 為 null 不得炸也不得放行');
+
+  assert.deepEqual(bg.sync.names().filter((n) => n !== 'verifySession'), []);
+});
+
+test('T6 auth.spike 入口已移除', async () => {
+  const bg = loadBackgroundForSync();
+
+  const result = await bg.send(
+    { type: 'auth.spike', clientId: 'x', apiBase: 'https://api-staging.metalinkclearer.workers.dev' },
+    EXT_PAGE_SENDER
+  );
+
+  assert.equal(result.responded, false, 'spike 入口是開發用暫時管道，車道 D 必須移除');
+});
+
+test('T6 chrome.alarms.onAlarm 接進引擎', async () => {
+  const bg = loadBackgroundForSync();
+  assert.ok(bg.alarmListenerCount() >= 1, 'background 必須註冊 alarms.onAlarm，否則週期同步永遠不會醒');
+
+  bg.fireAlarm({ name: 'tcl-sync' });
+  await settle();
+
+  assert.ok(bg.sync.names().includes('onAlarm'), 'alarm 觸發要轉入引擎');
+});
+
+test('T6 SW 啟動時驗一次 token(verifySession)', async () => {
+  const bg = loadBackgroundForSync();
+  await settle();
+
+  assert.ok(
+    bg.sync.names().includes('verifySession'),
+    '啟動時要用 get-session 驗 token，不必等 /api/v1/* 打回 401 才發現失效'
+  );
+});
+
+test('T6 recordHistory 之後掛去抖同步(notifyRecorded)', async () => {
+  const bg = loadBackgroundForSync();
+
+  bg.send({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' }, CONTENT_SCRIPT_SENDER);
+  await settle();
+
+  assert.equal(bg.storage.localSnapshot().history.length, 1, '前置條件:紀錄確實寫入');
+  assert.ok(
+    bg.sync.names().includes('notifyRecorded'),
+    '新紀錄要觸發 2 秒去抖同步(D12)，否則只能等週期 alarm'
+  );
+});
+
+// ============================================================
+// S3:recordHistory 寫入路徑對齊雲端 schema(docs/cloud-sync.md 4.1)
+// ------------------------------------------------------------
+// 新建與合併兩條路徑都必須產出帶齊七個新欄位(id/postKey/original/
+// receivedAt/dirty/serverUpdatedAt/deletedAt)的條目。合併路徑額外三條不變
+// 量:id 是雲端身分不得換、receivedAt 是「最早事件」只會往前不會往後、既有
+// 墓碑遇到新事件要復活。
+// ============================================================
+
+// S3 新建路徑用的 UUID v4 樣式(與 test/history-schema.test.js 同一份)。
+const S3_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const S3_NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverUpdatedAt', 'deletedAt'];
+// CLEANED_NOTICE_CLEAN_URL 的 postKeyOf 結果(D11:threads:<code>)。
+const S3_POST_KEY = 'threads:DbezfB0gYvP';
+
+test('S3 新建:新 entry 帶齊七個新欄位——id 為 UUID v4、postKey 由 postKeyOf 算、original 補 url、receivedAt 等於 at', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  S3_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `新建的條目缺新欄位 ${f}`));
+  assert.match(e.id, S3_UUID_V4, 'id 應為新生成的 UUID v4');
+  assert.equal(e.postKey, S3_POST_KEY, 'postKey 持久化為 TCLCore.postKeyOf 的結果');
+  assert.equal(e.original, CLEANED_NOTICE_CLEAN_URL, 'cleanedNotice 沒帶 original 時以 url 補(伺服器必填)');
+  assert.equal(e.receivedAt, e.at, '新建時 receivedAt 等於 at');
+  assert.equal(e.dirty, true, '新紀錄尚未上傳，dirty 為 true');
+  assert.equal(e.serverUpdatedAt, null);
+  assert.equal(e.deletedAt, null);
+});
+
+test('S3 新建:cleanedNotice 帶 original 時以該值為準，不被 url 覆蓋', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    original: CLEANED_NOTICE_SHARE_URL,
+  });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  assert.equal(e.original, CLEANED_NOTICE_SHARE_URL);
+  assert.equal(e.postKey, S3_POST_KEY, '其餘新欄位照樣補齊(排除假綠燈)');
+  assert.equal(e.dirty, true);
+});
+
+test('S3 合併:id 沿用既有、postKey 重算、receivedAt 取兩者最小、dirty 標髒、serverUpdatedAt 沿用既有', async () => {
+  const now = Date.now();
+  const existing = {
+    url: 'https://m.threads.com/@dafucoding/post/DbezfB0gYvP',
+    kind: 'share',
+    at: now - 60 * 1000,
+    seen: [{ at: now - 60 * 1000, kind: 'share' }],
+    id: 'existing-id-0000-4000-8000-000000000000',
+    postKey: S3_POST_KEY,
+    original: CLEANED_NOTICE_SHARE_URL,
+    receivedAt: now - 90 * 1000,
+    dirty: false,
+    serverUpdatedAt: now - 30 * 1000,
+    deletedAt: null,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '同 postKey 應合併為一筆');
+  const e = history[0];
+  S3_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `合併結果缺新欄位 ${f}(合併不得丟欄位)`));
+  assert.equal(e.id, 'existing-id-0000-4000-8000-000000000000', 'id 沿用既有——換 id 等於在雲端另開一張卡');
+  assert.equal(e.postKey, S3_POST_KEY, 'postKey 重算(m. 子網域與 www. 同一個鍵)');
+  assert.equal(e.receivedAt, now - 90 * 1000, 'receivedAt 取兩者最小(最早事件只會往前)');
+  assert.equal(e.dirty, true, '本機有新事件，重新標髒待上傳');
+  assert.equal(e.serverUpdatedAt, now - 30 * 1000, 'serverUpdatedAt 是伺服器的值，本機合併不得清掉');
+  assert.equal(e.deletedAt, null);
+  assert.ok(e.at >= now, 'at 照舊浮到最新');
+});
+
+test('S3 合併:既有卡尚未遷移(無 receivedAt)時，receivedAt 退回既有最早事件，不得變成本次的 now', async () => {
+  const now = Date.now();
+  const firstSeen = now - 3 * 60 * 60 * 1000;
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: firstSeen,
+    seen: [{ at: firstSeen, kind: 'share' }],
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  assert.equal(e.receivedAt, firstSeen, '缺 receivedAt 的舊卡以自身最早事件推導後再取最小');
+  assert.match(e.id, S3_UUID_V4, '缺 id 的舊卡在寫入路徑補一個');
+});
+
+test('S3 合併:墓碑復活——既有 deletedAt 非 null 時清為 null 並標髒', async () => {
+  const now = Date.now();
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 60 * 1000,
+    seen: [{ at: now - 60 * 1000, kind: 'share' }],
+    id: 'tomb-id-0000-4000-8000-000000000000',
+    postKey: S3_POST_KEY,
+    original: CLEANED_NOTICE_CLEAN_URL,
+    receivedAt: now - 60 * 1000,
+    dirty: false,
+    serverUpdatedAt: now - 50 * 1000,
+    deletedAt: now - 40 * 1000,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '復活是就地改既有那張卡，不是另開一張');
+  assert.equal(history[0].deletedAt, null, '刪過的貼文再次淨化應復活，不得留著墓碑');
+  assert.equal(history[0].dirty, true, '復活是待上傳的變更');
+  assert.equal(history[0].id, 'tomb-id-0000-4000-8000-000000000000', '復活沿用同一個 id');
+});
+
+test('S3 失敗卡收編:收編後新欄位不丟失，id 沿用貼文卡的', async () => {
+  const now = Date.now();
+  const failedAt = now - 2 * 60 * 60 * 1000;
+  const failed = {
+    url: CLEANED_NOTICE_SHARE_URL,
+    kind: 'share',
+    at: failedAt,
+    handle: '@dafucoding',
+    id: 'failed-id-0000-4000-8000-000000000000',
+    postKey: 'url:threads.com/share/CleanedNoticeCode',
+    original: CLEANED_NOTICE_SHARE_URL,
+    receivedAt: failedAt,
+    dirty: true,
+    serverUpdatedAt: null,
+    deletedAt: null,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [failed] });
+
+  bg.sendRuntimeMessage({
+    type: 'cleanedNotice',
+    cleanUrl: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    original: CLEANED_NOTICE_SHARE_URL,
+  });
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '失敗卡被收編，不與貼文卡並存');
+  const e = history[0];
+  S3_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `收編結果缺新欄位 ${f}`));
+  assert.equal(e.postKey, S3_POST_KEY, 'postKey 是貼文卡的(不得沿用失敗卡的短碼 fallback key)');
+  assert.notEqual(e.id, 'failed-id-0000-4000-8000-000000000000', 'id 不得被失敗卡的值覆蓋');
+  assert.equal(e.dirty, true);
+  assert.equal(e.deletedAt, null);
+});
+
+test('S3 合併:seen[] 聯集仍裁到 50 筆，且新欄位照樣帶齊', async () => {
+  const now = Date.now();
+  const seenSeed = Array.from({ length: 50 }, (_, i) => ({ at: now - (50 - i) * 1000, kind: 'share' }));
+  const existing = {
+    url: CLEANED_NOTICE_CLEAN_URL,
+    kind: 'share',
+    at: now - 1000,
+    seen: seenSeed,
+    id: 'cap-id-0000-4000-8000-000000000000',
+    postKey: S3_POST_KEY,
+    original: CLEANED_NOTICE_CLEAN_URL,
+    receivedAt: now - 50 * 1000,
+    dirty: false,
+    serverUpdatedAt: null,
+    deletedAt: null,
+  };
+  const bg = loadBackgroundWithSettings({ saveHistory: true }, { localHistory: [existing] });
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'icon' });
+  await settle();
+
+  const e = bg.storage.localSnapshot().history[0];
+  assert.equal(e.seen.length, 50, 'seen[] 仍裁到 LIMITS.SEEN_MAX');
+  assert.equal(e.seen[49].kind, 'icon', '本次事件在尾端');
+  assert.equal(
+    e.receivedAt,
+    now - 50 * 1000,
+    'seen 被裁掉最舊一筆不影響 receivedAt——它是這張卡真正的最早事件，裁時間軸不等於改身分'
+  );
+  assert.equal(e.id, 'cap-id-0000-4000-8000-000000000000');
 });

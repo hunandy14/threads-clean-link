@@ -11,6 +11,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -81,5 +82,73 @@ test('打包白名單:manifest 與引用鏈推導出的必要檔案，一個都�
       fs.existsSync(path.join(REPO_ROOT, f)),
       `白名單條目 ${f} 在 repo 根目錄不存在(改名或刪除後忘了同步白名單?)`
     );
+  });
+});
+
+// ---- 固定擴充 ID 與雲端同步的選用權限 ----
+
+test('manifest:key 欄位存在，且推導出的擴充 ID 等於商店版 ID', async () => {
+  const manifest = JSON.parse(read('manifest.json'));
+  assert.equal(typeof manifest.key, 'string');
+  assert.ok(manifest.key.length > 0, 'manifest.key 不得為空字串');
+
+  const mod = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'tools', 'verify-extension-id.mjs')).href
+  );
+  assert.equal(mod.extensionIdFromManifest(), mod.EXPECTED_EXTENSION_ID);
+});
+
+test('manifest:選用權限恰為 identity 與兩個後端 host', () => {
+  const manifest = JSON.parse(read('manifest.json'));
+  assert.deepEqual(manifest.optional_permissions, ['identity']);
+  assert.deepEqual(manifest.optional_host_permissions, [
+    'https://api.metalinkclearer.workers.dev/*',
+    'https://api-staging.metalinkclearer.workers.dev/*',
+  ]);
+});
+
+test('manifest:既有 permissions 與 host_permissions 未被選用權限稀釋', () => {
+  const manifest = JSON.parse(read('manifest.json'));
+  assert.deepEqual(manifest.permissions, [
+    'contextMenus',
+    'scripting',
+    'notifications',
+    'activeTab',
+    'storage',
+    // D12 的週期同步靠 chrome.alarms，沒宣告權限 chrome.alarms 就是 undefined。
+    // alarms 屬非警示型權限，Chrome 更新時不會觸發自動停用(見 test/sync.test.js T5)。
+    'alarms',
+  ]);
+  assert.deepEqual(manifest.host_permissions, [
+    'https://*.threads.com/*',
+    'https://*.threads.net/*',
+  ]);
+});
+
+// manifest.json 本身就在 $includeFiles 白名單裡，key 欄位隨檔案進 zip,
+// 商店版與 unpacked dev build 因此共用同一個擴充 ID。
+test('打包白名單:manifest.json 在白名單內，key 會隨檔案進 zip', () => {
+  assert.ok(readIncludeFiles().includes('manifest.json'));
+});
+
+test('版本號:manifest.json 與 package.json 一致，避免上架版與 repo 標記的版本號對不上', () => {
+  const manifest = JSON.parse(read('manifest.json'));
+  const pkg = JSON.parse(read('package.json'));
+  assert.equal(manifest.version, pkg.version);
+});
+
+// 防止 dev-browser.mjs 為 --env local 注入的 http://localhost:8787/* 這類
+// 開發用 host 權限，因 dev-build-loaded 副本被誤當成正式 repo 內容提交或打包
+// 進上架 zip——manifest 的 host 權限清單一律不得出現 localhost／127.0.0.1／
+// 明文 http://。
+test('manifest:host 權限不得含開發用的 localhost／127.0.0.1／http://', () => {
+  const manifest = JSON.parse(read('manifest.json'));
+  const hostLists = [
+    ...(manifest.host_permissions || []),
+    ...(manifest.optional_host_permissions || []),
+  ];
+  hostLists.forEach((host) => {
+    assert.doesNotMatch(host, /localhost|127\.0\.0\.1/i, `host 權限混入開發用網域:${host}`);
+    assert.doesNotMatch(host, /^http:\/\//i, `host 權限混入明文 http://:${host}`);
   });
 });

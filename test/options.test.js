@@ -17,9 +17,16 @@ const URL_A = 'https://www.threads.com/@usera/post/AbC123_-xyz';
 const URL_B = 'https://www.threads.com/@user.b/post/DeF456';
 const URL_C = 'https://threads.net/@user_c/post/GhI789';
 
-function settle(ms = 30) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// settle() 原本是本檔逐字維護的一份牆鐘等待邏輯:controller 的每一條非同
+// 步鏈路(讀設定 → 讀紀錄 → 渲染;或清除全部的「重讀 syncState → 寫回」)
+// 都經 chrome.storage mock 的 setTimeout(0) 落盤，而 Windows 的計時器粒度
+// 約 15.6ms，固定 ms 訂太小、鏈路多一次 storage 往返就會在斷言前還沒跑完;
+// 連同其餘五份逐字或近乎逐字相同的版本收斂進 test/support/settle.js 一份
+// 共用實作(原理與各項取捨的完整說明，包含本檔特有的「只等延遲不超過上限
+// 的計時器」——用來排除 options.js toast 那顆 2200ms 自動隱藏計時器——見
+// 該檔頭註解)。
+const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 30 });
+test.beforeEach(reset);
 
 // ---- 純函式 ----
 
@@ -116,16 +123,30 @@ test('mergeImportedEntries:合併結果不裁切，超過舊版上限(1000)也�
   assert.equal(options.HISTORY_LIMIT, undefined, 'HISTORY_LIMIT 常數已隨上限移除一併撤除');
 });
 
-test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀，entries 只留三欄', () => {
+// 【斷言翻轉】原斷言為「entries 只留三欄」(url/kind/at)。依 docs/cloud-sync.md
+// 4.1，匯出檔加帶 id／receivedAt／serverUpdatedAt——少了它們，匯出再匯入等於
+// 在雲端把同一張卡拆成兩張、起始時間往後跳、合併判準歸零。未知欄位(extra)
+// 仍然一律丟棄，這一點不變。
+test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀，entries 只留白名單欄位', () => {
   const payload = options.buildExportPayload(
-    [{ url: URL_A, kind: 'share', at: 123, extra: 'junk' }],
+    [{ url: URL_A, kind: 'share', at: 123, extra: 'junk', id: 'card-1', receivedAt: 100, serverUpdatedAt: 200 }],
     '2026-08-16T00:00:00.000Z'
   );
 
   assert.equal(payload.app, 'threads-clean-link');
   assert.equal(payload.version, 1);
   assert.equal(payload.exportedAt, '2026-08-16T00:00:00.000Z');
-  assert.deepEqual(payload.entries, [{ url: URL_A, kind: 'share', at: 123 }]);
+  assert.deepEqual(payload.entries, [
+    { url: URL_A, kind: 'share', at: 123, id: 'card-1', receivedAt: 100, serverUpdatedAt: 200 },
+  ]);
+
+  // postKey／dirty／deletedAt 不輸出:前兩者匯入端可推導，deletedAt 的來源
+  // (visibleEntries)已濾掉墓碑。
+  const withSkipped = options.buildExportPayload(
+    [{ url: URL_A, kind: 'share', at: 1, postKey: 'threads:x', dirty: true, deletedAt: 5 }],
+    '2026-08-16T00:00:00.000Z'
+  );
+  assert.deepEqual(withSkipped.entries, [{ url: URL_A, kind: 'share', at: 1 }]);
 });
 
 // entries 擴充選填 author/handle/excerpt，為字串時才輸出，規則與
@@ -225,7 +246,7 @@ test('mergeImportedEntries:author/handle 截斷至 100 字元、excerpt 截斷�
   assert.equal(truncated.excerpt.length, 2000);
 
   const dropped = result.merged.find((e) => e.url === URL_B);
-  assert.deepEqual(Object.keys(dropped).sort(), ['at', 'kind', 'url'], '非字串型別的選填欄位應整欄不寫入');
+  ['author', 'handle', 'excerpt'].forEach((f) => assert.equal(f in dropped, false, 'S4：非字串型別的選填欄位應整欄不寫入'));
 });
 
 // 匯入條目帶偽造 seen 的 sanitize。匯入檔是外部輸入，seen[] 逐筆過 at 有限
@@ -835,7 +856,7 @@ test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊
 
 // ---- controller smoke(最小 DOM stub) ----
 
-function makeNode(tag) {
+function makeNode(tag, ownerDoc) {
   const attrs = {};
   const classes = new Set();
   const listeners = {};
@@ -850,8 +871,11 @@ function makeNode(tag) {
     title: '',
     checked: false,
     classList: {
-      add: (c) => classes.add(c),
-      remove: (c) => classes.delete(c),
+      // 比照真實 DOM 的 classList.add/remove:可變參數，一次收多個
+      // class(options.js 的 statusDot 重設就是 remove('is-danger',
+      // 'is-warning') 一次兩個，只認單一參數會漏清第二個)。
+      add: (...cs) => cs.forEach((c) => classes.add(c)),
+      remove: (...cs) => cs.forEach((c) => classes.delete(c)),
       toggle: (c, force) => {
         const next = force === undefined ? !classes.has(c) : force;
         if (next) classes.add(c);
@@ -864,6 +888,16 @@ function makeNode(tag) {
     },
     getAttribute(k) {
       return Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null;
+    },
+    removeAttribute(k) {
+      delete attrs[k];
+    },
+    contains(other) {
+      // 淺層足夠:帳號選單的「點外關閉」只需要判斷目標是否為容器自身或
+      // 其直接子節點(測試以 fire('click', { target }) 模擬，不會構造更深的
+      // 巢狀節點)。
+      if (other === node) return true;
+      return node.children.indexOf(other) !== -1;
     },
     appendChild(n) {
       this.children.push(n);
@@ -892,6 +926,15 @@ function makeNode(tag) {
     getBoundingClientRect() {
       return { left: 0, top: 0, width: 10, height: 10 };
     },
+    // 帳號選單的鍵盤導覽/開合測試需要 focus 落點:owner document 存在時
+    // 才記錄(比照真 DOM 的 document.activeElement)，沒有 owner 時(獨立
+    // 建立的節點，如既有測試直接呼叫 makeNode() 者)安靜 no-op。
+    focus() {
+      if (ownerDoc) ownerDoc.activeElement = node;
+    },
+    blur() {
+      if (ownerDoc && ownerDoc.activeElement === node) ownerDoc.activeElement = null;
+    },
   };
   // 比照真 DOM:對 textContent 賦值會清空既有子節點(renderList 靠這個清單)。
   Object.defineProperty(node, 'textContent', {
@@ -908,21 +951,23 @@ function makeNode(tag) {
 
 function makeDocumentStub() {
   const byId = {};
-  return {
+  const docListeners = {};
+  const doc = {
     ids: byId,
     documentElement: makeNode('html'),
+    activeElement: null,
     getElementById(id) {
-      if (!byId[id]) byId[id] = makeNode('#' + id);
+      if (!byId[id]) byId[id] = makeNode('#' + id, doc);
       return byId[id];
     },
     createElement(tag) {
-      return makeNode(tag);
+      return makeNode(tag, doc);
     },
     createElementNS(ns, tag) {
-      return makeNode(tag);
+      return makeNode(tag, doc);
     },
     createTextNode(text) {
-      const n = makeNode('#text');
+      const n = makeNode('#text', doc);
       n.textContent = text;
       return n;
     },
@@ -932,8 +977,21 @@ function makeDocumentStub() {
     querySelector() {
       return null;
     },
-    addEventListener() {},
+    // 帳號選單的「點外關閉」/Esc 監聽掛在 document 層級(見 options.js 的
+    // bindAccount)，比照節點的 addEventListener/fire 慣例真的登記/派送，
+    // 而不是像既有多數測試那樣留白 no-op——這兩個行為只能靠 document 層級
+    // 事件驗證，其餘既有的對話框 Esc 處理仍是留白(見各處「由人工/CDP
+    // 驗證」註解)，這裡只為帳號選單新增的兩條路徑補上最小可行的派送。
+    addEventListener(type, fn) {
+      if (!docListeners[type]) docListeners[type] = [];
+      docListeners[type].push(fn);
+    },
+    removeEventListener() {},
+    fire(type, event) {
+      (docListeners[type] || []).slice().forEach((fn) => fn(event || { type }));
+    },
   };
+  return doc;
 }
 
 test('controller smoke:init 讀兩區 storage、整條渲染跑完，清單與計數正確', async () => {
@@ -1966,4 +2024,1997 @@ test('refresh:詳細視窗開著時一併刷新視窗內相對時間(detailTime)
   controller.refresh();
 
   assert.equal(doc.ids.detailTime.textContent, i18n.fmt('zh', 'opRelMin', { n: 10 }), '視窗內相對時間應一併刷新');
+});
+
+// ============================================================
+// S4:options 直接操作 storage 的路徑對齊雲端 schema
+// ------------------------------------------------------------
+// 刪除／清空的語意依登入態分流(D6:未登入行為與現況完全一致):
+//   - 已登入(syncState.userId 非 null):單筆刪除軟刪(寫 deletedAt 墓碑 +
+//     dirty)，清除全部寫 syncState.clearedAt 這條全域水位線;
+//   - 未登入:維持現況硬刪。
+// 墓碑是「等待上傳的刪除意圖」，必須留在 storage，但一律不進畫面、統計、
+// 圖表與匯出檔。匯入則改以 postKey 去重(D11)，並接受含／不含新欄位兩種格式。
+// ============================================================
+
+const S4_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const S4_NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverUpdatedAt', 'deletedAt'];
+
+// 已登入的 syncState(計劃 4.2 的形狀)。
+function signedInState(overrides) {
+  return Object.assign(
+    { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+    overrides || {}
+  );
+}
+function signedOutState() {
+  return { userId: null, email: null, cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null };
+}
+
+// 一筆已具備新欄位的條目(S1 形狀)。
+function s4Entry(url, at, overrides) {
+  return Object.assign(
+    {
+      url: url,
+      kind: 'share',
+      at: at,
+      seen: [{ at: at, kind: 'share' }],
+      id: 'id-' + at,
+      postKey: 'postkey-' + at,
+      original: url,
+      receivedAt: at,
+      dirty: false,
+      serverUpdatedAt: null,
+      deletedAt: null,
+    },
+    overrides || {}
+  );
+}
+
+function makeController(local, syncSeed) {
+  const storage = createChromeStorage(Object.assign({ langPref: 'zh' }, syncSeed || {}), local);
+  const doc = makeDocumentStub();
+  const downloads = [];
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    download: (name, text) => downloads.push({ name, text }),
+  });
+  return { storage, doc, controller, downloads };
+}
+
+// S4:單筆刪除依登入態分流。同一份資料、同一個動作，登入與未登入的落盤結果
+// 必須不同——把兩種情境放在同一條測試裡，才擋得住「兩邊都照現況硬刪」。
+test('S4 刪除:已登入軟刪(deletedAt + dirty，entry 留在陣列)，未登入維持硬刪', async () => {
+  const inCtx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedInState() });
+  await inCtx.controller.init();
+  await settle();
+  inCtx.doc.ids.rows.children[0].fire('click');
+  inCtx.doc.ids.detailDeleteBtn.fire('click');
+  inCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const inHistory = inCtx.storage.localSnapshot().history;
+  assert.equal(inHistory.length, 1, '已登入時軟刪:entry 仍留在陣列(墓碑要等伺服器 ack 才真刪)');
+  assert.equal(typeof inHistory[0].deletedAt, 'number', 'deletedAt 應寫入刪除時戳');
+  assert.ok(inHistory[0].deletedAt > 0);
+  assert.equal(inHistory[0].dirty, true, '軟刪是待上傳的變更');
+  assert.equal(inHistory[0].id, 'id-1000', '軟刪不得換 id(伺服器要靠它認出刪的是哪張卡)');
+  assert.equal(inCtx.doc.ids.rows.children.length, 0, '墓碑不得留在畫面上');
+  assert.equal(inCtx.doc.ids.toast.textContent, i18n.t('zh', 'opToastDeleted'), '照常回報已刪除');
+
+  const outCtx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedOutState() });
+  await outCtx.controller.init();
+  await settle();
+  outCtx.doc.ids.rows.children[0].fire('click');
+  outCtx.doc.ids.detailDeleteBtn.fire('click');
+  outCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(outCtx.storage.localSnapshot().history, [], '未登入維持現況硬刪，不留墓碑');
+});
+
+// S4:清除全部。已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成
+// 墓碑撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由車道 D 上傳。
+test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入不動 syncState', async () => {
+  const inCtx = makeController(
+    { history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)], syncState: signedInState() }
+  );
+  await inCtx.controller.init();
+  await settle();
+  inCtx.doc.ids.clearBtn.fire('click');
+  inCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const inLocal = inCtx.storage.localSnapshot();
+  assert.deepEqual(inLocal.history, [], '所有 entry 移除');
+  assert.equal(typeof inLocal.syncState.clearedAt, 'number', '應寫 syncState.clearedAt(雲端全域墓碑)');
+  assert.ok(inLocal.syncState.clearedAt > 0);
+  assert.equal(inLocal.syncState.userId, 'user-1', '清除紀錄不等於登出，userId 不得被清掉');
+  assert.equal(inCtx.doc.ids.toast.textContent, i18n.t('zh', 'opToastCleared'));
+
+  const outCtx = makeController({ history: [s4Entry(URL_A, 2000)], syncState: signedOutState() });
+  await outCtx.controller.init();
+  await settle();
+  outCtx.doc.ids.clearBtn.fire('click');
+  outCtx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(outCtx.storage.localSnapshot().history, []);
+  assert.equal(outCtx.storage.localSnapshot().syncState.clearedAt, null, '未登入不寫雲端水位線');
+});
+
+// S4:墓碑一律不進畫面。清單、筆數提示、統計磚(statTotal)、14 天圖表的
+// bar-label 四處都必須看不到它——四處共用同一份 entries，漏掉任一處就會出
+// 現「清單看不到、統計卻多一筆」的分岔。
+test('S4 墓碑:清單/筆數提示/統計磚/14 天圖表一律不計入', async () => {
+  const now = Date.now();
+  const ctx = makeController({
+    history: [
+      s4Entry(URL_A, now - 1000),
+      s4Entry(URL_B, now - 2000),
+      s4Entry(URL_C, now - 3000, { deletedAt: now - 500, dirty: true }),
+    ],
+    syncState: signedInState(),
+  });
+  // 圖表的「今天」以真實時鐘為準，這裡把 now 對齊真實時間。
+  const ctl = options.createOptionsController({
+    document: ctx.doc,
+    syncStorage: ctx.storage.sync,
+    localStorage: ctx.storage.local,
+    i18n,
+    now: () => now,
+  });
+
+  await ctl.init();
+  await settle();
+
+  assert.equal(ctx.doc.ids.rows.children.length, 2, '墓碑不得渲染成卡片');
+  assert.equal(ctx.doc.ids.countHint.textContent, '顯示 2 / 2 筆');
+  assert.equal(ctx.doc.ids.statTotal.textContent, '2', '統計磚總數不計墓碑');
+  const barLabels = ctx.doc.ids.chart.children
+    .filter((c) => c.getAttribute('class') === 'bar-label')
+    .map((c) => c.textContent);
+  assert.deepEqual(barLabels, ['2'], '14 天圖表今天那一柱只算 2 筆(墓碑不計)');
+});
+
+// S4:匯出檔是使用者換裝置時的完整鏡像，但墓碑是「已刪除」的意思，匯出去
+// 再匯回來等於讓刪掉的紀錄復活。
+test('S4 墓碑:匯出 JSON 不輸出墓碑', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000, { deletedAt: 1500, dirty: true })],
+    syncState: signedInState(),
+  });
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.exportBtn.fire('click');
+  await settle();
+
+  assert.equal(ctx.downloads.length, 1, '應觸發一次下載');
+  const payload = JSON.parse(ctx.downloads[0].text);
+  assert.deepEqual(payload.entries.map((e) => e.url), [URL_A], '墓碑不得出現在匯出檔');
+});
+
+// S4:sanitizeEntries 是 options 讀取端的信任邊界，也是 persistHistory 寫回
+// 去的那份陣列的來源——它丟掉的欄位會在下一次刪除／匯入時被永久寫掉。新欄
+// 位必須原樣保留，墓碑也必須留在陣列裡(只是不顯示)，否則使用者一按刪除，
+// 整張表的 id 與待上傳的墓碑就全部消失。
+test('S4 讀取:sanitizeEntries 保留七個新欄位，墓碑不得在讀取階段被丟棄', () => {
+  const entry = s4Entry(URL_A, 1000, { id: 'keep-id', postKey: 'threads:AbC123_-xyz', dirty: true, serverUpdatedAt: 777 });
+  const out = options.sanitizeEntries([entry]);
+  assert.equal(out.length, 1);
+  S4_NEW_FIELDS.forEach((f) => assert.equal(f in out[0], true, `讀取後遺失新欄位 ${f}`));
+  assert.equal(out[0].id, 'keep-id');
+  assert.equal(out[0].postKey, 'threads:AbC123_-xyz');
+  assert.equal(out[0].dirty, true);
+  assert.equal(out[0].serverUpdatedAt, 777);
+
+  const tomb = options.sanitizeEntries([s4Entry(URL_B, 1000, { deletedAt: 1500 })]);
+  assert.equal(tomb.length, 1, '墓碑是待上傳狀態，讀取階段不得丟棄(不顯示是渲染層的事)');
+  assert.equal(tomb[0].deletedAt, 1500);
+});
+
+// S4:匯入舊格式(v1 匯出檔，沒有任何新欄位)時比照 S2 補齊。
+test('S4 匯入:不含新欄位的舊格式補齊七個新欄位', () => {
+  const result = options.mergeImportedEntries([], [{ url: URL_A, kind: 'icon', at: 900, seen: [{ at: 400, kind: 'share' }] }], 1000);
+  assert.equal(result.merged.length, 1);
+  const e = result.merged[0];
+  S4_NEW_FIELDS.forEach((f) => assert.equal(f in e, true, `匯入後缺新欄位 ${f}`));
+  assert.match(e.id, S4_UUID_V4);
+  assert.equal(e.postKey, 'threads:AbC123_-xyz', 'postKey 由正規化後的 url 算出');
+  assert.equal(e.original, URL_A, 'original 缺席時以 url 補');
+  assert.equal(e.receivedAt, 400, 'receivedAt 取 seen 最早事件');
+  assert.equal(e.dirty, true, '匯入進來的資料尚未上傳');
+  assert.equal(e.serverUpdatedAt, null);
+  assert.equal(e.deletedAt, null);
+});
+
+// S4:去重鍵改為 postKey(D11)。作者改名後同一篇貼文的乾淨網址不同、正規化
+// 後仍不相等，舊的 url 去重會多開一張卡，雲端跟著分裂。
+test('S4 匯入:去重以 postKey 為鍵——改名前後的同一篇貼文合併，不新增一筆', () => {
+  const existing = [
+    s4Entry(URL_A, 500, { id: 'keep-id', postKey: 'threads:AbC123_-xyz', seen: [{ at: 500, kind: 'share' }], serverUpdatedAt: 321 }),
+  ];
+  const renamed = 'https://www.threads.com/@renamed.user/post/AbC123_-xyz';
+  const result = options.mergeImportedEntries(existing, [{ url: renamed, kind: 'icon', at: 900, seen: [{ at: 900, kind: 'icon' }] }], 1000);
+
+  assert.equal(result.merged.length, 1, '同 postKey 應合併，不新增一筆');
+  const e = result.merged[0];
+  assert.equal(e.id, 'keep-id', 'id 沿用既有');
+  assert.equal(e.postKey, 'threads:AbC123_-xyz');
+  assert.equal(e.receivedAt, 500, 'receivedAt 取兩者最小');
+  assert.equal(e.dirty, true, '合併後有本機變更待上傳');
+  assert.equal(e.serverUpdatedAt, 321, 'serverUpdatedAt 沿用既有');
+  assert.deepEqual(e.seen.map((s) => s.at), [500, 900], 'seen 取聯集並按時間排序');
+});
+
+// S4:同一批匯入檔內部若有同 postKey 的兩筆(改名前後各匯出過一次)，批內也
+// 要先併起來，否則一次匯入就自己製造出兩張同文卡。
+test('S4 匯入:同一批匯入內部的同 postKey 也合併成一張', () => {
+  const result = options.mergeImportedEntries(
+    [],
+    [
+      { url: URL_A, kind: 'share', at: 500, seen: [{ at: 500, kind: 'share' }] },
+      { url: 'https://www.threads.com/@renamed.user/post/AbC123_-xyz', kind: 'icon', at: 900, seen: [{ at: 900, kind: 'icon' }] },
+    ],
+    1000
+  );
+
+  assert.equal(result.merged.length, 1, '批內同 postKey 應先合併');
+  assert.equal(result.merged[0].receivedAt, 500);
+  assert.deepEqual(result.merged[0].seen.map((s) => s.at), [500, 900]);
+});
+
+// S4:匯入檔帶新欄位(手機匯出／另一台裝置的完整鏡像)時沿用其 id，重新生成
+// 等於在雲端把同一張卡拆成兩張。
+test('S4 匯入:含新欄位的格式沿用檔案裡的 id，不重新生成', () => {
+  const result = options.mergeImportedEntries(
+    [],
+    [
+      {
+        url: URL_A,
+        kind: 'share',
+        at: 900,
+        seen: [{ at: 900, kind: 'share' }],
+        id: 'from-file-0000-4000-8000-000000000000',
+        original: 'https://www.threads.com/share/AbCdEfGhI',
+        receivedAt: 900,
+      },
+    ],
+    1000
+  );
+
+  assert.equal(result.merged[0].id, 'from-file-0000-4000-8000-000000000000');
+  assert.equal(result.merged[0].original, 'https://www.threads.com/share/AbCdEfGhI', '檔案裡的 original 不被 url 覆蓋');
+  assert.equal(result.merged[0].dirty, true, '別台裝置來的資料在本機仍是待上傳');
+});
+
+// ============================================================
+// 頁首帳號入口(車道 B，消費 docs/cloud-sync.md 第 5 節的 state 形狀，
+// displayName/avatarUrl 為車道 A 新增的兩欄，缺席視為 null)
+//
+// background 的同步引擎(車道 D)尚未實作，這裡的測試只驗證 options 端
+// 消費介面的行為:未注入 runtime／runtime 回應非法/reject 都要優雅退回
+// signed_out;五態(未登入/已登入/同步中/錯誤/登入過期)渲染正確;頭像
+// 三層備援(avatarUrl→displayName 首字→email 首字)與 img onerror 退回;
+// 選單開合/鍵盤/點外關閉;登入前先跳確認框且文案帶本機筆數(D3);刪除
+// 雲端資料二次確認;stateChanged 廣播(由接線層轉呼叫 setSyncState)更新
+// 畫面;寬度切換與 XSS 縱深。
+// ============================================================
+
+// 測試專用假 runtime:handlers 依 message.type 分派，未登記的 type 一律
+// resolve(undefined)，模擬 background 尚無對應 handler 的現況。
+function makeFakeRuntime(handlers) {
+  const calls = [];
+  return {
+    calls,
+    sendMessage(message) {
+      calls.push(message);
+      const handler = handlers && handlers[message.type];
+      if (!handler) return Promise.resolve(undefined);
+      return Promise.resolve(handler(message));
+    },
+  };
+}
+
+test('雲端同步:normalizeSyncCardState 對非法/形狀不對的輸入一律退回 DEFAULT_SYNC_CARD_STATE，displayName/avatarUrl 隨狀態一併正規化', () => {
+  assert.deepEqual(options.normalizeSyncCardState(undefined), options.DEFAULT_SYNC_CARD_STATE);
+  assert.deepEqual(options.normalizeSyncCardState(null), options.DEFAULT_SYNC_CARD_STATE);
+  assert.deepEqual(options.normalizeSyncCardState({}), options.DEFAULT_SYNC_CARD_STATE, 'status 缺席不在白名單內');
+  assert.deepEqual(options.normalizeSyncCardState({ status: 'bogus' }), options.DEFAULT_SYNC_CARD_STATE);
+  assert.equal(options.DEFAULT_SYNC_CARD_STATE.displayName, null);
+  assert.equal(options.DEFAULT_SYNC_CARD_STATE.avatarUrl, null);
+
+  const normalized = options.normalizeSyncCardState({
+    status: 'signed_in',
+    email: 'a@b.com',
+    displayName: 'Ada',
+    avatarUrl: 'https://lh3.googleusercontent.com/a/x',
+    lastSyncedAt: 123,
+    pendingCount: 4,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  assert.deepEqual(normalized, {
+    status: 'signed_in',
+    email: 'a@b.com',
+    displayName: 'Ada',
+    avatarUrl: 'https://lh3.googleusercontent.com/a/x',
+    lastSyncedAt: 123,
+    pendingCount: 4,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+
+  // 型別不對的 displayName/avatarUrl 個別退回 null，不整包丟棄其餘欄位
+  // (比照既有欄位的容錯慣例)。
+  const badFields = options.normalizeSyncCardState({ status: 'signed_in', displayName: 123, avatarUrl: {} });
+  assert.equal(badFields.displayName, null);
+  assert.equal(badFields.avatarUrl, null);
+});
+
+test('isTrustedAvatarUrl:只信任 https:// 且 host 以 googleusercontent.com 結尾的網址', () => {
+  assert.equal(options.isTrustedAvatarUrl('https://lh3.googleusercontent.com/a/abc'), true);
+  assert.equal(options.isTrustedAvatarUrl('https://googleusercontent.com/x'), true);
+  assert.equal(options.isTrustedAvatarUrl('http://lh3.googleusercontent.com/a/abc'), false, '非 https 一律拒絕');
+  assert.equal(options.isTrustedAvatarUrl('https://evil.com/?u=googleusercontent.com'), false);
+  assert.equal(options.isTrustedAvatarUrl('https://notgoogleusercontent.com/a'), false, '結尾比對需含分隔點，不可子字串命中');
+  assert.equal(options.isTrustedAvatarUrl('javascript:alert(1)'), false);
+  assert.equal(options.isTrustedAvatarUrl(''), false);
+  assert.equal(options.isTrustedAvatarUrl(null), false);
+});
+
+test('帳號入口:未注入 runtime 時渲染未登入態(登入鈕顯示、頭像觸發鈕隱藏)，deviceNote 維持既有文案', async () => {
+  const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '未登入態登入鈕應顯示');
+  assert.equal(doc.ids.acctTrigger.hidden, true, '未登入態頭像觸發鈕應隱藏');
+  assert.equal(doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNote'), '未登入時裝置提示文案不變');
+});
+
+test('帳號入口:background 無回應(sendMessage reject)時，退回未登入態渲染', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => Promise.reject(new Error('Could not establish connection.')),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, false);
+  assert.equal(doc.ids.acctTrigger.hidden, true);
+});
+
+test('帳號入口:已登入時渲染頭像字母/名字/email/上次同步(相對時間)·待上傳筆數，狀態點為綠色，deviceNote 換成已同步文案', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const NOW = 1000000;
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: 'Hong',
+      avatarUrl: null,
+      lastSyncedAt: NOW - 5 * 60 * 1000, // 5 分鐘前
+      pendingCount: 3,
+      lastError: null,
+      apiBase: 'https://api.example/',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => NOW,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, true);
+  assert.equal(doc.ids.acctTrigger.hidden, false);
+  assert.equal(doc.ids.acctHeaderName.textContent, 'Hong');
+  assert.equal(doc.ids.avatarLetter.textContent, 'H', '頭像備援首字取自 displayName');
+  assert.equal(doc.ids.avatarPhoto.hidden, true, '無 avatarUrl 時不顯示 img');
+  assert.equal(doc.ids.acctMenuName.textContent, 'Hong');
+  assert.equal(doc.ids.acctMenuEmail.textContent, 'user@example.com');
+  assert.equal(
+    doc.ids.acctMenuSub.textContent,
+    i18n.fmt('zh', 'opAccountLastSync', { t: i18n.fmt('zh', 'opRelMin', { n: 5 }) }) +
+      ' · ' +
+      i18n.fmt('zh', 'opAccountPending', { n: 3 }),
+    '選單灰字一行含上次同步時間與待上傳筆數'
+  );
+  assert.equal(doc.ids.statusDot.hidden, false);
+  assert.equal(doc.ids.statusDot.classList.contains('is-danger'), false);
+  assert.equal(doc.ids.statusDot.classList.contains('is-warning'), false);
+  assert.equal(doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNoteSynced'));
+  // 狀態文字併進觸發鈕自身的 aria-label(不掛在巢狀 statusDot 上，讀屏器
+  // 讀不到——見 options.js 的 renderAccount)。
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.fmt('zh', 'opAccountMenuLabelStatus', { label: i18n.t('zh', 'opAccountMenuLabel'), status: i18n.t('zh', 'opAccountStatusSynced') })
+  );
+});
+
+test('帳號入口:頭像備援三層——avatarUrl 缺席時退回 displayName 首字，displayName 也缺席時退回 email 首字', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'nina@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.avatarLetter.textContent, 'N', 'displayName 缺席時退回 email 首字(大寫)');
+  assert.equal(doc.ids.acctHeaderName.textContent, 'nina', '名字缺席時退回 email 的 @ 前段');
+  assert.equal(doc.ids.acctMenuName.textContent, 'nina');
+});
+
+test('帳號入口:avatarUrl 通過白名單時顯示大頭照 img，字母備援隱藏；不通過(非 https/host 不符)時仍走字母備援', async () => {
+  async function renderWith(avatarUrl) {
+    const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+    const doc = makeDocumentStub();
+    const runtime = makeFakeRuntime({
+      'sync.getState': () => ({
+        status: 'signed_in',
+        email: 'user@example.com',
+        displayName: 'Hong',
+        avatarUrl,
+        lastSyncedAt: null,
+        pendingCount: 0,
+        lastError: null,
+        apiBase: '',
+      }),
+    });
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+      runtime,
+    });
+    await controller.init();
+    await settle();
+    return doc;
+  }
+
+  const trusted = await renderWith('https://lh3.googleusercontent.com/a/abc123');
+  assert.equal(trusted.ids.avatarPhoto.hidden, false);
+  assert.equal(trusted.ids.avatarPhoto.src, 'https://lh3.googleusercontent.com/a/abc123');
+  assert.equal(trusted.ids.avatarLetter.hidden, true);
+  assert.equal(trusted.ids.avatarCircle.classList.contains('has-photo'), true);
+
+  const untrusted = await renderWith('http://lh3.googleusercontent.com/a/abc123');
+  assert.equal(untrusted.ids.avatarPhoto.hidden, true, '非 https 不得設進 img.src');
+  assert.equal(untrusted.ids.avatarLetter.hidden, false);
+  assert.equal(untrusted.ids.avatarCircle.classList.contains('has-photo'), false);
+});
+
+test('帳號入口:大頭照 img 載入失敗(onerror)時退回字母備援，不留破圖', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: 'Hong',
+      avatarUrl: 'https://lh3.googleusercontent.com/a/dead-link',
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+  assert.equal(doc.ids.avatarPhoto.hidden, false, '前置:應先嘗試顯示大頭照');
+
+  doc.ids.avatarPhoto.onerror();
+
+  assert.equal(doc.ids.avatarPhoto.hidden, true);
+  assert.equal(doc.ids.avatarLetter.hidden, false);
+  assert.equal(doc.ids.avatarLetter.textContent, 'H');
+  assert.equal(doc.ids.avatarCircle.classList.contains('has-photo'), false);
+});
+
+test('帳號入口:登出後兩顆大頭照 img(頁首/選單)的 src 都清空，不殘留上一個帳號的照片(真機實證回歸)', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: 'Hong',
+      avatarUrl: 'https://lh3.googleusercontent.com/a/abc123',
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.avatarPhoto.src, 'https://lh3.googleusercontent.com/a/abc123', '前置:已登入應先顯示大頭照');
+  assert.equal(doc.ids.acctMenuAvatarPhoto.src, 'https://lh3.googleusercontent.com/a/abc123');
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+
+  assert.equal(doc.ids.avatarPhoto.src, '', '登出後頁首觸發鈕的大頭照 img 不應殘留 src');
+  assert.equal(doc.ids.avatarPhoto.getAttribute('src'), null);
+  assert.equal(doc.ids.avatarPhoto.hidden, true);
+  assert.equal(doc.ids.acctMenuAvatarPhoto.src, '', '登出後選單頂部的大頭照 img 不應殘留 src');
+  assert.equal(doc.ids.acctMenuAvatarPhoto.getAttribute('src'), null);
+  assert.equal(doc.ids.acctMenuAvatarPhoto.hidden, true);
+  assert.equal(doc.ids.avatarCircle.classList.contains('has-photo'), false);
+  assert.equal(doc.ids.acctMenuAvatarCircle.classList.contains('has-photo'), false);
+});
+
+test('帳號入口:登入鈕先跳確認框，文案帶本機現有筆數(D3)，確認後才送 sync.signIn', async () => {
+  const history = [
+    { url: CARD_URL_A, kind: 'share', at: 1000 },
+    { url: CARD_URL_B, kind: 'share', at: 2000 },
+    { url: CARD_URL_NET, kind: 'share', at: 3000 },
+  ];
+  const storage = createChromeStorage({ langPref: 'zh' }, { history });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctSignInBtn.fire('click');
+  assert.equal(doc.ids.confirmOverlay.hidden, false, '登入前應先跳確認框');
+  assert.equal(
+    doc.ids.confirmDesc.textContent,
+    i18n.fmt('zh', 'opSyncSignInConfirmDesc', { n: 3 }),
+    '確認框文案應帶本機現有筆數'
+  );
+
+  const callsBefore = runtime.calls.length;
+  doc.ids.confirmOk.fire('click');
+  assert.equal(doc.ids.confirmOverlay.hidden, true, '確認後應關閉確認框');
+  assert.equal(runtime.calls.length, callsBefore + 1);
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.signIn' });
+});
+
+test('帳號入口:登入確認框不是破壞性操作，不該長得像刪除(回歸:曾經 OK 鈕與圖示寫死垃圾桶/紅色，登入跟刪除長一樣)', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctSignInBtn.fire('click');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-danger-solid'), false, 'OK 鈕不該是破壞性紅色實心鈕');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-primary'), true, 'OK 鈕應改為品牌色實心鈕');
+  assert.notEqual(doc.ids.confirmIconUse.getAttribute('href'), '#i-trash', '標題圖示不該是垃圾桶');
+  assert.equal(doc.ids.confirmIcon.classList.contains('danger-ink'), false, '標題圖示不該是危險紅');
+
+  // 「清除全部」等既有的破壞性操作要維持原本外觀不變。
+  doc.ids.confirmCancel.fire('click');
+  doc.ids.clearBtn.fire('click');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-danger-solid'), true, '清除全部應維持紅色實心鈕');
+  assert.equal(doc.ids.confirmOk.classList.contains('btn-primary'), false);
+  assert.equal(doc.ids.confirmIconUse.getAttribute('href'), '#i-trash', '清除全部應維持垃圾桶圖示');
+  assert.equal(doc.ids.confirmIcon.classList.contains('danger-ink'), true);
+});
+
+test('帳號入口:取消登入確認框不送出 sync.signIn', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctSignInBtn.fire('click');
+  doc.ids.confirmCancel.fire('click');
+
+  assert.equal(doc.ids.confirmOverlay.hidden, true);
+  assert.ok(
+    runtime.calls.every((c) => c.type !== 'sync.signIn'),
+    '取消後不應送出 sync.signIn'
+  );
+});
+
+test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原/本機保留/這些紀錄不會再上傳)，確認後才送 sync.deleteCloud 並顯示已刪除 toast', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.match(doc.ids.acctMenuSub.textContent, /尚未同步/, '從未同步時 {t} 顯示對應文案');
+
+  doc.ids.acctDeleteBtn.fire('click');
+  assert.equal(doc.ids.confirmOverlay.hidden, false);
+  const desc = doc.ids.confirmDesc.textContent;
+  assert.equal(desc, i18n.t('zh', 'opSyncDeleteConfirmDesc'));
+  assert.match(desc, /無法復原/);
+  assert.match(desc, /這台裝置上的紀錄不受影響/);
+  // 語意修正(伺服器對早於 cleared_at 的紀錄一律拒收，api-spec 4.4):刪除
+  // 雲端後本機紀錄不會再自動上傳，舊文案「下次登入時會再次上傳」與後端
+  // 實際行為矛盾。
+  assert.match(desc, /不會再上傳到雲端/);
+
+  const callsBefore = runtime.calls.length;
+  doc.ids.confirmOk.fire('click');
+  assert.equal(runtime.calls.length, callsBefore + 1);
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.deleteCloud' });
+  // deleteCloud 是 fire-and-forget，送出當下先樂觀顯示已完成的 toast。
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'));
+});
+
+test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 若帶回 lastError，樂觀 toast 被改成錯誤 toast', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'), '送出當下先樂觀顯示已完成');
+
+  // 接線層轉呼叫的下一次廣播帶回失敗:樂觀 toast 該被蓋成錯誤訊息，
+  // 不能讓使用者以為刪除已成功。
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'user@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'internal_error',
+    apiBase: '',
+  });
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'internal_error');
+});
+
+test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 沒有 lastError 時，不覆蓋樂觀 toast', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'));
+
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'user@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: 100,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'), '成功時樂觀 toast 維持原樣，不被覆蓋');
+
+  // 再下一次廣播不該重複觸發旗標(pendingDeleteCloudToast 只消費一次)。
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'user@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: 200,
+    pendingCount: 0,
+    lastError: 'rate_limited',
+    apiBase: '',
+  });
+  assert.equal(
+    doc.ids.toast.textContent,
+    i18n.t('zh', 'opToastCloudDeleted'),
+    '旗標只消費一次，往後的 lastError 不再誤蓋刪除 toast'
+  );
+});
+
+test('帳號入口:立即同步/登出從選單點下去直接送出對應訊息，不經確認框，且會關閉選單', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: 100,
+      pendingCount: 1,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  doc.ids.acctTrigger.fire('click');
+  assert.equal(doc.ids.acctMenu.hidden, false, '前置:選單應已開啟');
+
+  // 立即同步/登出點下去直接送出訊息(不像登入/刪除雲端資料要先經
+  // openConfirm)，這裡驗證的是「點擊後訊息立即出現在 calls 裡，不需要
+  // 額外去點某個確認鈕才送出」，且點擊後會收合選單。
+  const callsBefore = runtime.calls.length;
+  doc.ids.acctSyncNowBtn.fire('click');
+  assert.equal(runtime.calls.length, callsBefore + 1, '點擊應立即送出一則訊息，不待額外確認動作');
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.now' });
+  await settle();
+  assert.equal(doc.ids.acctMenu.hidden, true, '動作後應收合選單');
+
+  doc.ids.acctTrigger.fire('click');
+  doc.ids.acctSignOutBtn.fire('click');
+  assert.equal(runtime.calls.length, callsBefore + 2);
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.signOut' });
+});
+
+test('帳號入口:status 為 syncing 時頭像外圈轉圈、狀態點隱藏，立即同步鈕 disabled 且文字換成同步中，登出/刪除鈕維持可點', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'syncing',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 2,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.avatarWrap.classList.contains('is-syncing'), true);
+  assert.equal(doc.ids.statusDot.hidden, true, '同步中不疊角標小圓點');
+  assert.equal(doc.ids.acctSyncNowBtn.disabled, true);
+  assert.equal(doc.ids.acctSyncLabel.textContent, i18n.t('zh', 'opAccountSyncing'));
+  assert.notEqual(doc.ids.acctSignOutBtn.disabled, true, '登出鈕不因同步中停用');
+  assert.notEqual(doc.ids.acctDeleteBtn.disabled, true, '刪除雲端資料鈕不因同步中停用');
+  // 同步中沒有對應的狀態文字(不疊角標小圓點)，觸發鈕 aria-label 維持
+  // 不帶狀態的基本文字，不併「同步中」進去。
+  assert.equal(doc.ids.acctTrigger.getAttribute('aria-label'), i18n.t('zh', 'opAccountMenuLabel'));
+});
+
+test('帳號入口:status 為 error 時選單顯示 lastError 一行(含前綴)與重試鈕，狀態點為紅色，重試會送 sync.now', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'error',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: 100,
+      pendingCount: 2,
+      lastError: 'rate_limited',
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.statusDot.classList.contains('is-danger'), true);
+  assert.equal(doc.ids.acctErrorRow.hidden, false);
+  assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'rate_limited');
+  assert.equal(doc.ids.acctSyncNowBtn.disabled, false, '錯誤態的一般同步鈕不因此停用');
+  assert.equal(
+    doc.ids.acctSyncLabel.textContent,
+    i18n.t('zh', 'opAccountRetry'),
+    '錯誤態選單裡的「立即同步」項目文字比照 demo 改為「重試」'
+  );
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.fmt('zh', 'opAccountMenuLabelStatus', { label: i18n.t('zh', 'opAccountMenuLabel'), status: i18n.t('zh', 'opAccountStatusError') })
+  );
+
+  doc.ids.acctTrigger.fire('click');
+  const callsBefore = runtime.calls.length;
+  doc.ids.acctRetryBtn.fire('click');
+  assert.equal(runtime.calls.length, callsBefore + 1);
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.now' });
+});
+
+test('帳號入口:登入過期(signed_out + lastError=session_expired 且有 email/displayName)時顯示黃色狀態點與重新登入列，同步鈕停用', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: 'hong@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'session_expired',
+    apiBase: '',
+  });
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, true, '有足夠身分資訊時應顯示頭像觸發鈕而非登入鈕');
+  assert.equal(doc.ids.acctTrigger.hidden, false);
+  assert.equal(doc.ids.statusDot.classList.contains('is-warning'), true);
+  assert.equal(doc.ids.acctExpiredRow.hidden, false);
+  assert.equal(doc.ids.acctExpiredText.textContent, i18n.t('zh', 'opAccountExpired'));
+  assert.equal(doc.ids.acctSyncNowBtn.disabled, true, '過期時應停用立即同步，逼使用者重新登入');
+  assert.equal(doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNote'), '過期時同步實質未在跑，不謊報已同步');
+
+  const callsBefore = runtime.calls.length;
+  doc.ids.acctTrigger.fire('click');
+  doc.ids.acctReSignInBtn.fire('click');
+  assert.equal(doc.ids.confirmOverlay.hidden, false, '重新登入應走完整登入確認框流程');
+  doc.ids.confirmOk.fire('click');
+  assert.ok(runtime.calls.slice(callsBefore).some((c) => c.type === 'sync.signIn'));
+});
+
+test('帳號入口:從登入過期切到真正登出時，狀態點/錯誤過期列/姓名信箱等節點全部重設乾淨(回歸:曾提早 return，殘留上一態內容)', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  // 先進入登入過期態(status: signed_out + session_expired + 有身分資訊)，
+  // 讓狀態點變黃、過期列顯示、姓名信箱等節點都填上內容。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: 'hong@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'session_expired',
+    apiBase: '',
+  });
+  assert.equal(doc.ids.statusDot.classList.contains('is-warning'), true, '前置條件:過期態應先是黃色狀態點');
+  assert.equal(doc.ids.acctExpiredRow.hidden, false, '前置條件:過期列應先顯示');
+  assert.equal(doc.ids.acctHeaderName.textContent, 'Hong', '前置條件:姓名應先被填入');
+  assert.equal(doc.ids.acctMenuEmail.textContent, 'hong@example.com', '前置條件:信箱應先被填入');
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.fmt('zh', 'opAccountMenuLabelStatus', { label: i18n.t('zh', 'opAccountMenuLabel'), status: i18n.t('zh', 'opAccountStatusExpired') }),
+    '前置條件:觸發鈕 aria-label 應先併上過期狀態文字'
+  );
+
+  // 再切到真正登出(沒有 email/displayName，lastError 也清空)。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '真正登出應顯示登入鈕');
+  assert.equal(doc.ids.acctTrigger.hidden, true);
+  assert.equal(doc.ids.statusDot.classList.contains('is-warning'), false, '登出後狀態點不應殘留過期的黃色');
+  assert.equal(doc.ids.statusDot.classList.contains('is-danger'), false, '登出後狀態點不應殘留錯誤的紅色');
+  assert.equal(doc.ids.statusDot.hidden, true);
+  // 規格翻轉:狀態文字不再掛在巢狀 statusDot 上(讀屏器讀不到，見
+  // renderAccount 的 aria-label 註解)，改併進觸發鈕自身的 aria-label；
+  // 登出後應重設回不帶狀態的基本文字，不殘留過期/錯誤字樣。
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.t('zh', 'opAccountMenuLabel'),
+    '登出後觸發鈕 aria-label 應重設回基本文字，不殘留過期/錯誤狀態'
+  );
+  assert.equal(doc.ids.acctErrorRow.hidden, true);
+  assert.equal(doc.ids.acctExpiredRow.hidden, true, '登出後過期列應重新隱藏');
+  assert.equal(doc.ids.acctHeaderName.textContent, '', '登出後姓名不應殘留上一態的內容');
+  assert.equal(doc.ids.acctMenuName.textContent, '');
+  assert.equal(doc.ids.acctMenuEmail.textContent, '', '登出後信箱不應殘留上一態的內容');
+  assert.equal(doc.ids.acctMenuSub.textContent, '');
+});
+
+test('帳號入口:登入過期但沒有 email/displayName 可辨識時，退回未登入外觀', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'session_expired',
+    apiBase: '',
+  });
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '資訊不足以分辨登入過期時應退回未登入外觀');
+  assert.equal(doc.ids.acctTrigger.hidden, true);
+});
+
+test('帳號入口:setSyncState(接線層轉呼叫 background 的 sync.stateChanged 廣播)即時更新畫面', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '前置:未注入 runtime，預設未登入');
+
+  controller.setSyncState({
+    status: 'signed_in',
+    email: 'broadcast@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, true);
+  assert.equal(doc.ids.acctTrigger.hidden, false);
+  assert.equal(doc.ids.acctMenuEmail.textContent, 'broadcast@example.com');
+
+  // 廣播非法形狀時應退回 signed_out，不因 background 傳壞資料而炸掉畫面。
+  controller.setSyncState({ status: 'nonsense' });
+  assert.equal(doc.ids.acctSignInBtn.hidden, false);
+  assert.equal(doc.ids.acctTrigger.hidden, true);
+});
+
+test('帳號入口:XSS 縱深——email 含 <img onerror> 字串只當純文字顯示，不解析成節點', async () => {
+  const evilEmail = '<img src=x onerror=alert(1)>@evil.example';
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: evilEmail,
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.acctMenuEmail.textContent, evilEmail, '整串只當文字內容，不被拆解');
+  assert.equal(doc.ids.acctMenuEmail.children.length, 0, '未曾組出子節點，證明走的是 textContent 不是 innerHTML');
+  assert.equal(
+    doc.ids.acctHeaderName.textContent,
+    '<img src=x onerror=alert(1)>',
+    'displayName 缺席時退回的 email @ 前段同樣只當文字(local part 本身就含這串)'
+  );
+  assert.equal(doc.ids.acctHeaderName.children.length, 0);
+});
+
+// ============================================================
+// 環境標籤——頁首標題(envBadge)與「紀錄」卡頭(envBadgeHistory)各一顆,
+// 由 renderEnvBadge 逐一套用同一份判斷結果,只認 staging/local 兩個
+// 白名單 apiBase 值,顯示固定英文小寫;其餘(含正式環境、未知值、
+// background 無回應)一律隱藏,且不把 apiBase 原始值印進 DOM。狀態來源
+// 同帳號卡片的 state.apiBase,但跟登入態無關——未登入也要顯示。以下
+// 測試以 envBadge 為主要斷言對象,並在每個情境額外驗證 envBadgeHistory
+// 與其同步,不重複展開成兩倍測試數。
+// ============================================================
+
+test('環境標籤:apiBase 為 staging 時顯示 staging chip,套 env-badge-staging 樣式,未登入也顯示', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_out',
+      email: null,
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: 'https://api-staging.metalinkclearer.workers.dev',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '前置:確實是未登入態');
+  assert.equal(doc.ids.envBadge.hidden, false, '未登入也要顯示,跟登入態無關');
+  assert.equal(doc.ids.envBadge.textContent, 'staging');
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), true);
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), false);
+  // 「紀錄」卡頭旁那顆(envBadgeHistory)跟頁首標題旁那顆同步,見
+  // options.js 的 ENV_BADGE_IDS/renderEnvBadge。
+  assert.equal(doc.ids.envBadgeHistory.hidden, false);
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'staging');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-staging'), true);
+});
+
+test('環境標籤:apiBase 為 local 時顯示 local chip,套 env-badge-local 樣式', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: 'http://localhost:8787',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.envBadge.hidden, false);
+  assert.equal(doc.ids.envBadge.textContent, 'local');
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), true);
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), false);
+  assert.equal(doc.ids.envBadgeHistory.hidden, false, '兩顆環境標籤同步');
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'local');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-local'), true);
+});
+
+test('環境標籤:apiBase 為正式環境或非白名單值一律隱藏,不把原始字串印進 DOM(XSS 縱深)', async () => {
+  async function renderWith(apiBase) {
+    const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+    const doc = makeDocumentStub();
+    const runtime = makeFakeRuntime({
+      'sync.getState': () => ({
+        status: 'signed_out',
+        email: null,
+        displayName: null,
+        avatarUrl: null,
+        lastSyncedAt: null,
+        pendingCount: 0,
+        lastError: null,
+        apiBase,
+      }),
+    });
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+      runtime,
+    });
+    await controller.init();
+    await settle();
+    return doc;
+  }
+
+  const prod = await renderWith('https://api.metalinkclearer.workers.dev');
+  assert.equal(prod.ids.envBadge.hidden, true, '正式環境不顯示標籤');
+  assert.equal(prod.ids.envBadge.textContent, '');
+  assert.equal(prod.ids.envBadgeHistory.hidden, true, '兩顆環境標籤同步隱藏');
+  assert.equal(prod.ids.envBadgeHistory.textContent, '');
+
+  const evil = '<img src=x onerror=alert(1)>';
+  const xss = await renderWith(evil);
+  assert.equal(xss.ids.envBadge.hidden, true, '不在白名單內一律隱藏');
+  assert.equal(xss.ids.envBadge.textContent, '', '不把非白名單 apiBase 原始值印進 DOM,只印固定字串');
+  assert.equal(xss.ids.envBadgeHistory.hidden, true);
+  assert.equal(xss.ids.envBadgeHistory.textContent, '');
+});
+
+test('環境標籤:background 無回應(sendMessage reject)時隱藏', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => Promise.reject(new Error('Could not establish connection.')),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.envBadge.hidden, true);
+  assert.equal(doc.ids.envBadgeHistory.hidden, true, '兩顆環境標籤同步隱藏');
+});
+
+test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → local → 正式環境隱藏,舊 modifier class 會被清掉', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+  assert.equal(doc.ids.envBadge.hidden, true, '前置:未注入 runtime,退回值 apiBase 空字串應隱藏');
+  assert.equal(doc.ids.envBadgeHistory.hidden, true);
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'https://api-staging.metalinkclearer.workers.dev',
+  });
+  assert.equal(doc.ids.envBadge.hidden, false);
+  assert.equal(doc.ids.envBadge.textContent, 'staging');
+  assert.equal(doc.ids.envBadgeHistory.hidden, false, '兩顆環境標籤同步顯示');
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'staging');
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'http://localhost:8787',
+  });
+  assert.equal(doc.ids.envBadge.hidden, false);
+  assert.equal(doc.ids.envBadge.textContent, 'local');
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), false, '切換環境時舊的 modifier class 要清掉');
+  assert.equal(doc.ids.envBadgeHistory.hidden, false);
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'local');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-staging'), false);
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'https://api.metalinkclearer.workers.dev',
+  });
+  assert.equal(doc.ids.envBadge.hidden, true);
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), false);
+  assert.equal(doc.ids.envBadgeHistory.hidden, true, '兩顆環境標籤同步隱藏');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-local'), false);
+});
+
+test('帳號入口:寬度切換——options.html 在 720px 斷點以 CSS 隱藏名字文字(不靠 JS 判斷寬度)', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(
+    html,
+    /@media \(max-width:\s*720px\)\s*\{[^}]*\.acc-name\s*\{[^}]*display:\s*none/,
+    '寬度斷點應以 CSS 隱藏 .acc-name，不需要 JS 讀取 window 寬度即可測'
+  );
+});
+
+// WCAG 相對亮度/對比度計算，僅供下面的 --warn 對比測試使用(不是產品
+// 程式碼，測試自己算一份夠了，不需要另立共用模組)。公式抄 WCAG 2.x
+// 定義:先把 sRGB 通道線性化，再用固定權重加總得相對亮度，最後取兩色
+// 亮度較高/較低者相除。
+function relLuminance(hex) {
+  const n = parseInt(hex.replace('#', ''), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrastRatio(hexA, hexB) {
+  const [la, lb] = [relLuminance(hexA), relLuminance(hexB)].sort((x, y) => y - x);
+  return (la + 0.05) / (lb + 0.05);
+}
+
+test('色票對比:淺色 --warn 對 --surface 至少 3:1(WCAG 非文字元素門檻，狀態點/提示列都是純色塊，沒有文字襯托)', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const rootBlock = html.slice(html.indexOf(':root {'), html.indexOf('@media (prefers-color-scheme: dark)'));
+  const warnMatch = /--warn:\s*(#[0-9a-fA-F]{6})/.exec(rootBlock);
+  const surfaceMatch = /--surface:\s*(#[0-9a-fA-F]{6})/.exec(rootBlock);
+  assert.ok(warnMatch && surfaceMatch, '淺色 :root 區塊應同時定義 --warn 與 --surface');
+  const ratio = contrastRatio(warnMatch[1], surfaceMatch[1]);
+  assert.ok(ratio >= 3, `淺色 --warn(${warnMatch[1]}) 對 --surface(${surfaceMatch[1]}) 的對比度應 ≥ 3:1，實測 ${ratio.toFixed(2)}:1`);
+});
+
+test('色票定義:--warn 在三處色票區塊(淺色 :root/深色媒體查詢/data-theme=dark)都要定義，缺一處就會有某個主題下讀到未定義變數', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const matches = html.match(/--warn:\s*#[0-9a-fA-F]{6};/g) || [];
+  assert.equal(matches.length, 3, '--warn 應恰好在三處色票區塊各出現一次(淺色/深色媒體查詢/data-theme=dark)');
+});
+
+test('.acct-warn-row 語意色改用 --warn(登入過期是黃色第三態，不該跟 --accent 共用變數)', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(html, /\.acct-warn-row\s*\{[^}]*background:\s*var\(--warn-soft\)[^}]*color:\s*var\(--warn\)/);
+  assert.match(html, /\.acct-warn-row \.link-btn\s*\{[^}]*color:\s*var\(--warn\)/);
+});
+
+test('同步轉圈尊重 prefers-reduced-motion:.avatar-wrap.is-syncing::after 的 animation 只在 no-preference 媒體查詢內生效，reduce 時顯示靜態外圈', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const baseRuleMatch = /\.avatar-wrap\.is-syncing::after\s*\{([^}]*)\}/.exec(html);
+  assert.ok(baseRuleMatch, '應有 .avatar-wrap.is-syncing::after 的基本規則(靜態外圈)');
+  assert.doesNotMatch(baseRuleMatch[1], /animation/, '基本規則不該直接帶 animation，否則 reduce 時仍會轉動');
+  assert.match(
+    html,
+    /@media \(prefers-reduced-motion:\s*no-preference\)\s*\{[^}]*\.avatar-wrap\.is-syncing::after\s*\{[^}]*animation:\s*acct-spin/,
+    'animation 應收進 prefers-reduced-motion:no-preference 媒體查詢內'
+  );
+});
+
+test('.avatar-circle.has-photo 底色透明(回歸:曾經是死類——JS 有 toggle 但 CSS 沒有對應規則)', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(html, /\.avatar-circle\.has-photo\s*\{[^}]*background:\s*transparent/);
+});
+
+test('menu-item:disabled 有停用樣式(回歸:曾經完全沒有 :disabled 規則，同步中的 acctSyncNowBtn 看起來跟平常一樣可點)', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(
+    html,
+    /\.menu-item:disabled\s*\{[^}]*opacity:\s*0(\.\d+)?[^}]*cursor:\s*not-allowed/,
+    '.menu-item:disabled 應同時降低透明度並改成禁用游標'
+  );
+  assert.match(
+    html,
+    /\.menu-item:disabled:hover\s*\{[^}]*background:\s*none/,
+    '停用時 hover 不應換底色，否則看起來還能點'
+  );
+});
+
+// ============================================================
+// 帳號選單開合/鍵盤(車道 B):觸發鈕點擊切換 [hidden]、aria-expanded；
+// 點選單以外的地方與 Esc 會關閉；方向鍵在可用項目間移動焦點。
+// ============================================================
+
+function makeMenuCtx() {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: 'Hong',
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+test('帳號選單:點觸發鈕開啟(hidden 移除、aria-expanded=true)，再點一次關閉(aria-expanded=false，延遲後 hidden)', async () => {
+  const ctx = makeMenuCtx();
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctTrigger.fire('click');
+  assert.equal(ctx.doc.ids.acctMenu.hidden, false);
+  assert.equal(ctx.doc.ids.acctTrigger.getAttribute('aria-expanded'), 'true');
+
+  ctx.doc.ids.acctTrigger.fire('click');
+  assert.equal(ctx.doc.ids.acctTrigger.getAttribute('aria-expanded'), 'false', '關閉是同步發生的，不等動畫');
+  await settle();
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '動畫延遲後才真的補上 hidden');
+});
+
+test('帳號選單:點選單以外的地方會關閉選單', async () => {
+  const ctx = makeMenuCtx();
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctTrigger.fire('click');
+  assert.equal(ctx.doc.ids.acctMenu.hidden, false);
+
+  // rows(紀錄卡片牆容器)與帳號區完全無關，代表「點在選單以外」。
+  ctx.doc.fire('click', { target: ctx.doc.getElementById('rows') });
+  await settle();
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+});
+
+test('帳號選單:Esc 關閉選單', async () => {
+  const ctx = makeMenuCtx();
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctTrigger.fire('click');
+  assert.equal(ctx.doc.ids.acctMenu.hidden, false);
+
+  ctx.doc.fire('keydown', { key: 'Escape' });
+  await settle();
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+});
+
+test('帳號選單:開啟時焦點進第一個可用項目，方向鍵在項目間移動', async () => {
+  const ctx = makeMenuCtx();
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctTrigger.fire('click');
+  // 已登入/非錯誤/非過期態下，第一個可用項目是「立即同步」。
+  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSyncNowBtn, '開啟時焦點應落在第一個可用項目');
+
+  ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSignOutBtn, 'ArrowDown 移到下一項');
+
+  ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctDeleteBtn);
+
+  ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSyncNowBtn, '到底後循環回第一項');
+
+  ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowUp', preventDefault() {} });
+  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctDeleteBtn, 'ArrowUp 從第一項循環到最後一項');
+});
+
+function makeMenuCtxWithState(state) {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({ 'sync.getState': () => state });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+test('帳號選單:syncing／expired 態下「立即同步」停用，方向鍵導覽應跳過它，不落焦點也不循環經過', async () => {
+  // syncing:可用項目只剩登出/刪除雲端資料兩顆，開啟時第一個可用項目
+  // 應直接是登出(略過停用的立即同步)。
+  const syncingCtx = makeMenuCtxWithState({
+    status: 'syncing',
+    email: 'user@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: null,
+    apiBase: '',
+  });
+  await syncingCtx.controller.init();
+  await settle();
+
+  syncingCtx.doc.ids.acctTrigger.fire('click');
+  assert.equal(
+    syncingCtx.doc.activeElement,
+    syncingCtx.doc.ids.acctSignOutBtn,
+    'syncing 態開啟選單應直接聚焦登出(立即同步停用，不落焦點)'
+  );
+
+  syncingCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(syncingCtx.doc.activeElement, syncingCtx.doc.ids.acctDeleteBtn, 'ArrowDown 移到下一項(刪除雲端資料)');
+
+  syncingCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(
+    syncingCtx.doc.activeElement,
+    syncingCtx.doc.ids.acctSignOutBtn,
+    '循環回第一個可用項目，中途不曾停在停用的立即同步'
+  );
+
+  // expired:多一個「重新登入」可用項目(過期提示列)，立即同步仍停用、
+  // 不在方向鍵導覽的循環內。
+  const expiredCtx = makeMenuCtxWithState({
+    status: 'signed_out',
+    email: 'hong@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'session_expired',
+    apiBase: '',
+  });
+  await expiredCtx.controller.init();
+  await settle();
+
+  expiredCtx.doc.ids.acctTrigger.fire('click');
+  assert.equal(
+    expiredCtx.doc.activeElement,
+    expiredCtx.doc.ids.acctReSignInBtn,
+    'expired 態開啟選單應聚焦「重新登入」(立即同步停用，不落焦點)'
+  );
+
+  expiredCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(expiredCtx.doc.activeElement, expiredCtx.doc.ids.acctSignOutBtn);
+
+  expiredCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(expiredCtx.doc.activeElement, expiredCtx.doc.ids.acctDeleteBtn);
+
+  expiredCtx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(
+    expiredCtx.doc.activeElement,
+    expiredCtx.doc.ids.acctReSignInBtn,
+    '循環回第一個可用項目，立即同步全程不在導覽序列內'
+  );
+});
+
+// ============================================================
+// 雲端同步的 optional 權限請求(車道 D 接手清單第 1 條)
+// ------------------------------------------------------------
+// identity 與後端 host 走 optional 權限(D8),而 chrome.permissions.request
+// 只能在使用者手勢中呼叫——service worker 自行發起一律失敗。因此「求權限」
+// 這一半落在登入按鈕的 click handler 內:先 contains 探一次，缺才 request,
+// 授予之後才送 sync.signIn。
+// ============================================================
+
+function makeFakePermissions(opts = {}) {
+  const containsCalls = [];
+  const requestCalls = [];
+  return {
+    containsCalls,
+    requestCalls,
+    contains(descriptor) {
+      containsCalls.push(descriptor);
+      return Promise.resolve(opts.granted === true);
+    },
+    request(descriptor) {
+      requestCalls.push(descriptor);
+      return Promise.resolve(opts.accepted !== false);
+    },
+  };
+}
+
+function makeSyncPermissionCtx(permissions, apiBase) {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_out',
+      email: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: apiBase || 'https://api.metalinkclearer.workers.dev',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+    permissions,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+test('雲端同步權限:已授予時只 contains 不 request，直接送出 sync.signIn', async () => {
+  const permissions = makeFakePermissions({ granted: true });
+  const ctx = makeSyncPermissionCtx(permissions);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(permissions.containsCalls.length, 1, '登入前必須先探一次權限');
+  assert.deepEqual(permissions.requestCalls, [], '已授予就不該再彈一次權限對話框');
+  assert.ok(
+    ctx.runtime.calls.some((c) => c.type === 'sync.signIn'),
+    '權限齊備時應送出 sync.signIn'
+  );
+});
+
+test('雲端同步權限:缺權限時在手勢內 request，授予後才送 sync.signIn', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: true });
+  const ctx = makeSyncPermissionCtx(permissions, 'https://api-staging.metalinkclearer.workers.dev');
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(permissions.requestCalls.length, 1);
+  assert.deepEqual(
+    permissions.requestCalls[0],
+    {
+      permissions: ['identity'],
+      origins: ['https://api-staging.metalinkclearer.workers.dev/*'],
+    },
+    'origin 依 state.apiBase 組出，且落在 manifest 的 optional_host_permissions 內'
+  );
+  assert.ok(ctx.runtime.calls.some((c) => c.type === 'sync.signIn'));
+});
+
+test('雲端同步權限:使用者拒絕授權時不送出 sync.signIn', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: false });
+  const ctx = makeSyncPermissionCtx(permissions);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(permissions.requestCalls.length, 1);
+  assert.ok(
+    ctx.runtime.calls.every((c) => c.type !== 'sync.signIn'),
+    '拒絕授權後送出登入只會讓 SW 端白跑一趟並轉成 permission_required'
+  );
+});
+
+test('雲端同步權限:使用者拒絕授權時顯示 toast 說明，不留下「按了沒反應」', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: false });
+  const ctx = makeSyncPermissionCtx(permissions);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.equal(
+    ctx.doc.ids.toast.textContent,
+    i18n.t('zh', 'opSyncPermissionDenied'),
+    '拒絕授權後畫面必須說明為什麼什麼都沒發生'
+  );
+});
+
+test('雲端同步權限:apiBase 為 local 時，origin 夾成 http://localhost:8787/*', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: true });
+  const ctx = makeSyncPermissionCtx(permissions, 'http://localhost:8787');
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(permissions.requestCalls[0], {
+    permissions: ['identity'],
+    origins: ['http://localhost:8787/*'],
+  });
+});
+
+test('雲端同步權限:長得像 local 的近似值一律夾回 production，不逐前綴放行', async () => {
+  // 夾值是逐字比對，不是前綴或子字串比對。換個埠、把 localhost 當成攻擊者
+  // 網域的一段、換成等價的迴圈位址——任何一個被放行，都會變成向那個 origin
+  // 要權限。
+  const nearMisses = ['http://localhost:8788', 'http://localhost.evil', 'http://127.0.0.1:8787'];
+  for (const value of nearMisses) {
+    const permissions = makeFakePermissions({ granted: false, accepted: true });
+    const ctx = makeSyncPermissionCtx(permissions, value);
+    await ctx.controller.init();
+    await settle();
+
+    ctx.doc.ids.acctSignInBtn.fire('click');
+    ctx.doc.ids.confirmOk.fire('click');
+    await settle();
+
+    assert.deepEqual(
+      permissions.requestCalls[0],
+      { permissions: ['identity'], origins: ['https://api.metalinkclearer.workers.dev/*'] },
+      `${value} 只是長得像白名單值，必須夾回 production`
+    );
+  }
+});
+
+test('雲端同步權限:origin 一律夾到三個合法的後端 host，不跟著 background 傳來的值走', async () => {
+  const permissions = makeFakePermissions({ granted: false, accepted: true });
+  // background 若被冒名或形狀走樣傳來任意 apiBase，這個值會直接變成
+  // permissions.request 的 origin;必須夾回白名單裡的三個之一。
+  const ctx = makeSyncPermissionCtx(permissions, 'https://evil.example');
+  await ctx.controller.init();
+  await settle();
+
+  ctx.doc.ids.acctSignInBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(permissions.requestCalls[0], {
+    permissions: ['identity'],
+    origins: ['https://api.metalinkclearer.workers.dev/*'],
+  });
+});
+
+test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 syncState 為基底', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000)],
+    syncState: { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+  });
+  await ctx.controller.init();
+  await settle();
+
+  // 頁面開著的期間，service worker 推進了游標並記下上次同步時間。開頁快照
+  // 完全不知道這件事;拿快照整包覆寫會把游標回捲。
+  await ctx.storage.local.set({
+    syncState: {
+      userId: 'user-1',
+      email: 'a@example.com',
+      cursor: '1700000000000~srv-9',
+      lastSyncedAt: 99000,
+      clearedAt: null,
+      lastError: null,
+    },
+  });
+  await settle();
+
+  const setsBefore = ctx.storage.localCalls.set.length;
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const written = ctx.storage.localCalls.set.slice(setsBefore);
+  assert.equal(written.length, 1, '水位線與清空必須是同一次 set，不留半套狀態');
+  assert.deepEqual(Object.keys(written[0]).sort(), ['history', 'syncState']);
+
+  const snapshot = ctx.storage.localSnapshot();
+  assert.deepEqual(snapshot.history, []);
+  assert.equal(typeof snapshot.syncState.clearedAt, 'number');
+  assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9', '不得用開頁快照把引擎推進的游標回捲');
+  assert.equal(snapshot.syncState.lastSyncedAt, 99000, 'lastSyncedAt 同理');
+});
+
+// ============================================================
+// 匯出 → 匯入 round-trip（docs/cloud-sync.md 4.1）
+// ============================================================
+
+// 匯出檔帶了 id／receivedAt／serverUpdatedAt 才能原封不動繞回來。id 不保留
+// 的話，匯入端會生成新 UUID——同一張卡在雲端變成兩張，原卡成孤兒;
+// serverUpdatedAt 不保留則下一輪合併失去判準，整張表被當成從未上傳過。
+test('匯出 → 匯入 round-trip:id 不變、serverUpdatedAt 保留、receivedAt 不往後跳', () => {
+  const source = [
+    {
+      url: URL_A,
+      kind: 'icon',
+      at: 5000,
+      author: 'Dafu',
+      seen: [{ at: 3000, kind: 'share' }, { at: 5000, kind: 'icon' }],
+      original: 'https://www.threads.com/share/AbCdEfGhI',
+      id: 'cloud-card-1',
+      postKey: 'threads:AbC123_-xyz',
+      receivedAt: 3000,
+      dirty: false,
+      serverUpdatedAt: 4500,
+      deletedAt: null,
+    },
+  ];
+
+  const payload = options.buildExportPayload(source, '2026-09-04T00:00:00.000Z');
+  const parsed = options.parseImportText(JSON.stringify(payload));
+  assert.equal(parsed.ok, true);
+
+  const result = options.mergeImportedEntries([], parsed.entries, 9000);
+  assert.equal(result.added, 1);
+  const back = result.merged[0];
+  assert.equal(back.id, 'cloud-card-1', 'id 必須原封不動繞回來');
+  assert.equal(back.serverUpdatedAt, 4500, 'serverUpdatedAt 保留，不得歸零');
+  assert.equal(back.receivedAt, 3000, 'receivedAt 保留，不得被 now 或較晚的 seen 推後');
+  assert.equal(back.url, URL_A);
+  assert.equal(back.kind, 'icon');
+  assert.equal(back.at, 5000);
+  assert.equal(back.author, 'Dafu');
+  // postKey 與 dirty 不在匯出檔內，由匯入端重算/重設。
+  assert.equal(back.postKey, 'threads:AbC123_-xyz');
+  assert.equal(back.dirty, true, '匯入回來的資料在本機一律是待上傳狀態');
+  assert.equal(back.deletedAt, null);
+});
+
+// ============================================================
+// 匯入的儲存上限（TCLCore.capHistory）
+// ============================================================
+
+// 匯入是唯一能一口氣把 history 撐長的使用者操作。原本 mergeImportedEntries
+// 完全繞過 background 那套裁切，一份夠大的匯入檔就能把 storage.local 寫爆
+// （寫入失敗只會吐配額 toast，整批匯入白做）。
+test('mergeImportedEntries:12000 筆匯入檔被裁到筆數硬保險，保留最新的一批', () => {
+  const MAX = 10000;
+  const imported = Array.from({ length: 12000 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/P${i}`,
+    kind: 'share',
+    // i 越大 at 越新，裁切必須從尾端（最舊，i 小）砍。
+    at: 1700000000000 + i,
+  }));
+
+  const result = options.mergeImportedEntries([], imported, 1700000000000);
+  assert.equal(result.merged.length, MAX, '結果被裁到 HISTORY_LIMITS.MAX_ENTRIES');
+  assert.equal(result.added, 12000, 'added 是合併階段的計數，不受裁切影響');
+  assert.equal(result.merged[0].url, 'https://www.threads.com/@u/post/P11999', '最新的一筆存活');
+  assert.equal(result.merged[MAX - 1].url, 'https://www.threads.com/@u/post/P2000', '最舊的 2000 筆被裁掉');
+});
+
+// 裁切走的是與 background 同一份實作：墓碑（deletedAt 為有限數字）優先淘
+// 汰，使用者真的看得到的最舊一筆必須存活。
+test('mergeImportedEntries:超量時墓碑優先淘汰，一般最舊的一筆存活', () => {
+  const existing = Array.from({ length: 10000 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/Q${i}`,
+    kind: 'share',
+    at: 1700000000000 - i,
+    id: `q-${i}`,
+    postKey: `threads:Q${i}`,
+    receivedAt: 1700000000000 - i,
+    dirty: false,
+    serverUpdatedAt: null,
+    // 最舊的那一筆是墓碑，超量時它應該先被丟。
+    deletedAt: i === 9999 ? 1600000000000 : null,
+  }));
+
+  const result = options.mergeImportedEntries(
+    existing,
+    [{ url: 'https://www.threads.com/@u/post/NEWCARD', kind: 'share', at: 1800000000000 }],
+    1800000000000
+  );
+
+  assert.equal(result.merged.length, 10000);
+  const urls = result.merged.map(function (e) {
+    return e.url;
+  });
+  assert.equal(urls.indexOf('https://www.threads.com/@u/post/Q9999'), -1, '墓碑被優先淘汰');
+  assert.ok(urls.indexOf('https://www.threads.com/@u/post/Q9998') !== -1, '一般最舊的一筆存活');
+  assert.equal(urls[0], 'https://www.threads.com/@u/post/NEWCARD');
 });

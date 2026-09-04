@@ -40,6 +40,19 @@ if (-not $version) {
     throw 'manifest.json 沒有 version 欄位，無法決定輸出檔名'
 }
 
+# 防止 dev-browser.mjs 為 --env local 注入的 http://localhost:8787/* 這類
+# 開發用 host 權限，因 dev-build-loaded 副本內容被誤當成正式 manifest 打包
+# 進上架 zip——打包前先擋，命中就直接中止，不產出 zip。
+$devHostPatterns = @('localhost', '127\.0\.0\.1', '^http://')
+$hostPermissionEntries = @($manifest.host_permissions) + @($manifest.optional_host_permissions) | Where-Object { $_ }
+foreach ($hostEntry in $hostPermissionEntries) {
+    foreach ($pattern in $devHostPatterns) {
+        if ($hostEntry -imatch $pattern) {
+            throw "manifest.json 的 host 權限混入開發用網域，禁止打包:$hostEntry(命中樣式:$pattern)"
+        }
+    }
+}
+
 # 直接複製的檔案(非資料夾)
 $includeFiles = @(
     'manifest.json',
@@ -48,6 +61,8 @@ $includeFiles = @(
     'bridge.js',
     'i18n.js',
     'tcl-core.js',
+    'auth.js',
+    'sync.js',
     'post-icon.js',
     'popup.html',
     'popup.js',

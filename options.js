@@ -24,8 +24,31 @@
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   var HISTORY_KEY = 'history';
+  // 帳號同步狀態(docs/cloud-sync.md 4.2)。options 只讀 userId 判斷登入
+  // 態、只寫 clearedAt(清除全部的全域水位線)，其餘欄位由同步引擎維護。
+  var SYNC_ACCOUNT_KEY = 'syncState';
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
+
+  // 墓碑判定走 TCLCore.isTombstone:deletedAt 為有限數字代表本機已軟刪、等待
+  // 伺服器 ack。墓碑必須留在 storage(它是待上傳的刪除意圖)，但一律不進畫面、
+  // 統計、圖表與匯出。
+  function liveEntries(list) {
+    return list.filter(function (e) {
+      return !TCLCore.isTombstone(e);
+    });
+  }
+
+  function finiteOrNull(value) {
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }
+  function nonEmptyString(value) {
+    return typeof value === 'string' && value !== '' ? value : null;
+  }
+  // 條目的最早事件時間與 receivedAt 推導(TCLCore.entryEarliestAt /
+  // TCLCore.resolveReceivedAt):seen 事件取最小 at(不是 seen[0].at，匯入檔不保
+  // 證已排序)，一個可用事件都沒有時退回條目自身的 at;已持久化的 receivedAt 與
+  // 推導值取較早者(只往前不往後)。與 background 寫入側共用同一份。
 
   // 貼文網址驗證/正規化走 TCLCore.normalizePostUrl(容尾正規化:白名單字元類 +
   // 長度上限，容忍尾隨斜線/查詢字串/hash，回傳正規化後的乾淨網址或 null)。
@@ -90,8 +113,33 @@
         if (original !== undefined) out.original = original;
         var removedParams = TCLCore.sanitizeRemovedParams(e.removedParams);
         if (removedParams !== undefined) out.removedParams = removedParams;
-        return out;
+        return keepSchemaFields(out, e);
       });
+  }
+
+  // 讀取端把雲端 schema 的七個欄位原樣帶過來(型別不對就退回該欄的安全預
+  // 設，鍵仍保留)。**只保留、不補值**:缺席代表這筆還沒跑過 background 的
+  // 遷移，補值是遷移與寫入路徑的職責。
+  //
+  // 這一步是刪除／匯入寫回 storage 那份陣列的來源，漏掉任一欄，使用者按一次
+  // 刪除就會把整張表的 id 與待上傳的墓碑一起洗掉。墓碑本身不在這裡過濾——
+  // 它必須留在陣列，不顯示是渲染層的事。
+  function keepSchemaFields(out, source) {
+    function has(field) {
+      return Object.prototype.hasOwnProperty.call(source, field);
+    }
+    if (has('id')) out.id = nonEmptyString(source.id);
+    if (has('postKey')) out.postKey = nonEmptyString(source.postKey);
+    // original 已由 sanitizeOriginal 處理過(與 url 相同時視為沒有額外資訊而
+    // 丟棄)。新 schema 下它是雲端必填欄位，值恰為 url 時同樣要留住。
+    if (out.original === undefined && typeof source.original === 'string') {
+      if (TCLCore.stripControlChars(source.original) === out.url) out.original = out.url;
+    }
+    if (has('receivedAt')) out.receivedAt = finiteOrNull(source.receivedAt);
+    if (has('dirty')) out.dirty = source.dirty === true;
+    if (has('serverUpdatedAt')) out.serverUpdatedAt = finiteOrNull(source.serverUpdatedAt);
+    if (has('deletedAt')) out.deletedAt = finiteOrNull(source.deletedAt);
+    return out;
   }
 
   // kind 過濾('all' 不過濾)+ 關鍵字過濾(比對整條網址，不分大小寫)。
@@ -108,6 +156,18 @@
   // removedParams)，沿用「非字串/缺席就整欄不寫」的慣例;漏掉任一欄，
   // 使用者換裝置/瀏覽器匯入回來時該欄資料會無聲消失。值直接沿用 entry
   // 已經 sanitize 過的形狀，不必在這裡重新驗證。
+  //
+  // 雲端 schema 欄位只輸出 id／receivedAt／serverUpdatedAt 三個(cloud-sync.md
+  // 4.1):
+  //   - id 是這張卡在雲端的身分。不輸出的話，匯入端會為同一張卡生成新
+  //     UUID，雲端就多出一張內容相同的孤兒卡。
+  //   - receivedAt 是雲端必填的「第一次出現時間」。seen 被 SEEN_MAX 裁掉最舊
+  //     幾筆之後，匯入端從 seen 推導只會得到較晚的時間，這張卡在雲端的起始
+  //     時間會憑空往後跳。
+  //   - serverUpdatedAt 是下一輪合併的判準，不帶會讓匯入回來的卡在下次同步
+  //     被當成從未上傳過。
+  // 其餘四欄刻意不輸出:deletedAt 不必(匯出來源已是 liveEntries，墓碑不進匯
+  // 出檔)，postKey 與 dirty 皆可由匯入端推導(postKeyOf(url)、匯入一律標髒)。
   function buildExportPayload(entries, exportedAt) {
     return {
       app: 'threads-clean-link',
@@ -121,6 +181,9 @@
         if (Array.isArray(e.seen) && e.seen.length > 0) out.seen = e.seen;
         if (typeof e.original === 'string') out.original = e.original;
         if (Array.isArray(e.removedParams) && e.removedParams.length > 0) out.removedParams = e.removedParams;
+        if (nonEmptyString(e.id) !== null) out.id = e.id;
+        if (finiteOrNull(e.receivedAt) !== null) out.receivedAt = e.receivedAt;
+        if (finiteOrNull(e.serverUpdatedAt) !== null) out.serverUpdatedAt = e.serverUpdatedAt;
         return out;
       }),
     };
@@ -141,54 +204,124 @@
     return { ok: true, entries: parsed.entries };
   }
 
-  // 匯入合併:url 過 TCLCore.normalizePostUrl 白名單並正規化(容忍尾隨斜線/
-  // query/hash)、以正規化後的 url 與現有去重;kind 非白名單→'share',at 非有限
-  // 數字→now;author/handle/excerpt 逐條 sanitize(型別+截斷，規則同
-  // sanitizeEntries)。合併後新到舊排序，結果不裁切(紀錄不設上限，匯入
-  // 多少留多少)。
-  function mergeImportedEntries(existing, imported, now) {
-    var seen = {};
-    existing.forEach(function (e) {
-      seen[e.url] = true;
+  // 匯入檔的單筆整形:url 過 TCLCore.normalizePostUrl 白名單並正規化(容忍尾
+  // 隨斜線/query/hash);kind 非白名單→'share'，at 非有限數字→now;
+  // author/handle/excerpt/seen/original/removedParams 逐條 sanitize(規則同
+  // sanitizeEntries——匯入檔是外部輸入，偽造/損毀資料不得混進來)。雲端 schema
+  // 的七個欄位一併補齊:檔案帶了就沿用(id 尤其不得重新生成——那等於在雲端把
+  // 同一張卡拆成兩張)，沒帶才補值。
+  function buildImportedEntry(raw, url, now) {
+    var entry = {
+      url: url,
+      kind: raw && Object.prototype.hasOwnProperty.call(KINDS, raw.kind) ? raw.kind : 'share',
+      at: raw && typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : now,
+    };
+    var author = TCLCore.sanitizeText(raw && raw.author, TCLCore.LIMITS.AUTHOR_MAX);
+    if (author !== undefined) entry.author = author;
+    var handle = TCLCore.sanitizeText(raw && raw.handle, TCLCore.LIMITS.AUTHOR_MAX);
+    if (handle !== undefined) entry.handle = handle;
+    var excerpt = TCLCore.sanitizeText(raw && raw.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
+    if (excerpt !== undefined) entry.excerpt = excerpt;
+    var seenList = TCLCore.sanitizeSeenList(raw && raw.seen);
+    if (seenList.length > 0) entry.seen = seenList;
+    // original 的相同判斷用正規化後的 url，不是匯入檔裡未正規化的原始字串。
+    // 檔案帶了 original 就照既有規則消毒(與 url 相同即沒有額外資訊，整欄丟
+    // 棄);整欄缺席才以 url 補(伺服器必填)。
+    if (raw && typeof raw.original === 'string') {
+      var original = TCLCore.sanitizeOriginal(raw.original, url);
+      if (original !== undefined) entry.original = original;
+    } else {
+      entry.original = url;
+    }
+    var removedParams = TCLCore.sanitizeRemovedParams(raw && raw.removedParams);
+    if (removedParams !== undefined) entry.removedParams = removedParams;
+
+    entry.id = nonEmptyString(raw && raw.id) || TCLCore.randomUuid();
+    entry.postKey = TCLCore.postKeyOf(url);
+    entry.receivedAt = TCLCore.resolveReceivedAt(Object.assign({}, entry, { receivedAt: raw && raw.receivedAt }));
+    // 匯入進來的資料(別台裝置的鏡像或本機舊匯出檔)在本機都是待上傳狀態。
+    entry.dirty = true;
+    entry.serverUpdatedAt = finiteOrNull(raw && raw.serverUpdatedAt);
+    entry.deletedAt = null;
+    return entry;
+  }
+
+  // 兩張同 postKey 的卡合成一張。新到舊的顯示欄位(url/kind/at 與選填欄位)以
+  // at 較新的一張為主、缺席才由另一張補位;雲端身分欄位反過來以本機既有的為
+  // 準(id 換一次等於在雲端另開一張卡，serverUpdatedAt 是伺服器的值)。
+  // receivedAt 取兩者最早，seen 取聯集，deletedAt 清為 null——匯入同一篇貼文
+  // 是明確的復活意圖。
+  function mergeSamePostEntries(existing, incoming) {
+    var primary = incoming.at >= existing.at ? incoming : existing;
+    var secondary = primary === incoming ? existing : incoming;
+    var out = { url: primary.url, kind: primary.kind, at: primary.at };
+    TCLCore.MERGEABLE_FIELDS.forEach(function (field) {
+      if (primary[field] !== undefined) out[field] = primary[field];
+      else if (secondary[field] !== undefined) out[field] = secondary[field];
     });
+
+    // seen 聯集走 TCLCore.unionSeen(同 at 只留一筆、按 at 升序、裁到 SEEN_MAX)
+    // ——與 background 合併端、fromSyncItem 共用同一份實作。
+    var seenList = TCLCore.unionSeen(existing.seen, incoming.seen);
+    if (seenList.length > 0) out.seen = seenList;
+
+    out.id = nonEmptyString(existing.id) || nonEmptyString(incoming.id) || TCLCore.randomUuid();
+    out.postKey = TCLCore.postKeyOf(out.url);
+    var earliest = [TCLCore.resolveReceivedAt(existing), TCLCore.resolveReceivedAt(incoming)].filter(function (v) {
+      return v !== null;
+    });
+    out.receivedAt = earliest.length > 0 ? Math.min.apply(null, earliest) : null;
+    out.dirty = true;
+    out.serverUpdatedAt =
+      finiteOrNull(existing.serverUpdatedAt) !== null
+        ? existing.serverUpdatedAt
+        : finiteOrNull(incoming.serverUpdatedAt);
+    out.deletedAt = null;
+    return out;
+  }
+
+  // 匯入合併:去重鍵是 postKey(D11)——作者改名後同一篇貼文的乾淨網址不同、
+  // 正規化後仍不相等，以 url 去重會多開一張卡、雲端跟著分裂。同鍵不是「略
+  // 過」而是合併語意(seen 聯集、receivedAt 取最早、墓碑復活)，計數上仍算
+  // skipped(對使用者而言就是「沒有新增一筆」)。同一批匯入檔內部的同 postKey
+  // 也先併起來，否則一次匯入就自己製造出兩張同文卡。合併後新到舊排序，最後過
+  // TCLCore.capHistory 套上與 background 寫入側同一份儲存上限(位元組軟預算＋
+  // 筆數硬保險，墓碑優先淘汰)——匯入是唯一能一口氣把 history 撐長的使用者操
+  // 作，繞過裁切等於讓一份夠大的匯入檔直接把 storage 寫爆。裁切從尾端(最舊)
+  // 起，added/skipped 仍是合併階段的計數(使用者關心的是「這次檔案裡有幾筆是
+  // 新的」，不是裁切後剩幾筆)。
+  function mergeImportedEntries(existing, imported, now) {
     var merged = existing.slice();
+    var indexByKey = {};
+    merged.forEach(function (e, i) {
+      var key = TCLCore.postKeyOf(e.url);
+      if (!Object.prototype.hasOwnProperty.call(indexByKey, key)) indexByKey[key] = i;
+    });
+
     var added = 0;
     var skipped = 0;
     imported.forEach(function (raw) {
       var rawUrl = raw && typeof raw.url === 'string' ? raw.url.trim() : '';
       var url = TCLCore.normalizePostUrl(rawUrl);
-      if (url === null || seen[url]) {
+      if (url === null) {
         skipped++;
         return;
       }
-      seen[url] = true;
-      var entry = {
-        url: url,
-        kind: raw && Object.prototype.hasOwnProperty.call(KINDS, raw.kind) ? raw.kind : 'share',
-        at: raw && typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : now,
-      };
-      var author = TCLCore.sanitizeText(raw && raw.author, TCLCore.LIMITS.AUTHOR_MAX);
-      if (author !== undefined) entry.author = author;
-      var handle = TCLCore.sanitizeText(raw && raw.handle, TCLCore.LIMITS.AUTHOR_MAX);
-      if (handle !== undefined) entry.handle = handle;
-      var excerpt = TCLCore.sanitizeText(raw && raw.excerpt, TCLCore.LIMITS.EXCERPT_MAX);
-      if (excerpt !== undefined) entry.excerpt = excerpt;
-      // 匯入檔的 seen[]/original/removedParams 皆屬外部輸入，同樣要逐筆
-      // sanitize，防止偽造/損毀資料混進來。original 的相同判斷用正規化
-      // 後的 url，不是匯入檔裡未正規化的原始 url 字串。
-      var seenList = TCLCore.sanitizeSeenList(raw && raw.seen);
-      if (seenList.length > 0) entry.seen = seenList;
-      var original = TCLCore.sanitizeOriginal(raw && raw.original, url);
-      if (original !== undefined) entry.original = original;
-      var removedParams = TCLCore.sanitizeRemovedParams(raw && raw.removedParams);
-      if (removedParams !== undefined) entry.removedParams = removedParams;
+      var entry = buildImportedEntry(raw, url, now);
+      if (Object.prototype.hasOwnProperty.call(indexByKey, entry.postKey)) {
+        var idx = indexByKey[entry.postKey];
+        merged[idx] = mergeSamePostEntries(merged[idx], entry);
+        skipped++;
+        return;
+      }
+      indexByKey[entry.postKey] = merged.length;
       merged.push(entry);
       added++;
     });
     merged.sort(function (a, b) {
       return b.at - a.at;
     });
-    return { merged: merged, added: added, skipped: skipped };
+    return { merged: TCLCore.capHistory(merged), added: added, skipped: skipped };
   }
 
   // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊
@@ -349,6 +482,86 @@
     };
   }
 
+  // ---- 雲端同步(車道 E，消費 docs/cloud-sync.md 第 5 節的 state 形狀) ----
+
+  // state.status 的合法枚舉，逐字照文件第 5.2 節。
+  var SYNC_STATUSES = ['signed_out', 'signed_in', 'syncing', 'error'];
+
+  // background 尚未實作同步引擎(車道 D)前的安全預設:未登入。也是
+  // sync.getState 無回應／回應形狀不對時的退回值(見 fetchSyncState)。
+  // displayName/avatarUrl 為車道 A 新增的兩欄(docs/cloud-sync.md 第 5.2
+  // 節)，缺席一律視為 null——帳號入口的頭像/名字渲染需要備援到
+  // email，見 renderAccount。
+  //
+  // 命名:DEFAULT_SYNC_CARD_STATE/normalizeSyncCardState 特意不叫
+  // DEFAULT_SYNC_STATE/normalizeSyncState——TCLCore 已有同名的
+  // normalizeSyncState(chrome.storage.local 的帳號同步狀態，車道 D6，形狀
+  // 完全不同，見上面 syncAccount)，兩者撞名容易在呼叫端讀岔;這裡的
+  // CardState 專指「頁首帳號卡片目前顯示的狀態」。
+  var DEFAULT_SYNC_CARD_STATE = {
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  };
+
+  // 權限描述子的 origin 來源:state.apiBase 尚未從 background 回來時的退回值。
+  // production／staging 的 host 宣告在商店版 manifest 的
+  // optional_host_permissions;local 只宣告在 tools/dev-browser.mjs 產出的
+  // 開發用 manifest 副本裡，商店版沒有這一項，request 自然拿不到。
+  var SYNC_API_BASE_FALLBACK = 'https://api.metalinkclearer.workers.dev';
+  var SYNC_API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
+  var SYNC_API_BASE_LOCAL = 'http://localhost:8787';
+
+  // 頁面上兩處環境標籤共用同一份判斷邏輯(見 renderEnvBadge):頁首標題
+  // 旁與「紀錄」卡頭旁,對應 options.html 的 #envBadge/#envBadgeHistory。
+  var ENV_BADGE_IDS = ['envBadge', 'envBadgeHistory'];
+
+  // apiBase 只有這三個合法值（D9）。這個值唯一的去處是權限描述子的 origin，
+  // 照單全收等於讓 background 的任何一次形狀走樣（或訊息被冒名）變成「對任意
+  // 網域請求權限」;夾到白名單內既安全，也不會讓 request 因為 origin 不在
+  // 宣告內而直接失敗。
+  function clampApiBase(value) {
+    if (value === SYNC_API_BASE_STAGING) return SYNC_API_BASE_STAGING;
+    if (value === SYNC_API_BASE_LOCAL) return SYNC_API_BASE_LOCAL;
+    return SYNC_API_BASE_FALLBACK;
+  }
+
+  function isValidSyncState(state) {
+    return !!state && typeof state === 'object' && SYNC_STATUSES.indexOf(state.status) !== -1;
+  }
+
+  // 防禦性整形，比照 sanitizeEntries 的慣例:形狀不對(非物件/status 不在
+  // 白名單)一律退回 DEFAULT_SYNC_CARD_STATE;個別欄位型別不對就退回該欄位的
+  // 安全預設，不整包丟棄——background 若只有某個欄位暫時給錯型別，UI 仍
+  // 該顯示其餘正確欄位。
+  function normalizeSyncCardState(state) {
+    if (!isValidSyncState(state)) return DEFAULT_SYNC_CARD_STATE;
+    return {
+      status: state.status,
+      email: typeof state.email === 'string' ? state.email : null,
+      displayName: typeof state.displayName === 'string' ? state.displayName : null,
+      avatarUrl: typeof state.avatarUrl === 'string' ? state.avatarUrl : null,
+      lastSyncedAt: typeof state.lastSyncedAt === 'number' && isFinite(state.lastSyncedAt) ? state.lastSyncedAt : null,
+      pendingCount: typeof state.pendingCount === 'number' && isFinite(state.pendingCount) ? state.pendingCount : 0,
+      lastError: typeof state.lastError === 'string' ? state.lastError : null,
+      apiBase: typeof state.apiBase === 'string' ? state.apiBase : '',
+    };
+  }
+
+  // avatarUrl 縱深防禦(引擎端 sync.js 存入 syncState 前已用同一份 TCLCore
+  // sanitize 過，這裡不信任那一層、自己在渲染端(DOM sink)再把關一次)。直接
+  // 複用 TCLCore.sanitizeAvatarUrl(單一權威:https:// + host 以
+  // googleusercontent.com 結尾，見 tcl-core.js)，不在本檔另養一份等價
+  // 邏輯——兩處各自實作最容易在其中一處修正網釣變體時漏改另一處。
+  function isTrustedAvatarUrl(url) {
+    return TCLCore.sanitizeAvatarUrl(url) !== null;
+  }
+
   // ---- 控制器 ----
 
   function createOptionsController(deps) {
@@ -360,6 +573,16 @@
     var now = typeof deps.now === 'function' ? deps.now : function () {
       return Date.now();
     };
+    // runtime 是選配依賴(chrome.runtime 形狀:sendMessage({type,...}) →
+    // Promise<response>)，車道 D 的同步引擎完成前接線層可能還沒注入，
+    // 或注入了但 background 端沒有對應 handler——兩種情況下面的
+    // fetchSyncState/sendSyncAction 都要優雅退回，不丟例外、不卡渲染。
+    var runtime = deps.runtime || null;
+    // permissions 是選配依賴(chrome.permissions 形狀:contains/request 回
+    // Promise<boolean>)。identity 與後端 host 走 optional 權限(D8)，而
+    // chrome.permissions.request 只能在使用者手勢中呼叫——service worker 自行
+    // 發起一律失敗，所以「求權限」這一半只能落在登入按鈕的 click handler 裡。
+    var permissionsApi = deps.permissions || null;
 
     var entries = [];
     var locale = 'zh';
@@ -377,9 +600,54 @@
     // 對話框開啟前的 activeElement，關閉時還原焦點(a11y，見 rememberFocus/
     // restoreFocus)。以對話框 key 分槽，巢狀(詳細→時間軸/刪除確認)各記各的。
     var overlayPrevFocus = {};
-    // 確認框(confirmOverlay)當前掛的動作:清除全部 / 刪除這筆共用同一個
-    // modal，confirmOk 點擊時執行這顆(見 openConfirm/closeConfirm)。
+    // 確認框(confirmOverlay)當前掛的動作:清除全部 / 刪除這筆 / 雲端同步
+    // 登入 / 刪除雲端資料共用同一個 modal，confirmOk 點擊時執行這顆(見
+    // openConfirm/closeConfirm)。
     var confirmAction = null;
+    // 雲端同步卡片目前顯示的狀態，預設未登入(見 DEFAULT_SYNC_CARD_STATE)。
+    // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
+    // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
+    var syncState = DEFAULT_SYNC_CARD_STATE;
+    // 刪除雲端資料是 fire-and-forget:送出當下就樂觀顯示已完成的 toast，
+    // 這顆旗標記著「下一次 setSyncState 要順便檢查 lastError，非 null
+    // 就把樂觀 toast 蓋成錯誤訊息」，見 acctDeleteBtn 的 click handler 與
+    // setSyncState。
+    var pendingDeleteCloudToast = false;
+    // chrome.storage.local.syncState 的帳號同步狀態(計劃 4.2，與上面那顆
+    // 卡片狀態是兩回事)。刪除與清除全部依它的 userId 分流(D6:未登入行為與
+    // 現況完全一致)。
+    var syncAccount = TCLCore.normalizeSyncState(null);
+
+    function isSignedIn() {
+      return nonEmptyString(syncAccount.userId) !== null;
+    }
+
+    // 從 storage 重讀帳號同步狀態、併進 patch，回傳「要寫回去的整包」(整包
+    // 寫回，不夾帶未知鍵)。實際落盤交給呼叫端，好與 history 併成同一次 set。
+    //
+    // 【競態】基底一定重讀，不用開頁快照:cursor／lastSyncedAt／lastError 由
+    // service worker 的同步引擎持續維護，拿快照整包覆寫等於把頁面開著這段期間
+    // 引擎推進的游標回捲，下一輪重拉一大段增量，最壞情況是把使用者早就刪掉的
+    // 雲端資料又拉回來。重讀失敗才退回用快照。
+    function nextSyncAccount(patch) {
+      return Promise.resolve(localStore.get({ [SYNC_ACCOUNT_KEY]: null })).then(
+        function (stored) {
+          return TCLCore.normalizeSyncState(
+            Object.assign({}, TCLCore.normalizeSyncState(stored && stored[SYNC_ACCOUNT_KEY]), patch)
+          );
+        },
+        function () {
+          return TCLCore.normalizeSyncState(Object.assign({}, syncAccount, patch));
+        }
+      );
+    }
+
+    // 畫面、統計、圖表與匯出共用的可見清單:墓碑留在 entries(它是待上傳的
+    // 刪除意圖)，但四處一律看不到它——漏掉任一處就會出現「清單看不到、統計
+    // 卻多一筆」的分岔。
+    function visibleEntries() {
+      return liveEntries(entries);
+    }
 
     // 注意:此模組內不得宣告名為 t 的區域變數，以免遮蔽翻譯函式。
     function tt(key) {
@@ -483,7 +751,7 @@
 
     // ---- 統計磚 ----
     function renderStats() {
-      var stats = aggregateStats(entries, now());
+      var stats = aggregateStats(visibleEntries(), now());
       var setText = function (id, text) {
         var el = byId(id);
         if (el) el.textContent = text;
@@ -675,25 +943,25 @@
 
     // ---- 紀錄清單 ----
 
-    // 配額超限判斷，沿用 background 寫入側的字串比對(見 background.js 的
-    // isQuotaExceededError):Chrome 對總量(QUOTA_BYTES)與單筆
-    // (QUOTA_BYTES_PER_ITEM)超限，都以開頭含 "QUOTA_BYTES" 的訊息 reject。
-    // 用字串比對而非錯誤類別，避免瀏覽器/版本差異誤判漏接。
-    function isQuotaExceededError(err) {
-      var message = (err && err.message) || String(err || '');
-      return /QUOTA_BYTES/i.test(message);
-    }
+    // 配額超限判斷走 TCLCore.isQuotaExceededError(與 background 寫入側、sync
+    // 引擎共用同一份字串比對)。
 
     // 回傳 Promise 給呼叫端(成功/失敗都 resolve，不 reject):寫入前先記住
     // 現值，失敗(常見:storage.local 配額寫爆)時把記憶體 entries 回滾成
     // 寫入前的值，避免磁碟寫失敗、記憶體卻已經前進造成分岔。呼叫端據
     // res.ok 決定發成功/失敗 toast，res.quota 供挑配額/一般兩種失敗文案。
-    function persistHistory(list) {
+    // extraItems 會併進同一次 set:chrome.storage.local.set 一次提交多個鍵，
+    // 要嘛一起落地要嘛都不落地。清除全部靠它把「雲端水位線」與「清空本機」寫
+    // 成同一次原子寫入，不留「本機已清空、水位線沒寫」的半套狀態——那會讓下
+    // 次同步把整份雲端資料原封不動拉回來。
+    function persistHistory(list, extraItems) {
       var prev = entries;
       entries = list;
       return Promise.resolve()
         .then(function () {
-          return localStore.set({ [HISTORY_KEY]: list });
+          var items = Object.assign({}, extraItems || {});
+          items[HISTORY_KEY] = list;
+          return localStore.set(items);
         })
         .then(function () {
           return { ok: true };
@@ -701,7 +969,7 @@
         .catch(function (err) {
           entries = prev;
           if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入紀錄失敗', err);
-          return { ok: false, quota: isQuotaExceededError(err) };
+          return { ok: false, quota: TCLCore.isQuotaExceededError(err) };
         });
     }
 
@@ -770,11 +1038,18 @@
       return null;
     }
 
-    // ---- 共用確認框(清除全部 / 刪除這筆)----
+    // ---- 共用確認框(清除全部 / 刪除這筆 / 登入)----
     // 複用同一個 confirmOverlay:opts.titleKey/okKey 是 i18n key，desc 是已
     // 組好的字串，action 是確認後要跑的函式。標題/確認鈕文案在 JS 端顯式
     // 覆寫(這兩顆有 data-i18n，renderAll 會重設，但確認框開著時不會觸發
     // renderAll，故安全)。
+    //
+    // opts.tone('danger'|'primary')/opts.icon('#i-xxx')決定標題圖示與確認
+    // 鈕外觀:刪除類操作維持既有的垃圾桶圖示 + 紅底實心鈕，登入類操作(見
+    // startSignInFlow)改成 Google G 圖示 + 品牌色實心鈕，不能沿用紅色——
+    // 登入不是破壞性操作，紅底會誤導使用者以為按下去會刪東西。兩者都不給
+    // 時保守預設回刪除類外觀，維持既有呼叫點(清除全部/刪單筆/刪雲端)行為
+    // 不變。
     function openConfirm(opts) {
       var titleText = byId('confirmTitleText');
       if (titleText) titleText.textContent = tt(opts.titleKey);
@@ -782,6 +1057,16 @@
       if (descEl) descEl.textContent = opts.desc;
       var okBtn = byId('confirmOk');
       if (okBtn) okBtn.textContent = tt(opts.okKey);
+      var isPrimary = opts.tone === 'primary';
+      var iconHref = opts.icon || (isPrimary ? '#i-google' : '#i-trash');
+      var iconEl = byId('confirmIcon');
+      if (iconEl) iconEl.classList.toggle('danger-ink', !isPrimary);
+      var iconUse = byId('confirmIconUse');
+      if (iconUse) iconUse.setAttribute('href', iconHref);
+      if (okBtn) {
+        okBtn.classList.toggle('btn-danger-solid', !isPrimary);
+        okBtn.classList.toggle('btn-primary', isPrimary);
+      }
       confirmAction = typeof opts.action === 'function' ? opts.action : null;
       var confirmOverlay = byId('confirmOverlay');
       if (confirmOverlay) confirmOverlay.hidden = false;
@@ -796,7 +1081,546 @@
       restoreFocus('confirm');
     }
 
-    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode,
+    // ---- 頁首帳號入口 ----
+
+    // 跟 background 要一次目前狀態(頁面載入時呼叫一次)。runtime 未注入、
+    // sendMessage 拋例外、或 background 端沒有對應 handler(MV3 對無人接聽
+    // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_CARD_STATE，
+    // 讓帳號入口優雅顯示未登入態，不因車道 D 還沒做完就卡住整頁。
+    function fetchSyncState() {
+      if (!runtime || typeof runtime.sendMessage !== 'function') {
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
+      }
+      var result;
+      try {
+        result = runtime.sendMessage({ type: 'sync.getState' });
+      } catch (e) {
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
+      }
+      return Promise.resolve(result).then(normalizeSyncCardState, function () {
+        return DEFAULT_SYNC_CARD_STATE;
+      });
+    }
+
+    // 觸發式動作(signIn/signOut/now/deleteCloud):fire-and-forget，後續
+    // UI 更新一律等 background 廣播 sync.stateChanged(由接線層轉呼叫
+    // setSyncState)，這裡不用回應值直接改畫面——避免兩條更新路徑互相
+    // 打架。runtime 未注入或呼叫失敗時安靜吞掉，不丟例外。
+    function sendSyncAction(message) {
+      if (!runtime || typeof runtime.sendMessage !== 'function') return;
+      try {
+        var result = runtime.sendMessage(message);
+        if (result && typeof result.catch === 'function') result.catch(function () {});
+      } catch (e) {
+        // 同上，優雅退回。
+      }
+    }
+
+    // 顯示名字:displayName 優先，缺席退回 email 的 @ 前段;兩者皆缺回
+    // 空字串(理論上不會發生——已登入態至少會有其中一個，防禦性寫法)。
+    function accountDisplayName(s) {
+      var name = nonEmptyString(s.displayName);
+      if (name !== null) return name;
+      var email = nonEmptyString(s.email);
+      if (email === null) return '';
+      var at = email.indexOf('@');
+      return at > 0 ? email.slice(0, at) : email;
+    }
+
+    // 頭像首字母備援:優先取名字首字，缺席退回 email 首字，全域大寫。
+    function accountInitial(s) {
+      var name = accountDisplayName(s);
+      if (name) return name.slice(0, 1).toUpperCase();
+      var email = nonEmptyString(s.email);
+      return email ? email.slice(0, 1).toUpperCase() : '';
+    }
+
+    // 三處頭像(頁首觸發鈕/選單頂部帳號列)共用同一份切換邏輯:img 與字母
+    // 互斥顯示，img 只在 avatarUrl 通過白名單時才設 src(縱深防禦，引擎端
+    // 也會白名單，見 isTrustedAvatarUrl)。img 載入失敗(onerror)一律退回
+    // 字母，不留一顆破圖示。
+    var AVATAR_INSTANCES = [
+      { circle: 'avatarCircle', letter: 'avatarLetter', photo: 'avatarPhoto' },
+      { circle: 'acctMenuAvatarCircle', letter: 'acctMenuAvatarLetter', photo: 'acctMenuAvatarPhoto' },
+    ];
+    function renderAvatars(initial, avatarUrl) {
+      // 取 TCLCore 解析後的 href(已正規化，不含控制字元/前後空白)當實際要
+      // 設進 img.src 的值，不是呼叫端傳進來的原始字串——通過驗證跟拿什麼值
+      // 落地是同一次判斷，兩處各自取值容易在其中一處漏改。
+      var safeUrl = TCLCore.sanitizeAvatarUrl(avatarUrl);
+      var usePhoto = safeUrl !== null;
+      AVATAR_INSTANCES.forEach(function (a) {
+        var letterEl = byId(a.letter);
+        var photoEl = byId(a.photo);
+        var circleEl = byId(a.circle);
+        if (letterEl) {
+          letterEl.textContent = initial;
+          letterEl.hidden = usePhoto;
+        }
+        if (photoEl) {
+          photoEl.hidden = !usePhoto;
+          photoEl.onerror = function () {
+            // 大頭照載入失敗(網路問題/連結失效):退回字母，不留破圖。順手清
+            // 掉 src——同一顆失效網址若原封不動再次指派給 img.src，瀏覽器
+            // 會判定「值沒變」而不重新發起請求、onerror 也就不會再觸發，下
+            // 次 renderAvatars 想重試就卡住;清空後下次指派必為一次真正的
+            // 新賦值。
+            photoEl.hidden = true;
+            if (letterEl) letterEl.hidden = false;
+            if (circleEl) circleEl.classList.remove('has-photo');
+            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+          };
+          if (usePhoto) photoEl.src = safeUrl;
+          else if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+        }
+        if (circleEl) circleEl.classList.toggle('has-photo', usePhoto);
+      });
+    }
+
+    // 帳號入口五態的顯示模式:登入過期是從 signed_out + lastError 推導出
+    // 的 UI 概念(docs/cloud-sync.md 5.2 節的 status 枚舉本身沒有 expired)，
+    // 且必須有 email/displayName 其中之一才能分辨——沒有這兩者，畫面上
+    // 沒有帳號資訊可顯示「重新登入哪個帳號」，退回未登入外觀。
+    function accountMode(s) {
+      var hasIdentity = nonEmptyString(s.email) !== null || nonEmptyString(s.displayName) !== null;
+      if (s.status === 'signed_out' && s.lastError === 'session_expired' && hasIdentity) return 'expired';
+      if (s.status === 'signed_out') return 'signedOut';
+      if (s.status === 'syncing') return 'syncing';
+      if (s.status === 'error') return 'error';
+      return 'signedIn';
+    }
+
+    // 純函式風格的更新器:只依 state 決定畫面，不讀寫其他外部狀態(entries
+    // 除外——僅在登入確認框組文案時讀取，不在這裡改動)。未登入/其餘四態
+    // 共用同一份觸發鈕與選單 DOM，用 hidden 切換;deviceNote 那一列(紀錄
+    // 清單卡片頁尾)也在此一併更新，因為它的文案同樣隨登入態切換(見
+    // options.html 的 #deviceNote 註解)。
+    // 頁首標題(h1)與「紀錄」卡頭旁各一顆環境標籤(ENV_BADGE_IDS):狀態
+    // 來源同 renderAccount 的 state.apiBase(docs/cloud-sync.md 5.2 節),
+    // 跟登入態無關——未登入也要顯示,讓開發時誤連正式環境或忘記切換環境
+    // 一眼可辨。只認 SYNC_API_BASE_STAGING/SYNC_API_BASE_LOCAL 這兩個白
+    // 名單值,其餘(含正式環境、background 無回應時的空字串退回值)一律
+    // 隱藏;顯示文字固定英文小寫、不經 i18n,且只印這兩顆常數字串,不把
+    // apiBase 原始值印進 DOM(縱深防禦——即便 background 端形狀走樣,也
+    // 不會有任意字串落地)。兩顆標籤同一份判斷結果,逐一套用,不會有其中
+    // 一顆漏更新。
+    function renderEnvBadge(apiBase) {
+      var isStaging = apiBase === SYNC_API_BASE_STAGING;
+      var isLocal = apiBase === SYNC_API_BASE_LOCAL;
+      ENV_BADGE_IDS.forEach(function (id) {
+        var badge = byId(id);
+        if (!badge) return;
+        badge.classList.toggle('env-badge-staging', isStaging);
+        badge.classList.toggle('env-badge-local', isLocal);
+        if (isStaging) {
+          badge.textContent = 'staging';
+          badge.title = '目前連線環境：staging';
+          badge.hidden = false;
+        } else if (isLocal) {
+          badge.textContent = 'local';
+          badge.title = '目前連線環境：local';
+          badge.hidden = false;
+        } else {
+          badge.textContent = '';
+          badge.removeAttribute('title');
+          badge.hidden = true;
+        }
+      });
+    }
+
+    function renderAccount(state) {
+      var s = state || DEFAULT_SYNC_CARD_STATE;
+      var mode = accountMode(s);
+      var signedOut = mode === 'signedOut';
+      renderEnvBadge(s.apiBase);
+
+      var signInBtn = byId('acctSignInBtn');
+      var trigger = byId('acctTrigger');
+      if (signInBtn) signInBtn.hidden = !signedOut;
+      if (trigger) trigger.hidden = signedOut;
+
+      if (signedOut) {
+        if (trigger) {
+          trigger.setAttribute('aria-expanded', 'false');
+          // 觸發鈕的 aria-label 重設回不帶狀態的基本文字(見下方 signedIn
+          // 分支併狀態文字進 aria-label 那段)——同一份防殘留邏輯:忘記先
+          // renderAccount 就重新顯示時，不該唸出上一態的「同步錯誤」。
+          trigger.setAttribute('aria-label', tt('opAccountMenuLabel'));
+        }
+        var menuEl = byId('acctMenu');
+        if (menuEl) menuEl.hidden = true;
+        var deviceNoteEl0 = byId('deviceNote');
+        if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
+
+        // 完整重設(回歸:曾經提早 return，從 expired/error 切回真正登出時，
+        // 狀態點顏色、錯誤/過期列、姓名/信箱等文字會殘留上一態的內容——觸發
+        // 鈕雖然 hidden，但選單內容本身沒清，下次顯示前若有任何路徑忘記先
+        // 呼叫 renderAccount 就會露出舊資料)。
+        var headerNameEl0 = byId('acctHeaderName');
+        if (headerNameEl0) headerNameEl0.textContent = '';
+        var menuNameEl0 = byId('acctMenuName');
+        if (menuNameEl0) menuNameEl0.textContent = '';
+        var menuEmailEl0 = byId('acctMenuEmail');
+        if (menuEmailEl0) menuEmailEl0.textContent = '';
+        var menuSubEl0 = byId('acctMenuSub');
+        if (menuSubEl0) menuSubEl0.textContent = '';
+
+        // 頭像三件(字母/img/圓框)一併重設(真機實證回歸:登出後兩顆 img
+        // 的 src 沒清，下次任何帳號改用同一顆 img 元素前若又先渲染一次
+        // 「有大頭照」以外的中繼態，舊圖會先閃現)。renderAvatars 走的是
+        // 「usePhoto 才設 src」的邏輯，這裡直接手動清，不繞回
+        // renderAvatars(登出態沒有 initial/avatarUrl 可傳)。
+        AVATAR_INSTANCES.forEach(function (a) {
+          var letterEl = byId(a.letter);
+          var photoEl = byId(a.photo);
+          var circleEl = byId(a.circle);
+          if (letterEl) {
+            letterEl.textContent = '';
+            letterEl.hidden = false;
+          }
+          if (photoEl) {
+            photoEl.hidden = true;
+            // 清 src 的 IDL 屬性與底層 attribute 都要動:.src 是實際觸發
+            // 瀏覽器發請求/快取圖片的那一份，只清 attribute 不夠(真機
+            // 實證回歸)。
+            photoEl.src = '';
+            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+          }
+          if (circleEl) circleEl.classList.remove('has-photo');
+        });
+
+        var dot0 = byId('statusDot');
+        if (dot0) {
+          dot0.classList.remove('is-danger', 'is-warning');
+          dot0.hidden = true;
+        }
+
+        var errorRow0 = byId('acctErrorRow');
+        if (errorRow0) errorRow0.hidden = true;
+        var errorText0 = byId('acctErrorText');
+        if (errorText0) errorText0.textContent = '';
+
+        var expiredRow0 = byId('acctExpiredRow');
+        if (expiredRow0) expiredRow0.hidden = true;
+        var expiredText0 = byId('acctExpiredText');
+        if (expiredText0) expiredText0.textContent = '';
+
+        return;
+      }
+
+      var name = accountDisplayName(s);
+      renderAvatars(accountInitial(s), s.avatarUrl);
+
+      var headerNameEl = byId('acctHeaderName');
+      if (headerNameEl) headerNameEl.textContent = name;
+      var menuNameEl = byId('acctMenuName');
+      if (menuNameEl) menuNameEl.textContent = name;
+      var menuEmailEl = byId('acctMenuEmail');
+      if (menuEmailEl) menuEmailEl.textContent = s.email || '';
+
+      var wrap = byId('avatarWrap');
+      if (wrap) wrap.classList.toggle('is-syncing', mode === 'syncing');
+
+      var dot = byId('statusDot');
+      // 狀態文字的 aria 通道只掛在觸發鈕(button)自己的 aria-label，不掛在
+      // 巢狀 statusDot span 上——aria-label 只認最近的可及性物件，button
+      // 已有自己的 aria-label 時，子節點的 aria-label 不會被讀屏器讀到
+      // (回歸:曾經掛在 statusDot 上，讀屏器一律只唸出「帳號選單」)。
+      var statusAriaKey = null;
+      if (dot) {
+        dot.classList.remove('is-danger', 'is-warning');
+        if (mode === 'error') {
+          dot.hidden = false;
+          dot.classList.add('is-danger');
+          statusAriaKey = 'opAccountStatusError';
+        } else if (mode === 'expired') {
+          dot.hidden = false;
+          dot.classList.add('is-warning');
+          statusAriaKey = 'opAccountStatusExpired';
+        } else if (mode === 'signedIn') {
+          dot.hidden = false;
+          statusAriaKey = 'opAccountStatusSynced';
+        } else {
+          // syncing:規格只要求外圈轉圈，不疊角標小圓點，避免視覺過雜。
+          dot.hidden = true;
+        }
+      }
+      if (trigger) {
+        trigger.setAttribute(
+          'aria-label',
+          statusAriaKey
+            ? tf('opAccountMenuLabelStatus', { label: tt('opAccountMenuLabel'), status: tt(statusAriaKey) })
+            : tt('opAccountMenuLabel')
+        );
+      }
+
+      var hasError = mode === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
+      var errorRow = byId('acctErrorRow');
+      var errorText = byId('acctErrorText');
+      if (errorRow) errorRow.hidden = !hasError;
+      if (errorText) errorText.textContent = hasError ? tt('opAccountErrorPrefix') + s.lastError : '';
+
+      var expiredRow = byId('acctExpiredRow');
+      var expiredText = byId('acctExpiredText');
+      if (expiredRow) expiredRow.hidden = mode !== 'expired';
+      // 靜態文案理論上靠 data-i18n 就會套上，這裡仍顯式覆寫一次:此列剛從
+      // hidden 切到顯示時不需要等下一輪語言切換才補上正確文字。
+      if (expiredText) expiredText.textContent = tt('opAccountExpired');
+
+      var subEl = byId('acctMenuSub');
+      if (subEl) {
+        var timeText = s.lastSyncedAt !== null ? relTime(s.lastSyncedAt) : tt('opSyncNever');
+        subEl.textContent = tf('opAccountLastSync', { t: timeText }) + ' · ' + tf('opAccountPending', { n: s.pendingCount });
+      }
+
+      var syncBtn = byId('acctSyncNowBtn');
+      var syncLabel = byId('acctSyncLabel');
+      // 登入過期時必須先重新登入，「立即同步」停用，逼使用者走上方的
+      // 「重新登入」;同步中本來就在跑，同樣停用避免重複觸發。
+      var syncDisabled = mode === 'syncing' || mode === 'expired';
+      if (syncBtn) syncBtn.disabled = syncDisabled;
+      if (syncLabel) {
+        syncLabel.textContent = tt(
+          mode === 'syncing' ? 'opAccountSyncing' : mode === 'error' ? 'opAccountRetry' : 'opAccountSyncNow'
+        );
+      }
+
+      // deviceNote:expired 態的同步實質上沒在跑(等待重新登入)，比照
+      // signedOut 顯示「僅保存於這台裝置」，避免謊報已同步。
+      var deviceSynced = mode === 'signedIn' || mode === 'syncing' || mode === 'error';
+      var deviceNoteEl = byId('deviceNote');
+      if (deviceNoteEl) deviceNoteEl.textContent = tt(deviceSynced ? 'opDeviceNoteSynced' : 'opDeviceNote');
+    }
+
+    // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫
+    // (比照 setHistory/setSyncSettings 的既有模式:controller 只暴露方法，
+    // 訊息監聽掛在 -init.js)。
+    function setSyncState(state) {
+      syncState = normalizeSyncCardState(state);
+      renderAccount(syncState);
+      // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
+      // 有沒有失敗——deleteCloud 是 fire-and-forget，這裡是唯一能得知
+      // 結果的管道(見 acctDeleteBtn 的 click handler)。
+      if (pendingDeleteCloudToast) {
+        pendingDeleteCloudToast = false;
+        if (syncState.lastError) toast(tt('opAccountErrorPrefix') + syncState.lastError);
+      }
+    }
+
+    // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
+    // sync.signIn——SW 端拿不到權限只會把狀態轉成 error/permission_required，
+    // 白跑一趟。
+    function ensureSyncPermissions() {
+      var base = clampApiBase(syncState.apiBase);
+      var descriptor = { permissions: ['identity'], origins: [base + '/*'] };
+      return Promise.resolve(permissionsApi.contains(descriptor)).then(function (granted) {
+        if (granted) return true;
+        if (typeof permissionsApi.request !== 'function') return false;
+        return Promise.resolve(permissionsApi.request(descriptor)).then(function (accepted) {
+          return accepted === true;
+        });
+      }, function () {
+        return false;
+      });
+    }
+
+    // 登入/重新登入共用的入口:一律從共用確認框(#confirmOverlay)重新
+    // 開始，內容依 D3 告知本機現有筆數、free 方案雲端保留上限、可隨時
+    // 登出或刪除，確認後才走權限關卡送出 sync.signIn。
+    function startSignInFlow() {
+      openConfirm({
+        titleKey: 'opAccountSignIn',
+        okKey: 'opSyncSignInConfirmDo',
+        tone: 'primary',
+        icon: '#i-google',
+        desc: tf('opSyncSignInConfirmDesc', { n: visibleEntries().length }),
+        action: function () {
+          // 沒有注入 permissions 時維持原本的直接送出(權限由 SW 端把關)。
+          if (!permissionsApi || typeof permissionsApi.contains !== 'function') {
+            sendSyncAction({ type: 'sync.signIn' });
+            return;
+          }
+          ensureSyncPermissions().then(function (granted) {
+            if (!granted) {
+              // 使用者在權限對話框按了拒絕:沒有這一則 toast，畫面就是「按了
+              // 確定但什麼都沒發生」，使用者會以為是壞掉。
+              toast(tt('opSyncPermissionDenied'));
+              return;
+            }
+            sendSyncAction({ type: 'sync.signIn' });
+          });
+        },
+      });
+    }
+
+    // ---- 帳號選單開合(a11y):[hidden] 是唯一的無障礙開關來源(從可及性
+    // 樹移除、不能被 Tab 到);動畫只發生在 [hidden] 被移除之後、加上
+    // .is-open 之前那一小段時間窗(見 options.html 的 .acct-menu 註解，
+    // reduced-motion 由 CSS 媒體查詢負責讓過渡瞬間完成，這裡不用 JS 另外
+    // 偵測)。開啟時焦點進第一個可用項目，關閉一律回觸發鈕(不論何種
+    // 關閉方式:點外/Esc/選單內動作)。 ----
+    var ACCT_MENU_ANIM_MS = 120;
+
+    // 目前可見且可操作的選單項目，依 DOM 順序——錯誤/過期提示列的按鈕
+    // 靠自己所在列的 hidden 判斷(按鈕本身不帶 hidden)，其餘靠自身
+    // disabled/hidden。用節點參照比對，不比對 el.id(避免依賴瀏覽器把
+    // HTML id 屬性反射到 .id 屬性這件事——一律走 getElementById 拿到的
+    // 同一個節點參照才是唯一可信來源)。
+    function acctMenuFocusableItems() {
+      var errorRow = byId('acctErrorRow');
+      var expiredRow = byId('acctExpiredRow');
+      var retryBtn = byId('acctRetryBtn');
+      var reSignInBtn = byId('acctReSignInBtn');
+      var syncBtn = byId('acctSyncNowBtn');
+      var signOutBtn = byId('acctSignOutBtn');
+      var deleteBtn = byId('acctDeleteBtn');
+      var list = [];
+      if (retryBtn && errorRow && !errorRow.hidden) list.push(retryBtn);
+      if (reSignInBtn && expiredRow && !expiredRow.hidden) list.push(reSignInBtn);
+      if (syncBtn && !syncBtn.disabled) list.push(syncBtn);
+      if (signOutBtn) list.push(signOutBtn);
+      if (deleteBtn) list.push(deleteBtn);
+      return list;
+    }
+
+    function openAcctMenu() {
+      var menu = byId('acctMenu');
+      if (!menu) return;
+      menu.hidden = false;
+      menu.classList.remove('is-open'); // 保險:萬一上一輪關閉動畫還沒清掉。
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(function () { menu.classList.add('is-open'); });
+      } else {
+        menu.classList.add('is-open');
+      }
+      var trigger = byId('acctTrigger');
+      if (trigger) trigger.setAttribute('aria-expanded', 'true');
+      var items = acctMenuFocusableItems();
+      if (items[0] && typeof items[0].focus === 'function') {
+        try { items[0].focus(); } catch (e) {}
+      }
+    }
+    function closeAcctMenu() {
+      var menu = byId('acctMenu');
+      if (!menu || menu.hidden) return;
+      menu.classList.remove('is-open');
+      setTimeout(function () { menu.hidden = true; }, ACCT_MENU_ANIM_MS);
+      var trigger = byId('acctTrigger');
+      if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (typeof trigger.focus === 'function') {
+          try { trigger.focus(); } catch (e) {}
+        }
+      }
+    }
+
+    // popup 導向的 #cloud-sync hash 舊行為是捲到雲端同步卡片;卡片已移除，
+    // 改為捲回頁首並嘗試開啟帳號選單(未登入時沒有選單可開，退回聚焦登入
+    // 鈕)，接線層在 init() resolve 後呼叫(見 options-init.js)。
+    function focusAccountArea() {
+      var area = byId('acctArea');
+      if (area && typeof area.scrollIntoView === 'function') {
+        area.scrollIntoView({ block: 'start' });
+      }
+      var trigger = byId('acctTrigger');
+      if (trigger && !trigger.hidden) {
+        openAcctMenu();
+        return;
+      }
+      var signInBtn = byId('acctSignInBtn');
+      if (signInBtn && typeof signInBtn.focus === 'function') {
+        try { signInBtn.focus(); } catch (e) {}
+      }
+    }
+
+    function bindAccount() {
+      on('acctTrigger', 'click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        var menu = byId('acctMenu');
+        if (!menu) return;
+        if (menu.hidden) openAcctMenu();
+        else closeAcctMenu();
+      });
+
+      // 方向鍵在選單項目間移動(Tab 走瀏覽器原生順序，這裡只補方向鍵)。
+      on('acctMenu', 'keydown', function (ev) {
+        if (!ev || (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp')) return;
+        var items = acctMenuFocusableItems();
+        if (!items.length) return;
+        if (ev.preventDefault) ev.preventDefault();
+        var active = document && document.activeElement;
+        var idx = items.indexOf(active);
+        var nextIdx;
+        if (ev.key === 'ArrowDown') nextIdx = idx < 0 ? 0 : (idx + 1) % items.length;
+        else nextIdx = idx <= 0 ? items.length - 1 : idx - 1;
+        var next = items[nextIdx];
+        if (next && typeof next.focus === 'function') {
+          try { next.focus(); } catch (e) {}
+        }
+      });
+
+      if (typeof document.addEventListener === 'function') {
+        // 點選單以外的地方關閉(比照 moreMenu/chipsRow 的既有模式)。
+        document.addEventListener('click', function (ev) {
+          var menu = byId('acctMenu');
+          if (!menu || menu.hidden) return;
+          var area = byId('acctArea');
+          var target = ev && ev.target;
+          var inside = !!area && typeof area.contains === 'function' && !!target && area.contains(target);
+          if (!inside) closeAcctMenu();
+        });
+        // Esc 關閉選單(與既有對話框的 Esc 處理是獨立的兩條監聽，互不影響)。
+        document.addEventListener('keydown', function (ev) {
+          if (!ev || ev.key !== 'Escape') return;
+          var menu = byId('acctMenu');
+          if (menu && !menu.hidden) closeAcctMenu();
+        });
+      }
+
+      on('acctSignInBtn', 'click', function () {
+        startSignInFlow();
+      });
+      on('acctReSignInBtn', 'click', function () {
+        closeAcctMenu();
+        startSignInFlow();
+      });
+      on('acctRetryBtn', 'click', function () {
+        closeAcctMenu();
+        sendSyncAction({ type: 'sync.now' });
+      });
+      on('acctSyncNowBtn', 'click', function () {
+        var btn = byId('acctSyncNowBtn');
+        if (btn && btn.disabled) return;
+        closeAcctMenu();
+        sendSyncAction({ type: 'sync.now' });
+      });
+      on('acctSignOutBtn', 'click', function () {
+        closeAcctMenu();
+        sendSyncAction({ type: 'sync.signOut' });
+      });
+      // 刪除雲端資料一樣走確認框，措辭明講三件事:無法復原、本機保留、
+      // 這些紀錄不會再上傳到雲端(避免與清除全部紀錄的本機刪除混淆)。
+      on('acctDeleteBtn', 'click', function () {
+        closeAcctMenu();
+        openConfirm({
+          titleKey: 'opAccountDeleteCloud',
+          okKey: 'opSyncDeleteConfirmDo',
+          tone: 'danger',
+          icon: '#i-trash',
+          desc: tt('opSyncDeleteConfirmDesc'),
+          action: function () {
+            sendSyncAction({ type: 'sync.deleteCloud' });
+            // deleteCloud 是 fire-and-forget，送出當下先樂觀提示已完成；
+            // 若下一次 stateChanged 帶回 lastError，setSyncState 會把這
+            // 顆 toast 蓋成錯誤訊息(見 pendingDeleteCloudToast)。
+            pendingDeleteCloudToast = true;
+            toast(tt('opToastCloudDeleted'));
+          },
+        });
+      });
+    }
+
+    // 網址拆解只為了視覺強調帳號段;一律 textContent/createTextNode，
     // 網址內容源頭是頁面可控管道，禁 innerHTML。紀錄卡片降級顯示(無
     // author/excerpt 時)靠這份拆解邏輯。
     function buildUrlNode(url, cls) {
@@ -856,14 +1680,23 @@
     // 移除)就不寫入、不動視窗、也不發「已刪除」成功 toast，避免對使用者
     // 謊報一個沒發生的動作。寫入失敗(配額)走 onPersistFailed 回滾+失敗
     // toast，不謊報成功。
+    //
+    // 【依登入態分流】已登入時是軟刪:entry 留在陣列，寫下 deletedAt 墓碑 +
+    // dirty，等伺服器 ack 才真的移除(墓碑不進畫面，見 visibleEntries)。未登
+    // 入維持現況硬刪(D6:「僅保存於這台裝置」的承諾在未登入時必須成立)。
+    // 兩條路徑都不換 id——伺服器要靠它認出刪的是哪一張卡。
     function deleteEntry(e) {
       var hit = false;
-      var next = entries.filter(function (x) {
-        if (!hit && x.url === e.url && x.at === e.at) {
-          hit = true;
-          return false;
+      var deletedAt = now();
+      var next = [];
+      entries.forEach(function (x) {
+        var match = !hit && x.url === e.url && x.at === e.at;
+        if (!match) {
+          next.push(x);
+          return;
         }
-        return true;
+        hit = true;
+        if (isSignedIn()) next.push(Object.assign({}, x, { deletedAt: deletedAt, dirty: true }));
       });
       if (!hit) return;
       if (detailEntry && detailEntry.url === e.url && detailEntry.at === e.at) closeEntryDetail();
@@ -1278,6 +2111,8 @@
         openConfirm({
           titleKey: 'opDeleteTitle',
           okKey: 'opDeleteConfirmDo',
+          tone: 'danger',
+          icon: '#i-trash',
           desc: tt('opDeleteConfirmDesc'),
           action: function () {
             deleteEntry(target);
@@ -1325,7 +2160,7 @@
       // 重新登錄(見 timeNodes / refresh)。
       timeNodes = [];
       rowsEl.textContent = '';
-      var matched = filterEntries(entries, activeKind, query);
+      var matched = filterEntries(visibleEntries(), activeKind, query);
       var visible = matched.slice(0, pageSize);
 
       visible.forEach(function (e) {
@@ -1341,6 +2176,9 @@
       var stats = renderStats();
       renderChart(stats);
       renderList();
+      // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderAccount
+      // 必須排在它後面才能把已登入態的文案蓋回去。
+      renderAccount(syncState);
     }
 
     // ---- 選單/對話框/工具列佈線 ----
@@ -1427,7 +2265,7 @@
       // 匯出:直接下載檔案。
       on('exportBtn', 'click', function () {
         closeMenu();
-        var payload = buildExportPayload(entries, new Date(now()).toISOString());
+        var payload = buildExportPayload(visibleEntries(), new Date(now()).toISOString());
         download('threads-clean-link-history.json', JSON.stringify(payload, null, 2));
         toast(tt('opToastExported'));
       });
@@ -1497,16 +2335,46 @@
         openConfirm({
           titleKey: 'opClearAll',
           okKey: 'opClearDo',
-          desc: tf('opClearConfirmDesc', { n: entries.length }),
+          tone: 'danger',
+          icon: '#i-trash',
+          desc: tf('opClearConfirmDesc', { n: visibleEntries().length }),
+          // 已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成墓碑
+          // 撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由同步引擎
+          // 上傳。未登入不動 syncState。
+          //
+          // 【原子性】水位線與清空寫在同一次 set(見 persistHistory 的
+          // extraItems)。分兩次寫的話，兩步之間分頁被關掉會留下「本機已清空、
+          // 雲端水位線沒寫」，下次同步就把整份雲端資料拉回來，使用者眼中是
+          // 「清了又自己長回來」。
           action: function () {
-            persistHistory([]).then(function (res) {
-              if (!res.ok) {
-                onPersistFailed(res);
-                return;
-              }
-              renderAll();
-              toast(tt('opToastCleared'));
-            });
+            var signedIn = isSignedIn();
+            var prepared = signedIn ? nextSyncAccount({ clearedAt: now() }) : Promise.resolve(null);
+            prepared
+              .then(function (nextAccount) {
+                var extra = null;
+                if (nextAccount) {
+                  extra = {};
+                  extra[SYNC_ACCOUNT_KEY] = nextAccount;
+                }
+                return persistHistory([], extra).then(function (res) {
+                  // 寫成功才更新記憶體快照，失敗時 persistHistory 已回滾
+                  // entries，這裡一併保持 syncAccount 與 storage 一致。
+                  if (res.ok && nextAccount) syncAccount = nextAccount;
+                  return res;
+                });
+              })
+              .then(function (res) {
+                if (!res.ok) {
+                  onPersistFailed(res);
+                  return;
+                }
+                // 線上時立刻推一次:clearedAt 只是「待送出」旗標，等下一個週期
+                // alarm 才送的話，這段空窗內寫入的新紀錄會被伺服器的 cleared_at
+                // 連坐拒收(見 docs/cloud-sync.md 第 6 節已知限制)。
+                if (signedIn) sendSyncAction({ type: 'sync.now' });
+                renderAll();
+                toast(tt('opToastCleared'));
+              });
           },
         });
       });
@@ -1552,11 +2420,12 @@
     function init() {
       var keys = Object.assign({ langPref: null, themePref: 'auto' }, OPTIONS_DEFAULT_SETTINGS);
       var readSync = Promise.resolve(syncStorage.get(keys));
-      var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [] }));
+      var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null }));
       return Promise.all([readSync, readLocal]).then(function (results) {
         var settings = results[0] || {};
         var localData = results[1] || {};
         entries = sanitizeEntries(localData[HISTORY_KEY]);
+        syncAccount = TCLCore.normalizeSyncState(localData[SYNC_ACCOUNT_KEY]);
 
         langPref = settings.langPref === 'zh' || settings.langPref === 'en' ? settings.langPref : null;
         locale = i18n.resolveLocale(langPref);
@@ -1575,7 +2444,18 @@
         bindToolbar();
         bindDetailDialog();
         bindChartTooltip();
+        bindAccount();
         renderAll();
+
+        // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_CARD_STATE(未登入)完成首次
+        // 繪製(above 的 renderAll)，真值回來後才刷新。init() 等這步結束
+        // 才 resolve，讓呼叫端 await controller.init() 後畫面已是最終狀態，
+        // 不需另外猜測時序;runtime 未注入或 background 沒回應時
+        // fetchSyncState 立即 resolve(見該函式)，不會拖慢 init()。
+        return fetchSyncState().then(function (state) {
+          syncState = state;
+          renderAccount(syncState);
+        });
       });
     }
 
@@ -1677,11 +2557,21 @@
       }
     }
 
-    return { init: init, setHistory: setHistory, setSyncSettings: setSyncSettings, refresh: refresh };
+    return {
+      init: init,
+      setHistory: setHistory,
+      setSyncSettings: setSyncSettings,
+      refresh: refresh,
+      setSyncState: setSyncState,
+      focusAccountArea: focusAccountArea,
+    };
   }
 
   var api = {
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
+    DEFAULT_SYNC_CARD_STATE: DEFAULT_SYNC_CARD_STATE,
+    normalizeSyncCardState: normalizeSyncCardState,
+    isTrustedAvatarUrl: isTrustedAvatarUrl,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,
     buildExportPayload: buildExportPayload,

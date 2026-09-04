@@ -85,6 +85,11 @@
     SEEN_MAX: 50,
   };
 
+  // D15:帳號入口顯示名字的長度上限(去頭尾空白後)。獨立常數而非併入
+  // LIMITS——LIMITS 的完整鍵集合另有測試逐鍵斷言(車道 A 範圍外的檔案)，混
+  // 進去會連動改到不該碰的測試。
+  var DISPLAY_NAME_MAX = 80;
+
   // 三顆開關的預設值全量集合(單一權威)。各端挑自己要的:background 取
   // autoClean/saveHistory;popup 取 autoClean/postCopyEnabled;options 取三顆全
   // 部。bridge.js 是 content script，範圍外，自帶 SETTINGS_DEFAULTS。
@@ -125,6 +130,333 @@
     if (typeof url !== 'string') return null;
     var match = STRICT_POST_URL_PATTERN.exec(url);
     return match ? match[3] : null;
+  }
+
+  // ---- 跨裝置合併鍵(postKeyOf) ----
+
+  // 逐字移植自手機 C:\gitRepos\meta-link-clearer\src\lib\post-key.ts 的
+  // postKeyOf，輸入輸出與其完全等價(見 docs/cloud-sync.md D11)。純函
+  // 式、無副作用，SW 與擴充頁共用，雲端同步以此為 history 的合併鍵，取代
+  // extractPostId 只認嚴格樣式(無尾斜線/query，handle 白名單字元類)的局
+  // 限。extractPostId 保留給顯示用途，行為不變。
+
+  // host 是否為 suffix 本身，或其任一子網域(以 '.' + suffix 結尾)。大小寫
+  // 不敏感;用 endsWith 而非 includes，避免 sub.threads.com.evil.com 這種
+  // 「字串包含但非同網域」的釣魚變體被誤判。
+  function hostnameEndsWith(hostname, suffix) {
+    var h = hostname.toLowerCase();
+    return h === suffix || h.slice(-(suffix.length + 1)) === '.' + suffix;
+  }
+
+  // Threads:/@handle/post/<code>;handle 會變，只取 code。
+  var THREADS_POST = /^\/@[^/]+\/post\/([A-Za-z0-9_-]+)\/?$/;
+  // Instagram:/p、/reel、/reels、/tv 後面都是同一種 shortcode。
+  var INSTAGRAM_POST = /^\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)\/?$/;
+  // Facebook 路徑型:.../posts/<id>(數字或 pfbid…)、.../videos/<id>、
+  // /reel/<id>、.../photos/<album>/<id>。
+  var FACEBOOK_POSTS = /\/posts\/([A-Za-z0-9_-]+)\/?$/;
+  var FACEBOOK_VIDEOS = /\/videos\/([0-9]+)\/?$/;
+  var FACEBOOK_REEL = /^\/reel\/([0-9]+)\/?$/;
+  var FACEBOOK_PHOTOS = /\/photos\/[^/]+\/([0-9]+)\/?$/;
+  // Facebook query 型:permalink.php／story.php 用 story_fbid、
+  // photo(.php) 用 fbid、watch 用 v。
+  var FACEBOOK_STORY_PAGES = /^\/(?:permalink|story)\.php$/;
+  var FACEBOOK_PHOTO_PAGES = /^\/photo(?:\.php)?\/?$/;
+  var FACEBOOK_WATCH_PAGES = /^\/watch\/?$/;
+
+  // 從已解析的 Facebook URL 抽貼文/影片/相片識別碼，抽不出回傳 null。
+  function facebookId(parsed) {
+    var path = parsed.pathname;
+    var m =
+      FACEBOOK_POSTS.exec(path) ||
+      FACEBOOK_VIDEOS.exec(path) ||
+      FACEBOOK_REEL.exec(path) ||
+      FACEBOOK_PHOTOS.exec(path);
+    if (m) return m[1];
+    if (FACEBOOK_STORY_PAGES.test(path)) return parsed.searchParams.get('story_fbid');
+    if (FACEBOOK_PHOTO_PAGES.test(path)) return parsed.searchParams.get('fbid');
+    if (FACEBOOK_WATCH_PAGES.test(path)) return parsed.searchParams.get('v');
+    return null;
+  }
+
+  // 退回網址本身當鍵:host 小寫並去掉 www./m./mobile. 前綴，路徑去尾斜線，
+  // query 照留(呼叫端傳入的網址已剝過追蹤參數)。
+  function urlKey(parsed) {
+    var host = parsed.hostname.toLowerCase().replace(/^(?:www|m|mobile)\./, '');
+    var path = parsed.pathname.replace(/\/+$/, '') || '/';
+    return 'url:' + host + path + parsed.search;
+  }
+
+  // 回傳形如 threads:DLxxxx、instagram:Cxxxx、facebook:123456 或
+  // url:host/path 的字串。無法解析的輸入回傳 url:<原字串>，永遠不丟例外。
+  function postKeyOf(cleaned) {
+    var parsed;
+    try {
+      parsed = new URL(cleaned);
+    } catch (e) {
+      return 'url:' + cleaned;
+    }
+    var hostname = parsed.hostname;
+
+    if (hostnameEndsWith(hostname, 'threads.com') || hostnameEndsWith(hostname, 'threads.net')) {
+      var threadsMatch = THREADS_POST.exec(parsed.pathname);
+      if (threadsMatch) return 'threads:' + threadsMatch[1];
+    } else if (hostnameEndsWith(hostname, 'instagram.com')) {
+      var instagramMatch = INSTAGRAM_POST.exec(parsed.pathname);
+      if (instagramMatch) return 'instagram:' + instagramMatch[1];
+    } else if (hostnameEndsWith(hostname, 'facebook.com')) {
+      var fbId = facebookId(parsed);
+      if (fbId) return 'facebook:' + fbId;
+    }
+    return urlKey(parsed);
+  }
+
+  // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync.md 4.2/4.3) ----
+
+  // chrome.storage.local.syncState 的預設形狀。欄位齊備是同步引擎的前提:
+  // 少一個鍵，讀到的是 undefined 而不是 null，各處「未登入」判定會失準。
+  var DEFAULT_SYNC_STATE = {
+    userId: null,
+    email: null,
+    // D15:帳號入口顯示用——已登入時秀名字與 Google 大頭照，備援 email 前段
+    // 與首字母。兩欄一律經下方 sanitize 函式把關，不直接存後端/id_token 原文。
+    displayName: null,
+    avatarUrl: null,
+    cursor: null,
+    lastSyncedAt: null,
+    clearedAt: null,
+    lastError: null,
+  };
+
+  // chrome.storage.local.syncAuth 的預設形狀(D10:bearer token 明文存 local)。
+  var DEFAULT_SYNC_AUTH = { token: null };
+
+  function optionalString(value) {
+    return typeof value === 'string' ? value : null;
+  }
+  function optionalFiniteNumber(value) {
+    return typeof value === 'number' && isFinite(value) ? value : null;
+  }
+
+  // D15:帳號入口的顯示名字。去頭尾空白、上限 DISPLAY_NAME_MAX 字元;非字串
+  // 或去空白後為空字串一律回 null(空字串會讓 UI 誤判成「有名字但顯示空
+  // 白」)。剝控制字元的規則與其他文字欄位一致(先剝後截)。
+  //
+  // 【摺成單行】\n/\r/tab 等空白字元(stripControlChars 刻意保留 tab/
+  // newline,見該函式註解)一律摺成單一半形空白再 trim——顯示名字是帳號入
+  // 口的單行 UI 元素,換行會被瀏覽器渲染成看不出來的怪異間距或直接破版。
+  //
+  // 【slice 後補一刀】String.slice 以 UTF-16 code unit 計數，80 這一刀可能
+  // 剛好切在 surrogate pair(例如 emoji)中間，留下孤立的高位代理——多數渲
+  // 染器會畫成 U+FFFD 替代字元,是使用者看得到的亂碼。截斷後若最後一個
+  // code unit 落在高位代理範圍(U+D800-U+DBFF)就整顆代理對一起丟掉,寧可
+  // 短一個字也不留半個 emoji。
+  function sanitizeDisplayName(value) {
+    if (typeof value !== 'string') return null;
+    var stripped = stripControlChars(value).replace(/\s+/g, ' ').trim();
+    if (stripped.length === 0) return null;
+    var truncated = stripped.slice(0, DISPLAY_NAME_MAX);
+    var lastCode = truncated.charCodeAt(truncated.length - 1);
+    if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+      truncated = truncated.slice(0, -1);
+    }
+    return truncated.length > 0 ? truncated : null;
+  }
+
+  // D15:頭像網址白名單。只接受 https 且 host 為 googleusercontent.com 本身
+  // 或其子網域(Google 個人頭像走這個 CDN，例如 lh3.googleusercontent.com)，
+  // 其餘一律回 null——後端資料一旦被污染，UI 不該把任意網址當成 <img src>
+  // 載入(可能觸發外部請求外洩 IP、或塞 data:/javascript: 之類的偽協定)。
+  //
+  // 【比對 hostname，不比對整串網址】new URL() 會把 "https://real.host@evil.
+  // com/x" 解析成 hostname = evil.com(real.host 只是 userinfo);用 indexOf/
+  // includes 對整串字比對會被這種偽裝網址騙過，用解析後的 hostname 才是可
+  // 信的判準。
+  //
+  // 【長度上限先於解析】超長字串丟進 new URL() 一樣會被吃掉記憶體/CPU 才拋
+  // 錯，沿用既有 ORIGINAL_MAX(貼文網址的長度上限)當同一把尺，這裡不是嚴謹
+  // 的網址長度標準,只是防呆。
+  //
+  // 【回傳 parsed.href，不回傳原始 value】new URL() 解析時已經正規化過(百
+  // 分比編碼、預設埠等)，href 不含控制字元/前後空白/bidi 標記——這些字元合
+  // 法落在 URL 的某些位置(例如 query/fragment)但夾帶控制字元的頭像網址本
+  // 身就是可疑輸入，讓 UI 拿到解析後的乾淨字串比對照抄使用者輸入更安全。
+  function sanitizeAvatarUrl(value) {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    if (value.length > LIMITS.ORIGINAL_MAX) return null;
+    var parsed;
+    try {
+      parsed = new URL(value);
+    } catch (e) {
+      return null;
+    }
+    if (parsed.protocol !== 'https:') return null;
+    if (!hostnameEndsWith(parsed.hostname, 'googleusercontent.com')) return null;
+    return parsed.href;
+  }
+
+  // syncState 防禦性整形:缺席欄位補預設、型別不對的欄位回該欄預設、未知鍵
+  // 一律丟棄(整包會寫回 storage，夾帶的鍵會一路長存)。**每次回傳全新物件**
+  // ——回傳共用的 DEFAULT_SYNC_STATE 參照時，呼叫端一改就污染全域預設值。
+  function normalizeSyncState(state) {
+    var raw = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
+    return {
+      userId: optionalString(raw.userId),
+      email: optionalString(raw.email),
+      displayName: sanitizeDisplayName(raw.displayName),
+      avatarUrl: sanitizeAvatarUrl(raw.avatarUrl),
+      cursor: optionalString(raw.cursor),
+      lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
+      clearedAt: optionalFiniteNumber(raw.clearedAt),
+      lastError: optionalString(raw.lastError),
+    };
+  }
+
+  // UUID v4 生成器。三種載入環境(service worker、擴充頁面、Node 測試)的全域
+  // 都有 crypto.randomUUID，只在缺席時退到 getRandomValues 自行組裝，版本位
+  // 與 variant 位照 RFC 4122 固定。**沒有 crypto 就直接拋錯**——id 是雲端卡片
+  // 的身分，用 Math.random 這種弱隨機補位會製造可預測的碰撞，寧可整條寫入路
+  // 徑失敗也不落一個不可信的 id。
+  function randomUuid() {
+    var webCrypto = typeof crypto !== 'undefined' && crypto ? crypto : null;
+    if (webCrypto && typeof webCrypto.randomUUID === 'function') {
+      return webCrypto.randomUUID();
+    }
+    if (!webCrypto || typeof webCrypto.getRandomValues !== 'function') {
+      throw new Error('[threads-clean-link] 環境缺少 crypto，無法生成 UUID');
+    }
+    var bytes = new Uint8Array(16);
+    webCrypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    var hex = [];
+    for (var j = 0; j < 16; j++) hex.push(('0' + bytes[j].toString(16)).slice(-2));
+    return (
+      hex.slice(0, 4).join('') +
+      '-' +
+      hex.slice(4, 6).join('') +
+      '-' +
+      hex.slice(6, 8).join('') +
+      '-' +
+      hex.slice(8, 10).join('') +
+      '-' +
+      hex.slice(10, 16).join('')
+    );
+  }
+
+  // seen[].kind → 雲端 seen[].source(D4):share→share，strip/menu/icon→
+  // clipboard。kind 缺席的種子紀錄不對應任何來源事件，回 undefined 讓呼叫端
+  // 整個 source 鍵不輸出——硬塞 clipboard 等於對雲端謊報沒發生過的來源。
+  function seenSourceOf(kind) {
+    if (kind === undefined) return undefined;
+    return kind === 'share' ? 'share' : 'clipboard';
+  }
+
+  // 雲端 seen[].source → 本機 kind。插件沒有 clipboard 這個 kind，一律回
+  // 'share';source 缺席時同樣回 undefined(維持無標籤的種子紀錄)。
+  function seenKindOf(source) {
+    if (source === undefined) return undefined;
+    return 'share';
+  }
+
+  // entry → 雲端 SyncItem(計劃 4.3)。只輸出雲端有的欄位:kind(D4)、dirty、
+  // deletedAt、serverUpdatedAt、postKey、at、url 全屬本機簿記，一律不上雲。
+  // 選填欄位缺席時整個鍵不輸出——輸出 null 會被伺服器當成「明確清空」。
+  function toSyncItem(entry) {
+    var cleaned = normalizePostUrl(entry.url) || entry.url;
+    var item = {
+      id: entry.id,
+      cleaned: cleaned,
+      // original 是伺服器必填欄位，缺席整筆會被靜默丟棄，上傳前最後補一次。
+      original: typeof entry.original === 'string' && entry.original ? entry.original : cleaned,
+      receivedAt: entry.receivedAt,
+    };
+    if (typeof entry.author === 'string') item.author = entry.author;
+    if (typeof entry.handle === 'string') item.handle = entry.handle;
+    if (typeof entry.excerpt === 'string') item.excerpt = entry.excerpt;
+    if (Array.isArray(entry.removedParams) && entry.removedParams.length > 0) {
+      item.removedParams = entry.removedParams.map(function (p) {
+        return { key: p.key, value: p.value };
+      });
+    }
+    // seen 上雲前最後裁一次到 SEEN_MAX(取最新的一批)。本機寫入路徑本來就裁
+    // 過，但遷移前的庫存與匯入檔可能帶著更長的 seen——上傳超量的事件序列會被
+    // 伺服器整筆拒收或截斷，兩種結果都不是本機能觀測到的。
+    if (Array.isArray(entry.seen) && entry.seen.length > 0) {
+      item.seen = entry.seen.slice(-LIMITS.SEEN_MAX).map(function (s) {
+        var source = seenSourceOf(s.kind);
+        return source === undefined ? { at: s.at } : { at: s.at, source: source };
+      });
+    }
+    return item;
+  }
+
+  // 雲端 SyncItem.seen → 本機 seen 形狀:source 反映射成 kind(見 seenKindOf)，
+  // 其餘型別把關交給下游的 sanitizeSeenList，這裡只做形狀轉換。非陣列回空陣列。
+  function cloudSeenEvents(list) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var record = list[i];
+      if (!record || typeof record !== 'object') continue;
+      var kind = record.kind !== undefined ? record.kind : seenKindOf(record.source);
+      out.push(kind === undefined ? { at: record.at } : { at: record.at, kind: kind });
+    }
+    return out;
+  }
+
+  // 雲端 SyncItem → entry。existing 是本機同一張卡(沒有則傳 null):
+  //   - id 以雲端(canonical)為準——伺服器改名時就地改名。
+  //   - kind 沿用既有(雲端無此欄位，D4 已接受跨裝置遺失)，沒有既有卡時預設
+  //     'share'。
+  //   - seen 取雲端與本機的聯集(同 at 去重)，按 at 升序裁到 SEEN_MAX。
+  //   - at 是本機顯示用的最後出現時間，取 max(receivedAt, seen 最大 at)。
+  //   - dirty 清為 false(剛從雲端拉下來)、deletedAt 清為 null(雲端仍存在的
+  //     卡片必須復活，否則別台裝置重新分享的貼文在這台永遠看不到)。
+  function fromSyncItem(item, existing) {
+    var base = existing && typeof existing === 'object' ? existing : null;
+    var url = normalizePostUrl(item.cleaned) || item.cleaned;
+    var receivedAt = optionalFiniteNumber(item.receivedAt);
+
+    // 雲端 seen 先把 source 反映射成本機 kind，再走共用的 unionSeen(同 at 去
+    // 重、升序、裁到 SEEN_MAX)。雲端那一份排在前，同一時刻以伺服器的說法為準。
+    var events = unionSeen(cloudSeenEvents(item.seen), base && base.seen, LIMITS.SEEN_MAX);
+
+    var latest = receivedAt === null ? null : receivedAt;
+    for (var k = 0; k < events.length; k++) {
+      if (latest === null || events[k].at > latest) latest = events[k].at;
+    }
+
+    var entry = {
+      url: url,
+      kind: base && typeof base.kind === 'string' ? base.kind : 'share',
+      at: latest === null ? optionalFiniteNumber(base && base.at) : latest,
+      seen: events,
+      id: item.id,
+      postKey: postKeyOf(url),
+      original: typeof item.original === 'string' && item.original ? item.original : url,
+      receivedAt: receivedAt,
+      dirty: false,
+      // serverUpdatedAt 取雲端本次回傳值，缺席則沿用既有(不得憑空清成 null，
+      // 它是下一輪合併的判準)。
+      serverUpdatedAt:
+        optionalFiniteNumber(item.updatedAt) !== null
+          ? optionalFiniteNumber(item.updatedAt)
+          : optionalFiniteNumber(base && base.serverUpdatedAt),
+      deletedAt: null,
+    };
+
+    var author = typeof item.author === 'string' ? item.author : base && base.author;
+    if (typeof author === 'string') entry.author = author;
+    var handle = typeof item.handle === 'string' ? item.handle : base && base.handle;
+    if (typeof handle === 'string') entry.handle = handle;
+    var excerpt = typeof item.excerpt === 'string' ? item.excerpt : base && base.excerpt;
+    if (typeof excerpt === 'string') entry.excerpt = excerpt;
+    var removedParams = Array.isArray(item.removedParams)
+      ? item.removedParams
+      : base && base.removedParams;
+    if (Array.isArray(removedParams) && removedParams.length > 0) entry.removedParams = removedParams;
+    return entry;
   }
 
   // ---- 欄位消毒 ----
@@ -208,20 +540,259 @@
     return out.slice(-LIMITS.SEEN_MAX);
   }
 
+  // 兩份 seen 事件的聯集:各自先過 sanitizeSeenList，**同 at 只留一筆**(a 的
+  // 那一筆優先)，按 at 升序，裁到最新 max 筆(max 缺席時用 SEEN_MAX)。
+  //
+  // 【單一權威】原本三處各養一份鏡像:background 的 unionSeenEvents、options
+  // 的 unionSeenLists、tcl-core fromSyncItem 內的 pushSeen。只有 background 那
+  // 份沒有同 at 去重——同一篇貼文反覆合併(落盤合併、失敗卡收編、遷移整平各走
+  // 一次)時，同一個時刻會在時間軸上疊出好幾筆，還把 SEEN_MAX 的額度吃掉，真
+  // 正較舊的事件反而被裁掉。
+  //
+  // 【N 份聯集】呼叫端以 reduce 逐份併入即可:每一步都只裁掉「比留下的 max 筆
+  // 更舊」的事件，那些事件在最終聯集裡本來也進不了最新 max 筆，結果與一次併
+  // 完全部再裁相同。
+  function unionSeen(a, b, max) {
+    var limit = typeof max === 'number' && isFinite(max) && max > 0 ? max : LIMITS.SEEN_MAX;
+    var byAt = {};
+    var out = [];
+    function collect(list) {
+      var sanitized = sanitizeSeenList(list);
+      for (var i = 0; i < sanitized.length; i++) {
+        var record = sanitized[i];
+        if (Object.prototype.hasOwnProperty.call(byAt, record.at)) continue;
+        byAt[record.at] = true;
+        out.push(record);
+      }
+    }
+    collect(a);
+    collect(b);
+    out.sort(function (x, y) {
+      return x.at - y.at;
+    });
+    return out.slice(-limit);
+  }
+
+  // ---- history 條目的共用純函式 ----
+
+  // 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合。background 的落盤
+  // 合併/失敗卡收編/遷移整平與 options 的匯入合併共用同一份清單——任一端多
+  // 一欄少一欄，同一筆紀錄在兩條路徑上就會併出不同結果。
+  var MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
+
+  // 純函式:取出條目的 seen 事件序列。seen[] 存在就逐筆過 sanitizeSeenList;
+  // 缺席(schema 升級前寫入的舊資料)時照手機版語意以條目自身的 at 補種一筆起
+  // 始紀錄，讓時間軸看得到它原本第一次出現的時間;種子紀錄不帶 kind(那一刻
+  // 沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)。at 不是有限數字就連
+  // 種子都不補(那筆時間本身就不可信)。
+  function entrySeenEvents(entry) {
+    if (!entry || typeof entry !== 'object') return [];
+    if (Array.isArray(entry.seen)) return sanitizeSeenList(entry.seen);
+    return typeof entry.at === 'number' && isFinite(entry.at) ? [{ at: entry.at }] : [];
+  }
+
+  // 純函式:條目的最早事件時間(cloud-sync.md 4.1 的 receivedAt)。取 seen 事件
+  // 的**最小** at 而非 seen[0].at——真實資料在多次合併/匯入後未必已排序;一個
+  // 可用事件都沒有(seen 為空陣列、或 at 全是髒資料)時退回條目自身的 at。
+  function entryEarliestAt(entry) {
+    var events = entrySeenEvents(entry);
+    var earliest = null;
+    for (var i = 0; i < events.length; i++) {
+      if (earliest === null || events[i].at < earliest) earliest = events[i].at;
+    }
+    if (earliest !== null) return earliest;
+    return optionalFiniteNumber(entry && entry.at);
+  }
+
+  // 純函式:條目已持久化的 receivedAt 與其事件序列推導值取較早者。receivedAt
+  // 是這張卡在雲端的「第一次出現時間」，只會往前不會往後——seen 裁到 SEEN_MAX
+  // 而丟掉最舊幾筆時，不得讓 receivedAt 跟著往後跳。
+  function resolveReceivedAt(entry) {
+    var stored = optionalFiniteNumber(entry && entry.receivedAt);
+    var derived = entryEarliestAt(entry);
+    if (stored === null) return derived;
+    if (derived === null) return stored;
+    return Math.min(stored, derived);
+  }
+
+  // 是否為 chrome.storage 的容量配額超限錯誤:Chrome 對總量配額(QUOTA_BYTES)
+  // 與單筆配額(QUOTA_BYTES_PER_ITEM)超限，都會用訊息含 "QUOTA_BYTES" 字樣的
+  // 錯誤 reject storage.local.set()。用字串比對辨識而不依賴特定錯誤類別/物件
+  // 形狀，避免不同瀏覽器或版本的錯誤物件實作差異導致誤判漏接。
+  function isQuotaExceededError(err) {
+    var message = (err && err.message) || String(err || '');
+    return /QUOTA_BYTES/i.test(message);
+  }
+
+  // ---- 儲存上限:位元組軟預算 + 筆數硬保險 ----
+  //
+  // chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
+  // (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算，刻意留約 2MB 餘裕給 sync
+  // 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload，不把配額用
+  // 滿到邊界。配額錯誤的優雅降級(見 background/options 的 isQuotaExceededError)
+  // 保留當最後一道防線——軟預算是「平時就不長到那麼大」，配額降級是「萬一還
+  // 是爆了也不炸」。
+  //
+  // 筆數硬保險:即使每筆都很小、位元組遠不到軟預算，也不讓陣列無限長(渲染/
+  // 去重掃描都是 O(n))。10000 筆是「正常使用永遠碰不到、異常暴衝才會撞上」的
+  // 量級。兩者取先觸發者:capHistory 先砍筆數上限、再用軟預算裁位元組，最終
+  // 陣列同時滿足兩個約束。
+  //
+  // 【單一權威】原本只有 background 有這套裁切，options 的匯入寫回路徑完全繞
+  // 過——一份 12,000 筆的匯入檔就能讓 storage 直接寫爆。實作收在此處，
+  // background 寫入/遷移/同步拉取與 options 匯入共用同一份。
+  var HISTORY_LIMITS = {
+    MAX_ENTRIES: 10000,
+    SOFT_BUDGET: 8 * 1024 * 1024,
+  };
+
+  // 純函式:條目是否為墓碑(已軟刪、等待伺服器 ack 刪除意圖)。墓碑留在
+  // storage 但不進畫面，裁切時優先淘汰。
+  function isTombstone(entry) {
+    return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
+  }
+
+  // 單筆的序列化位元組估算:JSON.stringify(...).length 近似(ASCII 相符;多位
+  // 元組字元會低估，由 2MB 餘裕吸收)，+1 近似陣列的分隔逗號。
+  function entryBytes(entry) {
+    return JSON.stringify(entry).length + 1;
+  }
+
+  // 純函式:從尾端(最舊)往前丟棄墓碑，最多丟 count 筆，其餘原位保留。沒有丟
+  // 掉任何一筆時回傳原陣列參照。
+  function dropOldestTombstones(list, count) {
+    if (count <= 0) return list;
+    var dropped = {};
+    var droppedCount = 0;
+    for (var i = list.length - 1; i >= 0 && droppedCount < count; i--) {
+      if (!isTombstone(list[i])) continue;
+      dropped[i] = true;
+      droppedCount++;
+    }
+    if (droppedCount === 0) return list;
+    return list.filter(function (item, i) {
+      return !dropped[i];
+    });
+  }
+
+  // 筆數硬保險的墓碑優先淘汰:超量幾筆就先丟幾張最舊的墓碑，仍超量才由呼叫
+  // 端從尾端砍。
+  function evictTombstonesForCount(list, maxEntries) {
+    if (list.length <= maxEntries) return list;
+    return dropOldestTombstones(list, list.length - maxEntries);
+  }
+
+  // 位元組軟預算的墓碑優先淘汰:估算總量超標時，從最舊的墓碑開始丟到回到預算
+  // 內(或墓碑丟完為止);仍超標由呼叫端的前向累加從尾端裁。
+  //
+  // 回傳 { list, sizes }:sizes 是與回傳 list 逐項對齊的位元組估算，供呼叫端
+  // 的前向累加直接重用，同一筆不 stringify 兩次。沒有墓碑時整表估算本來就
+  // 省下了(常態路徑)，sizes 回 null 表示「沒有可重用的估算」。
+  function evictTombstonesForBudget(list, budget) {
+    var i;
+    var hasTombstone = false;
+    for (i = 0; i < list.length; i++) {
+      if (isTombstone(list[i])) {
+        hasTombstone = true;
+        break;
+      }
+    }
+    if (!hasTombstone) return { list: list, sizes: null };
+
+    var bytes = 2; // '[]' 外框
+    var sizes = [];
+    for (i = 0; i < list.length; i++) {
+      var size = entryBytes(list[i]);
+      sizes.push(size);
+      bytes += size;
+    }
+    if (bytes <= budget) return { list: list, sizes: sizes };
+
+    var dropped = {};
+    var droppedCount = 0;
+    for (i = list.length - 1; i >= 0 && bytes > budget; i--) {
+      if (!isTombstone(list[i])) continue;
+      dropped[i] = true;
+      droppedCount++;
+      bytes -= sizes[i];
+    }
+    if (droppedCount === 0) return { list: list, sizes: sizes };
+
+    var keptList = [];
+    var keptSizes = [];
+    for (i = 0; i < list.length; i++) {
+      if (dropped[i]) continue;
+      keptList.push(list[i]);
+      keptSizes.push(sizes[i]);
+    }
+    return { list: keptList, sizes: keptSizes };
+  }
+
+  // 把待寫入的紀錄陣列(新到舊排列，index 0 最新)裁到儲存上限內:筆數超過
+  // maxEntries 先從尾端(最舊)砍;再從最新往最舊累加估算序列化位元組，超過
+  // softBudget 就不再收更舊的條目(同樣等於從尾端裁)。永遠至少保留最新一筆，
+  // 不會把本次剛寫入的紀錄也裁掉。limits 缺席時用 HISTORY_LIMITS。
+  //
+  // 兩條裁切路徑(筆數、位元組)都先淘汰墓碑:墓碑是使用者早就刪掉、只等伺服
+  // 器 ack 的空殼，純尾端裁切會為了留住它而砍掉使用者真的看得到的紀錄。
+  function capHistory(list, limits) {
+    if (!Array.isArray(list)) return [];
+    var maxEntries =
+      limits && typeof limits.maxEntries === 'number' ? limits.maxEntries : HISTORY_LIMITS.MAX_ENTRIES;
+    var budget = limits && typeof limits.softBudget === 'number' ? limits.softBudget : HISTORY_LIMITS.SOFT_BUDGET;
+
+    var capped = evictTombstonesForCount(list, maxEntries);
+    capped = capped.length > maxEntries ? capped.slice(0, maxEntries) : capped;
+    var evicted = evictTombstonesForBudget(capped, budget);
+    capped = evicted.list;
+    var sizes = evicted.sizes;
+
+    // 單次 O(n) 前向累加，避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
+    var budgeted = [];
+    var bytes = 2; // '[]' 外框
+    for (var i = 0; i < capped.length; i++) {
+      var itemBytes = sizes === null ? entryBytes(capped[i]) : sizes[i];
+      if (budgeted.length > 0 && bytes + itemBytes > budget) break;
+      bytes += itemBytes;
+      budgeted.push(capped[i]);
+    }
+    // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置;遷移的冪等短路也
+    // 依賴這個參照相等)。
+    return budgeted.length === list.length ? list : budgeted;
+  }
+
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
     isCleanPostUrl: isCleanPostUrl,
     normalizePostUrl: normalizePostUrl,
     extractPostId: extractPostId,
+    postKeyOf: postKeyOf,
     KIND_LIST: KIND_LIST,
     NOTICE_KIND_LIST: NOTICE_KIND_LIST,
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
+    DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
+    DEFAULT_SYNC_AUTH: DEFAULT_SYNC_AUTH,
+    normalizeSyncState: normalizeSyncState,
+    sanitizeDisplayName: sanitizeDisplayName,
+    sanitizeAvatarUrl: sanitizeAvatarUrl,
+    randomUuid: randomUuid,
+    toSyncItem: toSyncItem,
+    fromSyncItem: fromSyncItem,
     stripControlChars: stripControlChars,
     sanitizeText: sanitizeText,
     sanitizeOriginal: sanitizeOriginal,
     sanitizeRemovedParams: sanitizeRemovedParams,
     sanitizeSeenList: sanitizeSeenList,
+    unionSeen: unionSeen,
+    MERGEABLE_FIELDS: MERGEABLE_FIELDS,
+    entrySeenEvents: entrySeenEvents,
+    entryEarliestAt: entryEarliestAt,
+    resolveReceivedAt: resolveReceivedAt,
+    isTombstone: isTombstone,
+    isQuotaExceededError: isQuotaExceededError,
+    HISTORY_LIMITS: HISTORY_LIMITS,
+    capHistory: capHistory,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
