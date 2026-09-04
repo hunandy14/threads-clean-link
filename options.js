@@ -509,7 +509,13 @@
   // displayName/avatarUrl 為車道 A 新增的兩欄(docs/cloud-sync.md 第 5.2
   // 節)，缺席一律視為 null——帳號入口的頭像/名字渲染需要備援到
   // email，見 renderAccount。
-  var DEFAULT_SYNC_STATE = {
+  //
+  // 命名:DEFAULT_SYNC_CARD_STATE/normalizeSyncCardState 特意不叫
+  // DEFAULT_SYNC_STATE/normalizeSyncState——TCLCore 已有同名的
+  // normalizeSyncState(chrome.storage.local 的帳號同步狀態，車道 D6，形狀
+  // 完全不同，見上面 syncAccount)，兩者撞名容易在呼叫端讀岔;這裡的
+  // CardState 專指「頁首帳號卡片目前顯示的狀態」。
+  var DEFAULT_SYNC_CARD_STATE = {
     status: 'signed_out',
     email: null,
     displayName: null,
@@ -543,11 +549,11 @@
   }
 
   // 防禦性整形，比照 sanitizeEntries 的慣例:形狀不對(非物件/status 不在
-  // 白名單)一律退回 DEFAULT_SYNC_STATE;個別欄位型別不對就退回該欄位的
+  // 白名單)一律退回 DEFAULT_SYNC_CARD_STATE;個別欄位型別不對就退回該欄位的
   // 安全預設，不整包丟棄——background 若只有某個欄位暫時給錯型別，UI 仍
   // 該顯示其餘正確欄位。
-  function normalizeSyncState(state) {
-    if (!isValidSyncState(state)) return DEFAULT_SYNC_STATE;
+  function normalizeSyncCardState(state) {
+    if (!isValidSyncState(state)) return DEFAULT_SYNC_CARD_STATE;
     return {
       status: state.status,
       email: typeof state.email === 'string' ? state.email : null,
@@ -611,10 +617,15 @@
     // 登入 / 刪除雲端資料共用同一個 modal，confirmOk 點擊時執行這顆(見
     // openConfirm/closeConfirm)。
     var confirmAction = null;
-    // 雲端同步卡片目前顯示的狀態，預設未登入(見 DEFAULT_SYNC_STATE)。
+    // 雲端同步卡片目前顯示的狀態，預設未登入(見 DEFAULT_SYNC_CARD_STATE)。
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
-    var syncState = DEFAULT_SYNC_STATE;
+    var syncState = DEFAULT_SYNC_CARD_STATE;
+    // 刪除雲端資料是 fire-and-forget:送出當下就樂觀顯示已完成的 toast，
+    // 這顆旗標記著「下一次 setSyncState 要順便檢查 lastError，非 null
+    // 就把樂觀 toast 蓋成錯誤訊息」，見 acctDeleteBtn 的 click handler 與
+    // setSyncState。
+    var pendingDeleteCloudToast = false;
     // chrome.storage.local.syncState 的帳號同步狀態(計劃 4.2，與上面那顆
     // 卡片狀態是兩回事)。刪除與清除全部依它的 userId 分流(D6:未登入行為與
     // 現況完全一致)。
@@ -1093,20 +1104,20 @@
 
     // 跟 background 要一次目前狀態(頁面載入時呼叫一次)。runtime 未注入、
     // sendMessage 拋例外、或 background 端沒有對應 handler(MV3 對無人接聽
-    // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_STATE，
+    // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_CARD_STATE，
     // 讓帳號入口優雅顯示未登入態，不因車道 D 還沒做完就卡住整頁。
     function fetchSyncState() {
       if (!runtime || typeof runtime.sendMessage !== 'function') {
-        return Promise.resolve(DEFAULT_SYNC_STATE);
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
       }
       var result;
       try {
         result = runtime.sendMessage({ type: 'sync.getState' });
       } catch (e) {
-        return Promise.resolve(DEFAULT_SYNC_STATE);
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
       }
-      return Promise.resolve(result).then(normalizeSyncState, function () {
-        return DEFAULT_SYNC_STATE;
+      return Promise.resolve(result).then(normalizeSyncCardState, function () {
+        return DEFAULT_SYNC_CARD_STATE;
       });
     }
 
@@ -1204,7 +1215,7 @@
     // 清單卡片頁尾)也在此一併更新，因為它的文案同樣隨登入態切換(見
     // options.html 的 #deviceNote 註解)。
     function renderAccount(state) {
-      var s = state || DEFAULT_SYNC_STATE;
+      var s = state || DEFAULT_SYNC_CARD_STATE;
       var mode = accountMode(s);
       var signedOut = mode === 'signedOut';
 
@@ -1214,7 +1225,13 @@
       if (trigger) trigger.hidden = signedOut;
 
       if (signedOut) {
-        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        if (trigger) {
+          trigger.setAttribute('aria-expanded', 'false');
+          // 觸發鈕的 aria-label 重設回不帶狀態的基本文字(見下方 signedIn
+          // 分支併狀態文字進 aria-label 那段)——同一份防殘留邏輯:忘記先
+          // renderAccount 就重新顯示時，不該唸出上一態的「同步錯誤」。
+          trigger.setAttribute('aria-label', tt('opAccountMenuLabel'));
+        }
         var menuEl = byId('acctMenu');
         if (menuEl) menuEl.hidden = true;
         var deviceNoteEl0 = byId('deviceNote');
@@ -1233,11 +1250,34 @@
         var menuSubEl0 = byId('acctMenuSub');
         if (menuSubEl0) menuSubEl0.textContent = '';
 
+        // 頭像三件(字母/img/圓框)一併重設(真機實證回歸:登出後兩顆 img
+        // 的 src 沒清，下次任何帳號改用同一顆 img 元素前若又先渲染一次
+        // 「有大頭照」以外的中繼態，舊圖會先閃現)。renderAvatars 走的是
+        // 「usePhoto 才設 src」的邏輯，這裡直接手動清，不繞回
+        // renderAvatars(登出態沒有 initial/avatarUrl 可傳)。
+        AVATAR_INSTANCES.forEach(function (a) {
+          var letterEl = byId(a.letter);
+          var photoEl = byId(a.photo);
+          var circleEl = byId(a.circle);
+          if (letterEl) {
+            letterEl.textContent = '';
+            letterEl.hidden = false;
+          }
+          if (photoEl) {
+            photoEl.hidden = true;
+            // 清 src 的 IDL 屬性與底層 attribute 都要動:.src 是實際觸發
+            // 瀏覽器發請求/快取圖片的那一份，只清 attribute 不夠(真機
+            // 實證回歸)。
+            photoEl.src = '';
+            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+          }
+          if (circleEl) circleEl.classList.remove('has-photo');
+        });
+
         var dot0 = byId('statusDot');
         if (dot0) {
           dot0.classList.remove('is-danger', 'is-warning');
           dot0.hidden = true;
-          dot0.removeAttribute('aria-label');
         }
 
         var errorRow0 = byId('acctErrorRow');
@@ -1267,9 +1307,13 @@
       if (wrap) wrap.classList.toggle('is-syncing', mode === 'syncing');
 
       var dot = byId('statusDot');
+      // 狀態文字的 aria 通道只掛在觸發鈕(button)自己的 aria-label，不掛在
+      // 巢狀 statusDot span 上——aria-label 只認最近的可及性物件，button
+      // 已有自己的 aria-label 時，子節點的 aria-label 不會被讀屏器讀到
+      // (回歸:曾經掛在 statusDot 上，讀屏器一律只唸出「帳號選單」)。
+      var statusAriaKey = null;
       if (dot) {
         dot.classList.remove('is-danger', 'is-warning');
-        var statusAriaKey = null;
         if (mode === 'error') {
           dot.hidden = false;
           dot.classList.add('is-danger');
@@ -1285,8 +1329,14 @@
           // syncing:規格只要求外圈轉圈，不疊角標小圓點，避免視覺過雜。
           dot.hidden = true;
         }
-        if (statusAriaKey) dot.setAttribute('aria-label', tt(statusAriaKey));
-        else dot.removeAttribute('aria-label');
+      }
+      if (trigger) {
+        trigger.setAttribute(
+          'aria-label',
+          statusAriaKey
+            ? tf('opAccountMenuLabelStatus', { label: tt('opAccountMenuLabel'), status: tt(statusAriaKey) })
+            : tt('opAccountMenuLabel')
+        );
       }
 
       var hasError = mode === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
@@ -1331,8 +1381,15 @@
     // (比照 setHistory/setSyncSettings 的既有模式:controller 只暴露方法，
     // 訊息監聽掛在 -init.js)。
     function setSyncState(state) {
-      syncState = normalizeSyncState(state);
+      syncState = normalizeSyncCardState(state);
       renderAccount(syncState);
+      // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
+      // 有沒有失敗——deleteCloud 是 fire-and-forget，這裡是唯一能得知
+      // 結果的管道(見 acctDeleteBtn 的 click handler)。
+      if (pendingDeleteCloudToast) {
+        pendingDeleteCloudToast = false;
+        if (syncState.lastError) toast(tt('opAccountErrorPrefix') + syncState.lastError);
+      }
     }
 
     // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
@@ -1527,7 +1584,7 @@
         sendSyncAction({ type: 'sync.signOut' });
       });
       // 刪除雲端資料一樣走確認框，措辭明講三件事:無法復原、本機保留、
-      // 重新登入會再次上傳(避免與清除全部紀錄的本機刪除混淆)。
+      // 這些紀錄不會再上傳到雲端(避免與清除全部紀錄的本機刪除混淆)。
       on('acctDeleteBtn', 'click', function () {
         closeAcctMenu();
         openConfirm({
@@ -1538,6 +1595,11 @@
           desc: tt('opSyncDeleteConfirmDesc'),
           action: function () {
             sendSyncAction({ type: 'sync.deleteCloud' });
+            // deleteCloud 是 fire-and-forget，送出當下先樂觀提示已完成；
+            // 若下一次 stateChanged 帶回 lastError，setSyncState 會把這
+            // 顆 toast 蓋成錯誤訊息(見 pendingDeleteCloudToast)。
+            pendingDeleteCloudToast = true;
+            toast(tt('opToastCloudDeleted'));
           },
         });
       });
@@ -2370,7 +2432,7 @@
         bindAccount();
         renderAll();
 
-        // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_STATE(未登入)完成首次
+        // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_CARD_STATE(未登入)完成首次
         // 繪製(above 的 renderAll)，真值回來後才刷新。init() 等這步結束
         // 才 resolve，讓呼叫端 await controller.init() 後畫面已是最終狀態，
         // 不需另外猜測時序;runtime 未注入或 background 沒回應時
@@ -2492,8 +2554,8 @@
 
   var api = {
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
-    DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
-    normalizeSyncState: normalizeSyncState,
+    DEFAULT_SYNC_CARD_STATE: DEFAULT_SYNC_CARD_STATE,
+    normalizeSyncCardState: normalizeSyncCardState,
     isTrustedAvatarUrl: isTrustedAvatarUrl,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,

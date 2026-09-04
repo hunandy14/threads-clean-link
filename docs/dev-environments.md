@@ -39,7 +39,7 @@ npm scripts(本專案 `package.json` 原文):
 
 - `--env <local|staging|production>`:必填，連線目標，無預設值——沒給就印 help 並非 0 退出，逼使用者每次都明確選。
 - `--yes`:跳過 production 的互動確認，供 CI／腳本呼叫；警告文字仍照印，不悄悄跳過。
-- `--fresh`:建全新臨時 profile／state，不沿用既有登入或快取，用於重現「全新使用者」情境。
+- `--fresh`:建全新臨時 profile／state，不沿用既有登入或快取，用於重現「全新使用者」情境。臨時 profile 不自動清理，位於系統暫存目錄，用完可手動刪除。
 - `--restart`:目標載入路徑與執行環境目前載入的不同時，先把它關掉再重開;不帶此旗標只印訊息並非 0 退出，不擅自關使用者手上開著的視窗。
 - `--ref <git ref>`:切換要載入的建置版本(worktree HEAD)，跟 `--env` 正交——可以拿 staging build 連 local，也可以拿某個 PR 分支連 staging。
 - `--no-open`:跑完不自動開啟畫面，供背景／CI 呼叫。
