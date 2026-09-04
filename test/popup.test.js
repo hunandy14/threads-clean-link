@@ -44,69 +44,16 @@ function loadPopup() {
   return require(path.join(__dirname, '..', 'popup.js'));
 }
 
-// settle() 原本用固定牆鐘等待非同步鏈路(storage get/set 皆經 chrome.storage
-// mock 的 setTimeout(0) 落盤)跑完;機器忙時固定 ms 等不到鏈路跑完就斷言，
-// 閒時又白等。改用計時器計數，作法逐字移植自 test/background.test.js 的
-// 同名 helper:全域 setTimeout/clearTimeout 包一層，同時記錄(a)只增不減
-// 的「累計排程次數」與(b)「目前尚未觸發」的計時器集合，任一有變化都算
-// 「還在動」，連續兩輪都沒有變化才視為鏈路真正跑完並穩定下來。popup.js
-// 以 require() 直接載入同一個 Node realm(不經 vm sandbox)，本身不含任何
-// setTimeout，不像 background.js 有需要排除的長效逾時計時器，故沿用 Set
-// 版即可。輪詢用原生 setTimeout(不可用 setImmediate，check phase 沒有其
-// 他 I/O 時不會真的讓出，Date.now() 幾乎不動)，穩定後仍至少等原 ms 的一
-// 小部分，逾時上限以 ms 為準再留緩衝，超時直接 resolve、不吞錯，讓原本的
-// 斷言自己失敗。
-let totalTimersScheduled = 0;
-const pendingTimers = new Set();
-const nativeSetTimeout = global.setTimeout;
-const nativeClearTimeout = global.clearTimeout;
-global.setTimeout = function trackedSetTimeout(fn, ms, ...args) {
-  totalTimersScheduled++;
-  const handle = nativeSetTimeout((...cbArgs) => {
-    pendingTimers.delete(handle);
-    return fn(...cbArgs);
-  }, ms, ...args);
-  pendingTimers.add(handle);
-  return handle;
-};
-global.clearTimeout = function trackedClearTimeout(handle) {
-  pendingTimers.delete(handle);
-  return nativeClearTimeout(handle);
-};
-// pendingTimers 是整份檔案共用的單一集合，每個測試開始前清空，只保留「這
-// 個測試自己造成的排程」，避免上一個測試留下的計時器干擾下一次 settle()。
-test.beforeEach(() => {
-  pendingTimers.clear();
-});
-
-function settle(ms = 30) {
-  return new Promise((resolve) => {
-    const start = Date.now();
-    const floor = Math.max(Math.floor(ms / 5), 20);
-    const cap = Math.max(ms + 500, 2000);
-    let lastCount = totalTimersScheduled;
-    let stableTicks = 0;
-
-    function tick() {
-      const countChanged = totalTimersScheduled !== lastCount;
-      if (countChanged) lastCount = totalTimersScheduled;
-      const stillPending = pendingTimers.size > 0;
-      if (countChanged || stillPending) {
-        stableTicks = 0;
-      } else {
-        stableTicks++;
-      }
-      const elapsed = Date.now() - start;
-      const settled = stableTicks >= 2 && elapsed >= floor;
-      if (settled || elapsed >= cap) {
-        resolve();
-        return;
-      }
-      nativeSetTimeout(tick, 4);
-    }
-    nativeSetTimeout(tick, 4);
-  });
-}
+// settle() 原本是本檔逐字維護的一份牆鐘等待邏輯，機器忙時固定 ms 等不到
+// 非同步鏈路(storage get/set 皆經 chrome.storage mock 的 setTimeout(0) 落
+// 盤)跑完就斷言、閒時又白等，兩頭不討好;連同其餘五份逐字或近乎逐字相同
+// 的版本收斂進 test/support/settle.js 一份共用實作(原理與各項取捨的完整
+// 說明見該檔頭註解)。popup.js 以 require() 直接載入同一個 Node realm(不
+// 經 vm sandbox)，本身不含任何 setTimeout，不像 background.js 有需要排除
+// 的長效逾時計時器，但共用實作已一併過濾延遲超過上限的計時器，行為不受
+// 影響。
+const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 30 });
+test.beforeEach(reset);
 
 function setup(initial = {}) {
   const popup = loadPopup();
