@@ -2628,6 +2628,57 @@ test('帳號入口:大頭照 img 載入失敗(onerror)時退回字母備援，�
   assert.equal(doc.ids.avatarCircle.classList.contains('has-photo'), false);
 });
 
+test('帳號入口:登出後兩顆大頭照 img(頁首/選單)的 src 都清空，不殘留上一個帳號的照片(真機實證回歸)', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: 'Hong',
+      avatarUrl: 'https://lh3.googleusercontent.com/a/abc123',
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.avatarPhoto.src, 'https://lh3.googleusercontent.com/a/abc123', '前置:已登入應先顯示大頭照');
+  assert.equal(doc.ids.acctMenuAvatarPhoto.src, 'https://lh3.googleusercontent.com/a/abc123');
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: '',
+  });
+
+  assert.equal(doc.ids.avatarPhoto.src, '', '登出後頁首觸發鈕的大頭照 img 不應殘留 src');
+  assert.equal(doc.ids.avatarPhoto.getAttribute('src'), null);
+  assert.equal(doc.ids.avatarPhoto.hidden, true);
+  assert.equal(doc.ids.acctMenuAvatarPhoto.src, '', '登出後選單頂部的大頭照 img 不應殘留 src');
+  assert.equal(doc.ids.acctMenuAvatarPhoto.getAttribute('src'), null);
+  assert.equal(doc.ids.acctMenuAvatarPhoto.hidden, true);
+  assert.equal(doc.ids.avatarCircle.classList.contains('has-photo'), false);
+  assert.equal(doc.ids.acctMenuAvatarCircle.classList.contains('has-photo'), false);
+});
+
 test('帳號入口:登入鈕先跳確認框，文案帶本機現有筆數(D3)，確認後才送 sync.signIn', async () => {
   const history = [
     { url: CARD_URL_A, kind: 'share', at: 1000 },

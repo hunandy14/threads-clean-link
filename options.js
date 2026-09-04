@@ -1233,6 +1233,30 @@
         var menuSubEl0 = byId('acctMenuSub');
         if (menuSubEl0) menuSubEl0.textContent = '';
 
+        // 頭像三件(字母/img/圓框)一併重設(真機實證回歸:登出後兩顆 img
+        // 的 src 沒清，下次任何帳號改用同一顆 img 元素前若又先渲染一次
+        // 「有大頭照」以外的中繼態，舊圖會先閃現)。renderAvatars 走的是
+        // 「usePhoto 才設 src」的邏輯，這裡直接手動清，不繞回
+        // renderAvatars(登出態沒有 initial/avatarUrl 可傳)。
+        AVATAR_INSTANCES.forEach(function (a) {
+          var letterEl = byId(a.letter);
+          var photoEl = byId(a.photo);
+          var circleEl = byId(a.circle);
+          if (letterEl) {
+            letterEl.textContent = '';
+            letterEl.hidden = false;
+          }
+          if (photoEl) {
+            photoEl.hidden = true;
+            // 清 src 的 IDL 屬性與底層 attribute 都要動:.src 是實際觸發
+            // 瀏覽器發請求/快取圖片的那一份，只清 attribute 不夠(真機
+            // 實證回歸)。
+            photoEl.src = '';
+            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+          }
+          if (circleEl) circleEl.classList.remove('has-photo');
+        });
+
         var dot0 = byId('statusDot');
         if (dot0) {
           dot0.classList.remove('is-danger', 'is-warning');
