@@ -328,3 +328,58 @@ test('unionSeen:max 可覆寫、髒項逐筆丟棄、非陣列當空集合', () 
   );
   assert.deepEqual(C.unionSeen(null, undefined), []);
 });
+
+// ---- capHistory(儲存上限:位元組軟預算 + 筆數硬保險) ----
+
+// 沒觸發任何裁切時回傳**原陣列參照**——background 兩支遷移的冪等短路(「每
+// 一筆都是原物件參照就不寫回」)直接依賴這個相等性。
+test('capHistory:未超限時回傳原陣列參照', () => {
+  const list = [{ url: 'a', at: 2 }, { url: 'b', at: 1 }];
+  assert.equal(C.capHistory(list), list);
+  assert.deepEqual(C.capHistory('junk'), []);
+});
+
+test('capHistory:筆數硬保險從尾端(最舊)砍，最新一筆必留', () => {
+  const list = Array.from({ length: 30 }, (_, i) => ({ url: 'u' + i, at: 1000 - i }));
+  const out = C.capHistory(list, { maxEntries: 10 });
+  assert.equal(out.length, 10);
+  assert.equal(out[0].url, 'u0');
+  assert.equal(out[9].url, 'u9');
+});
+
+// 位元組軟預算:從最新往最舊累加，超標就不再收更舊的條目;預算再小也至少
+// 保留最新一筆（不會把本次剛寫入的紀錄也裁掉）。
+test('capHistory:位元組軟預算從尾端裁，且永遠至少保留最新一筆', () => {
+  const list = Array.from({ length: 20 }, (_, i) => ({ url: 'u' + i, at: 1000 - i }));
+  const one = JSON.stringify(list[0]).length + 1;
+  const out = C.capHistory(list, { softBudget: 2 + one * 3 });
+  assert.equal(out.length, 3);
+  assert.equal(out[0].url, 'u0');
+  assert.equal(C.capHistory(list, { softBudget: 1 }).length, 1, '預算不足一筆仍保留最新一筆');
+});
+
+// 墓碑優先淘汰:兩條裁切路徑都先丟墓碑，使用者真的看得到的最舊一筆才留得住。
+test('capHistory:超限時墓碑優先淘汰(筆數與位元組兩路徑)', () => {
+  const byCount = [
+    { url: 'live-new', at: 3 },
+    { url: 'tomb', at: 2, deletedAt: 1 },
+    { url: 'live-old', at: 1 },
+  ];
+  assert.deepEqual(
+    C.capHistory(byCount, { maxEntries: 2 }).map((e) => e.url),
+    ['live-new', 'live-old'],
+    '筆數超量先丟墓碑，一般最舊的一筆存活'
+  );
+
+  const byBudget = [
+    { url: 'live-new', at: 3 },
+    { url: 'tomb', at: 2, deletedAt: 1 },
+    { url: 'live-old', at: 1 },
+  ];
+  const budget = 2 + byBudget.reduce((sum, e) => sum + JSON.stringify(e).length + 1, 0) - 1;
+  assert.deepEqual(
+    C.capHistory(byBudget, { softBudget: budget }).map((e) => e.url),
+    ['live-new', 'live-old'],
+    '位元組超標同樣先丟墓碑'
+  );
+});

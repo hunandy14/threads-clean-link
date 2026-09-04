@@ -305,8 +305,12 @@
   // 正規化後仍不相等，以 url 去重會多開一張卡、雲端跟著分裂。同鍵不是「略
   // 過」而是合併語意(seen 聯集、receivedAt 取最早、墓碑復活)，計數上仍算
   // skipped(對使用者而言就是「沒有新增一筆」)。同一批匯入檔內部的同 postKey
-  // 也先併起來，否則一次匯入就自己製造出兩張同文卡。合併後新到舊排序，結果
-  // 不裁切(紀錄不設上限，匯入多少留多少)。
+  // 也先併起來，否則一次匯入就自己製造出兩張同文卡。合併後新到舊排序，最後過
+  // TCLCore.capHistory 套上與 background 寫入側同一份儲存上限(位元組軟預算＋
+  // 筆數硬保險，墓碑優先淘汰)——匯入是唯一能一口氣把 history 撐長的使用者操
+  // 作，繞過裁切等於讓一份夠大的匯入檔直接把 storage 寫爆。裁切從尾端(最舊)
+  // 起，added/skipped 仍是合併階段的計數(使用者關心的是「這次檔案裡有幾筆是
+  // 新的」，不是裁切後剩幾筆)。
   function mergeImportedEntries(existing, imported, now) {
     var merged = existing.slice();
     var indexByKey = {};
@@ -338,7 +342,7 @@
     merged.sort(function (a, b) {
       return b.at - a.at;
     });
-    return { merged: merged, added: added, skipped: skipped };
+    return { merged: TCLCore.capHistory(merged), added: added, skipped: skipped };
   }
 
   // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊

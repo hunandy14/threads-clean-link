@@ -570,6 +570,143 @@
     return out.slice(-limit);
   }
 
+  // ---- 儲存上限:位元組軟預算 + 筆數硬保險 ----
+  //
+  // chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
+  // (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算，刻意留約 2MB 餘裕給 sync
+  // 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload，不把配額用
+  // 滿到邊界。配額錯誤的優雅降級(見 background/options 的 isQuotaExceededError)
+  // 保留當最後一道防線——軟預算是「平時就不長到那麼大」，配額降級是「萬一還
+  // 是爆了也不炸」。
+  //
+  // 筆數硬保險:即使每筆都很小、位元組遠不到軟預算，也不讓陣列無限長(渲染/
+  // 去重掃描都是 O(n))。10000 筆是「正常使用永遠碰不到、異常暴衝才會撞上」的
+  // 量級。兩者取先觸發者:capHistory 先砍筆數上限、再用軟預算裁位元組，最終
+  // 陣列同時滿足兩個約束。
+  //
+  // 【單一權威】原本只有 background 有這套裁切，options 的匯入寫回路徑完全繞
+  // 過——一份 12,000 筆的匯入檔就能讓 storage 直接寫爆。實作收在此處，
+  // background 寫入/遷移/同步拉取與 options 匯入共用同一份。
+  var HISTORY_LIMITS = {
+    MAX_ENTRIES: 10000,
+    SOFT_BUDGET: 8 * 1024 * 1024,
+  };
+
+  // 純函式:條目是否為墓碑(已軟刪、等待伺服器 ack 刪除意圖)。墓碑留在
+  // storage 但不進畫面，裁切時優先淘汰。
+  function isTombstone(entry) {
+    return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
+  }
+
+  // 單筆的序列化位元組估算:JSON.stringify(...).length 近似(ASCII 相符;多位
+  // 元組字元會低估，由 2MB 餘裕吸收)，+1 近似陣列的分隔逗號。
+  function entryBytes(entry) {
+    return JSON.stringify(entry).length + 1;
+  }
+
+  // 純函式:從尾端(最舊)往前丟棄墓碑，最多丟 count 筆，其餘原位保留。沒有丟
+  // 掉任何一筆時回傳原陣列參照。
+  function dropOldestTombstones(list, count) {
+    if (count <= 0) return list;
+    var dropped = {};
+    var droppedCount = 0;
+    for (var i = list.length - 1; i >= 0 && droppedCount < count; i--) {
+      if (!isTombstone(list[i])) continue;
+      dropped[i] = true;
+      droppedCount++;
+    }
+    if (droppedCount === 0) return list;
+    return list.filter(function (item, i) {
+      return !dropped[i];
+    });
+  }
+
+  // 筆數硬保險的墓碑優先淘汰:超量幾筆就先丟幾張最舊的墓碑，仍超量才由呼叫
+  // 端從尾端砍。
+  function evictTombstonesForCount(list, maxEntries) {
+    if (list.length <= maxEntries) return list;
+    return dropOldestTombstones(list, list.length - maxEntries);
+  }
+
+  // 位元組軟預算的墓碑優先淘汰:估算總量超標時，從最舊的墓碑開始丟到回到預算
+  // 內(或墓碑丟完為止);仍超標由呼叫端的前向累加從尾端裁。
+  //
+  // 回傳 { list, sizes }:sizes 是與回傳 list 逐項對齊的位元組估算，供呼叫端
+  // 的前向累加直接重用，同一筆不 stringify 兩次。沒有墓碑時整表估算本來就
+  // 省下了(常態路徑)，sizes 回 null 表示「沒有可重用的估算」。
+  function evictTombstonesForBudget(list, budget) {
+    var i;
+    var hasTombstone = false;
+    for (i = 0; i < list.length; i++) {
+      if (isTombstone(list[i])) {
+        hasTombstone = true;
+        break;
+      }
+    }
+    if (!hasTombstone) return { list: list, sizes: null };
+
+    var bytes = 2; // '[]' 外框
+    var sizes = [];
+    for (i = 0; i < list.length; i++) {
+      var size = entryBytes(list[i]);
+      sizes.push(size);
+      bytes += size;
+    }
+    if (bytes <= budget) return { list: list, sizes: sizes };
+
+    var dropped = {};
+    var droppedCount = 0;
+    for (i = list.length - 1; i >= 0 && bytes > budget; i--) {
+      if (!isTombstone(list[i])) continue;
+      dropped[i] = true;
+      droppedCount++;
+      bytes -= sizes[i];
+    }
+    if (droppedCount === 0) return { list: list, sizes: sizes };
+
+    var keptList = [];
+    var keptSizes = [];
+    for (i = 0; i < list.length; i++) {
+      if (dropped[i]) continue;
+      keptList.push(list[i]);
+      keptSizes.push(sizes[i]);
+    }
+    return { list: keptList, sizes: keptSizes };
+  }
+
+  // 把待寫入的紀錄陣列(新到舊排列，index 0 最新)裁到儲存上限內:筆數超過
+  // maxEntries 先從尾端(最舊)砍;再從最新往最舊累加估算序列化位元組，超過
+  // softBudget 就不再收更舊的條目(同樣等於從尾端裁)。永遠至少保留最新一筆，
+  // 不會把本次剛寫入的紀錄也裁掉。limits 缺席時用 HISTORY_LIMITS。
+  //
+  // 兩條裁切路徑(筆數、位元組)都先淘汰墓碑:墓碑是使用者早就刪掉、只等伺服
+  // 器 ack 的空殼，純尾端裁切會為了留住它而砍掉使用者真的看得到的紀錄。
+  function capHistory(list, limits) {
+    if (!Array.isArray(list)) return [];
+    var maxEntries =
+      limits && typeof limits.maxEntries === 'number' ? limits.maxEntries : HISTORY_LIMITS.MAX_ENTRIES;
+    var budget = limits && typeof limits.softBudget === 'number' ? limits.softBudget : HISTORY_LIMITS.SOFT_BUDGET;
+
+    var capped = evictTombstonesForCount(list, maxEntries);
+    capped = capped.length > maxEntries ? capped.slice(0, maxEntries) : capped;
+    var evicted = evictTombstonesForBudget(capped, budget);
+    capped = evicted.list;
+    var sizes = evicted.sizes;
+
+    // 單次 O(n) 前向累加，避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
+    var budgeted = [];
+    var bytes = 2; // '[]' 外框
+    for (var i = 0; i < capped.length; i++) {
+      var itemBytes = sizes === null ? entryBytes(capped[i]) : sizes[i];
+      if (budgeted.length > 0 && bytes + itemBytes > budget) break;
+      bytes += itemBytes;
+      budgeted.push(capped[i]);
+    }
+    // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置;遷移的冪等短路也
+    // 依賴這個參照相等)。
+    return budgeted.length === list.length ? list : budgeted;
+  }
+
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
     isCleanPostUrl: isCleanPostUrl,
@@ -594,6 +731,8 @@
     sanitizeRemovedParams: sanitizeRemovedParams,
     sanitizeSeenList: sanitizeSeenList,
     unionSeen: unionSeen,
+    HISTORY_LIMITS: HISTORY_LIMITS,
+    capHistory: capHistory,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

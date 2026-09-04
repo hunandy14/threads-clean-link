@@ -3825,3 +3825,57 @@ test('匯出 → 匯入 round-trip:id 不變、serverUpdatedAt 保留、received
   assert.equal(back.dirty, true, '匯入回來的資料在本機一律是待上傳狀態');
   assert.equal(back.deletedAt, null);
 });
+
+// ============================================================
+// 匯入的儲存上限（TCLCore.capHistory）
+// ============================================================
+
+// 匯入是唯一能一口氣把 history 撐長的使用者操作。原本 mergeImportedEntries
+// 完全繞過 background 那套裁切，一份夠大的匯入檔就能把 storage.local 寫爆
+// （寫入失敗只會吐配額 toast，整批匯入白做）。
+test('mergeImportedEntries:12000 筆匯入檔被裁到筆數硬保險，保留最新的一批', () => {
+  const MAX = 10000;
+  const imported = Array.from({ length: 12000 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/P${i}`,
+    kind: 'share',
+    // i 越大 at 越新，裁切必須從尾端（最舊，i 小）砍。
+    at: 1700000000000 + i,
+  }));
+
+  const result = options.mergeImportedEntries([], imported, 1700000000000);
+  assert.equal(result.merged.length, MAX, '結果被裁到 HISTORY_LIMITS.MAX_ENTRIES');
+  assert.equal(result.added, 12000, 'added 是合併階段的計數，不受裁切影響');
+  assert.equal(result.merged[0].url, 'https://www.threads.com/@u/post/P11999', '最新的一筆存活');
+  assert.equal(result.merged[MAX - 1].url, 'https://www.threads.com/@u/post/P2000', '最舊的 2000 筆被裁掉');
+});
+
+// 裁切走的是與 background 同一份實作：墓碑（deletedAt 為有限數字）優先淘
+// 汰，使用者真的看得到的最舊一筆必須存活。
+test('mergeImportedEntries:超量時墓碑優先淘汰，一般最舊的一筆存活', () => {
+  const existing = Array.from({ length: 10000 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/Q${i}`,
+    kind: 'share',
+    at: 1700000000000 - i,
+    id: `q-${i}`,
+    postKey: `threads:Q${i}`,
+    receivedAt: 1700000000000 - i,
+    dirty: false,
+    serverUpdatedAt: null,
+    // 最舊的那一筆是墓碑，超量時它應該先被丟。
+    deletedAt: i === 9999 ? 1600000000000 : null,
+  }));
+
+  const result = options.mergeImportedEntries(
+    existing,
+    [{ url: 'https://www.threads.com/@u/post/NEWCARD', kind: 'share', at: 1800000000000 }],
+    1800000000000
+  );
+
+  assert.equal(result.merged.length, 10000);
+  const urls = result.merged.map(function (e) {
+    return e.url;
+  });
+  assert.equal(urls.indexOf('https://www.threads.com/@u/post/Q9999'), -1, '墓碑被優先淘汰');
+  assert.ok(urls.indexOf('https://www.threads.com/@u/post/Q9998') !== -1, '一般最舊的一筆存活');
+  assert.equal(urls[0], 'https://www.threads.com/@u/post/NEWCARD');
+});

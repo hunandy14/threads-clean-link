@@ -58,7 +58,7 @@ const DEFAULT_SETTINGS = {
 
 // 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
 // 紀錄量），新到舊排列。上限由位元組軟預算 + 筆數硬保險把關(見
-// capHistoryForStorage / STORAGE_SOFT_BUDGET / HISTORY_MAX_ENTRIES)，平時
+// TCLCore.capHistory 與 TCLCore.HISTORY_LIMITS)，平時
 // 就不長到撞配額;萬一仍寫入超限，再走 recordHistory 的 isQuotaExceededError
 // 優雅降級(不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能)。
 const HISTORY_KEY = 'history';
@@ -332,7 +332,7 @@ const syncEngine =
         writeChain: (fn) => enqueueHistoryWrite(fn),
         // 拉取是唯一會把 history 變長的寫入路徑，套的是與 recordHistory 同一
         // 份容量上限(位元組軟預算＋筆數硬保險，優先淘汰墓碑)。
-        capHistory: (list) => capHistoryForStorage(list),
+        capHistory: (list) => TCLCore.capHistory(list),
         setTimeout: (fn, ms) => setTimeout(fn, ms),
         clearTimeout: (handle) => clearTimeout(handle),
       })
@@ -984,7 +984,7 @@ function historyDedupKey(url) {
 }
 
 // 純函式:在既有清單中找出合併鍵相同的條目 index，找不到回傳 -1。**全表比
-// 對、不設時間視窗**(永久合併)。清單長度由 HISTORY_MAX_ENTRIES 封頂，全表
+// 對、不設時間視窗**(永久合併)。清單長度由 TCLCore.HISTORY_LIMITS 封頂，全表
 // 掃描的成本與原本的視窗掃描同為 O(n)。
 function findDedupIndex(list, url) {
   if (!Array.isArray(list)) return -1;
@@ -1059,7 +1059,7 @@ function resolveReceivedAt(entry) {
 }
 
 // 純函式:條目是否為墓碑(已軟刪、等待上傳刪除意圖)。墓碑留在 storage 但不
-// 進畫面，裁切時優先淘汰(見 capHistoryForStorage)。
+// 進畫面，裁切時優先淘汰(見 TCLCore.capHistory)。
 function isTombstoneEntry(entry) {
   return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
 }
@@ -1179,97 +1179,11 @@ function hasStorageLocal() {
   );
 }
 
-// ---- 儲存上限:位元組軟預算 + 筆數硬保險 ----
+// ---- 儲存上限 ----
 //
-// chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
-// (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算，刻意留約 2MB 餘裕給 sync
-// 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload，不把配額
-// 用滿到邊界。既有的 isQuotaExceededError 降級(見下方 set 的 catch)保留當
-// 最後一道防線——軟預算是「平時就不長到那麼大」，配額降級是「萬一還是爆了
-// 也不炸」。
-const STORAGE_SOFT_BUDGET = 8 * 1024 * 1024;
-// 筆數硬保險:即使每筆都很小、位元組遠不到軟預算，也不讓陣列無限長(渲染/
-// 去重掃描都是 O(n))。10000 筆是「正常使用永遠碰不到、異常暴衝才會撞上」
-// 的量級。軟預算與硬保險兩者取先觸發者:capHistoryForStorage 先砍筆數上
-// 限、再用軟預算裁位元組，最終陣列同時滿足兩個約束。
-const HISTORY_MAX_ENTRIES = 10000;
-
-// 把待寫入的紀錄陣列(新到舊排列，index 0 最新)裁到儲存上限內:筆數超過
-// HISTORY_MAX_ENTRIES 先從尾端(最舊)砍;再從最新往最舊累加估算序列化位元
-// 組，超過 STORAGE_SOFT_BUDGET 就不再收更舊的條目(同樣等於從尾端裁)。位
-// 元組以 JSON.stringify(...).length 近似(ASCII 相符;多位元組字元會低估，由
-// 2MB 餘裕吸收)。永遠至少保留最新一筆，不會把本次剛寫入的紀錄也裁掉。
-function capHistoryForStorage(list) {
-  // 兩條裁切路徑(筆數、位元組)都先淘汰墓碑:墓碑是使用者早就刪掉、只等伺
-  // 服器 ack 的空殼，純尾端裁切會為了留住它而砍掉使用者真的看得到的紀錄。
-  let capped = evictTombstonesForCount(list);
-  capped = capped.length > HISTORY_MAX_ENTRIES ? capped.slice(0, HISTORY_MAX_ENTRIES) : capped;
-  capped = evictTombstonesForBudget(capped);
-
-  // 單次 O(n) 前向累加，避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
-  const budgeted = [];
-  let bytes = 2; // '[]' 外框
-  for (let i = 0; i < capped.length; i++) {
-    const itemBytes = JSON.stringify(capped[i]).length + 1; // +1 近似分隔逗號
-    if (budgeted.length > 0 && bytes + itemBytes > STORAGE_SOFT_BUDGET) break;
-    bytes += itemBytes;
-    budgeted.push(capped[i]);
-  }
-  // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置;遷移的冪等短路也
-  // 依賴這個參照相等)。
-  return budgeted.length === list.length ? list : budgeted;
-}
-
-// 純函式:從尾端(最舊)往前丟棄墓碑，最多丟 count 筆，其餘原位保留。沒有丟
-// 掉任何一筆時回傳原陣列參照。
-function dropOldestTombstones(list, count) {
-  if (count <= 0) return list;
-  const dropped = new Set();
-  for (let i = list.length - 1; i >= 0 && dropped.size < count; i--) {
-    if (isTombstoneEntry(list[i])) dropped.add(i);
-  }
-  if (dropped.size === 0) return list;
-  return list.filter((item, i) => !dropped.has(i));
-}
-
-// 筆數硬保險的墓碑優先淘汰:超量幾筆就先丟幾張最舊的墓碑，仍超量才由呼叫
-// 端從尾端砍。
-function evictTombstonesForCount(list) {
-  if (list.length <= HISTORY_MAX_ENTRIES) return list;
-  return dropOldestTombstones(list, list.length - HISTORY_MAX_ENTRIES);
-}
-
-// 位元組軟預算的墓碑優先淘汰:估算總量超標時，從最舊的墓碑開始丟到回到預
-// 算內(或墓碑丟完為止);仍超標由呼叫端的前向累加從尾端裁。
-function evictTombstonesForBudget(list) {
-  // 沒有墓碑就沒有可優先淘汰的對象，省下整表估算(常態路徑)。
-  let hasTombstone = false;
-  for (let i = 0; i < list.length; i++) {
-    if (isTombstoneEntry(list[i])) {
-      hasTombstone = true;
-      break;
-    }
-  }
-  if (!hasTombstone) return list;
-
-  let bytes = 2; // '[]' 外框
-  const itemBytes = [];
-  for (let i = 0; i < list.length; i++) {
-    const size = JSON.stringify(list[i]).length + 1; // +1 近似分隔逗號
-    itemBytes.push(size);
-    bytes += size;
-  }
-  if (bytes <= STORAGE_SOFT_BUDGET) return list;
-
-  const dropped = new Set();
-  for (let i = list.length - 1; i >= 0 && bytes > STORAGE_SOFT_BUDGET; i--) {
-    if (!isTombstoneEntry(list[i])) continue;
-    dropped.add(i);
-    bytes -= itemBytes[i];
-  }
-  if (dropped.size === 0) return list;
-  return list.filter((item, i) => !dropped.has(i));
-}
+// 位元組軟預算(8MB)＋筆數硬保險(10000 筆)、墓碑優先淘汰的完整實作在
+// TCLCore.capHistory(見 tcl-core.js 的儲存上限區塊)，寫入/遷移/同步拉取與
+// options 匯入共用同一份。本檔四條寫入路徑一律經它，沒有任何一條繞得過去。
 
 // 同一個 SW 內的 append 以 promise chain 序列化，避免兩筆同時 read-modify-write
 // 互相覆蓋。options 頁的清除/刪除/匯入直接寫 storage.local，與這裡的競態只
@@ -1320,7 +1234,7 @@ function recordHistory(url, kind, extra) {
         // 陣列。extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎
         // 把 url/kind/at/seen 也塞進 extra 物件，核心欄位仍會覆蓋回正確值
         // (防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任來源，
-        // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 capHistoryForStorage
+        // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 TCLCore.capHistory
         // 處理。
         entry = applyHistorySchema(
           Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] }),
@@ -1344,7 +1258,7 @@ function recordHistory(url, kind, extra) {
       let next = [entry].concat(rest);
       // 儲存上限:寫入前把陣列裁到位元組軟預算 + 筆數硬保險內(從尾端/
       // 最舊裁，本次剛寫入的最新一筆永遠保留)。
-      next = capHistoryForStorage(next);
+      next = TCLCore.capHistory(next);
       try {
         await chrome.storage.local.set({ [HISTORY_KEY]: next });
       } catch (err) {
@@ -1396,7 +1310,7 @@ function recordHistory(url, kind, extra) {
 //
 // 【競態】走既有的 historyWriteChain 串行，與 recordHistory 的
 // read-modify-write 互斥——遷移讀到的必定是完整的表，也不會被同時落盤的新
-// 紀錄覆蓋。寫回同樣先過 capHistoryForStorage(合併只會讓資料變少，這裡純
+// 紀錄覆蓋。寫回同樣先過 TCLCore.capHistory(合併只會讓資料變少，這裡純
 // 粹是不讓任何一條寫入路徑繞過儲存上限防線)。
 
 // 純函式:比較兩筆條目的 at(新到舊)。at 不是有限數字者一律排到最後(那筆
@@ -1538,7 +1452,7 @@ function migrateHistoryMerge() {
       if (next.length === list.length && next.every((item, i) => item === list[i])) return;
 
       try {
-        await chrome.storage.local.set({ [HISTORY_KEY]: capHistoryForStorage(next) });
+        await chrome.storage.local.set({ [HISTORY_KEY]: TCLCore.capHistory(next) });
       } catch (err) {
         // 配額失敗優雅降級，理由同 recordHistory:遷移失敗最多維持舊形狀的
         // 紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響任何主功能。
@@ -1612,7 +1526,7 @@ function migrateHistorySchema() {
       if (next.every((item, i) => item === list[i])) return;
 
       try {
-        await chrome.storage.local.set({ [HISTORY_KEY]: capHistoryForStorage(next) });
+        await chrome.storage.local.set({ [HISTORY_KEY]: TCLCore.capHistory(next) });
       } catch (err) {
         // 配額失敗優雅降級，理由同 migrateHistoryMerge:補欄位失敗最多維持
         // 舊形狀的紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響主功能。
