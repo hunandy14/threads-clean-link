@@ -448,6 +448,11 @@
           });
         })
         .then(function (payload) {
+          // 【契約要求】api-spec 8.1 第 4 點:「**任何**回應只要帶這個標頭就
+          // 覆寫本地存值」——包含 4xx／5xx。後端可能在拒絕這一次請求的同時
+          // 完成 token 輪替，只採信 2xx 的話新 token 會漏掉，本地留著的舊值
+          // 從下一次請求起全部 401。回應來源已由 redirect:'error' 收窄成後端
+          // 本人(轉址後那一站的標頭不會走到這裡)。
           var rotated = res.headers && typeof res.headers.get === 'function'
             ? res.headers.get('set-auth-token')
             : null;
@@ -784,8 +789,11 @@
     }
 
     function scheduleBackoff(failures, retryAfterMs) {
-      var delay = typeof retryAfterMs === 'number' && isFinite(retryAfterMs) && retryAfterMs > 0
-        ? retryAfterMs
+      // Retry-After 同樣夾在退避曲線的上限內:這個值來自後端標頭，一個誤設
+      // 的大數字(或惡意中間人)會把下一次同步推遲到幾天以後，等於單一標頭就
+      // 能讓同步停擺。封頂之後最壞情況只是提早重試一次，由 429 再退一步。
+      var delay = finiteNumber(retryAfterMs) && retryAfterMs > 0
+        ? Math.min(retryAfterMs, POLL_BACKOFF_MAX_MS)
         : pollIntervalFor(failures);
       alarms.create(ALARM_NAME, { when: now() + delay });
       return saveFailures(failures);
@@ -837,7 +845,10 @@
           var state = buildState(ctx, history);
           // options／popup 開啟時順手補一次(D12)。fire-and-forget:狀態以廣播
           // 回傳，這裡不等它跑完，也不因它失敗而讓 getState 失敗。
-          if (ctx.token && (ctx.state.lastSyncedAt === null || now() - ctx.state.lastSyncedAt >= STALE_MS)) {
+          // 落在 FATAL_ERRORS 的狀態一律跳過:那一類重試永遠不會成功(見常數
+          // 註解)，每開一次頁就拿同一份必然失敗的請求去敲共用的限流桶。
+          var fatal = ctx.state.lastError !== null && FATAL_ERRORS.indexOf(ctx.state.lastError) !== -1;
+          if (ctx.token && !fatal && (ctx.state.lastSyncedAt === null || now() - ctx.state.lastSyncedAt >= STALE_MS)) {
             syncNow().catch(function () {});
           }
           return state;
@@ -1093,11 +1104,21 @@
                   return broadcastState('error');
                 });
             })
-            .then(function (value) {
-              return releaseInflight().then(function () {
-                return value;
-              });
-            });
+            // finally 語意:上面的 catch 自己也會寫 storage、排 alarm，那幾步
+            // 一旦失敗就走到這裡的失敗分支——只掛成功回呼的話單飛旗標會留在
+            // session 裡，直到 TTL 到期前所有同步全被擋掉。
+            .then(
+              function (value) {
+                return releaseInflight().then(function () {
+                  return value;
+                });
+              },
+              function (err) {
+                return releaseInflight().then(function () {
+                  throw err;
+                });
+              }
+            );
         });
     }
 

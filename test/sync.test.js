@@ -2257,3 +2257,81 @@ test('T9/E1 守衛認帳號：換人之後前一位使用者的守衛不得沿�
 
   assert.deepEqual(env.storage.history(), [], '守衛的 userId 對不上就當成別人清的');
 });
+
+test('T9/L6 rejectedIds：該 entry 清 dirty，下一輪不再進 upserts', async () => {
+  const TCLSync = loadSync();
+  const cleared = T0 - 50_000;
+  // 伺服器已有清空水位線，早於它的事件一律拒收（api-spec 4.3 規則 2）。
+  const env = makeEnv({
+    signedIn: true,
+    history: [
+      entry({ id: 'x', url: POST_A, at: cleared - 10_000, receivedAt: cleared - 10_000, dirty: true, seen: [{ at: cleared - 10_000, kind: 'strip' }] }),
+    ],
+    local: { syncClearGuard: { userId: 'user-abc', clearedAt: cleared } },
+  });
+  env.server.seed([], { clearedAt: cleared });
+  const engine = TCLSync.create(env.deps);
+
+  await engine.syncNow();
+  await settle(10);
+  const first = env.syncPosts();
+  assert.deepEqual(
+    (first[0].body.upserts || []).map((u) => u.id),
+    ['x'],
+    '前置：第一輪確實推了這一筆'
+  );
+  assert.equal(env.storage.history()[0].dirty, false, '被拒收的 entry 要清 dirty，否則每一輪重送一次');
+
+  env.advance(60_000);
+  await engine.syncNow();
+  await settle(10);
+  const second = env.syncPosts().slice(first.length);
+  assert.ok(second.length >= 1, '前置：第二輪確實有發請求');
+  second.forEach((r) => assert.deepEqual(r.body.upserts, [], '下一輪不得再送被拒收的那一筆'));
+});
+
+test('T9/L6 跨引擎單飛：第一台持有未過期旗標時，第二台 syncNow 零請求', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  const release = env.server.holdNext(1);
+  const first = TCLSync.create(env.deps);
+  const running = first.syncNow();
+  await settle(4);
+  assert.equal(env.syncPosts().length, 1, '前置：第一台已把旗標搶下並發出請求');
+
+  // 同一份 storage（session 沒消失）＝另一個 SW 實例／另一個引擎。
+  const second = env.recreate(TCLSync);
+  await second.syncNow();
+  await settle(6);
+  assert.equal(env.syncPosts().length, 1, '單飛旗標未過期時第二台一個請求都不該發');
+
+  release();
+  await running;
+  await settle();
+});
+
+test('T9/L2 Retry-After 夾在退避上限內，單一標頭不得把同步推遲到天邊', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  env.server.failNext({ status: 429, code: 'rate_limited', retryAfter: 86_400 }); // 一天
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(10);
+
+  const delay = env.alarms.delayOf(env.alarms.lastCreate(), env.now());
+  assert.equal(delay, 600_000, '封頂 600 秒，與退避曲線同一條上限');
+});
+
+test('T9/L5 getState：lastError 落在不可重試清單時不順手補同步', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    history: [entry()],
+    syncState: { lastSyncedAt: T0 - 10 * 60 * 60_000, lastError: 'forbidden_origin' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.getState();
+  await settle(10);
+
+  assert.deepEqual(env.syncPosts(), [], '重試永遠不會成功，每開一次頁就白敲一次共用限流桶');
+});
