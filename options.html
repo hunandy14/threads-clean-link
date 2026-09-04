@@ -36,8 +36,14 @@
     --danger: #d03b3b;
     --danger-soft: rgba(208, 59, 59, 0.1);
     /* 帳號入口(車道 B)的「登入過期」語意色，既有色票沒有這個第三態，
-       綠(已同步)/紅(錯誤)之外新增一顆黃供狀態點與選單提示列使用。 */
-    --warn: #d9a441;
+       綠(已同步)/紅(錯誤)之外新增一顆黃供狀態點與選單提示列使用。
+       #d9a441 對 --surface(#fcfcfb)只有約 2.19:1 對比，未達 WCAG 非文字
+       元素 3:1 門檻(狀態點本身就是純色塊，沒有文字襯托);改用 #b8862b，
+       實測約 3.16:1。 */
+    --warn: #b8862b;
+    /* 選單提示列(.acct-warn-row)的淡底色，比照 --accent-soft/--danger-soft
+       同一套「主色 + 淡底變體」慣例，alpha 沿用 --accent-soft 的 0.14。 */
+    --warn-soft: rgba(184, 134, 43, 0.14);
     --switch-track-off: #d0d3d9;
     --switch-thumb: #ffffff;
     --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 4px 16px rgba(11, 11, 11, 0.05);
@@ -62,6 +68,7 @@
       --danger: #e66767;
       --danger-soft: rgba(230, 103, 103, 0.14);
       --warn: #e6b955;
+      --warn-soft: rgba(230, 185, 85, 0.2);
       --switch-track-off: #55575c;
       --switch-thumb: #e8e8e8;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -86,6 +93,7 @@
     --danger: #e66767;
     --danger-soft: rgba(230, 103, 103, 0.14);
     --warn: #e6b955;
+    --warn-soft: rgba(230, 185, 85, 0.2);
     --switch-track-off: #55575c;
     --switch-thumb: #e8e8e8;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -279,14 +287,26 @@
     display: grid; place-items: center; font-size: 13px; font-weight: 700; user-select: none;
     overflow: hidden;
   }
+  /* 有大頭照時底色透明:img 本來就 100%/100% + overflow:hidden 蓋滿整個
+     圓框，--accent 背景平時被完全遮住看不見，但 img 載入失敗會先
+     onerror 才退回字母(見 options.js 的 renderAvatars)，這段時間縫隙裡
+     露出的應該是透明，不是誤導使用者「這裡本來有色塊」的實色。 */
+  .avatar-circle.has-photo { background: transparent; }
   /* 下拉選單頂部帳號列用的 40px 大頭像變體，只覆寫尺寸，其餘沿用
      .avatar-circle。 */
   .avatar-circle.acct-menu-avatar { width: 40px; height: 40px; flex-shrink: 0; }
-  /* 同步中:外圈轉動的 2px 弧線，用 ::after 疊在頭像外緣，不擋住字母。 */
+  /* 同步中:外圈疊在頭像外緣的 2px 弧線。預設(含 prefers-reduced-motion:
+     reduce)只畫靜態淡色圓環;轉動效果收進下面的 no-preference 媒體查詢，
+     一併帶出頂色對比，reduce 時保留「正在同步」的視覺提示但不轉動。 */
   .avatar-wrap.is-syncing::after {
     content: ""; position: absolute; inset: -3px; border-radius: 50%;
-    border: 2px solid var(--accent-soft); border-top-color: var(--accent);
-    animation: acct-spin 0.85s linear infinite;
+    border: 2px solid var(--accent-soft);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .avatar-wrap.is-syncing::after {
+      border-top-color: var(--accent);
+      animation: acct-spin 0.85s linear infinite;
+    }
   }
   @keyframes acct-spin { to { transform: rotate(360deg); } }
   .status-dot {
@@ -337,8 +357,10 @@
   }
   .acct-error-row { background: var(--danger-soft); color: var(--danger); }
   .acct-error-row .link-btn { color: var(--danger); font-size: 12px; flex-shrink: 0; }
-  .acct-warn-row { background: var(--accent-soft); color: var(--accent); }
-  .acct-warn-row .link-btn { color: var(--accent); font-size: 12px; flex-shrink: 0; }
+  /* 語意色改用 --warn(登入過期是黃色第三態，跟 --accent 純屬巧合撞色，
+     不是同一件事——狀態點/這一列都該用同一顆 --warn 變數)。 */
+  .acct-warn-row { background: var(--warn-soft); color: var(--warn); }
+  .acct-warn-row .link-btn { color: var(--warn); font-size: 12px; flex-shrink: 0; }
   .acct-error-row .link-btn:hover, .acct-warn-row .link-btn:hover { text-decoration: underline; }
 
   /* ---- 設定列 ---- */
