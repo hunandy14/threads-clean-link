@@ -245,44 +245,33 @@ Optional host permissions, off by default and never requested at install time �
 
 Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「資料類型」核取清單與三個認證聲明，逐題對照本擴充功能的實際行為填寫如下。
 
-### 資料類型清單 —— 全部不勾
+### 資料類型清單
 
-| 資料類型 | 是否勾選 | 理由 |
+0.6.0 起「雲端同步」隨插件出貨(預設關閉，需使用者主動登入才會啟用)，下表已反映這個現況，而非只反映未登入時的行為。
+
+| 資料類型 | 是否勾選 | 用途說明 |
 |---|---|---|
-| Personally identifiable information | 不勾 | 不蒐集任何個人識別資訊 |
+| Personally identifiable information | **勾選** | 使用者主動於「紀錄與設定」頁點擊「使用 Google 帳號登入」後才會取得:Google 帳號 email、名稱與大頭照網址，用途是識別使用者身分、維持雲端同步跨裝置一致(App functionality)。未登入者不涉及。<br>Collected only after the user actively signs in with Google on the History & Settings page — email, name, and avatar URL — used to identify the user and keep cloud sync consistent across devices (App functionality). Not collected if the user never signs in. |
 | Health information | 不勾 | 無關 |
 | Financial and payment information | 不勾 | 無關 |
-| Authentication information | 不勾 | 匿名請求刻意 `credentials: 'omit'`，不讀取、不傳送任何登入憑證或 cookie |
+| Authentication information | **勾選** | 僅在使用者主動點擊「使用 Google 帳號登入」後才會取得(Google OAuth 身分權杖)，唯一用途是向開發者自營後端建立/維持雲端同步的登入工作階段(App functionality)。不用於廣告或分析，不轉讓、不出售給第三方，不取得或儲存使用者的 Google 密碼。<br>Obtained only after the user actively clicks "Sign in with Google" (a Google OAuth identity token); its sole purpose is establishing/maintaining the cloud-sync login session with the developer's own backend (App functionality). Not used for ads or analytics, not shared or sold to third parties; the user's Google password is never obtained or stored. |
 | Personal communications | 不勾 | 不讀取頁面內容、不讀取剪貼簿既有內容 |
 | Location | 不勾 | 不存取地理位置 |
-| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。0.3.0 起的「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址、預設只存 chrome.storage.local、不傳輸給任何一方(含開發者;除非另行以 Google 帳號登入啟用「雲端同步」)，依 CWS 定義不構成蒐集;雲端同步啟用後的資料揭露見下方「雲端同步上線後，需改勾選的兩項」 |
-| User activity | 不勾 | 不追蹤點擊、捲動等使用者行為 |
+| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
+| User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方。<br>Occurs only after sign-in: syncs the cleaning-history records the user's own actions generate (post URL, removed tracking parameters, post author and summary, cleaning timestamp), solely to keep that user's own cleaning history consistent across devices, including the companion mobile app (App functionality). Not used to analyze aggregate user behavior, not used for ads, not shared or sold to third parties. |
 | Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
 
-若表單有「This item does not collect or use user data」這類總結選項，**選是 / 勾選**。
-
-上表對應目前(不含雲端同步)的行為;「雲端同步」上線後，下面兩項需要改成**勾選**，見下一小節草稿。
-
-### 雲端同步上線後，需改勾選的兩項
-
-「雲端同步」是選用功能，但只要擴充功能本身具備這個能力(即使多數使用者不會登入)，Chrome 表單就要求依「可能發生的最大情況」誠實揭露，因此下列兩項需從「不勾」改成「勾選」，並填入用途說明:
-
-| 資料類型 | 是否勾選 | 用途說明草稿 |
-|---|---|---|
-| Authentication information | **勾選** | 僅在使用者主動於「紀錄與設定」頁點擊「使用 Google 帳號登入」後才會取得(Google OAuth 身分權杖)，唯一用途是向開發者自營後端建立/維持雲端同步的登入工作階段(App functionality)。不用於廣告或分析，不轉讓、不出售給第三方，不取得或儲存使用者的 Google 密碼 |
-| User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方 |
-
-**「單一用途」聲明維持不變的說明**:雲端同步是既有「保存清理紀錄」子功能的延伸——把原本只存在本機的同一份紀錄，改為選用地額外存一份到使用者自己的雲端帳號，讓同一位使用者可以跨裝置(含手機版 App)看到同一份紀錄;沒有新增與「Threads 連結淨化」無關的目的，因此第 5 節的單一用途聲明文字不需要修改。
+**「單一用途」聲明相容性說明**:雲端同步是既有「保存清理紀錄」子功能的延伸——把原本只存在本機的同一份紀錄，改為選用地額外存一份到使用者自己的雲端帳號，讓同一位使用者可以跨裝置(含手機版 App)看到同一份紀錄;沒有新增與「Threads 連結淨化」無關的目的，因此第 5 節的單一用途聲明文字不需要修改。
 
 ### 三項認證聲明 —— 全部勾選(皆為真)
 
 - 「I do not sell or transfer user data to third parties, outside of the approved use cases」→ **勾選**(沒有任何資料可賣，也未傳輸給第三方)
-- 「I do not use or transfer user data for purposes unrelated to the item's single purpose」→ **勾選**(短碼解析是核心網路請求；雲端同步(選用，登入後)的同步請求服務同一單一用途，見上方「單一用途」聲明維持不變的說明，沒有為無關用途使用或轉讓資料)
+- 「I do not use or transfer user data for purposes unrelated to the item's single purpose」→ **勾選**(短碼解析是核心網路請求；雲端同步(選用，登入後)的同步請求服務同一單一用途，見上方「單一用途」聲明相容性說明，沒有為無關用途使用或轉讓資料)
 - 「I do not use or transfer user data to determine creditworthiness or for lending purposes」→ **勾選**(完全無關)
 
 ### 為什麼「發網路請求」不等於「蒐集資料」
 
-這裡容易被誤解，先講清楚:①右鍵還原與②淨化功能攔到短碼時，都會對 Threads 發出一次匿名 GET——但這是「擴充功能代替使用者向 Threads 詢問一條連結指向哪裡」，資料流向是「使用者瀏覽器 → Threads 伺服器」，不會經過開發者的任何伺服器，開發者端沒有蒐集、沒有留存、也沒有能力事後查詢任何一次請求。因此在 Chrome 的資料揭露定義裡，這不構成「蒐集使用者資料」;資料類型清單維持全部不勾是正確的。
+這裡容易被誤解，先講清楚:①右鍵還原與②淨化功能攔到短碼時，都會對 Threads 發出一次匿名 GET——但這是「擴充功能代替使用者向 Threads 詢問一條連結指向哪裡」，資料流向是「使用者瀏覽器 → Threads 伺服器」，不會經過開發者的任何伺服器，開發者端沒有蒐集、沒有留存、也沒有能力事後查詢任何一次請求。因此在 Chrome 的資料揭露定義裡，這兩個匿名 GET 請求本身不構成蒐集使用者資料;上表 Web history 維持不勾是正確的，也與 Personally identifiable information、Authentication information、User activity 三項的勾選互不影響——那三項對應的是使用者主動登入雲端同步後的行為，與這裡未登入即可用的匿名短碼解析請求是兩回事。
 
 ---
 
