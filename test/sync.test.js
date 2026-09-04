@@ -648,20 +648,75 @@ test('T2 signOut：displayName／avatarUrl 隨 syncState 清空（D15）', async
   assert.equal(env.storage.syncState().avatarUrl, null);
 });
 
-test('T2 任何 API 回 401：displayName／avatarUrl 隨 syncState 清空（D15）', async () => {
+// 【翻轉既有斷言／H2】原斷言要求 401 之後清空 displayName／avatarUrl。
+// session 過期是一次轉場而非登出:D17 的「登入過期」卡片要讓使用者看得出過期
+// 的是哪一個帳號，清掉名字與大頭照就顯示不出來。真正的清空在 signOut（下一
+// 條測試）與 deleteCloud。帳號識別欄位一併保留，理由見 handleSessionExpired。
+test('T2 任何 API 回 401：帳號識別與顯示欄位全部保留，只記 session_expired（H2）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
     history: [entry()],
-    syncState: { displayName: 'Alice', avatarUrl: 'https://lh3.googleusercontent.com/a/alice' },
+    syncState: {
+      displayName: 'Alice',
+      avatarUrl: 'https://lh3.googleusercontent.com/a/alice',
+      cursor: 'cur-7',
+      clearedAt: T0 - 5_000,
+    },
   });
   env.server.failNext({ status: 401, code: 'unauthorized' });
   const engine = TCLSync.create(env.deps);
   await engine.syncNow();
   await settle();
 
-  assert.equal(env.storage.syncState().displayName, null, 'session 過期視同登出，清空顯示用欄位');
-  assert.equal(env.storage.syncState().avatarUrl, null);
+  const state = env.storage.syncState();
+  assert.equal(state.lastError, 'session_expired');
+  assert.equal((env.storage.syncAuth() || {}).token, null, 'token 必須清掉');
+  assert.equal(state.displayName, 'Alice', '「登入過期」卡片要顯示是哪個帳號過期');
+  assert.equal(state.avatarUrl, 'https://lh3.googleusercontent.com/a/alice');
+  assert.equal(state.userId, 'user-abc', 'userId 沒了就永遠判不出下次登入是不是換帳號');
+  assert.equal(state.email, 'someone@example.com');
+  assert.equal(state.cursor, 'cur-7', '游標留著，重新登入不必整份重拉');
+  assert.equal(state.clearedAt, T0 - 5_000, '待送出的清空水位線不得被吞掉');
+});
+
+test('T2 session 過期：退避次數歸零（重新登入不該延續失效前的退避，H2／M1）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()], local: { syncBackoff: { failures: 4 } } });
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(env.storage.localData.syncBackoff, { failures: 0 }, 'token 失效不是後端故障');
+});
+
+test('T2 session 過期後換帳號登入：鏡像欄位重置、全部標髒（H2）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    history: [
+      entry({ id: 'a', url: POST_A, dirty: false, serverUpdatedAt: T0 - 1000 }),
+      entry({ id: 'b', url: POST_B, dirty: false, serverUpdatedAt: T0 - 2000 }),
+    ],
+  });
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+  assert.equal(env.storage.syncState().userId, 'user-abc', '前置：過期後 userId 仍在');
+
+  // 換 B 帳號登入：mock 的 sign-in 一律回自己的 user，換掉它就是換人。
+  env.server.setUser({ id: 'user-zzz', email: 'other@example.com' });
+  await engine.signIn();
+  await settle(12);
+
+  assert.equal(env.storage.syncState().userId, 'user-zzz');
+  // resetMirrorFields 的可觀測後果：登入後那一次同步把**兩筆**都重推上去
+  // （dirty 全 true 才會進 outbox），推完才由 ack 清回 dirty:false。
+  const pushed = [];
+  env.syncPosts().forEach((r) => (r.body.upserts || []).forEach((u) => pushed.push(u.id)));
+  assert.deepEqual(pushed.sort(), ['a', 'b'], '換帳號後本機紀錄要對新帳號重新全量上傳');
 });
 
 test('T6 deleteCloud：displayName／avatarUrl 清空，但 userId／email 保留（D15）', async () => {

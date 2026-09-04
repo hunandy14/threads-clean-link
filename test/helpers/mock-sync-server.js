@@ -756,6 +756,15 @@ function createMockSyncServer(options = {}) {
       return this;
     },
 
+    /**
+     * 換掉這台伺服器認得的使用者（`sign-in/social` 與 `get-session` 都回它）。
+     * 供「同一份 storage 上換帳號登入」的測試使用：只帶要改的欄位。
+     */
+    setUser(patch) {
+      Object.assign(user, patch || {});
+      return this;
+    },
+
     /** 直接發一枚有效 token（略過登入往返）。 */
     grantToken(token) {
       state.token = token || issueToken();

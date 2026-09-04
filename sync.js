@@ -794,11 +794,28 @@
 
     // ---- 登出／失效 ----
 
-    /** token 失效的統一出口:清 token、狀態回預設、停掉週期 alarm。 */
+    /**
+     * token 失效的統一出口:清 token、記 session_expired、停掉週期 alarm。
+     *
+     * 【合併式 patch】session 過期是一次轉場，不是換帳號也不是刪資料:整包
+     * 重設會把 userId 一起清掉，下次登入的帳號切換偵測(finishSignIn)就永遠
+     * 判不出「換了人」，前一位使用者的本機鏡像會被當成新帳號的資料;
+     * clearedAt(待送出的清空)與 cursor 被清掉則分別造成「清空指令遺失」與
+     * 「重登後整份重拉」。displayName／avatarUrl 留著是 D17 的「登入過期」
+     * 卡片要顯示的資訊——使用者得看得出過期的是哪一個帳號。
+     * 退避次數歸零:失效不是後端故障，重新登入後該從基礎週期重新開始。
+     */
     function handleSessionExpired() {
-      return saveToken(null)
+      return loadContext()
+        .then(function (ctx) {
+          var patched = Object.assign({}, ctx.state, { lastError: 'session_expired' });
+          return saveState(patched);
+        })
         .then(function () {
-          return saveState({ lastError: 'session_expired' });
+          return saveToken(null);
+        })
+        .then(function () {
+          return saveFailures(0);
         })
         .then(function () {
           // 週期與去抖保底兩支都要清:留著去抖 alarm 會在登出後照樣喚醒 SW，
