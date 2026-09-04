@@ -123,16 +123,30 @@ test('mergeImportedEntries:合併結果不裁切，超過舊版上限(1000)也�
   assert.equal(options.HISTORY_LIMIT, undefined, 'HISTORY_LIMIT 常數已隨上限移除一併撤除');
 });
 
-test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀，entries 只留三欄', () => {
+// 【斷言翻轉】原斷言為「entries 只留三欄」(url/kind/at)。依 docs/cloud-sync.md
+// 4.1，匯出檔加帶 id／receivedAt／serverUpdatedAt——少了它們，匯出再匯入等於
+// 在雲端把同一張卡拆成兩張、起始時間往後跳、合併判準歸零。未知欄位(extra)
+// 仍然一律丟棄，這一點不變。
+test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀，entries 只留白名單欄位', () => {
   const payload = options.buildExportPayload(
-    [{ url: URL_A, kind: 'share', at: 123, extra: 'junk' }],
+    [{ url: URL_A, kind: 'share', at: 123, extra: 'junk', id: 'card-1', receivedAt: 100, serverUpdatedAt: 200 }],
     '2026-08-16T00:00:00.000Z'
   );
 
   assert.equal(payload.app, 'threads-clean-link');
   assert.equal(payload.version, 1);
   assert.equal(payload.exportedAt, '2026-08-16T00:00:00.000Z');
-  assert.deepEqual(payload.entries, [{ url: URL_A, kind: 'share', at: 123 }]);
+  assert.deepEqual(payload.entries, [
+    { url: URL_A, kind: 'share', at: 123, id: 'card-1', receivedAt: 100, serverUpdatedAt: 200 },
+  ]);
+
+  // postKey／dirty／deletedAt 不輸出:前兩者匯入端可推導，deletedAt 的來源
+  // (visibleEntries)已濾掉墓碑。
+  const withSkipped = options.buildExportPayload(
+    [{ url: URL_A, kind: 'share', at: 1, postKey: 'threads:x', dirty: true, deletedAt: 5 }],
+    '2026-08-16T00:00:00.000Z'
+  );
+  assert.deepEqual(withSkipped.entries, [{ url: URL_A, kind: 'share', at: 1 }]);
 });
 
 // entries 擴充選填 author/handle/excerpt，為字串時才輸出，規則與
@@ -3690,4 +3704,103 @@ test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 sy
   assert.equal(typeof snapshot.syncState.clearedAt, 'number');
   assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9', '不得用開頁快照把引擎推進的游標回捲');
   assert.equal(snapshot.syncState.lastSyncedAt, 99000, 'lastSyncedAt 同理');
+});
+
+// ============================================================
+// 匯出 → 匯入 round-trip（docs/cloud-sync.md 4.1）
+// ============================================================
+
+// 匯出檔帶了 id／receivedAt／serverUpdatedAt 才能原封不動繞回來。id 不保留
+// 的話，匯入端會生成新 UUID——同一張卡在雲端變成兩張，原卡成孤兒;
+// serverUpdatedAt 不保留則下一輪合併失去判準，整張表被當成從未上傳過。
+test('匯出 → 匯入 round-trip:id 不變、serverUpdatedAt 保留、receivedAt 不往後跳', () => {
+  const source = [
+    {
+      url: URL_A,
+      kind: 'icon',
+      at: 5000,
+      author: 'Dafu',
+      seen: [{ at: 3000, kind: 'share' }, { at: 5000, kind: 'icon' }],
+      original: 'https://www.threads.com/share/AbCdEfGhI',
+      id: 'cloud-card-1',
+      postKey: 'threads:AbC123_-xyz',
+      receivedAt: 3000,
+      dirty: false,
+      serverUpdatedAt: 4500,
+      deletedAt: null,
+    },
+  ];
+
+  const payload = options.buildExportPayload(source, '2026-09-04T00:00:00.000Z');
+  const parsed = options.parseImportText(JSON.stringify(payload));
+  assert.equal(parsed.ok, true);
+
+  const result = options.mergeImportedEntries([], parsed.entries, 9000);
+  assert.equal(result.added, 1);
+  const back = result.merged[0];
+  assert.equal(back.id, 'cloud-card-1', 'id 必須原封不動繞回來');
+  assert.equal(back.serverUpdatedAt, 4500, 'serverUpdatedAt 保留，不得歸零');
+  assert.equal(back.receivedAt, 3000, 'receivedAt 保留，不得被 now 或較晚的 seen 推後');
+  assert.equal(back.url, URL_A);
+  assert.equal(back.kind, 'icon');
+  assert.equal(back.at, 5000);
+  assert.equal(back.author, 'Dafu');
+  // postKey 與 dirty 不在匯出檔內，由匯入端重算/重設。
+  assert.equal(back.postKey, 'threads:AbC123_-xyz');
+  assert.equal(back.dirty, true, '匯入回來的資料在本機一律是待上傳狀態');
+  assert.equal(back.deletedAt, null);
+});
+
+// ============================================================
+// 匯入的儲存上限（TCLCore.capHistory）
+// ============================================================
+
+// 匯入是唯一能一口氣把 history 撐長的使用者操作。原本 mergeImportedEntries
+// 完全繞過 background 那套裁切，一份夠大的匯入檔就能把 storage.local 寫爆
+// （寫入失敗只會吐配額 toast，整批匯入白做）。
+test('mergeImportedEntries:12000 筆匯入檔被裁到筆數硬保險，保留最新的一批', () => {
+  const MAX = 10000;
+  const imported = Array.from({ length: 12000 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/P${i}`,
+    kind: 'share',
+    // i 越大 at 越新，裁切必須從尾端（最舊，i 小）砍。
+    at: 1700000000000 + i,
+  }));
+
+  const result = options.mergeImportedEntries([], imported, 1700000000000);
+  assert.equal(result.merged.length, MAX, '結果被裁到 HISTORY_LIMITS.MAX_ENTRIES');
+  assert.equal(result.added, 12000, 'added 是合併階段的計數，不受裁切影響');
+  assert.equal(result.merged[0].url, 'https://www.threads.com/@u/post/P11999', '最新的一筆存活');
+  assert.equal(result.merged[MAX - 1].url, 'https://www.threads.com/@u/post/P2000', '最舊的 2000 筆被裁掉');
+});
+
+// 裁切走的是與 background 同一份實作：墓碑（deletedAt 為有限數字）優先淘
+// 汰，使用者真的看得到的最舊一筆必須存活。
+test('mergeImportedEntries:超量時墓碑優先淘汰，一般最舊的一筆存活', () => {
+  const existing = Array.from({ length: 10000 }, (_, i) => ({
+    url: `https://www.threads.com/@u/post/Q${i}`,
+    kind: 'share',
+    at: 1700000000000 - i,
+    id: `q-${i}`,
+    postKey: `threads:Q${i}`,
+    receivedAt: 1700000000000 - i,
+    dirty: false,
+    serverUpdatedAt: null,
+    // 最舊的那一筆是墓碑，超量時它應該先被丟。
+    deletedAt: i === 9999 ? 1600000000000 : null,
+  }));
+
+  const result = options.mergeImportedEntries(
+    existing,
+    [{ url: 'https://www.threads.com/@u/post/NEWCARD', kind: 'share', at: 1800000000000 }],
+    1800000000000
+  );
+
+  assert.equal(result.merged.length, 10000);
+  const urls = result.merged.map(function (e) {
+    return e.url;
+  });
+  assert.equal(urls.indexOf('https://www.threads.com/@u/post/Q9999'), -1, '墓碑被優先淘汰');
+  assert.ok(urls.indexOf('https://www.threads.com/@u/post/Q9998') !== -1, '一般最舊的一筆存活');
+  assert.equal(urls[0], 'https://www.threads.com/@u/post/NEWCARD');
 });

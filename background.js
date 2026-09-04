@@ -58,8 +58,8 @@ const DEFAULT_SETTINGS = {
 
 // 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
 // 紀錄量），新到舊排列。上限由位元組軟預算 + 筆數硬保險把關(見
-// capHistoryForStorage / STORAGE_SOFT_BUDGET / HISTORY_MAX_ENTRIES)，平時
-// 就不長到撞配額;萬一仍寫入超限，再走 recordHistory 的 isQuotaExceededError
+// TCLCore.capHistory 與 TCLCore.HISTORY_LIMITS)，平時
+// 就不長到撞配額;萬一仍寫入超限，再走 recordHistory 的 TCLCore.isQuotaExceededError
 // 優雅降級(不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能)。
 const HISTORY_KEY = 'history';
 
@@ -332,7 +332,7 @@ const syncEngine =
         writeChain: (fn) => enqueueHistoryWrite(fn),
         // 拉取是唯一會把 history 變長的寫入路徑，套的是與 recordHistory 同一
         // 份容量上限(位元組軟預算＋筆數硬保險，優先淘汰墓碑)。
-        capHistory: (list) => capHistoryForStorage(list),
+        capHistory: (list) => TCLCore.capHistory(list),
         setTimeout: (fn, ms) => setTimeout(fn, ms),
         clearTimeout: (handle) => clearTimeout(handle),
       })
@@ -970,11 +970,6 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
 // 'menu')一律走 TCLCore;seen[] 逐筆消毒改用 TCLCore.sanitizeSeenList(與
 // options 讀取/匯入端共用同一份，連 slice(-SEEN_MAX) 都在函式內完成)。
 
-// 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合。三處共用同一份清
-// 單:落盤合併(mergeHistoryEntry 逐欄寫開，語意同此)、失敗卡收編
-// (adoptFailureEntry)、一次性遷移(mergeHistoryGroup)。
-const MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
-
 // 純函式:條目的合併鍵，走 TCLCore.postKeyOf(D11，與手機 postKeyOf 完全等
 // 價)。同一篇貼文不論 handle 改名、網域變體(www./m./mobile.、threads.com/
 // .net)、尾斜線、query，皆算出同一個 threads:<code> 之類的鍵;抽不出貼文
@@ -984,7 +979,7 @@ function historyDedupKey(url) {
 }
 
 // 純函式:在既有清單中找出合併鍵相同的條目 index，找不到回傳 -1。**全表比
-// 對、不設時間視窗**(永久合併)。清單長度由 HISTORY_MAX_ENTRIES 封頂，全表
+// 對、不設時間視窗**(永久合併)。清單長度由 TCLCore.HISTORY_LIMITS 封頂，全表
 // 掃描的成本與原本的視窗掃描同為 O(n)。
 function findDedupIndex(list, url) {
   if (!Array.isArray(list)) return -1;
@@ -995,6 +990,14 @@ function findDedupIndex(list, url) {
   }
   return -1;
 }
+
+// ---- 失敗卡收編(isAdoptableOriginal / findOriginalAdoptIndex /
+//      adoptFailureEntry / adoptFailureEntriesInList) ----
+//
+// 【現況】收編的對象是「當年解析失敗、以短碼原文入庫」的卡。這種卡在 0.3.0
+// 起已無法由任何入口產生(所有寫入路徑都先取得乾淨貼文網址才落盤)，這整區
+// 因此只服務 0.3.0 之前留下的庫存。保留至 0.7 評估移除——移除前要先確認實
+// 際使用者庫存已無此類殘留，本波不動。
 
 // 純函式:本次的 original 是否有資格觸發失敗卡收編——必須是分享短碼原文。
 //
@@ -1022,58 +1025,17 @@ function findOriginalAdoptIndex(list, original, skipIndex) {
   return -1;
 }
 
-// 純函式:取出條目的 seen 事件序列。seen[] 存在就逐筆過
-// TCLCore.sanitizeSeenList;缺席(schema 升級前寫入的舊資料)時照手機版語意
-// (`existing.seen ?? [{ at: existing.receivedAt }]`)以條目自身的 at 補種一
-// 筆起始紀錄，讓時間軸看得到它原本第一次出現的時間;種子紀錄不帶 kind(那
-// 一刻沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)。at 不是有限數字
-// 就連種子都不補(那筆時間本身就不可信)。
-function entrySeenEvents(entry) {
-  if (!entry || typeof entry !== 'object') return [];
-  if (Array.isArray(entry.seen)) return TCLCore.sanitizeSeenList(entry.seen);
-  return typeof entry.at === 'number' && isFinite(entry.at) ? [{ at: entry.at }] : [];
-}
+// seen 事件序列(entrySeenEvents)、最早事件時間(entryEarliestAt)、已持久化
+// 值與推導值取較早者(resolveReceivedAt)、墓碑判定(isTombstone)一律走
+// TCLCore——四支都是純函式，options 讀取/匯入端與 sync 引擎用的是同一份。
 
-// 純函式:條目的最早事件時間(計劃 4.1 的 receivedAt)。取 seen 事件的**最小**
-// at 而非 seen[0].at——真實資料在多次合併/匯入後未必已排序;一個可用事件都
-// 沒有(seen 為空陣列、或 at 全是髒資料)時退回條目自身的 at。
-function entryEarliestAt(entry) {
-  const events = entrySeenEvents(entry);
-  let earliest = null;
-  for (let i = 0; i < events.length; i++) {
-    if (earliest === null || events[i].at < earliest) earliest = events[i].at;
-  }
-  if (earliest !== null) return earliest;
-  return entry && typeof entry.at === 'number' && isFinite(entry.at) ? entry.at : null;
-}
-
-// 純函式:條目已持久化的 receivedAt 與其事件序列推導值取較早者。receivedAt
-// 是這張卡在雲端的「第一次出現時間」，只會往前不會往後——seen 裁到 SEEN_MAX
-// 而丟掉最舊幾筆時，不得讓 receivedAt 跟著往後跳。
-function resolveReceivedAt(entry) {
-  const stored = entry && typeof entry.receivedAt === 'number' && isFinite(entry.receivedAt) ? entry.receivedAt : null;
-  const derived = entryEarliestAt(entry);
-  if (stored === null) return derived;
-  if (derived === null) return stored;
-  return Math.min(stored, derived);
-}
-
-// 純函式:條目是否為墓碑(已軟刪、等待上傳刪除意圖)。墓碑留在 storage 但不
-// 進畫面，裁切時優先淘汰(見 capHistoryForStorage)。
-function isTombstoneEntry(entry) {
-  return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
-}
-
-// 純函式:多張卡的 seen 事件聯集——攤平後按 at 升序排列(卡與卡之間的事件
-// 本來就交錯，不能直接接龍)，再裁到最新 SEEN_MAX 筆。at 相同的事件維持原
-// 順序(Array#sort 穩定)。
+// 純函式:多張卡的 seen 事件聯集，逐份併入 TCLCore.unionSeen(同 at 去重、按
+// at 升序、裁到最新 SEEN_MAX)。lists 由新到舊排列，同一時刻的事件以較新那張
+// 卡的為準。去重規則與 options 匯入端、fromSyncItem 共用同一份實作。
 function unionSeenEvents(lists) {
-  const all = [];
-  for (let i = 0; i < lists.length; i++) {
-    for (let j = 0; j < lists[i].length; j++) all.push(lists[i][j]);
-  }
-  all.sort((a, b) => a.at - b.at);
-  return all.slice(-TCLCore.LIMITS.SEEN_MAX);
+  let out = [];
+  for (let i = 0; i < lists.length; i++) out = TCLCore.unionSeen(out, lists[i]);
+  return out;
 }
 
 // 純函式:把失敗卡收編進同文卡，回傳全新的條目物件(不改動任一輸入)。
@@ -1085,17 +1047,17 @@ function unionSeenEvents(lists) {
 //     下那個時刻因此留在時間軸上。
 function adoptFailureEntry(entry, failed) {
   const merged = Object.assign({}, entry);
-  for (let i = 0; i < MERGEABLE_FIELDS.length; i++) {
-    const field = MERGEABLE_FIELDS[i];
+  for (let i = 0; i < TCLCore.MERGEABLE_FIELDS.length; i++) {
+    const field = TCLCore.MERGEABLE_FIELDS[i];
     if (merged[field] === undefined && failed && failed[field] !== undefined) {
       merged[field] = failed[field];
     }
   }
-  merged.seen = unionSeenEvents([entrySeenEvents(entry), entrySeenEvents(failed)]);
+  merged.seen = unionSeenEvents([TCLCore.entrySeenEvents(entry), TCLCore.entrySeenEvents(failed)]);
   // 收編把失敗卡那一刻的事件併進時間軸，這張卡的最早事件因此可能往前——
   // receivedAt 跟著取兩張卡的較早者。id 一律維持同文卡的(失敗卡的 id 指向
   // 雲端另一張卡，換過去等於改身分)。
-  const earliest = [resolveReceivedAt(entry), resolveReceivedAt(failed)].filter((v) => v !== null);
+  const earliest = [TCLCore.resolveReceivedAt(entry), TCLCore.resolveReceivedAt(failed)].filter((v) => v !== null);
   if (earliest.length > 0) merged.receivedAt = Math.min.apply(null, earliest);
   return merged;
 }
@@ -1115,7 +1077,7 @@ function adoptFailureEntry(entry, failed) {
 //     沒抓到」蓋掉「上次抓到的」)，五個欄位規則一致。
 //   - url 更新為本次的乾淨網址:handle 改名後同一個 post ID 會帶來新的
 //     網址，卡片顯示的應是最近一次看到的樣子。
-//   - seen[]:既有事件序列走 entrySeenEvents(seen[] 存在就逐筆 sanitize，
+//   - seen[]:既有事件序列走 TCLCore.entrySeenEvents(seen[] 存在就逐筆 sanitize，
 //     缺席則以 existing.at 補種一筆起始紀錄)，再 append 本次
 //     {at: now, kind}，裁到最新 SEEN_MAX 筆。本次事件必為最新，直接接在
 //     尾端即可，不需要像 unionSeenEvents 那樣重排。
@@ -1126,7 +1088,7 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   const original = extra && extra.original !== undefined ? extra.original : existing.original;
   const removedParams =
     extra && extra.removedParams !== undefined ? extra.removedParams : existing.removedParams;
-  const seen = entrySeenEvents(existing)
+  const seen = TCLCore.entrySeenEvents(existing)
     .concat([{ at: now, kind }])
     .slice(-TCLCore.LIMITS.SEEN_MAX);
 
@@ -1160,7 +1122,7 @@ function applyHistorySchema(entry, previous, now) {
   entry.id = base && typeof base.id === 'string' && base.id ? base.id : TCLCore.randomUuid();
   entry.postKey = TCLCore.postKeyOf(entry.url);
   if (entry.original === undefined) entry.original = entry.url;
-  const earliest = [base === null ? null : resolveReceivedAt(base), typeof now === 'number' ? now : null].filter(
+  const earliest = [base === null ? null : TCLCore.resolveReceivedAt(base), typeof now === 'number' ? now : null].filter(
     (v) => v !== null
   );
   entry.receivedAt = earliest.length > 0 ? Math.min.apply(null, earliest) : null;
@@ -1182,97 +1144,11 @@ function hasStorageLocal() {
   );
 }
 
-// ---- 儲存上限:位元組軟預算 + 筆數硬保險 ----
+// ---- 儲存上限 ----
 //
-// chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
-// (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算，刻意留約 2MB 餘裕給 sync
-// 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload，不把配額
-// 用滿到邊界。既有的 isQuotaExceededError 降級(見下方 set 的 catch)保留當
-// 最後一道防線——軟預算是「平時就不長到那麼大」，配額降級是「萬一還是爆了
-// 也不炸」。
-const STORAGE_SOFT_BUDGET = 8 * 1024 * 1024;
-// 筆數硬保險:即使每筆都很小、位元組遠不到軟預算，也不讓陣列無限長(渲染/
-// 去重掃描都是 O(n))。10000 筆是「正常使用永遠碰不到、異常暴衝才會撞上」
-// 的量級。軟預算與硬保險兩者取先觸發者:capHistoryForStorage 先砍筆數上
-// 限、再用軟預算裁位元組，最終陣列同時滿足兩個約束。
-const HISTORY_MAX_ENTRIES = 10000;
-
-// 把待寫入的紀錄陣列(新到舊排列，index 0 最新)裁到儲存上限內:筆數超過
-// HISTORY_MAX_ENTRIES 先從尾端(最舊)砍;再從最新往最舊累加估算序列化位元
-// 組，超過 STORAGE_SOFT_BUDGET 就不再收更舊的條目(同樣等於從尾端裁)。位
-// 元組以 JSON.stringify(...).length 近似(ASCII 相符;多位元組字元會低估，由
-// 2MB 餘裕吸收)。永遠至少保留最新一筆，不會把本次剛寫入的紀錄也裁掉。
-function capHistoryForStorage(list) {
-  // 兩條裁切路徑(筆數、位元組)都先淘汰墓碑:墓碑是使用者早就刪掉、只等伺
-  // 服器 ack 的空殼，純尾端裁切會為了留住它而砍掉使用者真的看得到的紀錄。
-  let capped = evictTombstonesForCount(list);
-  capped = capped.length > HISTORY_MAX_ENTRIES ? capped.slice(0, HISTORY_MAX_ENTRIES) : capped;
-  capped = evictTombstonesForBudget(capped);
-
-  // 單次 O(n) 前向累加，避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
-  const budgeted = [];
-  let bytes = 2; // '[]' 外框
-  for (let i = 0; i < capped.length; i++) {
-    const itemBytes = JSON.stringify(capped[i]).length + 1; // +1 近似分隔逗號
-    if (budgeted.length > 0 && bytes + itemBytes > STORAGE_SOFT_BUDGET) break;
-    bytes += itemBytes;
-    budgeted.push(capped[i]);
-  }
-  // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置;遷移的冪等短路也
-  // 依賴這個參照相等)。
-  return budgeted.length === list.length ? list : budgeted;
-}
-
-// 純函式:從尾端(最舊)往前丟棄墓碑，最多丟 count 筆，其餘原位保留。沒有丟
-// 掉任何一筆時回傳原陣列參照。
-function dropOldestTombstones(list, count) {
-  if (count <= 0) return list;
-  const dropped = new Set();
-  for (let i = list.length - 1; i >= 0 && dropped.size < count; i--) {
-    if (isTombstoneEntry(list[i])) dropped.add(i);
-  }
-  if (dropped.size === 0) return list;
-  return list.filter((item, i) => !dropped.has(i));
-}
-
-// 筆數硬保險的墓碑優先淘汰:超量幾筆就先丟幾張最舊的墓碑，仍超量才由呼叫
-// 端從尾端砍。
-function evictTombstonesForCount(list) {
-  if (list.length <= HISTORY_MAX_ENTRIES) return list;
-  return dropOldestTombstones(list, list.length - HISTORY_MAX_ENTRIES);
-}
-
-// 位元組軟預算的墓碑優先淘汰:估算總量超標時，從最舊的墓碑開始丟到回到預
-// 算內(或墓碑丟完為止);仍超標由呼叫端的前向累加從尾端裁。
-function evictTombstonesForBudget(list) {
-  // 沒有墓碑就沒有可優先淘汰的對象，省下整表估算(常態路徑)。
-  let hasTombstone = false;
-  for (let i = 0; i < list.length; i++) {
-    if (isTombstoneEntry(list[i])) {
-      hasTombstone = true;
-      break;
-    }
-  }
-  if (!hasTombstone) return list;
-
-  let bytes = 2; // '[]' 外框
-  const itemBytes = [];
-  for (let i = 0; i < list.length; i++) {
-    const size = JSON.stringify(list[i]).length + 1; // +1 近似分隔逗號
-    itemBytes.push(size);
-    bytes += size;
-  }
-  if (bytes <= STORAGE_SOFT_BUDGET) return list;
-
-  const dropped = new Set();
-  for (let i = list.length - 1; i >= 0 && bytes > STORAGE_SOFT_BUDGET; i--) {
-    if (!isTombstoneEntry(list[i])) continue;
-    dropped.add(i);
-    bytes -= itemBytes[i];
-  }
-  if (dropped.size === 0) return list;
-  return list.filter((item, i) => !dropped.has(i));
-}
+// 位元組軟預算(8MB)＋筆數硬保險(10000 筆)、墓碑優先淘汰的完整實作在
+// TCLCore.capHistory(見 tcl-core.js 的儲存上限區塊)，寫入/遷移/同步拉取與
+// options 匯入共用同一份。本檔四條寫入路徑一律經它，沒有任何一條繞得過去。
 
 // 同一個 SW 內的 append 以 promise chain 序列化，避免兩筆同時 read-modify-write
 // 互相覆蓋。options 頁的清除/刪除/匯入直接寫 storage.local，與這裡的競態只
@@ -1323,7 +1199,7 @@ function recordHistory(url, kind, extra) {
         // 陣列。extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎
         // 把 url/kind/at/seen 也塞進 extra 物件，核心欄位仍會覆蓋回正確值
         // (防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任來源，
-        // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 capHistoryForStorage
+        // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 TCLCore.capHistory
         // 處理。
         entry = applyHistorySchema(
           Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] }),
@@ -1347,7 +1223,7 @@ function recordHistory(url, kind, extra) {
       let next = [entry].concat(rest);
       // 儲存上限:寫入前把陣列裁到位元組軟預算 + 筆數硬保險內(從尾端/
       // 最舊裁，本次剛寫入的最新一筆永遠保留)。
-      next = capHistoryForStorage(next);
+      next = TCLCore.capHistory(next);
       try {
         await chrome.storage.local.set({ [HISTORY_KEY]: next });
       } catch (err) {
@@ -1358,7 +1234,7 @@ function recordHistory(url, kind, extra) {
         // 等主功能持續運作。非配額類錯誤(例如 storage API 本身壞掉)
         // 則重新拋出，交給外層 catch 統一以 console.error 記錄，維持
         // 既有「非預期錯誤」的可見度。
-        if (isQuotaExceededError(err)) {
+        if (TCLCore.isQuotaExceededError(err)) {
           console.warn('[threads-clean-link] 紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)', err);
           return;
         }
@@ -1399,7 +1275,7 @@ function recordHistory(url, kind, extra) {
 //
 // 【競態】走既有的 historyWriteChain 串行，與 recordHistory 的
 // read-modify-write 互斥——遷移讀到的必定是完整的表，也不會被同時落盤的新
-// 紀錄覆蓋。寫回同樣先過 capHistoryForStorage(合併只會讓資料變少，這裡純
+// 紀錄覆蓋。寫回同樣先過 TCLCore.capHistory(合併只會讓資料變少，這裡純
 // 粹是不讓任何一條寫入路徑繞過儲存上限防線)。
 
 // 純函式:比較兩筆條目的 at(新到舊)。at 不是有限數字者一律排到最後(那筆
@@ -1412,8 +1288,11 @@ function compareEntryAtDesc(a, b) {
   return av < bv ? 1 : -1;
 }
 
-// 整平多張卡時必須帶過來的雲端身分欄位(見 mergeHistoryGroup)。
-const MERGE_CARRY_FIELDS = ['id', 'serverUpdatedAt'];
+// 整平多張卡時必須帶過來的雲端身分欄位(見 mergeHistoryGroup)。deletedAt 也在
+// 列:少了它，一組裡混著墓碑與活卡時整平出來的卡永遠沒有 deletedAt 鍵，待上傳
+// 的刪除意圖會在遷移中無聲蒸發(全組皆墓碑時尤其明顯——使用者刪掉的貼文會整批
+// 復活)。實際取值另有墓碑裁決，見 mergeHistoryGroup。
+const MERGE_CARRY_FIELDS = ['id', 'serverUpdatedAt', 'deletedAt'];
 
 // 純函式:把同一組(同合併鍵)的多張卡合成一張。單卡組由呼叫端直接原樣保
 // 留，不會進到這裡。
@@ -1423,8 +1302,8 @@ function mergeHistoryGroup(group) {
   const primary = ordered[0];
   const merged = { url: primary.url, at: primary.at };
   if (primary.kind !== undefined) merged.kind = primary.kind;
-  for (let f = 0; f < MERGEABLE_FIELDS.length; f++) {
-    const field = MERGEABLE_FIELDS[f];
+  for (let f = 0; f < TCLCore.MERGEABLE_FIELDS.length; f++) {
+    const field = TCLCore.MERGEABLE_FIELDS[f];
     for (let i = 0; i < ordered.length; i++) {
       if (ordered[i][field] !== undefined) {
         merged[field] = ordered[i][field];
@@ -1445,7 +1324,26 @@ function mergeHistoryGroup(group) {
       }
     }
   }
-  merged.seen = unionSeenEvents(ordered.map(entrySeenEvents));
+  // 墓碑裁決:同一組裡混著墓碑與活卡時，活卡優先、deletedAt 取 null——墓碑代
+  // 表「當年刪過」，之後又有一張活卡出現代表使用者後來重新淨化過同一篇貼文，
+  // 那是明確的復活意圖(語意與 fromSyncItem 的復活、匯入的 deletedAt 清空一
+  // 致)。全組皆墓碑才保留墓碑身分，deletedAt 取 max——刪除意圖只會往後推移，
+  // 取最舊的那一刻會讓水位線比較時把這張卡誤判成早該被 ack 的殘留。
+  let anyTombstone = false;
+  let anyLive = false;
+  let latestDeletedAt = null;
+  for (let i = 0; i < ordered.length; i++) {
+    if (TCLCore.isTombstone(ordered[i])) {
+      anyTombstone = true;
+      if (latestDeletedAt === null || ordered[i].deletedAt > latestDeletedAt) {
+        latestDeletedAt = ordered[i].deletedAt;
+      }
+    } else {
+      anyLive = true;
+    }
+  }
+  if (anyTombstone) merged.deletedAt = anyLive ? null : latestDeletedAt;
+  merged.seen = unionSeenEvents(ordered.map((e) => TCLCore.entrySeenEvents(e)));
   return merged;
 }
 
@@ -1519,11 +1417,11 @@ function migrateHistoryMerge() {
       if (next.length === list.length && next.every((item, i) => item === list[i])) return;
 
       try {
-        await chrome.storage.local.set({ [HISTORY_KEY]: capHistoryForStorage(next) });
+        await chrome.storage.local.set({ [HISTORY_KEY]: TCLCore.capHistory(next) });
       } catch (err) {
         // 配額失敗優雅降級，理由同 recordHistory:遷移失敗最多維持舊形狀的
         // 紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響任何主功能。
-        if (isQuotaExceededError(err)) {
+        if (TCLCore.isQuotaExceededError(err)) {
           console.warn('[threads-clean-link] 紀錄遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
           return;
         }
@@ -1546,13 +1444,20 @@ function migrateHistoryMerge() {
 // 生成等於每次更新都在雲端多開一張卡)與 dirty(dirty:false 代表已同步，重新
 // 標髒會讓整表無謂重傳)。
 //
-// 【冪等】每一筆都已具備七個欄位時，逐筆回傳原物件參照，據此短路、連寫回都
-// 不做。畸形條目(非物件、url 非字串)無從算 postKey，整筆原樣保留。
+// 【seen 一併消毒】seen[] 過 TCLCore.sanitizeSeenList:遷移前的庫存可能是舊
+// 版寫入的、或使用者匯入過的資料，長度不受 SEEN_MAX 約束、也可能夾著髒項。
+// 不在這裡收斂的話，上雲時 toSyncItem 會把超量的 seen 整串送出去，本機的
+// receivedAt 推導也會被髒項牽動。
+//
+// 【冪等】每一筆都已具備七個欄位、seen 也不需要收斂時，逐筆回傳原物件參照，
+// 據此短路、連寫回都不做。畸形條目(非物件、url 非字串)無從算 postKey，整筆
+// 原樣保留。
 //
 // 【競態】與 migrateHistoryMerge／recordHistory 共用 historyWriteChain 串行;
 // 掛在 merge 之後執行，整平產生的新卡才補得到欄位。
 
-// 純函式:補齊單筆條目缺席的 schema 欄位。無缺席時回傳原物件參照。
+// 純函式:補齊單筆條目缺席的 schema 欄位並收斂 seen[]。無事可做時回傳原物件
+// 參照。
 function fillHistorySchema(entry) {
   if (!entry || typeof entry !== 'object' || typeof entry.url !== 'string') return entry;
   let missing = false;
@@ -1562,16 +1467,25 @@ function fillHistorySchema(entry) {
       break;
     }
   }
-  if (!missing) return entry;
+  // 消毒後筆數變少就代表有東西被裁掉/丟掉(超過 SEEN_MAX、at 非有限數字、
+  // kind 不在白名單)，這時才需要換上新的 seen;筆數相同代表原本就每一筆都
+  // 合法，維持原陣列參照讓冪等短路成立。
+  let seen = null;
+  if (Array.isArray(entry.seen)) {
+    const sanitized = TCLCore.sanitizeSeenList(entry.seen);
+    if (sanitized.length !== entry.seen.length) seen = sanitized;
+  }
+  if (!missing && seen === null) return entry;
 
   const next = Object.assign({}, entry);
+  if (seen !== null) next.seen = seen;
   function fill(field, value) {
     if (!Object.prototype.hasOwnProperty.call(next, field)) next[field] = value;
   }
   fill('id', TCLCore.randomUuid());
   fill('postKey', TCLCore.postKeyOf(next.url));
   fill('original', next.url);
-  fill('receivedAt', entryEarliestAt(next));
+  fill('receivedAt', TCLCore.entryEarliestAt(next));
   // 遷移補齊的資料尚未上傳過，一律標髒;已有 dirty 的條目不動(dirty:false
   // 是「已同步」，重新標髒會讓整表無謂重傳)。
   fill('dirty', true);
@@ -1593,11 +1507,11 @@ function migrateHistorySchema() {
       if (next.every((item, i) => item === list[i])) return;
 
       try {
-        await chrome.storage.local.set({ [HISTORY_KEY]: capHistoryForStorage(next) });
+        await chrome.storage.local.set({ [HISTORY_KEY]: TCLCore.capHistory(next) });
       } catch (err) {
         // 配額失敗優雅降級，理由同 migrateHistoryMerge:補欄位失敗最多維持
         // 舊形狀的紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響主功能。
-        if (isQuotaExceededError(err)) {
+        if (TCLCore.isQuotaExceededError(err)) {
           console.warn('[threads-clean-link] 紀錄欄位遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
           return;
         }
@@ -1608,16 +1522,6 @@ function migrateHistorySchema() {
       console.error('[threads-clean-link] 紀錄欄位遷移失敗', err);
     });
   return historyWriteChain;
-}
-
-// 判斷是否為 chrome.storage.local 配額超限的錯誤:Chrome 對總量配額
-// (QUOTA_BYTES)與單筆配額(QUOTA_BYTES_PER_ITEM)超限，都會用開頭包含
-// "QUOTA_BYTES" 字樣的錯誤訊息 reject storage.local.set() 回傳的
-// Promise。用字串比對辨識而不依賴特定錯誤類別/物件形狀，避免不同瀏覽
-// 器或版本的錯誤物件實作差異導致誤判漏接。
-function isQuotaExceededError(err) {
-  const message = (err && err.message) || String(err || '');
-  return /QUOTA_BYTES/i.test(message);
 }
 
 // 不信任呼叫端傳入的 url，一律用 TCLCore.SHARE_URL_PATTERN 重新驗證，

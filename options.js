@@ -30,14 +30,12 @@
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
 
-  // 墓碑判定:deletedAt 為有限數字代表本機已軟刪、等待伺服器 ack。墓碑必須
-  // 留在 storage(它是待上傳的刪除意圖)，但一律不進畫面、統計、圖表與匯出。
-  function isTombstone(entry) {
-    return !!entry && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
-  }
+  // 墓碑判定走 TCLCore.isTombstone:deletedAt 為有限數字代表本機已軟刪、等待
+  // 伺服器 ack。墓碑必須留在 storage(它是待上傳的刪除意圖)，但一律不進畫面、
+  // 統計、圖表與匯出。
   function liveEntries(list) {
     return list.filter(function (e) {
-      return !isTombstone(e);
+      return !TCLCore.isTombstone(e);
     });
   }
 
@@ -47,25 +45,10 @@
   function nonEmptyString(value) {
     return typeof value === 'string' && value !== '' ? value : null;
   }
-  // 條目的最早事件時間:seen 事件取最小 at(不是 seen[0].at，匯入檔不保證已
-  // 排序)，一個可用事件都沒有時退回條目自身的 at。
-  function earliestEventAt(entry) {
-    var seen = TCLCore.sanitizeSeenList(entry && entry.seen);
-    var earliest = null;
-    seen.forEach(function (record) {
-      if (earliest === null || record.at < earliest) earliest = record.at;
-    });
-    if (earliest !== null) return earliest;
-    return finiteOrNull(entry && entry.at);
-  }
-  // 已持久化的 receivedAt 與事件序列推導值取較早者(只往前不往後)。
-  function resolveReceivedAt(entry) {
-    var stored = finiteOrNull(entry && entry.receivedAt);
-    var derived = earliestEventAt(entry);
-    if (stored === null) return derived;
-    if (derived === null) return stored;
-    return Math.min(stored, derived);
-  }
+  // 條目的最早事件時間與 receivedAt 推導(TCLCore.entryEarliestAt /
+  // TCLCore.resolveReceivedAt):seen 事件取最小 at(不是 seen[0].at，匯入檔不保
+  // 證已排序)，一個可用事件都沒有時退回條目自身的 at;已持久化的 receivedAt 與
+  // 推導值取較早者(只往前不往後)。與 background 寫入側共用同一份。
 
   // 貼文網址驗證/正規化走 TCLCore.normalizePostUrl(容尾正規化:白名單字元類 +
   // 長度上限，容忍尾隨斜線/查詢字串/hash，回傳正規化後的乾淨網址或 null)。
@@ -173,6 +156,18 @@
   // removedParams)，沿用「非字串/缺席就整欄不寫」的慣例;漏掉任一欄，
   // 使用者換裝置/瀏覽器匯入回來時該欄資料會無聲消失。值直接沿用 entry
   // 已經 sanitize 過的形狀，不必在這裡重新驗證。
+  //
+  // 雲端 schema 欄位只輸出 id／receivedAt／serverUpdatedAt 三個(cloud-sync.md
+  // 4.1):
+  //   - id 是這張卡在雲端的身分。不輸出的話，匯入端會為同一張卡生成新
+  //     UUID，雲端就多出一張內容相同的孤兒卡。
+  //   - receivedAt 是雲端必填的「第一次出現時間」。seen 被 SEEN_MAX 裁掉最舊
+  //     幾筆之後，匯入端從 seen 推導只會得到較晚的時間，這張卡在雲端的起始
+  //     時間會憑空往後跳。
+  //   - serverUpdatedAt 是下一輪合併的判準，不帶會讓匯入回來的卡在下次同步
+  //     被當成從未上傳過。
+  // 其餘四欄刻意不輸出:deletedAt 不必(匯出來源已是 liveEntries，墓碑不進匯
+  // 出檔)，postKey 與 dirty 皆可由匯入端推導(postKeyOf(url)、匯入一律標髒)。
   function buildExportPayload(entries, exportedAt) {
     return {
       app: 'threads-clean-link',
@@ -186,6 +181,9 @@
         if (Array.isArray(e.seen) && e.seen.length > 0) out.seen = e.seen;
         if (typeof e.original === 'string') out.original = e.original;
         if (Array.isArray(e.removedParams) && e.removedParams.length > 0) out.removedParams = e.removedParams;
+        if (nonEmptyString(e.id) !== null) out.id = e.id;
+        if (finiteOrNull(e.receivedAt) !== null) out.receivedAt = e.receivedAt;
+        if (finiteOrNull(e.serverUpdatedAt) !== null) out.serverUpdatedAt = e.serverUpdatedAt;
         return out;
       }),
     };
@@ -240,7 +238,7 @@
 
     entry.id = nonEmptyString(raw && raw.id) || TCLCore.randomUuid();
     entry.postKey = TCLCore.postKeyOf(url);
-    entry.receivedAt = resolveReceivedAt(Object.assign({}, entry, { receivedAt: raw && raw.receivedAt }));
+    entry.receivedAt = TCLCore.resolveReceivedAt(Object.assign({}, entry, { receivedAt: raw && raw.receivedAt }));
     // 匯入進來的資料(別台裝置的鏡像或本機舊匯出檔)在本機都是待上傳狀態。
     entry.dirty = true;
     entry.serverUpdatedAt = finiteOrNull(raw && raw.serverUpdatedAt);
@@ -257,17 +255,19 @@
     var primary = incoming.at >= existing.at ? incoming : existing;
     var secondary = primary === incoming ? existing : incoming;
     var out = { url: primary.url, kind: primary.kind, at: primary.at };
-    MERGEABLE_FIELDS.forEach(function (field) {
+    TCLCore.MERGEABLE_FIELDS.forEach(function (field) {
       if (primary[field] !== undefined) out[field] = primary[field];
       else if (secondary[field] !== undefined) out[field] = secondary[field];
     });
 
-    var seenList = unionSeenLists(existing.seen, incoming.seen);
+    // seen 聯集走 TCLCore.unionSeen(同 at 只留一筆、按 at 升序、裁到 SEEN_MAX)
+    // ——與 background 合併端、fromSyncItem 共用同一份實作。
+    var seenList = TCLCore.unionSeen(existing.seen, incoming.seen);
     if (seenList.length > 0) out.seen = seenList;
 
     out.id = nonEmptyString(existing.id) || nonEmptyString(incoming.id) || TCLCore.randomUuid();
     out.postKey = TCLCore.postKeyOf(out.url);
-    var earliest = [resolveReceivedAt(existing), resolveReceivedAt(incoming)].filter(function (v) {
+    var earliest = [TCLCore.resolveReceivedAt(existing), TCLCore.resolveReceivedAt(incoming)].filter(function (v) {
       return v !== null;
     });
     out.receivedAt = earliest.length > 0 ? Math.min.apply(null, earliest) : null;
@@ -280,33 +280,16 @@
     return out;
   }
 
-  // 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合(與 background 的
-  // 同名清單一致)。
-  var MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
-
-  // 兩張卡的 seen 事件聯集:同 at 只留一筆，按 at 升序，裁到最新 SEEN_MAX 筆。
-  function unionSeenLists(a, b) {
-    var byAt = {};
-    var out = [];
-    [a, b].forEach(function (list) {
-      TCLCore.sanitizeSeenList(list).forEach(function (record) {
-        if (Object.prototype.hasOwnProperty.call(byAt, record.at)) return;
-        byAt[record.at] = true;
-        out.push(record);
-      });
-    });
-    out.sort(function (x, y) {
-      return x.at - y.at;
-    });
-    return out.slice(-TCLCore.LIMITS.SEEN_MAX);
-  }
-
   // 匯入合併:去重鍵是 postKey(D11)——作者改名後同一篇貼文的乾淨網址不同、
   // 正規化後仍不相等，以 url 去重會多開一張卡、雲端跟著分裂。同鍵不是「略
   // 過」而是合併語意(seen 聯集、receivedAt 取最早、墓碑復活)，計數上仍算
   // skipped(對使用者而言就是「沒有新增一筆」)。同一批匯入檔內部的同 postKey
-  // 也先併起來，否則一次匯入就自己製造出兩張同文卡。合併後新到舊排序，結果
-  // 不裁切(紀錄不設上限，匯入多少留多少)。
+  // 也先併起來，否則一次匯入就自己製造出兩張同文卡。合併後新到舊排序，最後過
+  // TCLCore.capHistory 套上與 background 寫入側同一份儲存上限(位元組軟預算＋
+  // 筆數硬保險，墓碑優先淘汰)——匯入是唯一能一口氣把 history 撐長的使用者操
+  // 作，繞過裁切等於讓一份夠大的匯入檔直接把 storage 寫爆。裁切從尾端(最舊)
+  // 起，added/skipped 仍是合併階段的計數(使用者關心的是「這次檔案裡有幾筆是
+  // 新的」，不是裁切後剩幾筆)。
   function mergeImportedEntries(existing, imported, now) {
     var merged = existing.slice();
     var indexByKey = {};
@@ -338,7 +321,7 @@
     merged.sort(function (a, b) {
       return b.at - a.at;
     });
-    return { merged: merged, added: added, skipped: skipped };
+    return { merged: TCLCore.capHistory(merged), added: added, skipped: skipped };
   }
 
   // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊
@@ -956,14 +939,8 @@
 
     // ---- 紀錄清單 ----
 
-    // 配額超限判斷，沿用 background 寫入側的字串比對(見 background.js 的
-    // isQuotaExceededError):Chrome 對總量(QUOTA_BYTES)與單筆
-    // (QUOTA_BYTES_PER_ITEM)超限，都以開頭含 "QUOTA_BYTES" 的訊息 reject。
-    // 用字串比對而非錯誤類別，避免瀏覽器/版本差異誤判漏接。
-    function isQuotaExceededError(err) {
-      var message = (err && err.message) || String(err || '');
-      return /QUOTA_BYTES/i.test(message);
-    }
+    // 配額超限判斷走 TCLCore.isQuotaExceededError(與 background 寫入側、sync
+    // 引擎共用同一份字串比對)。
 
     // 回傳 Promise 給呼叫端(成功/失敗都 resolve，不 reject):寫入前先記住
     // 現值，失敗(常見:storage.local 配額寫爆)時把記憶體 entries 回滾成
@@ -988,7 +965,7 @@
         .catch(function (err) {
           entries = prev;
           if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入紀錄失敗', err);
-          return { ok: false, quota: isQuotaExceededError(err) };
+          return { ok: false, quota: TCLCore.isQuotaExceededError(err) };
         });
     }
 

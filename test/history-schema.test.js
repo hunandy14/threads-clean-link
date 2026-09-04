@@ -928,3 +928,155 @@ test('S5 fromSyncItem:既有墓碑被雲端活卡復活（deletedAt 清為 null�
   assert.equal(out.dirty, false);
   assert.equal(out.id, 'cloud-id-9', 'id 以雲端 canonical 為準（伺服器改名時就地改名）');
 });
+
+// ============================================================
+// S2 補強：整平時的墓碑裁決與 id 不換
+// ============================================================
+
+// S2：同一組裡混著墓碑與活卡時，活卡優先——墓碑代表「當年刪過」，之後又
+// 有一張活卡代表使用者後來重新淨化過同一篇貼文，那是明確的復活意圖（語意
+// 與 fromSyncItem 的復活、匯入的 deletedAt 清空一致）。整平出來的卡不得帶
+// 著 deletedAt 走，否則使用者眼前看得到的紀錄會在遷移後整批消失。
+test('S2 遷移:同組含墓碑與活卡時活卡優先，deletedAt 清為 null', async () => {
+  const base = 1700000000000;
+  const bg = loadBackgroundForMigration([
+    // 較新的活卡（handle 改名後的網址）。
+    equippedEntry('https://www.threads.com/@newname/post/DbezfB0gYvP', base, {
+      id: 'live-id',
+      kind: 'icon',
+      seen: [{ at: base, kind: 'icon' }],
+    }),
+    // 較舊的墓碑（同一篇貼文的舊網址）。
+    equippedEntry(CLEAN_URL, base - 5000, {
+      id: 'tomb-id',
+      seen: [{ at: base - 5000, kind: 'share' }],
+      deletedAt: base - 4000,
+    }),
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1, '同一篇貼文的兩張卡應整平成一張');
+  assert.equal(history[0].deletedAt, null, '活卡優先，deletedAt 清為 null');
+  assert.equal(history[0].id, 'live-id', 'id 取最新一張有值的卡，不憑空生成');
+});
+
+// S2：全組皆墓碑時保留墓碑身分，deletedAt 取 max——刪除意圖只會往後推移，
+// 取最舊的那一刻會讓水位線比較把這張卡誤判成早該被 ack 的殘留。若整平時
+// 整個把 deletedAt 丟掉，使用者刪掉的貼文會在遷移後全部復活。
+test('S2 遷移:全組皆墓碑時保留墓碑，deletedAt 取 max', async () => {
+  const base = 1700000000000;
+  const bg = loadBackgroundForMigration([
+    equippedEntry('https://www.threads.com/@newname/post/DbezfB0gYvP', base, {
+      id: 'tomb-new',
+      seen: [{ at: base, kind: 'share' }],
+      deletedAt: base + 100,
+    }),
+    equippedEntry(CLEAN_URL, base - 5000, {
+      id: 'tomb-old',
+      seen: [{ at: base - 5000, kind: 'share' }],
+      deletedAt: base + 900,
+    }),
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].deletedAt, base + 900, 'deletedAt 取組內最大值，不是主卡的值');
+});
+
+// S2：整平換 id 等於在雲端另開一張卡、原卡變孤兒。這條釘住「合併鍵相同的
+// 多張卡整平後，id 必為組內既有的 id，絕不重新生成」。
+test('S2 遷移:整平不換 id——沿用組內既有的 id', async () => {
+  const base = 1700000000000;
+  const bg = loadBackgroundForMigration([
+    equippedEntry('https://www.threads.com/@newname/post/DbezfB0gYvP', base, {
+      id: 'keep-me',
+      seen: [{ at: base, kind: 'share' }],
+    }),
+    equippedEntry(CLEAN_URL, base - 5000, { id: 'older-id', seen: [{ at: base - 5000, kind: 'share' }] }),
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, 'keep-me', 'id 沿用最新一張有值的卡，不生成新 UUID');
+});
+
+// S2：整平的 seen 聯集走 TCLCore.unionSeen，同 at 只留一筆。同一時刻的事件
+// 疊出兩筆不只讓時間軸重複顯示，還會吃掉 SEEN_MAX 的額度，把真正較舊的事件
+// 擠掉。
+test('S2 遷移:整平的 seen 聯集對相同 at 去重', async () => {
+  const base = 1700000000000;
+  const bg = loadBackgroundForMigration([
+    equippedEntry('https://www.threads.com/@newname/post/DbezfB0gYvP', base, {
+      id: 'a',
+      kind: 'icon',
+      seen: [{ at: base - 1000, kind: 'share' }, { at: base, kind: 'icon' }],
+    }),
+    equippedEntry(CLEAN_URL, base - 1000, {
+      id: 'b',
+      seen: [{ at: base - 1000, kind: 'strip' }, { at: base - 2000, kind: 'share' }],
+    }),
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.deepEqual(
+    Array.from(history[0].seen, (s) => [s.at, s.kind]),
+    [
+      [base - 2000, 'share'],
+      [base - 1000, 'share'],
+      [base, 'icon'],
+    ],
+    'at 相同的兩筆只留較新那張卡的一筆，整串按 at 升序'
+  );
+});
+
+// S2：遷移時 seen[] 一併過 sanitizeSeenList。遷移前的庫存可能是舊版寫入或
+// 使用者匯入的資料，長度不受 SEEN_MAX 約束、也可能夾著髒項；不在這裡收斂，
+// 上雲時 toSyncItem 會把超量的 seen 整串送出去。
+test('S2 遷移:51 筆 seen 收斂為 50 筆，髒項一併丟棄', async () => {
+  const base = 1700000000000;
+  // 51 筆合法事件 + 2 筆髒項（at 非有限數字、kind 不在白名單）。
+  const seen = Array.from({ length: 51 }, (_, i) => ({ at: base - 51 + i, kind: 'share' }));
+  seen.push({ at: 'nope', kind: 'share' });
+  seen.push({ at: base, kind: 'not-a-kind' });
+
+  const bg = loadBackgroundForMigration([{ url: CLEAN_URL, kind: 'share', at: base, seen: seen }]);
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].seen.length, C.LIMITS.SEEN_MAX, 'seen 裁到 SEEN_MAX');
+  assert.equal(history[0].seen[0].at, base - 50, '保留最新的一批，最舊那一筆被裁掉');
+  assert.equal(history[0].seen[C.LIMITS.SEEN_MAX - 1].at, base - 1);
+  assert.equal(history[0].receivedAt, base - 50, 'receivedAt 由收斂後的 seen 推導');
+});
+
+// S5：上傳前最後一道 seen 上限。伺服器對超量的事件序列會整筆拒收或截斷，
+// 兩種結果本機都觀測不到，只能在送出前自己裁乾淨。
+test('S5 toSyncItem:seen 上雲前裁到 SEEN_MAX，保留最新的一批', () => {
+  const base = 1700000000000;
+  const entry = {
+    id: 'card-1',
+    url: CLEAN_URL,
+    original: SHARE_URL,
+    receivedAt: base - 60,
+    seen: Array.from({ length: 60 }, (_, i) => ({ at: base - 60 + i, kind: 'share' })),
+  };
+  const item = C.toSyncItem(entry);
+  assert.equal(item.seen.length, C.LIMITS.SEEN_MAX);
+  assert.equal(item.seen[0].at, base - 50);
+  assert.equal(item.seen[C.LIMITS.SEEN_MAX - 1].at, base - 1);
+});

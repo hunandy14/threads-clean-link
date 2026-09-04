@@ -379,13 +379,30 @@
         return { key: p.key, value: p.value };
       });
     }
+    // seen 上雲前最後裁一次到 SEEN_MAX(取最新的一批)。本機寫入路徑本來就裁
+    // 過，但遷移前的庫存與匯入檔可能帶著更長的 seen——上傳超量的事件序列會被
+    // 伺服器整筆拒收或截斷，兩種結果都不是本機能觀測到的。
     if (Array.isArray(entry.seen) && entry.seen.length > 0) {
-      item.seen = entry.seen.map(function (s) {
+      item.seen = entry.seen.slice(-LIMITS.SEEN_MAX).map(function (s) {
         var source = seenSourceOf(s.kind);
         return source === undefined ? { at: s.at } : { at: s.at, source: source };
       });
     }
     return item;
+  }
+
+  // 雲端 SyncItem.seen → 本機 seen 形狀:source 反映射成 kind(見 seenKindOf)，
+  // 其餘型別把關交給下游的 sanitizeSeenList，這裡只做形狀轉換。非陣列回空陣列。
+  function cloudSeenEvents(list) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var record = list[i];
+      if (!record || typeof record !== 'object') continue;
+      var kind = record.kind !== undefined ? record.kind : seenKindOf(record.source);
+      out.push(kind === undefined ? { at: record.at } : { at: record.at, kind: kind });
+    }
+    return out;
   }
 
   // 雲端 SyncItem → entry。existing 是本機同一張卡(沒有則傳 null):
@@ -401,26 +418,9 @@
     var url = normalizePostUrl(item.cleaned) || item.cleaned;
     var receivedAt = optionalFiniteNumber(item.receivedAt);
 
-    var events = [];
-    var seenAt = {};
-    function pushSeen(list) {
-      if (!Array.isArray(list)) return;
-      for (var i = 0; i < list.length; i++) {
-        var record = list[i];
-        if (!record || typeof record !== 'object') continue;
-        if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
-        if (Object.prototype.hasOwnProperty.call(seenAt, record.at)) continue;
-        seenAt[record.at] = true;
-        var kind = record.kind !== undefined ? record.kind : seenKindOf(record.source);
-        events.push(kind === undefined ? { at: record.at } : { at: record.at, kind: kind });
-      }
-    }
-    pushSeen(item.seen);
-    pushSeen(base && base.seen);
-    events.sort(function (a, b) {
-      return a.at - b.at;
-    });
-    events = events.slice(-LIMITS.SEEN_MAX);
+    // 雲端 seen 先把 source 反映射成本機 kind，再走共用的 unionSeen(同 at 去
+    // 重、升序、裁到 SEEN_MAX)。雲端那一份排在前，同一時刻以伺服器的說法為準。
+    var events = unionSeen(cloudSeenEvents(item.seen), base && base.seen, LIMITS.SEEN_MAX);
 
     var latest = receivedAt === null ? null : receivedAt;
     for (var k = 0; k < events.length; k++) {
@@ -540,6 +540,227 @@
     return out.slice(-LIMITS.SEEN_MAX);
   }
 
+  // 兩份 seen 事件的聯集:各自先過 sanitizeSeenList，**同 at 只留一筆**(a 的
+  // 那一筆優先)，按 at 升序，裁到最新 max 筆(max 缺席時用 SEEN_MAX)。
+  //
+  // 【單一權威】原本三處各養一份鏡像:background 的 unionSeenEvents、options
+  // 的 unionSeenLists、tcl-core fromSyncItem 內的 pushSeen。只有 background 那
+  // 份沒有同 at 去重——同一篇貼文反覆合併(落盤合併、失敗卡收編、遷移整平各走
+  // 一次)時，同一個時刻會在時間軸上疊出好幾筆，還把 SEEN_MAX 的額度吃掉，真
+  // 正較舊的事件反而被裁掉。
+  //
+  // 【N 份聯集】呼叫端以 reduce 逐份併入即可:每一步都只裁掉「比留下的 max 筆
+  // 更舊」的事件，那些事件在最終聯集裡本來也進不了最新 max 筆，結果與一次併
+  // 完全部再裁相同。
+  function unionSeen(a, b, max) {
+    var limit = typeof max === 'number' && isFinite(max) && max > 0 ? max : LIMITS.SEEN_MAX;
+    var byAt = {};
+    var out = [];
+    function collect(list) {
+      var sanitized = sanitizeSeenList(list);
+      for (var i = 0; i < sanitized.length; i++) {
+        var record = sanitized[i];
+        if (Object.prototype.hasOwnProperty.call(byAt, record.at)) continue;
+        byAt[record.at] = true;
+        out.push(record);
+      }
+    }
+    collect(a);
+    collect(b);
+    out.sort(function (x, y) {
+      return x.at - y.at;
+    });
+    return out.slice(-limit);
+  }
+
+  // ---- history 條目的共用純函式 ----
+
+  // 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合。background 的落盤
+  // 合併/失敗卡收編/遷移整平與 options 的匯入合併共用同一份清單——任一端多
+  // 一欄少一欄，同一筆紀錄在兩條路徑上就會併出不同結果。
+  var MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
+
+  // 純函式:取出條目的 seen 事件序列。seen[] 存在就逐筆過 sanitizeSeenList;
+  // 缺席(schema 升級前寫入的舊資料)時照手機版語意以條目自身的 at 補種一筆起
+  // 始紀錄，讓時間軸看得到它原本第一次出現的時間;種子紀錄不帶 kind(那一刻
+  // 沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)。at 不是有限數字就連
+  // 種子都不補(那筆時間本身就不可信)。
+  function entrySeenEvents(entry) {
+    if (!entry || typeof entry !== 'object') return [];
+    if (Array.isArray(entry.seen)) return sanitizeSeenList(entry.seen);
+    return typeof entry.at === 'number' && isFinite(entry.at) ? [{ at: entry.at }] : [];
+  }
+
+  // 純函式:條目的最早事件時間(cloud-sync.md 4.1 的 receivedAt)。取 seen 事件
+  // 的**最小** at 而非 seen[0].at——真實資料在多次合併/匯入後未必已排序;一個
+  // 可用事件都沒有(seen 為空陣列、或 at 全是髒資料)時退回條目自身的 at。
+  function entryEarliestAt(entry) {
+    var events = entrySeenEvents(entry);
+    var earliest = null;
+    for (var i = 0; i < events.length; i++) {
+      if (earliest === null || events[i].at < earliest) earliest = events[i].at;
+    }
+    if (earliest !== null) return earliest;
+    return optionalFiniteNumber(entry && entry.at);
+  }
+
+  // 純函式:條目已持久化的 receivedAt 與其事件序列推導值取較早者。receivedAt
+  // 是這張卡在雲端的「第一次出現時間」，只會往前不會往後——seen 裁到 SEEN_MAX
+  // 而丟掉最舊幾筆時，不得讓 receivedAt 跟著往後跳。
+  function resolveReceivedAt(entry) {
+    var stored = optionalFiniteNumber(entry && entry.receivedAt);
+    var derived = entryEarliestAt(entry);
+    if (stored === null) return derived;
+    if (derived === null) return stored;
+    return Math.min(stored, derived);
+  }
+
+  // 是否為 chrome.storage 的容量配額超限錯誤:Chrome 對總量配額(QUOTA_BYTES)
+  // 與單筆配額(QUOTA_BYTES_PER_ITEM)超限，都會用訊息含 "QUOTA_BYTES" 字樣的
+  // 錯誤 reject storage.local.set()。用字串比對辨識而不依賴特定錯誤類別/物件
+  // 形狀，避免不同瀏覽器或版本的錯誤物件實作差異導致誤判漏接。
+  function isQuotaExceededError(err) {
+    var message = (err && err.message) || String(err || '');
+    return /QUOTA_BYTES/i.test(message);
+  }
+
+  // ---- 儲存上限:位元組軟預算 + 筆數硬保險 ----
+  //
+  // chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
+  // (QUOTA_BYTES = 10485760)。這裡設 8MB 軟預算，刻意留約 2MB 餘裕給 sync
+  // 設定的鏡像、options 匯入時的暫態、以及單次突發的較大 payload，不把配額用
+  // 滿到邊界。配額錯誤的優雅降級(見 background/options 的 isQuotaExceededError)
+  // 保留當最後一道防線——軟預算是「平時就不長到那麼大」，配額降級是「萬一還
+  // 是爆了也不炸」。
+  //
+  // 筆數硬保險:即使每筆都很小、位元組遠不到軟預算，也不讓陣列無限長(渲染/
+  // 去重掃描都是 O(n))。10000 筆是「正常使用永遠碰不到、異常暴衝才會撞上」的
+  // 量級。兩者取先觸發者:capHistory 先砍筆數上限、再用軟預算裁位元組，最終
+  // 陣列同時滿足兩個約束。
+  //
+  // 【單一權威】原本只有 background 有這套裁切，options 的匯入寫回路徑完全繞
+  // 過——一份 12,000 筆的匯入檔就能讓 storage 直接寫爆。實作收在此處，
+  // background 寫入/遷移/同步拉取與 options 匯入共用同一份。
+  var HISTORY_LIMITS = {
+    MAX_ENTRIES: 10000,
+    SOFT_BUDGET: 8 * 1024 * 1024,
+  };
+
+  // 純函式:條目是否為墓碑(已軟刪、等待伺服器 ack 刪除意圖)。墓碑留在
+  // storage 但不進畫面，裁切時優先淘汰。
+  function isTombstone(entry) {
+    return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
+  }
+
+  // 單筆的序列化位元組估算:JSON.stringify(...).length 近似(ASCII 相符;多位
+  // 元組字元會低估，由 2MB 餘裕吸收)，+1 近似陣列的分隔逗號。
+  function entryBytes(entry) {
+    return JSON.stringify(entry).length + 1;
+  }
+
+  // 純函式:從尾端(最舊)往前丟棄墓碑，最多丟 count 筆，其餘原位保留。沒有丟
+  // 掉任何一筆時回傳原陣列參照。
+  function dropOldestTombstones(list, count) {
+    if (count <= 0) return list;
+    var dropped = {};
+    var droppedCount = 0;
+    for (var i = list.length - 1; i >= 0 && droppedCount < count; i--) {
+      if (!isTombstone(list[i])) continue;
+      dropped[i] = true;
+      droppedCount++;
+    }
+    if (droppedCount === 0) return list;
+    return list.filter(function (item, i) {
+      return !dropped[i];
+    });
+  }
+
+  // 筆數硬保險的墓碑優先淘汰:超量幾筆就先丟幾張最舊的墓碑，仍超量才由呼叫
+  // 端從尾端砍。
+  function evictTombstonesForCount(list, maxEntries) {
+    if (list.length <= maxEntries) return list;
+    return dropOldestTombstones(list, list.length - maxEntries);
+  }
+
+  // 位元組軟預算的墓碑優先淘汰:估算總量超標時，從最舊的墓碑開始丟到回到預算
+  // 內(或墓碑丟完為止);仍超標由呼叫端的前向累加從尾端裁。
+  //
+  // 回傳 { list, sizes }:sizes 是與回傳 list 逐項對齊的位元組估算，供呼叫端
+  // 的前向累加直接重用，同一筆不 stringify 兩次。沒有墓碑時整表估算本來就
+  // 省下了(常態路徑)，sizes 回 null 表示「沒有可重用的估算」。
+  function evictTombstonesForBudget(list, budget) {
+    var i;
+    var hasTombstone = false;
+    for (i = 0; i < list.length; i++) {
+      if (isTombstone(list[i])) {
+        hasTombstone = true;
+        break;
+      }
+    }
+    if (!hasTombstone) return { list: list, sizes: null };
+
+    var bytes = 2; // '[]' 外框
+    var sizes = [];
+    for (i = 0; i < list.length; i++) {
+      var size = entryBytes(list[i]);
+      sizes.push(size);
+      bytes += size;
+    }
+    if (bytes <= budget) return { list: list, sizes: sizes };
+
+    var dropped = {};
+    var droppedCount = 0;
+    for (i = list.length - 1; i >= 0 && bytes > budget; i--) {
+      if (!isTombstone(list[i])) continue;
+      dropped[i] = true;
+      droppedCount++;
+      bytes -= sizes[i];
+    }
+    if (droppedCount === 0) return { list: list, sizes: sizes };
+
+    var keptList = [];
+    var keptSizes = [];
+    for (i = 0; i < list.length; i++) {
+      if (dropped[i]) continue;
+      keptList.push(list[i]);
+      keptSizes.push(sizes[i]);
+    }
+    return { list: keptList, sizes: keptSizes };
+  }
+
+  // 把待寫入的紀錄陣列(新到舊排列，index 0 最新)裁到儲存上限內:筆數超過
+  // maxEntries 先從尾端(最舊)砍;再從最新往最舊累加估算序列化位元組，超過
+  // softBudget 就不再收更舊的條目(同樣等於從尾端裁)。永遠至少保留最新一筆，
+  // 不會把本次剛寫入的紀錄也裁掉。limits 缺席時用 HISTORY_LIMITS。
+  //
+  // 兩條裁切路徑(筆數、位元組)都先淘汰墓碑:墓碑是使用者早就刪掉、只等伺服
+  // 器 ack 的空殼，純尾端裁切會為了留住它而砍掉使用者真的看得到的紀錄。
+  function capHistory(list, limits) {
+    if (!Array.isArray(list)) return [];
+    var maxEntries =
+      limits && typeof limits.maxEntries === 'number' ? limits.maxEntries : HISTORY_LIMITS.MAX_ENTRIES;
+    var budget = limits && typeof limits.softBudget === 'number' ? limits.softBudget : HISTORY_LIMITS.SOFT_BUDGET;
+
+    var capped = evictTombstonesForCount(list, maxEntries);
+    capped = capped.length > maxEntries ? capped.slice(0, maxEntries) : capped;
+    var evicted = evictTombstonesForBudget(capped, budget);
+    capped = evicted.list;
+    var sizes = evicted.sizes;
+
+    // 單次 O(n) 前向累加，避免逐筆 pop + 重算整串 JSON 的 O(n^2)。
+    var budgeted = [];
+    var bytes = 2; // '[]' 外框
+    for (var i = 0; i < capped.length; i++) {
+      var itemBytes = sizes === null ? entryBytes(capped[i]) : sizes[i];
+      if (budgeted.length > 0 && bytes + itemBytes > budget) break;
+      bytes += itemBytes;
+      budgeted.push(capped[i]);
+    }
+    // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置;遷移的冪等短路也
+    // 依賴這個參照相等)。
+    return budgeted.length === list.length ? list : budgeted;
+  }
+
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
     isCleanPostUrl: isCleanPostUrl,
@@ -563,6 +784,15 @@
     sanitizeOriginal: sanitizeOriginal,
     sanitizeRemovedParams: sanitizeRemovedParams,
     sanitizeSeenList: sanitizeSeenList,
+    unionSeen: unionSeen,
+    MERGEABLE_FIELDS: MERGEABLE_FIELDS,
+    entrySeenEvents: entrySeenEvents,
+    entryEarliestAt: entryEarliestAt,
+    resolveReceivedAt: resolveReceivedAt,
+    isTombstone: isTombstone,
+    isQuotaExceededError: isQuotaExceededError,
+    HISTORY_LIMITS: HISTORY_LIMITS,
+    capHistory: capHistory,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
