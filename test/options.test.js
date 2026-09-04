@@ -198,16 +198,30 @@ test('mergeImportedEntries:合併結果不裁切，超過舊版上限(1000)也�
   assert.equal(options.HISTORY_LIMIT, undefined, 'HISTORY_LIMIT 常數已隨上限移除一併撤除');
 });
 
-test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀，entries 只留三欄', () => {
+// 【斷言翻轉】原斷言為「entries 只留三欄」(url/kind/at)。依 docs/cloud-sync.md
+// 4.1，匯出檔加帶 id／receivedAt／serverUpdatedAt——少了它們，匯出再匯入等於
+// 在雲端把同一張卡拆成兩張、起始時間往後跳、合併判準歸零。未知欄位(extra)
+// 仍然一律丟棄，這一點不變。
+test('buildExportPayload:輸出 app/version/exportedAt/entries 形狀，entries 只留白名單欄位', () => {
   const payload = options.buildExportPayload(
-    [{ url: URL_A, kind: 'share', at: 123, extra: 'junk' }],
+    [{ url: URL_A, kind: 'share', at: 123, extra: 'junk', id: 'card-1', receivedAt: 100, serverUpdatedAt: 200 }],
     '2026-08-16T00:00:00.000Z'
   );
 
   assert.equal(payload.app, 'threads-clean-link');
   assert.equal(payload.version, 1);
   assert.equal(payload.exportedAt, '2026-08-16T00:00:00.000Z');
-  assert.deepEqual(payload.entries, [{ url: URL_A, kind: 'share', at: 123 }]);
+  assert.deepEqual(payload.entries, [
+    { url: URL_A, kind: 'share', at: 123, id: 'card-1', receivedAt: 100, serverUpdatedAt: 200 },
+  ]);
+
+  // postKey／dirty／deletedAt 不輸出:前兩者匯入端可推導，deletedAt 的來源
+  // (visibleEntries)已濾掉墓碑。
+  const withSkipped = options.buildExportPayload(
+    [{ url: URL_A, kind: 'share', at: 1, postKey: 'threads:x', dirty: true, deletedAt: 5 }],
+    '2026-08-16T00:00:00.000Z'
+  );
+  assert.deepEqual(withSkipped.entries, [{ url: URL_A, kind: 'share', at: 1 }]);
 });
 
 // entries 擴充選填 author/handle/excerpt，為字串時才輸出，規則與
@@ -3765,4 +3779,49 @@ test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 sy
   assert.equal(typeof snapshot.syncState.clearedAt, 'number');
   assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9', '不得用開頁快照把引擎推進的游標回捲');
   assert.equal(snapshot.syncState.lastSyncedAt, 99000, 'lastSyncedAt 同理');
+});
+
+// ============================================================
+// 匯出 → 匯入 round-trip（docs/cloud-sync.md 4.1）
+// ============================================================
+
+// 匯出檔帶了 id／receivedAt／serverUpdatedAt 才能原封不動繞回來。id 不保留
+// 的話，匯入端會生成新 UUID——同一張卡在雲端變成兩張，原卡成孤兒;
+// serverUpdatedAt 不保留則下一輪合併失去判準，整張表被當成從未上傳過。
+test('匯出 → 匯入 round-trip:id 不變、serverUpdatedAt 保留、receivedAt 不往後跳', () => {
+  const source = [
+    {
+      url: URL_A,
+      kind: 'icon',
+      at: 5000,
+      author: 'Dafu',
+      seen: [{ at: 3000, kind: 'share' }, { at: 5000, kind: 'icon' }],
+      original: 'https://www.threads.com/share/AbCdEfGhI',
+      id: 'cloud-card-1',
+      postKey: 'threads:AbC123_-xyz',
+      receivedAt: 3000,
+      dirty: false,
+      serverUpdatedAt: 4500,
+      deletedAt: null,
+    },
+  ];
+
+  const payload = options.buildExportPayload(source, '2026-09-04T00:00:00.000Z');
+  const parsed = options.parseImportText(JSON.stringify(payload));
+  assert.equal(parsed.ok, true);
+
+  const result = options.mergeImportedEntries([], parsed.entries, 9000);
+  assert.equal(result.added, 1);
+  const back = result.merged[0];
+  assert.equal(back.id, 'cloud-card-1', 'id 必須原封不動繞回來');
+  assert.equal(back.serverUpdatedAt, 4500, 'serverUpdatedAt 保留，不得歸零');
+  assert.equal(back.receivedAt, 3000, 'receivedAt 保留，不得被 now 或較晚的 seen 推後');
+  assert.equal(back.url, URL_A);
+  assert.equal(back.kind, 'icon');
+  assert.equal(back.at, 5000);
+  assert.equal(back.author, 'Dafu');
+  // postKey 與 dirty 不在匯出檔內，由匯入端重算/重設。
+  assert.equal(back.postKey, 'threads:AbC123_-xyz');
+  assert.equal(back.dirty, true, '匯入回來的資料在本機一律是待上傳狀態');
+  assert.equal(back.deletedAt, null);
 });

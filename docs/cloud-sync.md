@@ -144,5 +144,5 @@ background 在 state 變化時廣播 `{type:"sync.stateChanged", state}`，optio
 ## 6. 已知限制（插件側）
 
 - 跨裝置讀回的紀錄，`seen[].source` 一律反映射為 `share`，無法還原上傳前的原始 `kind`（`strip`／`menu`／`icon`）。
-- 匯出檔案格式不含 `id`／`postKey`／`dirty`／`serverUpdatedAt`／`deletedAt` 等同步用新欄位，只含既有欄位。
+- 匯出檔案格式含既有欄位加上 `id`／`receivedAt`／`serverUpdatedAt`（4.1）；`postKey` 與 `dirty` 不輸出（匯入端由 `postKeyOf(url)` 重算、一律標髒），`deletedAt` 不輸出（匯出來源已濾掉墓碑）。
 - 「清除全部」到下一輪同步真正送出之間有短暫空窗，這段時間內新記下的貼文可能不會被這次清除動作正確處理；已登入時會在清除當下立即觸發一次同步以縮小空窗，但不保證完全消除。

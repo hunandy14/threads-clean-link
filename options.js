@@ -173,6 +173,18 @@
   // removedParams)，沿用「非字串/缺席就整欄不寫」的慣例;漏掉任一欄，
   // 使用者換裝置/瀏覽器匯入回來時該欄資料會無聲消失。值直接沿用 entry
   // 已經 sanitize 過的形狀，不必在這裡重新驗證。
+  //
+  // 雲端 schema 欄位只輸出 id／receivedAt／serverUpdatedAt 三個(cloud-sync.md
+  // 4.1):
+  //   - id 是這張卡在雲端的身分。不輸出的話，匯入端會為同一張卡生成新
+  //     UUID，雲端就多出一張內容相同的孤兒卡。
+  //   - receivedAt 是雲端必填的「第一次出現時間」。seen 被 SEEN_MAX 裁掉最舊
+  //     幾筆之後，匯入端從 seen 推導只會得到較晚的時間，這張卡在雲端的起始
+  //     時間會憑空往後跳。
+  //   - serverUpdatedAt 是下一輪合併的判準，不帶會讓匯入回來的卡在下次同步
+  //     被當成從未上傳過。
+  // 其餘四欄刻意不輸出:deletedAt 不必(匯出來源已是 liveEntries，墓碑不進匯
+  // 出檔)，postKey 與 dirty 皆可由匯入端推導(postKeyOf(url)、匯入一律標髒)。
   function buildExportPayload(entries, exportedAt) {
     return {
       app: 'threads-clean-link',
@@ -186,6 +198,9 @@
         if (Array.isArray(e.seen) && e.seen.length > 0) out.seen = e.seen;
         if (typeof e.original === 'string') out.original = e.original;
         if (Array.isArray(e.removedParams) && e.removedParams.length > 0) out.removedParams = e.removedParams;
+        if (nonEmptyString(e.id) !== null) out.id = e.id;
+        if (finiteOrNull(e.receivedAt) !== null) out.receivedAt = e.receivedAt;
+        if (finiteOrNull(e.serverUpdatedAt) !== null) out.serverUpdatedAt = e.serverUpdatedAt;
         return out;
       }),
     };
