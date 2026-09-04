@@ -2382,15 +2382,15 @@ function makeFakeRuntime(handlers) {
   };
 }
 
-test('雲端同步:normalizeSyncState 對非法/形狀不對的輸入一律退回 DEFAULT_SYNC_STATE，displayName/avatarUrl 隨狀態一併正規化', () => {
-  assert.deepEqual(options.normalizeSyncState(undefined), options.DEFAULT_SYNC_STATE);
-  assert.deepEqual(options.normalizeSyncState(null), options.DEFAULT_SYNC_STATE);
-  assert.deepEqual(options.normalizeSyncState({}), options.DEFAULT_SYNC_STATE, 'status 缺席不在白名單內');
-  assert.deepEqual(options.normalizeSyncState({ status: 'bogus' }), options.DEFAULT_SYNC_STATE);
-  assert.equal(options.DEFAULT_SYNC_STATE.displayName, null);
-  assert.equal(options.DEFAULT_SYNC_STATE.avatarUrl, null);
+test('雲端同步:normalizeSyncCardState 對非法/形狀不對的輸入一律退回 DEFAULT_SYNC_CARD_STATE，displayName/avatarUrl 隨狀態一併正規化', () => {
+  assert.deepEqual(options.normalizeSyncCardState(undefined), options.DEFAULT_SYNC_CARD_STATE);
+  assert.deepEqual(options.normalizeSyncCardState(null), options.DEFAULT_SYNC_CARD_STATE);
+  assert.deepEqual(options.normalizeSyncCardState({}), options.DEFAULT_SYNC_CARD_STATE, 'status 缺席不在白名單內');
+  assert.deepEqual(options.normalizeSyncCardState({ status: 'bogus' }), options.DEFAULT_SYNC_CARD_STATE);
+  assert.equal(options.DEFAULT_SYNC_CARD_STATE.displayName, null);
+  assert.equal(options.DEFAULT_SYNC_CARD_STATE.avatarUrl, null);
 
-  const normalized = options.normalizeSyncState({
+  const normalized = options.normalizeSyncCardState({
     status: 'signed_in',
     email: 'a@b.com',
     displayName: 'Ada',
@@ -2413,7 +2413,7 @@ test('雲端同步:normalizeSyncState 對非法/形狀不對的輸入一律退�
 
   // 型別不對的 displayName/avatarUrl 個別退回 null，不整包丟棄其餘欄位
   // (比照既有欄位的容錯慣例)。
-  const badFields = options.normalizeSyncState({ status: 'signed_in', displayName: 123, avatarUrl: {} });
+  const badFields = options.normalizeSyncCardState({ status: 'signed_in', displayName: 123, avatarUrl: {} });
   assert.equal(badFields.displayName, null);
   assert.equal(badFields.avatarUrl, null);
 });

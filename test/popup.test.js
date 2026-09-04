@@ -363,6 +363,29 @@ test('雲端同步狀態列:popup.html 有 id=syncStatusRow 的 button(不是 ch
   );
 });
 
+test('雲端同步卡片狀態:normalizeSyncCardState/DEFAULT_SYNC_CARD_STATE 命名不撞 TCLCore.normalizeSyncState(帳號同步狀態，形狀不同)；popup 不渲染 displayName/avatarUrl，但形狀仍與 options.js 的卡片狀態對齊', () => {
+  const popup = loadPopup();
+  assert.equal(popup.DEFAULT_SYNC_CARD_STATE.displayName, null);
+  assert.equal(popup.DEFAULT_SYNC_CARD_STATE.avatarUrl, null);
+  const normalized = popup.normalizeSyncCardState({
+    status: 'signed_in',
+    email: 'a@b.com',
+    displayName: 'Ada',
+    avatarUrl: 'https://lh3.googleusercontent.com/a/x',
+    lastSyncedAt: 123,
+    pendingCount: 4,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  assert.equal(normalized.displayName, 'Ada');
+  assert.equal(normalized.avatarUrl, 'https://lh3.googleusercontent.com/a/x');
+  // 型別不對時個別欄位退回 null，不整包丟棄(比照既有欄位的容錯慣例，
+  // 見 options.js 的 normalizeSyncCardState)。
+  const badFields = popup.normalizeSyncCardState({ status: 'signed_in', displayName: 123, avatarUrl: {} });
+  assert.equal(badFields.displayName, null);
+  assert.equal(badFields.avatarUrl, null);
+});
+
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
 test('雲端同步狀態列:未注入 runtime 時顯示「未啟用」文案', async () => {

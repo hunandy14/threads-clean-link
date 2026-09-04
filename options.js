@@ -509,7 +509,13 @@
   // displayName/avatarUrl 為車道 A 新增的兩欄(docs/cloud-sync.md 第 5.2
   // 節)，缺席一律視為 null——帳號入口的頭像/名字渲染需要備援到
   // email，見 renderAccount。
-  var DEFAULT_SYNC_STATE = {
+  //
+  // 命名:DEFAULT_SYNC_CARD_STATE/normalizeSyncCardState 特意不叫
+  // DEFAULT_SYNC_STATE/normalizeSyncState——TCLCore 已有同名的
+  // normalizeSyncState(chrome.storage.local 的帳號同步狀態，車道 D6，形狀
+  // 完全不同，見上面 syncAccount)，兩者撞名容易在呼叫端讀岔;這裡的
+  // CardState 專指「頁首帳號卡片目前顯示的狀態」。
+  var DEFAULT_SYNC_CARD_STATE = {
     status: 'signed_out',
     email: null,
     displayName: null,
@@ -543,11 +549,11 @@
   }
 
   // 防禦性整形，比照 sanitizeEntries 的慣例:形狀不對(非物件/status 不在
-  // 白名單)一律退回 DEFAULT_SYNC_STATE;個別欄位型別不對就退回該欄位的
+  // 白名單)一律退回 DEFAULT_SYNC_CARD_STATE;個別欄位型別不對就退回該欄位的
   // 安全預設，不整包丟棄——background 若只有某個欄位暫時給錯型別，UI 仍
   // 該顯示其餘正確欄位。
-  function normalizeSyncState(state) {
-    if (!isValidSyncState(state)) return DEFAULT_SYNC_STATE;
+  function normalizeSyncCardState(state) {
+    if (!isValidSyncState(state)) return DEFAULT_SYNC_CARD_STATE;
     return {
       status: state.status,
       email: typeof state.email === 'string' ? state.email : null,
@@ -611,10 +617,10 @@
     // 登入 / 刪除雲端資料共用同一個 modal，confirmOk 點擊時執行這顆(見
     // openConfirm/closeConfirm)。
     var confirmAction = null;
-    // 雲端同步卡片目前顯示的狀態，預設未登入(見 DEFAULT_SYNC_STATE)。
+    // 雲端同步卡片目前顯示的狀態，預設未登入(見 DEFAULT_SYNC_CARD_STATE)。
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
-    var syncState = DEFAULT_SYNC_STATE;
+    var syncState = DEFAULT_SYNC_CARD_STATE;
     // 刪除雲端資料是 fire-and-forget:送出當下就樂觀顯示已完成的 toast，
     // 這顆旗標記著「下一次 setSyncState 要順便檢查 lastError，非 null
     // 就把樂觀 toast 蓋成錯誤訊息」，見 acctDeleteBtn 的 click handler 與
@@ -1098,20 +1104,20 @@
 
     // 跟 background 要一次目前狀態(頁面載入時呼叫一次)。runtime 未注入、
     // sendMessage 拋例外、或 background 端沒有對應 handler(MV3 對無人接聽
-    // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_STATE，
+    // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_CARD_STATE，
     // 讓帳號入口優雅顯示未登入態，不因車道 D 還沒做完就卡住整頁。
     function fetchSyncState() {
       if (!runtime || typeof runtime.sendMessage !== 'function') {
-        return Promise.resolve(DEFAULT_SYNC_STATE);
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
       }
       var result;
       try {
         result = runtime.sendMessage({ type: 'sync.getState' });
       } catch (e) {
-        return Promise.resolve(DEFAULT_SYNC_STATE);
+        return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
       }
-      return Promise.resolve(result).then(normalizeSyncState, function () {
-        return DEFAULT_SYNC_STATE;
+      return Promise.resolve(result).then(normalizeSyncCardState, function () {
+        return DEFAULT_SYNC_CARD_STATE;
       });
     }
 
@@ -1209,7 +1215,7 @@
     // 清單卡片頁尾)也在此一併更新，因為它的文案同樣隨登入態切換(見
     // options.html 的 #deviceNote 註解)。
     function renderAccount(state) {
-      var s = state || DEFAULT_SYNC_STATE;
+      var s = state || DEFAULT_SYNC_CARD_STATE;
       var mode = accountMode(s);
       var signedOut = mode === 'signedOut';
 
@@ -1375,7 +1381,7 @@
     // (比照 setHistory/setSyncSettings 的既有模式:controller 只暴露方法，
     // 訊息監聽掛在 -init.js)。
     function setSyncState(state) {
-      syncState = normalizeSyncState(state);
+      syncState = normalizeSyncCardState(state);
       renderAccount(syncState);
       // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
       // 有沒有失敗——deleteCloud 是 fire-and-forget，這裡是唯一能得知
@@ -2426,7 +2432,7 @@
         bindAccount();
         renderAll();
 
-        // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_STATE(未登入)完成首次
+        // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_CARD_STATE(未登入)完成首次
         // 繪製(above 的 renderAll)，真值回來後才刷新。init() 等這步結束
         // 才 resolve，讓呼叫端 await controller.init() 後畫面已是最終狀態，
         // 不需另外猜測時序;runtime 未注入或 background 沒回應時
@@ -2548,8 +2554,8 @@
 
   var api = {
     OPTIONS_DEFAULT_SETTINGS: OPTIONS_DEFAULT_SETTINGS,
-    DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
-    normalizeSyncState: normalizeSyncState,
+    DEFAULT_SYNC_CARD_STATE: DEFAULT_SYNC_CARD_STATE,
+    normalizeSyncCardState: normalizeSyncCardState,
     isTrustedAvatarUrl: isTrustedAvatarUrl,
     sanitizeEntries: sanitizeEntries,
     filterEntries: filterEntries,
