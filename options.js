@@ -1191,10 +1191,40 @@
     // 共用同一份觸發鈕與選單 DOM，用 hidden 切換;deviceNote 那一列(紀錄
     // 清單卡片頁尾)也在此一併更新，因為它的文案同樣隨登入態切換(見
     // options.html 的 #deviceNote 註解)。
+    // 頁首副標的環境標籤:狀態來源同 renderAccount 的 state.apiBase(docs/
+    // cloud-sync.md 5.2 節),跟登入態無關——未登入也要顯示,讓開發時誤連
+    // 正式環境或忘記切換環境一眼可辨。只認 SYNC_API_BASE_STAGING/
+    // SYNC_API_BASE_LOCAL 這兩個白名單值,其餘(含正式環境、background 無
+    // 回應時的空字串退回值)一律隱藏;顯示文字固定英文小寫、不經 i18n,
+    // 且只印這兩顆常數字串,不把 apiBase 原始值印進 DOM(縱深防禦——即便
+    // background 端形狀走樣,也不會有任意字串落地)。
+    function renderEnvBadge(apiBase) {
+      var badge = byId('envBadge');
+      if (!badge) return;
+      var isStaging = apiBase === SYNC_API_BASE_STAGING;
+      var isLocal = apiBase === SYNC_API_BASE_LOCAL;
+      badge.classList.toggle('env-badge-staging', isStaging);
+      badge.classList.toggle('env-badge-local', isLocal);
+      if (isStaging) {
+        badge.textContent = 'staging';
+        badge.title = '目前連線環境：staging';
+        badge.hidden = false;
+      } else if (isLocal) {
+        badge.textContent = 'local';
+        badge.title = '目前連線環境：local';
+        badge.hidden = false;
+      } else {
+        badge.textContent = '';
+        badge.removeAttribute('title');
+        badge.hidden = true;
+      }
+    }
+
     function renderAccount(state) {
       var s = state || DEFAULT_SYNC_CARD_STATE;
       var mode = accountMode(s);
       var signedOut = mode === 'signedOut';
+      renderEnvBadge(s.apiBase);
 
       var signInBtn = byId('acctSignInBtn');
       var trigger = byId('acctTrigger');

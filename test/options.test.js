@@ -3221,6 +3221,197 @@ test('帳號入口:XSS 縱深——email 含 <img onerror> 字串只當純文字
   assert.equal(doc.ids.acctHeaderName.children.length, 0);
 });
 
+// ============================================================
+// 頁首副標的環境標籤(envBadge)——只認 staging/local 兩個白名單 apiBase
+// 值,顯示固定英文小寫;其餘(含正式環境、未知值、background 無回應)
+// 一律隱藏,且不把 apiBase 原始值印進 DOM(見 options.js 的
+// renderEnvBadge)。狀態來源同帳號卡片的 state.apiBase,但跟登入態
+// 無關——未登入也要顯示。
+// ============================================================
+
+test('環境標籤:apiBase 為 staging 時顯示 staging chip,套 env-badge-staging 樣式,未登入也顯示', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_out',
+      email: null,
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: 'https://api-staging.metalinkclearer.workers.dev',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '前置:確實是未登入態');
+  assert.equal(doc.ids.envBadge.hidden, false, '未登入也要顯示,跟登入態無關');
+  assert.equal(doc.ids.envBadge.textContent, 'staging');
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), true);
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), false);
+});
+
+test('環境標籤:apiBase 為 local 時顯示 local chip,套 env-badge-local 樣式', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: 'http://localhost:8787',
+    }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.envBadge.hidden, false);
+  assert.equal(doc.ids.envBadge.textContent, 'local');
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), true);
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), false);
+});
+
+test('環境標籤:apiBase 為正式環境或非白名單值一律隱藏,不把原始字串印進 DOM(XSS 縱深)', async () => {
+  async function renderWith(apiBase) {
+    const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+    const doc = makeDocumentStub();
+    const runtime = makeFakeRuntime({
+      'sync.getState': () => ({
+        status: 'signed_out',
+        email: null,
+        displayName: null,
+        avatarUrl: null,
+        lastSyncedAt: null,
+        pendingCount: 0,
+        lastError: null,
+        apiBase,
+      }),
+    });
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+      runtime,
+    });
+    await controller.init();
+    await settle();
+    return doc;
+  }
+
+  const prod = await renderWith('https://api.metalinkclearer.workers.dev');
+  assert.equal(prod.ids.envBadge.hidden, true, '正式環境不顯示標籤');
+  assert.equal(prod.ids.envBadge.textContent, '');
+
+  const evil = '<img src=x onerror=alert(1)>';
+  const xss = await renderWith(evil);
+  assert.equal(xss.ids.envBadge.hidden, true, '不在白名單內一律隱藏');
+  assert.equal(xss.ids.envBadge.textContent, '', '不把非白名單 apiBase 原始值印進 DOM,只印固定字串');
+});
+
+test('環境標籤:background 無回應(sendMessage reject)時隱藏', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => Promise.reject(new Error('Could not establish connection.')),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.ids.envBadge.hidden, true);
+});
+
+test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → local → 正式環境隱藏,舊 modifier class 會被清掉', async () => {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+  });
+
+  await controller.init();
+  await settle();
+  assert.equal(doc.ids.envBadge.hidden, true, '前置:未注入 runtime,退回值 apiBase 空字串應隱藏');
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'https://api-staging.metalinkclearer.workers.dev',
+  });
+  assert.equal(doc.ids.envBadge.hidden, false);
+  assert.equal(doc.ids.envBadge.textContent, 'staging');
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'http://localhost:8787',
+  });
+  assert.equal(doc.ids.envBadge.hidden, false);
+  assert.equal(doc.ids.envBadge.textContent, 'local');
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), false, '切換環境時舊的 modifier class 要清掉');
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: null,
+    apiBase: 'https://api.metalinkclearer.workers.dev',
+  });
+  assert.equal(doc.ids.envBadge.hidden, true);
+  assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), false);
+});
+
 test('帳號入口:寬度切換——options.html 在 720px 斷點以 CSS 隱藏名字文字(不靠 JS 判斷寬度)', () => {
   const fs = require('node:fs');
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
