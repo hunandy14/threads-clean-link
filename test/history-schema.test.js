@@ -132,12 +132,20 @@ function makeSandboxGlobals(chrome, fetchImpl) {
 
 // 只驅動 onInstalled（遷移）的載入器：比照 background.test.js 的
 // loadBackgroundForMigration，另外注入 crypto。
+// 本擴充自己的 id。訊息入口只認 sender.id（見 background.js 的
+// isOwnExtensionSender），mock 與送出的 sender 都以這一枚為準。
+const EXT_ID = 'test-extension-id';
+// 自己人送來的 sender：content script（bridge.js）與擴充頁面都長這樣。
+const OWN_SENDER = { id: EXT_ID };
+
 function loadBackgroundForMigration(localHistory, localExtra) {
   const onInstalledListeners = [];
   const chrome = {
     runtime: {
       onInstalled: { addListener: (fn) => onInstalledListeners.push(fn) },
       onMessage: { addListener: () => {} },
+      // sender.id 的比對基準：訊息入口只接受本擴充自己送來的訊息。
+      id: EXT_ID,
     },
     contextMenus: { removeAll: async () => {}, create: () => {}, onClicked: { addListener: () => {} } },
     notifications: { create: () => {} },
@@ -171,6 +179,8 @@ function loadBackgroundForRecord(localHistory) {
     runtime: {
       onInstalled: { addListener: () => {} },
       onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
+      // sender.id 的比對基準：訊息入口只接受本擴充自己送來的訊息。
+      id: EXT_ID,
     },
     contextMenus: { removeAll: async () => {}, create: () => {}, onClicked: { addListener: () => {} } },
     notifications: { create: () => {} },
@@ -187,7 +197,7 @@ function loadBackgroundForRecord(localHistory) {
   return {
     storage,
     sendRuntimeMessage(message) {
-      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+      onMessageListeners.slice().forEach((fn) => fn(message, OWN_SENDER, () => {}));
     },
   };
 }

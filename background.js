@@ -222,12 +222,27 @@ if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChange
   });
 }
 
+// 訊息是否來自本擴充自己（content script 或擴充頁面皆可）。只看 sender.id
+// ——content script 的 sender.url 是它所在網頁的網址，比對擴充前綴會把
+// clipboard-guard 這條正常路徑整條擋掉。跨擴充訊息走的是 onMessageExternal，
+// 進不了這個 listener；沒宣告 externally_connectable 時網頁也送不進來，因此
+// sender.id 不等於自己就是不該回應的來源。
+// 需要更嚴的判準（只准擴充自己的頁面）時用 isExtensionPageSender，見下方。
+function isOwnExtensionSender(sender) {
+  if (!sender) return false;
+  const selfId = chrome.runtime && chrome.runtime.id;
+  return typeof selfId === 'string' && selfId !== '' && sender.id === selfId;
+}
+
 // 回應 clipboard-guard.js 經 bridge.js 送來的短碼解析請求。本路徑不寫
 // 剪貼簿、不發通知，只負責解析並回傳結果；失敗一律回傳 ok:false，由
 // 呼叫端自行決定要不要用原始短碼放行。
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'resolveShare') {
     return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+  }
+  if (!isOwnExtensionSender(sender)) {
+    return false; // 不是自己人送來的，不回應、不解析。
   }
 
   handleResolveShareMessage(message)
@@ -246,6 +261,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.type !== 'cleanedNotice') {
     return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+  }
+  if (!isOwnExtensionSender(sender)) {
+    return false; // 紀錄是使用者資料，不接受本擴充以外的來源寫入。
   }
 
   handleCleanedNotice(message).catch((err) => {
@@ -341,9 +359,8 @@ const SYNC_MESSAGE_HANDLERS = {
 // 若日後新增 WAR，被網頁 iframe 的 WAR 頁面也會帶本擴充前綴，需回頭把判準收窄成
 // 具名頁面(options.html／popup.html)或改用 sender.origin。
 function isExtensionPageSender(sender) {
-  if (!sender) return false;
-  const selfId = chrome.runtime && chrome.runtime.id;
-  if (typeof selfId !== 'string' || selfId === '' || sender.id !== selfId) return false;
+  if (!isOwnExtensionSender(sender)) return false;
+  const selfId = chrome.runtime.id;
   return typeof sender.url === 'string' && sender.url.indexOf('chrome-extension://' + selfId + '/') === 0;
 }
 

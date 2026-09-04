@@ -20,6 +20,12 @@ const SRC =
   '\n' +
   fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
+// 本擴充自己的 id。訊息入口只認 sender.id（見 background.js 的
+// isOwnExtensionSender），mock 與送出的 sender 都以這一枚為準。
+const EXT_ID = 'test-extension-id';
+// 自己人送來的 sender：content script（bridge.js）與擴充頁面都長這樣。
+const OWN_SENDER = { id: EXT_ID };
+
 const SHARE_URL = 'https://www.threads.com/share/DHuf91XTf/';
 const CLEAN_POST_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
 
@@ -30,6 +36,8 @@ function makeChrome() {
     runtime: {
       onInstalled: { addListener: () => {} },
       onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
+      // sender.id 的比對基準：訊息入口只接受本擴充自己送來的訊息。
+      id: EXT_ID,
     },
     contextMenus: {
       removeAll: async () => {},
@@ -114,12 +122,12 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
     // 器發送請求，並等待回應(callback 形式)。
     sendResolveShare(message) {
       return new Promise((resolve) => {
-        onMessageListeners.slice().forEach((fn) => fn(message, {}, resolve));
+        onMessageListeners.slice().forEach((fn) => fn(message, OWN_SENDER, resolve));
       });
     },
     // 模擬 bridge.js 轉發 cleanedNotice，不需要回應。
     sendCleanedNotice(message) {
-      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+      onMessageListeners.slice().forEach((fn) => fn(message, OWN_SENDER, () => {}));
     },
   };
 }
@@ -164,9 +172,9 @@ function loadBackground() {
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
-function callListener(listener, message) {
+function callListener(listener, message, sender) {
   return new Promise((resolve) => {
-    const keepAlive = listener(message, {}, resolve);
+    const keepAlive = listener(message, sender || OWN_SENDER, resolve);
     resolve.keepAlive = keepAlive;
   });
 }
@@ -178,14 +186,48 @@ test('onMessage 契約:resolveShare 回傳 true 保持通道，其他類型回�
   const { listener } = loadBackground();
   assert.equal(typeof listener, 'function', '腳本載入時就該註冊 onMessage 監聽器');
 
-  assert.equal(listener({ type: 'resolveShare', url: SHARE_URL }, {}, () => {}), true);
+  assert.equal(listener({ type: 'resolveShare', url: SHARE_URL }, OWN_SENDER, () => {}), true);
 
   let called = false;
-  const keepAlive = listener({ type: 'somethingElse' }, {}, () => {
+  const keepAlive = listener({ type: 'somethingElse' }, OWN_SENDER, () => {
     called = true;
   });
   assert.equal(keepAlive, false);
   assert.equal(called, false);
+});
+
+// 來源把關：兩個既有入口（resolveShare／cleanedNotice）只認 sender.id。
+// 判準刻意不看 sender.url——content script 的 url 是它所在的網頁，比對擴充
+// 前綴會把 clipboard-guard 這條正常路徑整條擋掉（sync.* 那組另有更嚴的
+// isExtensionPageSender）。
+test('來源把關:sender.id 不是本擴充時 resolveShare 不回應、不 fetch', async () => {
+  const { listener, calls } = loadBackground();
+  let responded = false;
+  const keepAlive = listener(
+    { type: 'resolveShare', url: SHARE_URL },
+    { id: 'some-other-extension' },
+    () => {
+      responded = true;
+    }
+  );
+  await settle();
+  assert.equal(keepAlive, false, '不佔用 sendResponse 通道');
+  assert.equal(responded, false);
+  assert.deepEqual(calls, [], '外人送來的短碼一律不解析');
+});
+
+test('來源把關:sender.id 不是本擴充時 cleanedNotice 不寫入紀錄', async () => {
+  const bg = loadBackgroundWithSettings({ saveHistory: true });
+  bg.sendRuntimeMessage(
+    { type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' },
+    { id: 'some-other-extension' }
+  );
+  await settle();
+  assert.deepEqual(bg.storage.localSnapshot().history, undefined, '紀錄是使用者資料，外人寫不進來');
+
+  bg.sendRuntimeMessage({ type: 'cleanedNotice', cleanUrl: CLEANED_NOTICE_CLEAN_URL, kind: 'share' });
+  await settle();
+  assert.equal(bg.storage.localSnapshot().history.length, 1, '自己人送的照樣記錄，把關不得誤傷');
 });
 
 test('合法短碼解析成功時，sendResponse 收到 ok:true 與去除追蹤參數的乾淨貼文網址', async () => {
@@ -461,6 +503,8 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     runtime: {
       onInstalled: { addListener: () => {} },
       onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
+      // sender.id 的比對基準：訊息入口只接受本擴充自己送來的訊息。
+      id: EXT_ID,
     },
     contextMenus: {
       removeAll: async () => {},
@@ -502,8 +546,8 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
     },
     // 模擬 bridge 經 chrome.runtime.sendMessage 送訊息給 service worker;
     // 派送給所有已註冊的 onMessage 監聽器，不假設實作註冊了幾支。
-    sendRuntimeMessage(message) {
-      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+    sendRuntimeMessage(message, sender) {
+      onMessageListeners.slice().forEach((fn) => fn(message, sender || OWN_SENDER, () => {}));
     },
   };
 }
@@ -1324,7 +1368,7 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
     fetchCalls,
     fetchInits,
     sendCleanedNotice(message) {
-      onMessageListeners.slice().forEach((fn) => fn(message, {}, () => {}));
+      onMessageListeners.slice().forEach((fn) => fn(message, OWN_SENDER, () => {}));
     },
   };
 }
@@ -2339,13 +2383,13 @@ function loadBackgroundOgMulti() {
       return new Promise((resolve) => {
         onMessageListeners
           .slice()
-          .forEach((fn) => fn({ type: 'resolveShare', url: `https://www.threads.com/share/S${i}` }, {}, resolve));
+          .forEach((fn) => fn({ type: 'resolveShare', url: `https://www.threads.com/share/S${i}` }, OWN_SENDER, resolve));
       });
     },
     notice(finalUrl) {
       onMessageListeners
         .slice()
-        .forEach((fn) => fn({ type: 'cleanedNotice', cleanUrl: finalUrl, kind: 'share' }, {}, () => {}));
+        .forEach((fn) => fn({ type: 'cleanedNotice', cleanUrl: finalUrl, kind: 'share' }, OWN_SENDER, () => {}));
     },
   };
 }
