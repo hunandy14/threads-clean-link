@@ -61,7 +61,7 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 【誠實隱私聲明(節錄，完整版請見下方 GitHub README)】
 兩個功能只要攔到的是 /share/ 短碼，都會向 threads.com / threads.net 發出一次不帶 cookie 的匿名 GET 請求，藉此把短碼換成乾淨網址——這是短碼問題「必須向伺服器問一次」的技術本質決定的，沒有繞過的辦法。這次請求不帶登入憑證，但仍會讓 Threads 看到你的來源 IP 與瀏覽器特徵，在意這點的話，請優先使用右鍵方式手動處理，或搭配 VPN。若攔到的內容已經是完整貼文網址、只帶追蹤參數，則是純文字處理，零網路請求。
 
-本擴充功能不蒐集、不儲存、不上傳任何使用者資料，不讀取剪貼簿裡原本的內容，不含任何遠端程式碼，也不會取得 <all_urls> 這種瀏覽所有網站的權限。
+未啟用雲端同步時，本擴充功能不蒐集、不儲存、不上傳任何使用者資料；啟用並登入後，只同步你自己的清理紀錄與 Google 帳號的基本身分（email、名稱、大頭照網址）到開發者自營伺服器，詳見 README。無論是否登入，都不讀取剪貼簿裡原本的內容，不含任何遠端程式碼，也不會取得 <all_urls> 這種瀏覽所有網站的權限。
 
 開源(MIT License)，原始碼與完整說明:
 https://github.com/hunandy14/threads-clean-link
@@ -89,7 +89,7 @@ Sign in with Google on the History & Settings page to additionally sync your cle
 HONEST PRIVACY NOTE
 Whenever either feature has to resolve a /share/ short code, it sends one anonymous GET request (no cookies) to threads.com/threads.net to look up the real destination — that's the only way to resolve a short code, and it's disclosed in full on the project README. This request carries no login credentials, but Threads will still see your source IP and browser fingerprint; if that matters to you, prefer the manual right-click flow or use a VPN. When the content is already a full post URL with only tracking parameters attached, cleaning is pure local string processing with zero network requests.
 
-This extension collects no user data, does not read existing clipboard contents, contains no remote code, and does not request <all_urls>.
+Unless Cloud Sync is enabled, this extension collects no user data. Once enabled and signed in, it syncs only your own cleaning history and basic Google account identity (email, name, avatar URL) to the developer's own backend — see the README for details. Either way, it never reads existing clipboard contents, contains no remote code, and never requests <all_urls>.
 
 Open source (MIT). Source & full details:
 https://github.com/hunandy14/threads-clean-link
