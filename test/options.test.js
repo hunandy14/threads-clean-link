@@ -2517,6 +2517,12 @@ test('帳號入口:已登入時渲染頭像字母/名字/email/上次同步(相�
   assert.equal(doc.ids.statusDot.classList.contains('is-danger'), false);
   assert.equal(doc.ids.statusDot.classList.contains('is-warning'), false);
   assert.equal(doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNoteSynced'));
+  // 狀態文字併進觸發鈕自身的 aria-label(不掛在巢狀 statusDot 上，讀屏器
+  // 讀不到——見 options.js 的 renderAccount)。
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.fmt('zh', 'opAccountMenuLabelStatus', { label: i18n.t('zh', 'opAccountMenuLabel'), status: i18n.t('zh', 'opAccountStatusSynced') })
+  );
 });
 
 test('帳號入口:頭像備援三層——avatarUrl 缺席時退回 displayName 首字，displayName 也缺席時退回 email 首字', async () => {
@@ -3006,6 +3012,9 @@ test('帳號入口:status 為 syncing 時頭像外圈轉圈、狀態點隱藏，
   assert.equal(doc.ids.acctSyncLabel.textContent, i18n.t('zh', 'opAccountSyncing'));
   assert.notEqual(doc.ids.acctSignOutBtn.disabled, true, '登出鈕不因同步中停用');
   assert.notEqual(doc.ids.acctDeleteBtn.disabled, true, '刪除雲端資料鈕不因同步中停用');
+  // 同步中沒有對應的狀態文字(不疊角標小圓點)，觸發鈕 aria-label 維持
+  // 不帶狀態的基本文字，不併「同步中」進去。
+  assert.equal(doc.ids.acctTrigger.getAttribute('aria-label'), i18n.t('zh', 'opAccountMenuLabel'));
 });
 
 test('帳號入口:status 為 error 時選單顯示 lastError 一行(含前綴)與重試鈕，狀態點為紅色，重試會送 sync.now', async () => {
@@ -3043,6 +3052,10 @@ test('帳號入口:status 為 error 時選單顯示 lastError 一行(含前綴)�
     doc.ids.acctSyncLabel.textContent,
     i18n.t('zh', 'opAccountRetry'),
     '錯誤態選單裡的「立即同步」項目文字比照 demo 改為「重試」'
+  );
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.fmt('zh', 'opAccountMenuLabelStatus', { label: i18n.t('zh', 'opAccountMenuLabel'), status: i18n.t('zh', 'opAccountStatusError') })
   );
 
   doc.ids.acctTrigger.fire('click');
@@ -3127,6 +3140,11 @@ test('帳號入口:從登入過期切到真正登出時，狀態點/錯誤過期
   assert.equal(doc.ids.acctExpiredRow.hidden, false, '前置條件:過期列應先顯示');
   assert.equal(doc.ids.acctHeaderName.textContent, 'Hong', '前置條件:姓名應先被填入');
   assert.equal(doc.ids.acctMenuEmail.textContent, 'hong@example.com', '前置條件:信箱應先被填入');
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.fmt('zh', 'opAccountMenuLabelStatus', { label: i18n.t('zh', 'opAccountMenuLabel'), status: i18n.t('zh', 'opAccountStatusExpired') }),
+    '前置條件:觸發鈕 aria-label 應先併上過期狀態文字'
+  );
 
   // 再切到真正登出(沒有 email/displayName，lastError 也清空)。
   controller.setSyncState({
@@ -3145,7 +3163,14 @@ test('帳號入口:從登入過期切到真正登出時，狀態點/錯誤過期
   assert.equal(doc.ids.statusDot.classList.contains('is-warning'), false, '登出後狀態點不應殘留過期的黃色');
   assert.equal(doc.ids.statusDot.classList.contains('is-danger'), false, '登出後狀態點不應殘留錯誤的紅色');
   assert.equal(doc.ids.statusDot.hidden, true);
-  assert.equal(doc.ids.statusDot.getAttribute('aria-label'), null, '登出後狀態點不應殘留過期/錯誤的 aria-label');
+  // 規格翻轉:狀態文字不再掛在巢狀 statusDot 上(讀屏器讀不到，見
+  // renderAccount 的 aria-label 註解)，改併進觸發鈕自身的 aria-label；
+  // 登出後應重設回不帶狀態的基本文字，不殘留過期/錯誤字樣。
+  assert.equal(
+    doc.ids.acctTrigger.getAttribute('aria-label'),
+    i18n.t('zh', 'opAccountMenuLabel'),
+    '登出後觸發鈕 aria-label 應重設回基本文字，不殘留過期/錯誤狀態'
+  );
   assert.equal(doc.ids.acctErrorRow.hidden, true);
   assert.equal(doc.ids.acctExpiredRow.hidden, true, '登出後過期列應重新隱藏');
   assert.equal(doc.ids.acctHeaderName.textContent, '', '登出後姓名不應殘留上一態的內容');

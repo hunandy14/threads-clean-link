@@ -144,6 +144,11 @@
       // 狀態一律當 signed_out 顯示) ----
       opAccountSignIn: '登入',
       opAccountMenuLabel: '帳號選單',
+      // 觸發鈕自身 aria-label 併入狀態文字用的樣板(見 options.js 的
+      // renderAccount)——巢狀 statusDot 上的 aria-label 不會被讀屏器讀出
+      // (aria-label 只認最近的可及性物件，這裡就是 button 本身)，狀態文字
+      // 必須併進觸發鈕唯一的 aria-label 才唸得到。
+      opAccountMenuLabelStatus: '{label}，{status}',
       // D3:首次綁定全量上傳並告知 free 方案雲端保留上限，{n} 為登入當下
       // 本機紀錄筆數。登入確認框與刪除雲端資料確認框沿用既有的共用
       // confirmOverlay，文案鍵維持原名不動。
@@ -294,6 +299,7 @@
 
       opAccountSignIn: 'Sign in',
       opAccountMenuLabel: 'Account menu',
+      opAccountMenuLabelStatus: '{label}, {status}',
       opSyncSignInConfirmDesc: 'Signing in uploads your {n} local records right away. The free plan keeps only the latest 1000 in the cloud, and your device keeps every record. You can sign out or delete your cloud data anytime.',
       opSyncSignInConfirmDo: 'Confirm sign-in',
       opSyncNever: 'Not synced yet',

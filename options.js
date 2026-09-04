@@ -1219,7 +1219,13 @@
       if (trigger) trigger.hidden = signedOut;
 
       if (signedOut) {
-        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        if (trigger) {
+          trigger.setAttribute('aria-expanded', 'false');
+          // 觸發鈕的 aria-label 重設回不帶狀態的基本文字(見下方 signedIn
+          // 分支併狀態文字進 aria-label 那段)——同一份防殘留邏輯:忘記先
+          // renderAccount 就重新顯示時，不該唸出上一態的「同步錯誤」。
+          trigger.setAttribute('aria-label', tt('opAccountMenuLabel'));
+        }
         var menuEl = byId('acctMenu');
         if (menuEl) menuEl.hidden = true;
         var deviceNoteEl0 = byId('deviceNote');
@@ -1266,7 +1272,6 @@
         if (dot0) {
           dot0.classList.remove('is-danger', 'is-warning');
           dot0.hidden = true;
-          dot0.removeAttribute('aria-label');
         }
 
         var errorRow0 = byId('acctErrorRow');
@@ -1296,9 +1301,13 @@
       if (wrap) wrap.classList.toggle('is-syncing', mode === 'syncing');
 
       var dot = byId('statusDot');
+      // 狀態文字的 aria 通道只掛在觸發鈕(button)自己的 aria-label，不掛在
+      // 巢狀 statusDot span 上——aria-label 只認最近的可及性物件，button
+      // 已有自己的 aria-label 時，子節點的 aria-label 不會被讀屏器讀到
+      // (回歸:曾經掛在 statusDot 上，讀屏器一律只唸出「帳號選單」)。
+      var statusAriaKey = null;
       if (dot) {
         dot.classList.remove('is-danger', 'is-warning');
-        var statusAriaKey = null;
         if (mode === 'error') {
           dot.hidden = false;
           dot.classList.add('is-danger');
@@ -1314,8 +1323,14 @@
           // syncing:規格只要求外圈轉圈，不疊角標小圓點，避免視覺過雜。
           dot.hidden = true;
         }
-        if (statusAriaKey) dot.setAttribute('aria-label', tt(statusAriaKey));
-        else dot.removeAttribute('aria-label');
+      }
+      if (trigger) {
+        trigger.setAttribute(
+          'aria-label',
+          statusAriaKey
+            ? tf('opAccountMenuLabelStatus', { label: tt('opAccountMenuLabel'), status: tt(statusAriaKey) })
+            : tt('opAccountMenuLabel')
+        );
       }
 
       var hasError = mode === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
