@@ -167,17 +167,33 @@
   }
 
   /**
-   * 自清守衛的形狀閘門。userId 允許 null(登入回應沒帶 user.id 的邊界)，
-   * clearedAt 必須是有限數字——不是的話整筆當不存在，寧可退回「照別台裝置
-   * 處理」也不要拿壞值當水位線比較。
+   * 自清守衛的形狀閘門(D19)。三種結果:
+   *
+   * - `null`:鍵不存在，這台裝置沒有發動過清空。
+   * - 已認領 `{ userId, clearedAt, pending: false }`:知道自己那一次的水位線。
+   * - 待定 `{ userId, clearedAt: null, pending: true, sentAt }`:DELETE 的回應
+   *   沒帶 clearedAt(欄位缺席／不是 JSON)，等下一次 `changes.clearedAt` 來認領。
+   *   **不拿本機時間當水位線**——伺服器時鐘快幾秒就會把自己清的那一次判成別台
+   *   裝置清的，本機紀錄全刪。
+   * - `{ invalid: true }`:鍵在但讀不懂(降級／被寫壞)。這一類**不能**當成「沒有
+   *   守衛」——那等於 fail-open 去硬刪使用者的資料;處理見 clearGuardVerdict。
    */
   function normalizeClearGuard(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-    if (!finiteNumber(raw.clearedAt)) return null;
-    return {
-      userId: typeof raw.userId === 'string' && raw.userId ? raw.userId : null,
-      clearedAt: raw.clearedAt,
-    };
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw !== 'object' || Array.isArray(raw)) return { invalid: true };
+    var userId = typeof raw.userId === 'string' && raw.userId ? raw.userId : null;
+    if (finiteNumber(raw.clearedAt)) {
+      return { userId: userId, clearedAt: raw.clearedAt, pending: false };
+    }
+    if (raw.pending === true) {
+      return {
+        userId: userId,
+        clearedAt: null,
+        pending: true,
+        sentAt: finiteNumber(raw.sentAt) ? raw.sentAt : null,
+      };
+    }
+    return { invalid: true, userId: userId };
   }
 
   /**
@@ -337,21 +353,35 @@
       return localSet(items);
     }
 
-    /**
-     * 記下「這一次雲端清空是本機自己發動的」(D19)。水位線優先取伺服器回應的
-     * clearedAt(api-spec 4.4 回 `{ok:true, clearedAt}`);缺席才退回請求發出
-     * 的本機時間——比伺服器實際寫下的時間早，守衛只會更保守，不會誤放。
-     * 同一個鍵直接覆寫:換帳號時 userId 跟著換，舊守衛自然失效。
-     */
-    function rememberSelfClear(ctx, payload, sentAt) {
-      var guard = {
-        userId: ctx.state.userId,
-        clearedAt: payload && finiteNumber(payload.clearedAt) ? payload.clearedAt : sentAt,
-      };
+    /** 守衛落地的唯一出口:記憶體與 storage 一起更新，形狀由閘門統一。 */
+    function writeClearGuard(ctx, guard) {
       ctx.clearGuard = normalizeClearGuard(guard);
       var items = {};
       items[CLEAR_GUARD_KEY] = guard;
       return localSet(items);
+    }
+
+    /** 待定守衛:知道自己清過，但還不知道伺服器寫下的水位線是哪一刻。 */
+    function pendingGuard(userId, sentAt) {
+      return { userId: userId, clearedAt: null, pending: true, sentAt: sentAt };
+    }
+
+    /**
+     * 記下「這一次雲端清空是本機自己發動的」(D19)。水位線取伺服器回應的
+     * clearedAt(api-spec 4.4 回 `{ok:true, clearedAt}`);缺席就記成待定，由下
+     * 一次拉回來的 `changes.clearedAt` 認領——**不能**拿本機發出時間頂替:兩邊
+     * 時鐘差幾秒(伺服器較快)就會讓自己清的那一次比守衛新，被判成別台裝置清的，
+     * 本機紀錄全刪。sentAt 只留著診斷用，不參與比較。
+     * 同一個鍵直接覆寫:換帳號時 userId 跟著換，舊守衛自然失效。
+     */
+    function rememberSelfClear(ctx, payload, sentAt) {
+      var clearedAt = payload && finiteNumber(payload.clearedAt) ? payload.clearedAt : null;
+      return writeClearGuard(
+        ctx,
+        clearedAt === null
+          ? pendingGuard(ctx.state.userId, sentAt)
+          : { userId: ctx.state.userId, clearedAt: clearedAt }
+      );
     }
 
     /** 丟掉守衛(換帳號)。留著會擋掉新帳號真正的清空水位線。 */
@@ -362,15 +392,37 @@
     }
 
     /**
-     * 這個 clearedAt 是不是本機自己那一次清空?是的話**不得**硬刪本機紀錄
-     * ——那是使用者「刪雲端但留在這台」的明確意圖(D19)。帳號對不上就當成
-     * 別台裝置(或別的帳號)清的，照常硬刪。
+     * 守衛對這一次 `changes.clearedAt` 的裁決(D19)。硬刪是不可逆的，所以只有
+     * 「確定不是自己清的」才刪:
+     *
+     * - `purge`  沒有守衛，或守衛屬於別的帳號，或水位線比守衛新 → 別台裝置清的。
+     * - `skip`   已認領的守衛涵蓋這個水位線 → 自己清的，本機留著。
+     * - `claim`  守衛待定 → 這就是自己那一次，本機留著並把水位線寫回守衛。
+     * - `invalid` 守衛讀不懂 → 本輪不硬刪(fail-safe)，另記錯誤碼讓使用者知情。
      */
-    function isSelfCleared(ctx, clearedAt) {
+    function clearGuardVerdict(ctx, clearedAt) {
       var guard = ctx.clearGuard;
-      if (!guard) return false;
-      if (guard.userId !== ctx.state.userId) return false;
-      return clearedAt <= guard.clearedAt;
+      if (!guard) return 'purge';
+      if (guard.invalid) return 'invalid';
+      if (guard.userId !== ctx.state.userId) return 'purge';
+      if (guard.pending) return 'claim';
+      return clearedAt <= guard.clearedAt ? 'skip' : 'purge';
+    }
+
+    /**
+     * 落實裁決的副作用:認領待定守衛(記下伺服器的水位線)，或把讀不懂的守衛重置
+     * 成待定、標記錯誤碼——下一輪的 clearedAt 就會把它認領回來，同時 runSync
+     * 收尾時以 clear_guard_invalid 廣播，不把這件事靜靜吞掉。
+     */
+    function settleClearGuard(ctx, verdict, clearedAt) {
+      if (verdict === 'claim') {
+        return writeClearGuard(ctx, { userId: ctx.state.userId, clearedAt: clearedAt });
+      }
+      if (verdict === 'invalid') {
+        ctx.clearGuardInvalid = true;
+        return writeClearGuard(ctx, pendingGuard(ctx.state.userId, now()));
+      }
+      return Promise.resolve();
     }
 
     // ---- 狀態與廣播(計劃 5.2／5.3) ----
@@ -618,14 +670,18 @@
           });
 
           var changes = body && body.changes;
+          var verdict = null;
           if (changes) {
-            if (finiteNumber(changes.clearedAt) && !isSelfCleared(ctx, changes.clearedAt)) {
+            if (finiteNumber(changes.clearedAt)) {
               // 別台裝置清空了雲端:早於水位線的本機紀錄一併硬刪。自己剛清的
-              // 那一次由 isSelfCleared 擋下(D19):使用者要的是「雲端沒了、這
-              // 台留著」，把自己的水位線拉回來當別人的會把本機資料清光。
-              next = next.filter(function (entry) {
-                return eventTimeOf(entry) > changes.clearedAt;
-              });
+              // 那一次由守衛擋下(D19):使用者要的是「雲端沒了、這台留著」，把
+              // 自己的水位線拉回來當別人的會把本機資料清光。
+              verdict = clearGuardVerdict(ctx, changes.clearedAt);
+              if (verdict === 'purge') {
+                next = next.filter(function (entry) {
+                  return eventTimeOf(entry) > changes.clearedAt;
+                });
+              }
             }
             var tombKeys = {};
             var tombIds = {};
@@ -667,12 +723,18 @@
           });
           var items = {};
           items[HISTORY_KEY] = capHistory(next);
-          return localSet(items).catch(function (err) {
-            // 配額爆掉不是「這一輪失敗、下一輪重來就好」而已:游標一旦前進，
-            // 這一頁的增量就再也拉不回來。改成拋出可辨識的錯誤碼，由 runSync
-            // 統一記 lastError 並排退避，游標留在原地下一輪重拉同一頁。
-            throw syncError(isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
-          });
+          return localSet(items)
+            .catch(function (err) {
+              // 配額爆掉不是「這一輪失敗、下一輪重來就好」而已:游標一旦前進，
+              // 這一頁的增量就再也拉不回來。改成拋出可辨識的錯誤碼，由 runSync
+              // 統一記 lastError 並排退避，游標留在原地下一輪重拉同一頁。
+              throw syncError(isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
+            })
+            .then(function () {
+              // 守衛的更新排在 history 之後:history 沒寫成功就整輪失敗重來，
+              // 守衛也不該先前進。
+              return settleClearGuard(ctx, verdict, changes && changes.clearedAt);
+            });
         });
       });
     }
@@ -1077,11 +1139,14 @@
           return runRound(ctx)
             .then(function () {
               ctx.state.lastSyncedAt = now();
-              ctx.state.lastError = null;
+              // 守衛讀不懂時這一輪照樣走完(推拉都成功，只是沒有執行硬刪)，但
+              // 不能靜靜吞掉:記錯誤碼並以 error 廣播，使用者才知道「別台裝置的
+              // 清空這一輪沒有套用到這台」。守衛已重置成待定，下一輪會認領回來。
+              ctx.state.lastError = ctx.clearGuardInvalid ? 'clear_guard_invalid' : null;
               return saveState(ctx.state)
                 .then(scheduleSuccess)
                 .then(function () {
-                  return broadcastState('signed_in');
+                  return broadcastState(ctx.clearGuardInvalid ? 'error' : 'signed_in');
                 });
             })
             .catch(function (err) {

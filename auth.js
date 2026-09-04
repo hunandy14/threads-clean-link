@@ -9,9 +9,11 @@
 // redirect_uri 固定為 https://<擴充 ID>.chromiumapp.org/,由 manifest 的 key
 // 欄位把擴充 ID 釘死，Console 端才登記得起來。
 //
-// nonce 是這條流程的重放防線:由呼叫端(sync.js 的同步引擎)產生並落
-// chrome.storage.session，本模組只負責把它放進授權請求並比對回來的 id_token
-// payload——SW 在授權往返中途被回收時，重建的引擎仍比對得出這一次的 nonce。
+// nonce 是這條流程的重放防線:由呼叫端(sync.js 的同步引擎)在同一個閉包裡產生
+// 並傳入，**不落 storage**;本模組把它放進授權請求，回來時與 id_token payload
+// 的 nonce 逐字比對(verifyIdTokenPayload)，一次比對就是全部的防線。SW 在授權
+// 往返中途被回收時，launchWebAuthFlow 的 promise 鏈整條消失，沒有「待比對的
+// 登入」可接，存一份到 storage 也接不回來。
 //
 // 權限:identity 與後端 host 都是 optional 權限。chrome.permissions.request
 // 只能在使用者手勢中呼叫，SW 自行發起一律失敗，因此本模組只提供「探」的一半
@@ -148,8 +150,8 @@
     });
   }
 
-  // nonce 由呼叫端傳入(引擎生成、落 chrome.storage.session);本模組不自行
-  // 生成，否則 SW 被回收後就沒有任何一方記得這一次用的是哪枚 nonce。
+  // nonce 由呼叫端傳入(引擎生成);本模組不自行生成——授權請求送出的那一枚與
+  // 底下驗 payload 用的必須是同一個值，來源只能有一個。
   function signInWithGoogle(options) {
     var clientId = options.clientId;
     var nonce = options.nonce;

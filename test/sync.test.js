@@ -695,6 +695,7 @@ test('T2 session 過期後換帳號登入：鏡像欄位重置、全部標髒（
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
+    local: { syncClearGuard: { userId: 'user-abc', clearedAt: T0 - 1000 } },
     history: [
       entry({ id: 'a', url: POST_A, dirty: false, serverUpdatedAt: T0 - 1000 }),
       entry({ id: 'b', url: POST_B, dirty: false, serverUpdatedAt: T0 - 2000 }),
@@ -717,6 +718,11 @@ test('T2 session 過期後換帳號登入：鏡像欄位重置、全部標髒（
   const pushed = [];
   env.syncPosts().forEach((r) => (r.body.upserts || []).forEach((u) => pushed.push(u.id)));
   assert.deepEqual(pushed.sort(), ['a', 'b'], '換帳號後本機紀錄要對新帳號重新全量上傳');
+  assert.equal(
+    env.storage.localData.syncClearGuard,
+    null,
+    '前一位使用者的自清守衛要丟掉，否則會擋掉新帳號真正的清空水位線'
+  );
 });
 
 test('T6 deleteCloud：displayName／avatarUrl 清空，但 userId／email 保留（D15）', async () => {
@@ -2334,4 +2340,152 @@ test('T9/L5 getState：lastError 落在不可重試清單時不順手補同步',
   await settle(10);
 
   assert.deepEqual(env.syncPosts(), [], '重試永遠不會成功，每開一次頁就白敲一次共用限流桶');
+});
+
+// ============================================================================
+// T10 — 自清守衛的 fail-safe（覆審 F1／F2）
+// ============================================================================
+//
+// 硬刪是不可逆的，兩個邊界必須往「不刪」倒：
+// F1 DELETE 的回應沒帶 clearedAt 時不得拿本機時間當水位線——伺服器時鐘快幾秒
+//    就會把自己清的那一次判成別台裝置清的，本機全滅；改記待定、由下一次拉回來
+//    的 clearedAt 認領。
+// F2 守衛讀不懂（降級／被寫壞）時不得當成「沒有守衛」——那是 fail-open，同樣
+//    把資料刪光；改成本輪不硬刪並記 clear_guard_invalid 讓使用者知情。
+
+/** 讓 DELETE /api/v1/links 的回應少掉 clearedAt 欄位（其餘請求照舊）。 */
+function depsWithoutDeleteClearedAt(env) {
+  const inner = env.deps.fetch;
+  return Object.assign({}, env.deps, {
+    fetch(url, init) {
+      return Promise.resolve(inner(url, init)).then((res) => {
+        const method = ((init && init.method) || 'GET').toUpperCase();
+        if (method !== 'DELETE') return res;
+        return {
+          status: res.status,
+          ok: res.ok,
+          headers: res.headers,
+          json: () => Promise.resolve({ ok: true }),
+        };
+      });
+    },
+  });
+}
+
+test('T10/F1 DELETE 回應缺 clearedAt：記待定守衛，登出再登入本機筆數不變', async () => {
+  const TCLSync = loadSync();
+  const old = T0 - 300_000;
+  const env = makeEnv({
+    signedIn: true,
+    history: [
+      entry({ id: 'a', url: POST_A, at: old, receivedAt: old, dirty: false, serverUpdatedAt: old, seen: [{ at: old, kind: 'strip' }] }),
+      entry({ id: 'b', url: POST_B, at: old + 1, receivedAt: old + 1, dirty: false, serverUpdatedAt: old + 1, seen: [{ at: old + 1, kind: 'strip' }] }),
+    ],
+  });
+  const engine = TCLSync.create(depsWithoutDeleteClearedAt(env));
+
+  await engine.deleteCloud();
+  await settle(10);
+  const guard = env.storage.localData.syncClearGuard;
+  assert.equal(guard.pending, true, '拿不到伺服器水位線就記待定，不得用本機時間頂替');
+  assert.equal(guard.clearedAt, null);
+
+  await engine.signOut();
+  await settle(10);
+  await engine.signIn();
+  await settle(20);
+
+  assert.deepEqual(
+    env.storage.history().map((e) => e.id).sort(),
+    ['a', 'b'],
+    '待定守衛要把拉回來的 clearedAt 認領成自己那一次，本機一筆都不刪'
+  );
+  assert.equal(
+    env.storage.localData.syncClearGuard.clearedAt,
+    env.server.clearedAt(),
+    '認領後守衛記下伺服器真正的水位線'
+  );
+});
+
+test('T10/F1 認領之後：別台裝置更晚的 clearedAt 仍照樣硬刪', async () => {
+  const TCLSync = loadSync();
+  const old = T0 - 300_000;
+  const env = makeEnv({
+    signedIn: true,
+    history: [
+      entry({ id: 'a', url: POST_A, at: old, receivedAt: old, dirty: false, serverUpdatedAt: old, seen: [{ at: old, kind: 'strip' }] }),
+    ],
+  });
+  const engine = TCLSync.create(depsWithoutDeleteClearedAt(env));
+
+  await engine.deleteCloud();
+  await settle(10);
+  await engine.syncNow(); // 認領：守衛拿到伺服器的水位線
+  await settle(10);
+  assert.equal(env.storage.history().length, 1, '前置：自己清的那一次不刪本機');
+
+  // 別台裝置後來又清了一次（水位線比守衛新）。
+  env.advance(60_000);
+  env.server.seed([], { clearedAt: env.now() });
+  await engine.syncNow();
+  await settle(10);
+
+  assert.deepEqual(env.storage.history(), [], '守衛只認自己那一次，比它新的水位線照舊硬刪');
+});
+
+test('T10/F2 守衛讀不懂時本輪不硬刪，記 clear_guard_invalid 並重置成待定', async () => {
+  const TCLSync = loadSync();
+  const cleared = T0 - 50_000;
+  const env = makeEnv({
+    signedIn: true,
+    local: { syncClearGuard: { userId: 'user-abc', clearedAt: 'corrupt' } },
+    history: [
+      entry({ id: 'old', url: POST_A, at: cleared - 10_000, receivedAt: cleared - 10_000, dirty: false, serverUpdatedAt: cleared - 10_000, seen: [{ at: cleared - 10_000, kind: 'strip' }] }),
+    ],
+  });
+  env.server.seed([], { clearedAt: cleared });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(10);
+
+  assert.deepEqual(
+    env.storage.history().map((e) => e.id),
+    ['old'],
+    '守衛壞掉就當成沒有守衛去硬刪，是拿使用者的資料賭'
+  );
+  assert.equal(env.storage.syncState().lastError, 'clear_guard_invalid', '不得靜靜吞掉');
+  assert.equal(env.lastState().status, 'error', '要廣播出去讓使用者知情');
+  assert.equal(env.storage.localData.syncClearGuard.pending, true, '重置成待定，下一輪認領回來');
+});
+
+test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally 語意）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  env.server.failNext({ kind: 'network' });
+  let boom = true;
+  const deps = Object.assign({}, env.deps, {
+    storage: {
+      session: env.deps.storage.session,
+      local: Object.assign({}, env.deps.storage.local, {
+        set(items) {
+          // 失敗收尾寫 syncState 時炸一次：catch 內的寫入失敗會沿著同一條鏈往外
+          // 冒，只掛成功回呼的 releaseInflight 就永遠不會跑。
+          if (boom && Object.prototype.hasOwnProperty.call(items, 'syncState')) {
+            boom = false;
+            return Promise.reject(new Error('storage 壞了'));
+          }
+          return env.deps.storage.local.set(items);
+        },
+      }),
+    },
+  });
+  const engine = TCLSync.create(deps);
+  await engine.syncNow().catch(() => {});
+  await settle(10);
+
+  assert.equal(
+    env.storage.sessionData.syncInflight,
+    undefined,
+    '旗標沒放回去的話，TTL 到期前這台裝置的同步全被擋掉'
+  );
 });
