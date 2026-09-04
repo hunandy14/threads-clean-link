@@ -991,6 +991,14 @@ function findDedupIndex(list, url) {
   return -1;
 }
 
+// ---- 失敗卡收編(isAdoptableOriginal / findOriginalAdoptIndex /
+//      adoptFailureEntry / adoptFailureEntriesInList) ----
+//
+// 【現況】收編的對象是「當年解析失敗、以短碼原文入庫」的卡。這種卡在 0.3.0
+// 起已無法由任何入口產生(所有寫入路徑都先取得乾淨貼文網址才落盤)，這整區
+// 因此只服務 0.3.0 之前留下的庫存。保留至 0.7 評估移除——移除前要先確認實
+// 際使用者庫存已無此類殘留，本波不動。
+
 // 純函式:本次的 original 是否有資格觸發失敗卡收編——必須是分享短碼原文。
 //
 // 【只認短碼原文】original 同屬頁面可控輸入(見 extractHistoryExtraFields):
