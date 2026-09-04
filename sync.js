@@ -152,15 +152,8 @@
     return TCLCoreRef.postKeyOf(url);
   }
 
-  function isTombstone(entry) {
-    return typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
-  }
-
-  // chrome.storage 的容量配額錯誤（與 background.js 的同名判定同一條規則）。
-  function isQuotaExceededError(err) {
-    var message = (err && err.message) || String(err || '');
-    return /QUOTA_BYTES/i.test(message);
-  }
+  // 墓碑判定與 chrome.storage 的容量配額錯誤判定一律走 TCLCore（與
+  // background 寫入側、options 讀取／匯入側共用同一份）。
 
   function finiteNumber(value) {
     return typeof value === 'number' && isFinite(value);
@@ -546,7 +539,7 @@
       var dropped = [];
       history.forEach(function (entry) {
         if (!entry || entry.dirty !== true) return;
-        if (isTombstone(entry)) {
+        if (TCLCoreRef.isTombstone(entry)) {
           if (isDeletable(entry)) deletes.push(entry.id);
           else if (typeof entry.id === 'string') dropped.push(entry.id);
           return;
@@ -643,7 +636,7 @@
             if (!entry) return;
             // 墓碑被 ack 之後才真正從 storage 移除，在此之前必須保留——SW 中途
             // 被殺時墓碑還在，下次照樣送得出去。
-            if (isTombstone(entry) && deletedIds[entry.id]) return;
+            if (TCLCoreRef.isTombstone(entry) && deletedIds[entry.id]) return;
             if (canonical[entry.id] !== undefined) {
               next.push(
                 Object.assign({}, entry, {
@@ -728,7 +721,7 @@
               // 配額爆掉不是「這一輪失敗、下一輪重來就好」而已:游標一旦前進，
               // 這一頁的增量就再也拉不回來。改成拋出可辨識的錯誤碼，由 runSync
               // 統一記 lastError 並排退避，游標留在原地下一輪重拉同一頁。
-              throw syncError(isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
+              throw syncError(TCLCoreRef.isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
             })
             .then(function () {
               // 守衛的更新排在 history 之後:history 沒寫成功就整輪失敗重來，

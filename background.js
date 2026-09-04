@@ -59,7 +59,7 @@ const DEFAULT_SETTINGS = {
 // 紀錄:存 chrome.storage.local(sync 的 100KB 總額與寫入配額撐不起
 // 紀錄量），新到舊排列。上限由位元組軟預算 + 筆數硬保險把關(見
 // TCLCore.capHistory 與 TCLCore.HISTORY_LIMITS)，平時
-// 就不長到撞配額;萬一仍寫入超限，再走 recordHistory 的 isQuotaExceededError
+// 就不長到撞配額;萬一仍寫入超限，再走 recordHistory 的 TCLCore.isQuotaExceededError
 // 優雅降級(不重試、不丟例外，只 console.warn，不影響複製/淨化等主功能)。
 const HISTORY_KEY = 'history';
 
@@ -970,11 +970,6 @@ async function fetchOgFieldsForLocalKind(cleanUrl) {
 // 'menu')一律走 TCLCore;seen[] 逐筆消毒改用 TCLCore.sanitizeSeenList(與
 // options 讀取/匯入端共用同一份，連 slice(-SEEN_MAX) 都在函式內完成)。
 
-// 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合。三處共用同一份清
-// 單:落盤合併(mergeHistoryEntry 逐欄寫開，語意同此)、失敗卡收編
-// (adoptFailureEntry)、一次性遷移(mergeHistoryGroup)。
-const MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
-
 // 純函式:條目的合併鍵，走 TCLCore.postKeyOf(D11，與手機 postKeyOf 完全等
 // 價)。同一篇貼文不論 handle 改名、網域變體(www./m./mobile.、threads.com/
 // .net)、尾斜線、query，皆算出同一個 threads:<code> 之類的鍵;抽不出貼文
@@ -1022,47 +1017,9 @@ function findOriginalAdoptIndex(list, original, skipIndex) {
   return -1;
 }
 
-// 純函式:取出條目的 seen 事件序列。seen[] 存在就逐筆過
-// TCLCore.sanitizeSeenList;缺席(schema 升級前寫入的舊資料)時照手機版語意
-// (`existing.seen ?? [{ at: existing.receivedAt }]`)以條目自身的 at 補種一
-// 筆起始紀錄，讓時間軸看得到它原本第一次出現的時間;種子紀錄不帶 kind(那
-// 一刻沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)。at 不是有限數字
-// 就連種子都不補(那筆時間本身就不可信)。
-function entrySeenEvents(entry) {
-  if (!entry || typeof entry !== 'object') return [];
-  if (Array.isArray(entry.seen)) return TCLCore.sanitizeSeenList(entry.seen);
-  return typeof entry.at === 'number' && isFinite(entry.at) ? [{ at: entry.at }] : [];
-}
-
-// 純函式:條目的最早事件時間(計劃 4.1 的 receivedAt)。取 seen 事件的**最小**
-// at 而非 seen[0].at——真實資料在多次合併/匯入後未必已排序;一個可用事件都
-// 沒有(seen 為空陣列、或 at 全是髒資料)時退回條目自身的 at。
-function entryEarliestAt(entry) {
-  const events = entrySeenEvents(entry);
-  let earliest = null;
-  for (let i = 0; i < events.length; i++) {
-    if (earliest === null || events[i].at < earliest) earliest = events[i].at;
-  }
-  if (earliest !== null) return earliest;
-  return entry && typeof entry.at === 'number' && isFinite(entry.at) ? entry.at : null;
-}
-
-// 純函式:條目已持久化的 receivedAt 與其事件序列推導值取較早者。receivedAt
-// 是這張卡在雲端的「第一次出現時間」，只會往前不會往後——seen 裁到 SEEN_MAX
-// 而丟掉最舊幾筆時，不得讓 receivedAt 跟著往後跳。
-function resolveReceivedAt(entry) {
-  const stored = entry && typeof entry.receivedAt === 'number' && isFinite(entry.receivedAt) ? entry.receivedAt : null;
-  const derived = entryEarliestAt(entry);
-  if (stored === null) return derived;
-  if (derived === null) return stored;
-  return Math.min(stored, derived);
-}
-
-// 純函式:條目是否為墓碑(已軟刪、等待上傳刪除意圖)。墓碑留在 storage 但不
-// 進畫面，裁切時優先淘汰(見 TCLCore.capHistory)。
-function isTombstoneEntry(entry) {
-  return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
-}
+// seen 事件序列(entrySeenEvents)、最早事件時間(entryEarliestAt)、已持久化
+// 值與推導值取較早者(resolveReceivedAt)、墓碑判定(isTombstone)一律走
+// TCLCore——四支都是純函式，options 讀取/匯入端與 sync 引擎用的是同一份。
 
 // 純函式:多張卡的 seen 事件聯集，逐份併入 TCLCore.unionSeen(同 at 去重、按
 // at 升序、裁到最新 SEEN_MAX)。lists 由新到舊排列，同一時刻的事件以較新那張
@@ -1082,17 +1039,17 @@ function unionSeenEvents(lists) {
 //     下那個時刻因此留在時間軸上。
 function adoptFailureEntry(entry, failed) {
   const merged = Object.assign({}, entry);
-  for (let i = 0; i < MERGEABLE_FIELDS.length; i++) {
-    const field = MERGEABLE_FIELDS[i];
+  for (let i = 0; i < TCLCore.MERGEABLE_FIELDS.length; i++) {
+    const field = TCLCore.MERGEABLE_FIELDS[i];
     if (merged[field] === undefined && failed && failed[field] !== undefined) {
       merged[field] = failed[field];
     }
   }
-  merged.seen = unionSeenEvents([entrySeenEvents(entry), entrySeenEvents(failed)]);
+  merged.seen = unionSeenEvents([TCLCore.entrySeenEvents(entry), TCLCore.entrySeenEvents(failed)]);
   // 收編把失敗卡那一刻的事件併進時間軸，這張卡的最早事件因此可能往前——
   // receivedAt 跟著取兩張卡的較早者。id 一律維持同文卡的(失敗卡的 id 指向
   // 雲端另一張卡，換過去等於改身分)。
-  const earliest = [resolveReceivedAt(entry), resolveReceivedAt(failed)].filter((v) => v !== null);
+  const earliest = [TCLCore.resolveReceivedAt(entry), TCLCore.resolveReceivedAt(failed)].filter((v) => v !== null);
   if (earliest.length > 0) merged.receivedAt = Math.min.apply(null, earliest);
   return merged;
 }
@@ -1112,7 +1069,7 @@ function adoptFailureEntry(entry, failed) {
 //     沒抓到」蓋掉「上次抓到的」)，五個欄位規則一致。
 //   - url 更新為本次的乾淨網址:handle 改名後同一個 post ID 會帶來新的
 //     網址，卡片顯示的應是最近一次看到的樣子。
-//   - seen[]:既有事件序列走 entrySeenEvents(seen[] 存在就逐筆 sanitize，
+//   - seen[]:既有事件序列走 TCLCore.entrySeenEvents(seen[] 存在就逐筆 sanitize，
 //     缺席則以 existing.at 補種一筆起始紀錄)，再 append 本次
 //     {at: now, kind}，裁到最新 SEEN_MAX 筆。本次事件必為最新，直接接在
 //     尾端即可，不需要像 unionSeenEvents 那樣重排。
@@ -1123,7 +1080,7 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   const original = extra && extra.original !== undefined ? extra.original : existing.original;
   const removedParams =
     extra && extra.removedParams !== undefined ? extra.removedParams : existing.removedParams;
-  const seen = entrySeenEvents(existing)
+  const seen = TCLCore.entrySeenEvents(existing)
     .concat([{ at: now, kind }])
     .slice(-TCLCore.LIMITS.SEEN_MAX);
 
@@ -1157,7 +1114,7 @@ function applyHistorySchema(entry, previous, now) {
   entry.id = base && typeof base.id === 'string' && base.id ? base.id : TCLCore.randomUuid();
   entry.postKey = TCLCore.postKeyOf(entry.url);
   if (entry.original === undefined) entry.original = entry.url;
-  const earliest = [base === null ? null : resolveReceivedAt(base), typeof now === 'number' ? now : null].filter(
+  const earliest = [base === null ? null : TCLCore.resolveReceivedAt(base), typeof now === 'number' ? now : null].filter(
     (v) => v !== null
   );
   entry.receivedAt = earliest.length > 0 ? Math.min.apply(null, earliest) : null;
@@ -1269,7 +1226,7 @@ function recordHistory(url, kind, extra) {
         // 等主功能持續運作。非配額類錯誤(例如 storage API 本身壞掉)
         // 則重新拋出，交給外層 catch 統一以 console.error 記錄，維持
         // 既有「非預期錯誤」的可見度。
-        if (isQuotaExceededError(err)) {
+        if (TCLCore.isQuotaExceededError(err)) {
           console.warn('[threads-clean-link] 紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)', err);
           return;
         }
@@ -1337,8 +1294,8 @@ function mergeHistoryGroup(group) {
   const primary = ordered[0];
   const merged = { url: primary.url, at: primary.at };
   if (primary.kind !== undefined) merged.kind = primary.kind;
-  for (let f = 0; f < MERGEABLE_FIELDS.length; f++) {
-    const field = MERGEABLE_FIELDS[f];
+  for (let f = 0; f < TCLCore.MERGEABLE_FIELDS.length; f++) {
+    const field = TCLCore.MERGEABLE_FIELDS[f];
     for (let i = 0; i < ordered.length; i++) {
       if (ordered[i][field] !== undefined) {
         merged[field] = ordered[i][field];
@@ -1368,7 +1325,7 @@ function mergeHistoryGroup(group) {
   let anyLive = false;
   let latestDeletedAt = null;
   for (let i = 0; i < ordered.length; i++) {
-    if (isTombstoneEntry(ordered[i])) {
+    if (TCLCore.isTombstone(ordered[i])) {
       anyTombstone = true;
       if (latestDeletedAt === null || ordered[i].deletedAt > latestDeletedAt) {
         latestDeletedAt = ordered[i].deletedAt;
@@ -1378,7 +1335,7 @@ function mergeHistoryGroup(group) {
     }
   }
   if (anyTombstone) merged.deletedAt = anyLive ? null : latestDeletedAt;
-  merged.seen = unionSeenEvents(ordered.map(entrySeenEvents));
+  merged.seen = unionSeenEvents(ordered.map((e) => TCLCore.entrySeenEvents(e)));
   return merged;
 }
 
@@ -1456,7 +1413,7 @@ function migrateHistoryMerge() {
       } catch (err) {
         // 配額失敗優雅降級，理由同 recordHistory:遷移失敗最多維持舊形狀的
         // 紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響任何主功能。
-        if (isQuotaExceededError(err)) {
+        if (TCLCore.isQuotaExceededError(err)) {
           console.warn('[threads-clean-link] 紀錄遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
           return;
         }
@@ -1520,7 +1477,7 @@ function fillHistorySchema(entry) {
   fill('id', TCLCore.randomUuid());
   fill('postKey', TCLCore.postKeyOf(next.url));
   fill('original', next.url);
-  fill('receivedAt', entryEarliestAt(next));
+  fill('receivedAt', TCLCore.entryEarliestAt(next));
   // 遷移補齊的資料尚未上傳過，一律標髒;已有 dirty 的條目不動(dirty:false
   // 是「已同步」，重新標髒會讓整表無謂重傳)。
   fill('dirty', true);
@@ -1546,7 +1503,7 @@ function migrateHistorySchema() {
       } catch (err) {
         // 配額失敗優雅降級，理由同 migrateHistoryMerge:補欄位失敗最多維持
         // 舊形狀的紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響主功能。
-        if (isQuotaExceededError(err)) {
+        if (TCLCore.isQuotaExceededError(err)) {
           console.warn('[threads-clean-link] 紀錄欄位遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
           return;
         }
@@ -1557,16 +1514,6 @@ function migrateHistorySchema() {
       console.error('[threads-clean-link] 紀錄欄位遷移失敗', err);
     });
   return historyWriteChain;
-}
-
-// 判斷是否為 chrome.storage.local 配額超限的錯誤:Chrome 對總量配額
-// (QUOTA_BYTES)與單筆配額(QUOTA_BYTES_PER_ITEM)超限，都會用開頭包含
-// "QUOTA_BYTES" 字樣的錯誤訊息 reject storage.local.set() 回傳的
-// Promise。用字串比對辨識而不依賴特定錯誤類別/物件形狀，避免不同瀏覽
-// 器或版本的錯誤物件實作差異導致誤判漏接。
-function isQuotaExceededError(err) {
-  const message = (err && err.message) || String(err || '');
-  return /QUOTA_BYTES/i.test(message);
 }
 
 // 不信任呼叫端傳入的 url，一律用 TCLCore.SHARE_URL_PATTERN 重新驗證，

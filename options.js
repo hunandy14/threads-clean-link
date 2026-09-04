@@ -30,14 +30,12 @@
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
 
-  // 墓碑判定:deletedAt 為有限數字代表本機已軟刪、等待伺服器 ack。墓碑必須
-  // 留在 storage(它是待上傳的刪除意圖)，但一律不進畫面、統計、圖表與匯出。
-  function isTombstone(entry) {
-    return !!entry && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
-  }
+  // 墓碑判定走 TCLCore.isTombstone:deletedAt 為有限數字代表本機已軟刪、等待
+  // 伺服器 ack。墓碑必須留在 storage(它是待上傳的刪除意圖)，但一律不進畫面、
+  // 統計、圖表與匯出。
   function liveEntries(list) {
     return list.filter(function (e) {
-      return !isTombstone(e);
+      return !TCLCore.isTombstone(e);
     });
   }
 
@@ -47,25 +45,10 @@
   function nonEmptyString(value) {
     return typeof value === 'string' && value !== '' ? value : null;
   }
-  // 條目的最早事件時間:seen 事件取最小 at(不是 seen[0].at，匯入檔不保證已
-  // 排序)，一個可用事件都沒有時退回條目自身的 at。
-  function earliestEventAt(entry) {
-    var seen = TCLCore.sanitizeSeenList(entry && entry.seen);
-    var earliest = null;
-    seen.forEach(function (record) {
-      if (earliest === null || record.at < earliest) earliest = record.at;
-    });
-    if (earliest !== null) return earliest;
-    return finiteOrNull(entry && entry.at);
-  }
-  // 已持久化的 receivedAt 與事件序列推導值取較早者(只往前不往後)。
-  function resolveReceivedAt(entry) {
-    var stored = finiteOrNull(entry && entry.receivedAt);
-    var derived = earliestEventAt(entry);
-    if (stored === null) return derived;
-    if (derived === null) return stored;
-    return Math.min(stored, derived);
-  }
+  // 條目的最早事件時間與 receivedAt 推導(TCLCore.entryEarliestAt /
+  // TCLCore.resolveReceivedAt):seen 事件取最小 at(不是 seen[0].at，匯入檔不保
+  // 證已排序)，一個可用事件都沒有時退回條目自身的 at;已持久化的 receivedAt 與
+  // 推導值取較早者(只往前不往後)。與 background 寫入側共用同一份。
 
   // 貼文網址驗證/正規化走 TCLCore.normalizePostUrl(容尾正規化:白名單字元類 +
   // 長度上限，容忍尾隨斜線/查詢字串/hash，回傳正規化後的乾淨網址或 null)。
@@ -255,7 +238,7 @@
 
     entry.id = nonEmptyString(raw && raw.id) || TCLCore.randomUuid();
     entry.postKey = TCLCore.postKeyOf(url);
-    entry.receivedAt = resolveReceivedAt(Object.assign({}, entry, { receivedAt: raw && raw.receivedAt }));
+    entry.receivedAt = TCLCore.resolveReceivedAt(Object.assign({}, entry, { receivedAt: raw && raw.receivedAt }));
     // 匯入進來的資料(別台裝置的鏡像或本機舊匯出檔)在本機都是待上傳狀態。
     entry.dirty = true;
     entry.serverUpdatedAt = finiteOrNull(raw && raw.serverUpdatedAt);
@@ -272,7 +255,7 @@
     var primary = incoming.at >= existing.at ? incoming : existing;
     var secondary = primary === incoming ? existing : incoming;
     var out = { url: primary.url, kind: primary.kind, at: primary.at };
-    MERGEABLE_FIELDS.forEach(function (field) {
+    TCLCore.MERGEABLE_FIELDS.forEach(function (field) {
       if (primary[field] !== undefined) out[field] = primary[field];
       else if (secondary[field] !== undefined) out[field] = secondary[field];
     });
@@ -284,7 +267,7 @@
 
     out.id = nonEmptyString(existing.id) || nonEmptyString(incoming.id) || TCLCore.randomUuid();
     out.postKey = TCLCore.postKeyOf(out.url);
-    var earliest = [resolveReceivedAt(existing), resolveReceivedAt(incoming)].filter(function (v) {
+    var earliest = [TCLCore.resolveReceivedAt(existing), TCLCore.resolveReceivedAt(incoming)].filter(function (v) {
       return v !== null;
     });
     out.receivedAt = earliest.length > 0 ? Math.min.apply(null, earliest) : null;
@@ -296,10 +279,6 @@
     out.deletedAt = null;
     return out;
   }
-
-  // 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合(與 background 的
-  // 同名清單一致)。
-  var MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
 
   // 匯入合併:去重鍵是 postKey(D11)——作者改名後同一篇貼文的乾淨網址不同、
   // 正規化後仍不相等，以 url 去重會多開一張卡、雲端跟著分裂。同鍵不是「略
@@ -960,14 +939,8 @@
 
     // ---- 紀錄清單 ----
 
-    // 配額超限判斷，沿用 background 寫入側的字串比對(見 background.js 的
-    // isQuotaExceededError):Chrome 對總量(QUOTA_BYTES)與單筆
-    // (QUOTA_BYTES_PER_ITEM)超限，都以開頭含 "QUOTA_BYTES" 的訊息 reject。
-    // 用字串比對而非錯誤類別，避免瀏覽器/版本差異誤判漏接。
-    function isQuotaExceededError(err) {
-      var message = (err && err.message) || String(err || '');
-      return /QUOTA_BYTES/i.test(message);
-    }
+    // 配額超限判斷走 TCLCore.isQuotaExceededError(與 background 寫入側、sync
+    // 引擎共用同一份字串比對)。
 
     // 回傳 Promise 給呼叫端(成功/失敗都 resolve，不 reject):寫入前先記住
     // 現值，失敗(常見:storage.local 配額寫爆)時把記憶體 entries 回滾成
@@ -992,7 +965,7 @@
         .catch(function (err) {
           entries = prev;
           if (typeof console !== 'undefined') console.error('[threads-clean-link] 寫入紀錄失敗', err);
-          return { ok: false, quota: isQuotaExceededError(err) };
+          return { ok: false, quota: TCLCore.isQuotaExceededError(err) };
         });
     }
 

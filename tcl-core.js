@@ -573,6 +573,57 @@
     return out.slice(-limit);
   }
 
+  // ---- history 條目的共用純函式 ----
+
+  // 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合。background 的落盤
+  // 合併/失敗卡收編/遷移整平與 options 的匯入合併共用同一份清單——任一端多
+  // 一欄少一欄，同一筆紀錄在兩條路徑上就會併出不同結果。
+  var MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
+
+  // 純函式:取出條目的 seen 事件序列。seen[] 存在就逐筆過 sanitizeSeenList;
+  // 缺席(schema 升級前寫入的舊資料)時照手機版語意以條目自身的 at 補種一筆起
+  // 始紀錄，讓時間軸看得到它原本第一次出現的時間;種子紀錄不帶 kind(那一刻
+  // 沒有對應的來源事件，UI 時間軸端已容忍缺 kind 標籤)。at 不是有限數字就連
+  // 種子都不補(那筆時間本身就不可信)。
+  function entrySeenEvents(entry) {
+    if (!entry || typeof entry !== 'object') return [];
+    if (Array.isArray(entry.seen)) return sanitizeSeenList(entry.seen);
+    return typeof entry.at === 'number' && isFinite(entry.at) ? [{ at: entry.at }] : [];
+  }
+
+  // 純函式:條目的最早事件時間(cloud-sync.md 4.1 的 receivedAt)。取 seen 事件
+  // 的**最小** at 而非 seen[0].at——真實資料在多次合併/匯入後未必已排序;一個
+  // 可用事件都沒有(seen 為空陣列、或 at 全是髒資料)時退回條目自身的 at。
+  function entryEarliestAt(entry) {
+    var events = entrySeenEvents(entry);
+    var earliest = null;
+    for (var i = 0; i < events.length; i++) {
+      if (earliest === null || events[i].at < earliest) earliest = events[i].at;
+    }
+    if (earliest !== null) return earliest;
+    return optionalFiniteNumber(entry && entry.at);
+  }
+
+  // 純函式:條目已持久化的 receivedAt 與其事件序列推導值取較早者。receivedAt
+  // 是這張卡在雲端的「第一次出現時間」，只會往前不會往後——seen 裁到 SEEN_MAX
+  // 而丟掉最舊幾筆時，不得讓 receivedAt 跟著往後跳。
+  function resolveReceivedAt(entry) {
+    var stored = optionalFiniteNumber(entry && entry.receivedAt);
+    var derived = entryEarliestAt(entry);
+    if (stored === null) return derived;
+    if (derived === null) return stored;
+    return Math.min(stored, derived);
+  }
+
+  // 是否為 chrome.storage 的容量配額超限錯誤:Chrome 對總量配額(QUOTA_BYTES)
+  // 與單筆配額(QUOTA_BYTES_PER_ITEM)超限，都會用訊息含 "QUOTA_BYTES" 字樣的
+  // 錯誤 reject storage.local.set()。用字串比對辨識而不依賴特定錯誤類別/物件
+  // 形狀，避免不同瀏覽器或版本的錯誤物件實作差異導致誤判漏接。
+  function isQuotaExceededError(err) {
+    var message = (err && err.message) || String(err || '');
+    return /QUOTA_BYTES/i.test(message);
+  }
+
   // ---- 儲存上限:位元組軟預算 + 筆數硬保險 ----
   //
   // chrome.storage.local 未申請 unlimitedStorage 權限時的總量配額約 10MB
@@ -734,6 +785,12 @@
     sanitizeRemovedParams: sanitizeRemovedParams,
     sanitizeSeenList: sanitizeSeenList,
     unionSeen: unionSeen,
+    MERGEABLE_FIELDS: MERGEABLE_FIELDS,
+    entrySeenEvents: entrySeenEvents,
+    entryEarliestAt: entryEarliestAt,
+    resolveReceivedAt: resolveReceivedAt,
+    isTombstone: isTombstone,
+    isQuotaExceededError: isQuotaExceededError,
     HISTORY_LIMITS: HISTORY_LIMITS,
     capHistory: capHistory,
   };
