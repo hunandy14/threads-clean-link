@@ -3222,11 +3222,13 @@ test('帳號入口:XSS 縱深——email 含 <img onerror> 字串只當純文字
 });
 
 // ============================================================
-// 頁首標題旁的環境標籤(envBadge)——只認 staging/local 兩個白名單 apiBase
-// 值,顯示固定英文小寫;其餘(含正式環境、未知值、background 無回應)
-// 一律隱藏,且不把 apiBase 原始值印進 DOM(見 options.js 的
-// renderEnvBadge)。狀態來源同帳號卡片的 state.apiBase,但跟登入態
-// 無關——未登入也要顯示。
+// 環境標籤——頁首標題(envBadge)與「紀錄」卡頭(envBadgeHistory)各一顆,
+// 由 renderEnvBadge 逐一套用同一份判斷結果,只認 staging/local 兩個
+// 白名單 apiBase 值,顯示固定英文小寫;其餘(含正式環境、未知值、
+// background 無回應)一律隱藏,且不把 apiBase 原始值印進 DOM。狀態來源
+// 同帳號卡片的 state.apiBase,但跟登入態無關——未登入也要顯示。以下
+// 測試以 envBadge 為主要斷言對象,並在每個情境額外驗證 envBadgeHistory
+// 與其同步,不重複展開成兩倍測試數。
 // ============================================================
 
 test('環境標籤:apiBase 為 staging 時顯示 staging chip,套 env-badge-staging 樣式,未登入也顯示', async () => {
@@ -3261,6 +3263,11 @@ test('環境標籤:apiBase 為 staging 時顯示 staging chip,套 env-badge-stag
   assert.equal(doc.ids.envBadge.textContent, 'staging');
   assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), true);
   assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), false);
+  // 「紀錄」卡頭旁那顆(envBadgeHistory)跟頁首標題旁那顆同步,見
+  // options.js 的 ENV_BADGE_IDS/renderEnvBadge。
+  assert.equal(doc.ids.envBadgeHistory.hidden, false);
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'staging');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-staging'), true);
 });
 
 test('環境標籤:apiBase 為 local 時顯示 local chip,套 env-badge-local 樣式', async () => {
@@ -3294,6 +3301,9 @@ test('環境標籤:apiBase 為 local 時顯示 local chip,套 env-badge-local �
   assert.equal(doc.ids.envBadge.textContent, 'local');
   assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), true);
   assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), false);
+  assert.equal(doc.ids.envBadgeHistory.hidden, false, '兩顆環境標籤同步');
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'local');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-local'), true);
 });
 
 test('環境標籤:apiBase 為正式環境或非白名單值一律隱藏,不把原始字串印進 DOM(XSS 縱深)', async () => {
@@ -3328,11 +3338,15 @@ test('環境標籤:apiBase 為正式環境或非白名單值一律隱藏,不把�
   const prod = await renderWith('https://api.metalinkclearer.workers.dev');
   assert.equal(prod.ids.envBadge.hidden, true, '正式環境不顯示標籤');
   assert.equal(prod.ids.envBadge.textContent, '');
+  assert.equal(prod.ids.envBadgeHistory.hidden, true, '兩顆環境標籤同步隱藏');
+  assert.equal(prod.ids.envBadgeHistory.textContent, '');
 
   const evil = '<img src=x onerror=alert(1)>';
   const xss = await renderWith(evil);
   assert.equal(xss.ids.envBadge.hidden, true, '不在白名單內一律隱藏');
   assert.equal(xss.ids.envBadge.textContent, '', '不把非白名單 apiBase 原始值印進 DOM,只印固定字串');
+  assert.equal(xss.ids.envBadgeHistory.hidden, true);
+  assert.equal(xss.ids.envBadgeHistory.textContent, '');
 });
 
 test('環境標籤:background 無回應(sendMessage reject)時隱藏', async () => {
@@ -3354,6 +3368,7 @@ test('環境標籤:background 無回應(sendMessage reject)時隱藏', async () 
   await settle();
 
   assert.equal(doc.ids.envBadge.hidden, true);
+  assert.equal(doc.ids.envBadgeHistory.hidden, true, '兩顆環境標籤同步隱藏');
 });
 
 test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → local → 正式環境隱藏,舊 modifier class 會被清掉', async () => {
@@ -3370,6 +3385,7 @@ test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → loc
   await controller.init();
   await settle();
   assert.equal(doc.ids.envBadge.hidden, true, '前置:未注入 runtime,退回值 apiBase 空字串應隱藏');
+  assert.equal(doc.ids.envBadgeHistory.hidden, true);
 
   controller.setSyncState({
     status: 'signed_out',
@@ -3383,6 +3399,8 @@ test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → loc
   });
   assert.equal(doc.ids.envBadge.hidden, false);
   assert.equal(doc.ids.envBadge.textContent, 'staging');
+  assert.equal(doc.ids.envBadgeHistory.hidden, false, '兩顆環境標籤同步顯示');
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'staging');
 
   controller.setSyncState({
     status: 'signed_out',
@@ -3397,6 +3415,9 @@ test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → loc
   assert.equal(doc.ids.envBadge.hidden, false);
   assert.equal(doc.ids.envBadge.textContent, 'local');
   assert.equal(doc.ids.envBadge.classList.contains('env-badge-staging'), false, '切換環境時舊的 modifier class 要清掉');
+  assert.equal(doc.ids.envBadgeHistory.hidden, false);
+  assert.equal(doc.ids.envBadgeHistory.textContent, 'local');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-staging'), false);
 
   controller.setSyncState({
     status: 'signed_out',
@@ -3410,6 +3431,8 @@ test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → loc
   });
   assert.equal(doc.ids.envBadge.hidden, true);
   assert.equal(doc.ids.envBadge.classList.contains('env-badge-local'), false);
+  assert.equal(doc.ids.envBadgeHistory.hidden, true, '兩顆環境標籤同步隱藏');
+  assert.equal(doc.ids.envBadgeHistory.classList.contains('env-badge-local'), false);
 });
 
 test('帳號入口:寬度切換——options.html 在 720px 斷點以 CSS 隱藏名字文字(不靠 JS 判斷寬度)', () => {

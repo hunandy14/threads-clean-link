@@ -174,6 +174,9 @@
   }
   .env-badge-staging { background: var(--warn-soft); color: var(--warn); }
   .env-badge-local { background: var(--accent-soft); color: var(--accent); }
+  /* 「紀錄」卡頭旁那顆(#envBadgeHistory)比大標題旁小一號,其餘樣式共用
+     上面的 .env-badge。 */
+  .env-badge-sm { font-size: 11px; }
   .topbar-actions { display: flex; align-items: center; gap: 8px; }
   .ghost-btn {
     appearance: none;
@@ -255,6 +258,8 @@
     margin: 0;
     font-size: 14px;
     font-weight: 650;
+    display: flex;
+    align-items: center;
   }
   .card-head .hint { font-size: 12px; color: var(--ink-3); }
 
@@ -1253,7 +1258,11 @@
   <!-- 紀錄清單為卡片牆，單一 view 直接顯示，不分頁 tab。 -->
   <section class="card history">
     <div class="card-head">
-      <h2 data-i18n="opHistoryTitle">紀錄</h2>
+      <!-- opHistoryTitle 文字包在自己的 span 裡,不直接掛在 h2 上——
+           applyI18nDom 對 data-i18n 節點做 node.textContent = ...,若掛在
+           h2 本身，語言切換會把巢狀的 envBadgeHistory 一併清空(比照頁首
+           .sub 的 opSub span 同一套避雷寫法)。 -->
+      <h2><span data-i18n="opHistoryTitle">紀錄</span><span id="envBadgeHistory" class="env-badge env-badge-sm" hidden></span></h2>
       <div class="menu-wrap">
         <span class="page-size" id="pageSizeSel"><span data-i18n="opPerPageA">每頁</span>
           <button class="ps on" data-n="20">20</button>
