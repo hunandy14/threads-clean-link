@@ -91,12 +91,12 @@
   var INFLIGHT_TTL_MS = 120000;
 
   // get-session 的節流:SW 每次被喚醒都會啟動驗一次，而喚醒在瀏覽期間非常
-  // 頻繁（每一則訊息、每一個 alarm）。60 次／60 秒的限流桶與手機端共用，
+  // 頻繁（每一則訊息、每一個 alarm）。後端限流桶(與手機端共用)容量有限，
   // 光是驗 session 就能把它吃光，因此距上次驗證未滿此間隔就跳過。
   var VERIFY_THROTTLE_MS = 5 * 60000;
 
   // getState 順手補一次同步的門檻(options／popup 開啟時)。低於此值就不打，
-  // 避免每次開頁都吃掉 60 次／60 秒的限流額度(與手機端共用同一桶)。
+  // 避免每次開頁都吃掉後端限流桶的額度(與手機端共用同一桶)。
   var STALE_MS = SYNC_PERIOD_MINUTES * 60000;
 
   // 「已登出」與「出錯」的分野:session_expired 描述的是一次正常的登出轉場
@@ -1151,8 +1151,8 @@
                   // 不可重試的錯誤只記碼，並且要把既有的週期 alarm 一起清掉:
                   // 只跳過 scheduleBackoff 是不夠的——登入成功那一輪建的
                   // periodInMinutes 重複 alarm 還在，403 之後就變成每 5 分鐘拿
-                  // 同一份必然失敗的請求去敲 60 次／60 秒的限流桶（與手機端共
-                  // 用同一桶）。使用者重新登入或手動同步時會重新建回來。
+                  // 同一份必然失敗的請求去敲後端限流桶（與手機端共用同一
+                  // 桶）。使用者重新登入或手動同步時會重新建回來。
                   if (FATAL_ERRORS.indexOf(code) !== -1) {
                     return Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {});
                   }

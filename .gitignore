@@ -8,6 +8,9 @@ secrets/
 # 環境與憑證
 .env
 .env.*
+.dev.vars
+*.pem
+*.pid
 # 編輯器與作業系統
 .vscode/
 .idea/
