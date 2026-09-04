@@ -291,3 +291,40 @@ test('三 context 載入:CommonJS require 得到同形 api', () => {
   assert.equal(typeof C.sanitizeOriginal, 'function');
   assert.ok(C.SHARE_URL_PATTERN instanceof RegExp);
 });
+
+// ---- unionSeen(三處鏡像收斂的單一實作) ----
+
+// 同 at 只留一筆:原本 background 的 unionSeenEvents 沒去重，同一篇貼文反覆
+// 合併(落盤合併、失敗卡收編、遷移整平各走一次)時同一個時刻會疊出好幾筆，
+// 還把 SEEN_MAX 的額度吃掉，真正較舊的事件反而被裁掉。
+test('unionSeen:同 at 只留一筆(前一份優先)，按 at 升序', () => {
+  const out = C.unionSeen(
+    [{ at: 300, kind: 'icon' }, { at: 100, kind: 'share' }],
+    [{ at: 100, kind: 'strip' }, { at: 200, kind: 'menu' }]
+  );
+  assert.deepEqual(out, [
+    { at: 100, kind: 'share' },
+    { at: 200, kind: 'menu' },
+    { at: 300, kind: 'icon' },
+  ]);
+});
+
+// 裁到 SEEN_MAX 時保留**最新**的那一批（slice(-max)，不是 slice(0, max)）。
+test('unionSeen:裁到 SEEN_MAX 且保留最新的一批', () => {
+  const a = Array.from({ length: 40 }, (_, i) => ({ at: i, kind: 'share' }));
+  const b = Array.from({ length: 40 }, (_, i) => ({ at: 40 + i, kind: 'icon' }));
+  const out = C.unionSeen(a, b);
+  assert.equal(out.length, C.LIMITS.SEEN_MAX);
+  assert.equal(out[0].at, 30, '最舊的 30 筆被裁掉');
+  assert.equal(out[out.length - 1].at, 79);
+});
+
+// max 參數可覆寫上限;髒項（at 非有限數字、kind 不在白名單）逐筆丟棄。
+test('unionSeen:max 可覆寫、髒項逐筆丟棄、非陣列當空集合', () => {
+  assert.equal(C.unionSeen([{ at: 1 }, { at: 2 }, { at: 3 }], null, 2).length, 2);
+  assert.deepEqual(
+    C.unionSeen([{ at: 1, kind: 'share' }, { at: NaN }, { at: 2, kind: 'nope' }, 'junk'], undefined),
+    [{ at: 1, kind: 'share' }]
+  );
+  assert.deepEqual(C.unionSeen(null, undefined), []);
+});

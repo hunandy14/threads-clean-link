@@ -1064,16 +1064,13 @@ function isTombstoneEntry(entry) {
   return !!entry && typeof entry === 'object' && typeof entry.deletedAt === 'number' && isFinite(entry.deletedAt);
 }
 
-// 純函式:多張卡的 seen 事件聯集——攤平後按 at 升序排列(卡與卡之間的事件
-// 本來就交錯，不能直接接龍)，再裁到最新 SEEN_MAX 筆。at 相同的事件維持原
-// 順序(Array#sort 穩定)。
+// 純函式:多張卡的 seen 事件聯集，逐份併入 TCLCore.unionSeen(同 at 去重、按
+// at 升序、裁到最新 SEEN_MAX)。lists 由新到舊排列，同一時刻的事件以較新那張
+// 卡的為準。去重規則與 options 匯入端、fromSyncItem 共用同一份實作。
 function unionSeenEvents(lists) {
-  const all = [];
-  for (let i = 0; i < lists.length; i++) {
-    for (let j = 0; j < lists[i].length; j++) all.push(lists[i][j]);
-  }
-  all.sort((a, b) => a.at - b.at);
-  return all.slice(-TCLCore.LIMITS.SEEN_MAX);
+  let out = [];
+  for (let i = 0; i < lists.length; i++) out = TCLCore.unionSeen(out, lists[i]);
+  return out;
 }
 
 // 純函式:把失敗卡收編進同文卡，回傳全新的條目物件(不改動任一輸入)。

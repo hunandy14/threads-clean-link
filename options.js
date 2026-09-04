@@ -277,7 +277,9 @@
       else if (secondary[field] !== undefined) out[field] = secondary[field];
     });
 
-    var seenList = unionSeenLists(existing.seen, incoming.seen);
+    // seen 聯集走 TCLCore.unionSeen(同 at 只留一筆、按 at 升序、裁到 SEEN_MAX)
+    // ——與 background 合併端、fromSyncItem 共用同一份實作。
+    var seenList = TCLCore.unionSeen(existing.seen, incoming.seen);
     if (seenList.length > 0) out.seen = seenList;
 
     out.id = nonEmptyString(existing.id) || nonEmptyString(incoming.id) || TCLCore.randomUuid();
@@ -298,23 +300,6 @@
   // 合併時「新值優先、新值缺席才沿用舊值」的選填欄位集合(與 background 的
   // 同名清單一致)。
   var MERGEABLE_FIELDS = ['author', 'handle', 'excerpt', 'original', 'removedParams'];
-
-  // 兩張卡的 seen 事件聯集:同 at 只留一筆，按 at 升序，裁到最新 SEEN_MAX 筆。
-  function unionSeenLists(a, b) {
-    var byAt = {};
-    var out = [];
-    [a, b].forEach(function (list) {
-      TCLCore.sanitizeSeenList(list).forEach(function (record) {
-        if (Object.prototype.hasOwnProperty.call(byAt, record.at)) return;
-        byAt[record.at] = true;
-        out.push(record);
-      });
-    });
-    out.sort(function (x, y) {
-      return x.at - y.at;
-    });
-    return out.slice(-TCLCore.LIMITS.SEEN_MAX);
-  }
 
   // 匯入合併:去重鍵是 postKey(D11)——作者改名後同一篇貼文的乾淨網址不同、
   // 正規化後仍不相等，以 url 去重會多開一張卡、雲端跟著分裂。同鍵不是「略

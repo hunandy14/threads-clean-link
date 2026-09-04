@@ -388,6 +388,20 @@
     return item;
   }
 
+  // 雲端 SyncItem.seen → 本機 seen 形狀:source 反映射成 kind(見 seenKindOf)，
+  // 其餘型別把關交給下游的 sanitizeSeenList，這裡只做形狀轉換。非陣列回空陣列。
+  function cloudSeenEvents(list) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var record = list[i];
+      if (!record || typeof record !== 'object') continue;
+      var kind = record.kind !== undefined ? record.kind : seenKindOf(record.source);
+      out.push(kind === undefined ? { at: record.at } : { at: record.at, kind: kind });
+    }
+    return out;
+  }
+
   // 雲端 SyncItem → entry。existing 是本機同一張卡(沒有則傳 null):
   //   - id 以雲端(canonical)為準——伺服器改名時就地改名。
   //   - kind 沿用既有(雲端無此欄位，D4 已接受跨裝置遺失)，沒有既有卡時預設
@@ -401,26 +415,9 @@
     var url = normalizePostUrl(item.cleaned) || item.cleaned;
     var receivedAt = optionalFiniteNumber(item.receivedAt);
 
-    var events = [];
-    var seenAt = {};
-    function pushSeen(list) {
-      if (!Array.isArray(list)) return;
-      for (var i = 0; i < list.length; i++) {
-        var record = list[i];
-        if (!record || typeof record !== 'object') continue;
-        if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
-        if (Object.prototype.hasOwnProperty.call(seenAt, record.at)) continue;
-        seenAt[record.at] = true;
-        var kind = record.kind !== undefined ? record.kind : seenKindOf(record.source);
-        events.push(kind === undefined ? { at: record.at } : { at: record.at, kind: kind });
-      }
-    }
-    pushSeen(item.seen);
-    pushSeen(base && base.seen);
-    events.sort(function (a, b) {
-      return a.at - b.at;
-    });
-    events = events.slice(-LIMITS.SEEN_MAX);
+    // 雲端 seen 先把 source 反映射成本機 kind，再走共用的 unionSeen(同 at 去
+    // 重、升序、裁到 SEEN_MAX)。雲端那一份排在前，同一時刻以伺服器的說法為準。
+    var events = unionSeen(cloudSeenEvents(item.seen), base && base.seen, LIMITS.SEEN_MAX);
 
     var latest = receivedAt === null ? null : receivedAt;
     for (var k = 0; k < events.length; k++) {
@@ -540,6 +537,39 @@
     return out.slice(-LIMITS.SEEN_MAX);
   }
 
+  // 兩份 seen 事件的聯集:各自先過 sanitizeSeenList，**同 at 只留一筆**(a 的
+  // 那一筆優先)，按 at 升序，裁到最新 max 筆(max 缺席時用 SEEN_MAX)。
+  //
+  // 【單一權威】原本三處各養一份鏡像:background 的 unionSeenEvents、options
+  // 的 unionSeenLists、tcl-core fromSyncItem 內的 pushSeen。只有 background 那
+  // 份沒有同 at 去重——同一篇貼文反覆合併(落盤合併、失敗卡收編、遷移整平各走
+  // 一次)時，同一個時刻會在時間軸上疊出好幾筆，還把 SEEN_MAX 的額度吃掉，真
+  // 正較舊的事件反而被裁掉。
+  //
+  // 【N 份聯集】呼叫端以 reduce 逐份併入即可:每一步都只裁掉「比留下的 max 筆
+  // 更舊」的事件，那些事件在最終聯集裡本來也進不了最新 max 筆，結果與一次併
+  // 完全部再裁相同。
+  function unionSeen(a, b, max) {
+    var limit = typeof max === 'number' && isFinite(max) && max > 0 ? max : LIMITS.SEEN_MAX;
+    var byAt = {};
+    var out = [];
+    function collect(list) {
+      var sanitized = sanitizeSeenList(list);
+      for (var i = 0; i < sanitized.length; i++) {
+        var record = sanitized[i];
+        if (Object.prototype.hasOwnProperty.call(byAt, record.at)) continue;
+        byAt[record.at] = true;
+        out.push(record);
+      }
+    }
+    collect(a);
+    collect(b);
+    out.sort(function (x, y) {
+      return x.at - y.at;
+    });
+    return out.slice(-limit);
+  }
+
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
     isCleanPostUrl: isCleanPostUrl,
@@ -563,6 +593,7 @@
     sanitizeOriginal: sanitizeOriginal,
     sanitizeRemovedParams: sanitizeRemovedParams,
     sanitizeSeenList: sanitizeSeenList,
+    unionSeen: unionSeen,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

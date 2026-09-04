@@ -1062,3 +1062,36 @@ test('S2 遷移:整平不換 id——沿用組內既有的 id', async () => {
   assert.equal(history.length, 1);
   assert.equal(history[0].id, 'keep-me', 'id 沿用最新一張有值的卡，不生成新 UUID');
 });
+
+// S2：整平的 seen 聯集走 TCLCore.unionSeen，同 at 只留一筆。同一時刻的事件
+// 疊出兩筆不只讓時間軸重複顯示，還會吃掉 SEEN_MAX 的額度，把真正較舊的事件
+// 擠掉。
+test('S2 遷移:整平的 seen 聯集對相同 at 去重', async () => {
+  const base = 1700000000000;
+  const bg = loadBackgroundForMigration([
+    equippedEntry('https://www.threads.com/@newname/post/DbezfB0gYvP', base, {
+      id: 'a',
+      kind: 'icon',
+      seen: [{ at: base - 1000, kind: 'share' }, { at: base, kind: 'icon' }],
+    }),
+    equippedEntry(CLEAN_URL, base - 1000, {
+      id: 'b',
+      seen: [{ at: base - 1000, kind: 'strip' }, { at: base - 2000, kind: 'share' }],
+    }),
+  ]);
+
+  bg.fireInstalled();
+  await settle();
+
+  const history = bg.storage.localSnapshot().history;
+  assert.equal(history.length, 1);
+  assert.deepEqual(
+    Array.from(history[0].seen, (s) => [s.at, s.kind]),
+    [
+      [base - 2000, 'share'],
+      [base - 1000, 'share'],
+      [base, 'icon'],
+    ],
+    'at 相同的兩筆只留較新那張卡的一筆，整串按 at 升序'
+  );
+});
