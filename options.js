@@ -1189,6 +1189,9 @@
       // 的收到無身分的 error 也不畫幽靈帳號卡片——沒有 email／displayName 就
       // 沒有帳號可重試，那張卡片的每一顆按鈕都是死的。
       if (s.status === 'error' && !hasIdentity) return 'signedOut';
+      // syncing 同理:沒有帳號就沒有東西可同步，轉圈的頭像框只會讓使用者以為
+      // 自己登入著。
+      if (s.status === 'syncing' && !hasIdentity) return 'signedOut';
       if (s.status === 'syncing') return 'syncing';
       if (s.status === 'error') return 'error';
       return 'signedIn';

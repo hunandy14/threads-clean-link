@@ -2838,3 +2838,42 @@ test('L9 token 過期(401):仍以 signed_out ＋ session_expired 呈現登入過
   assert.equal(state.lastError, 'session_expired');
   assert.equal(state.email, 'someone@example.com', '過期卡片要說得出過期的是哪個帳號');
 });
+
+// 後端的 body.error 會原樣變成使用者看得到的錯誤碼(config 類的提示直接把它
+// 印出來)。形狀不對的一律退回泛用碼，不讓任意字串經由這條路徑落到畫面上。
+test('L4 signIn 失敗:body.error 不是錯誤碼形狀時夾擠成 sign_in_failed', async () => {
+  const TCLSync = loadSync();
+  const cases = [
+    'x'.repeat(41),
+    'bad request!',
+    '<script>alert(1)</script>',
+    'Bad_Request',
+    '登入失敗，請稍後再試',
+    '',
+  ];
+  for (const error of cases) {
+    const env = makeEnv();
+    env.server.failNext({ status: 400, body: { error } });
+    const engine = TCLSync.create(env.deps);
+    await engine.signIn();
+    await settle(10);
+
+    assert.deepEqual(syncStateWrites(env), []);
+    assert.deepEqual(
+      transientOf(env),
+      { code: 'sign_in_failed', kind: 'transient' },
+      `body.error 為「${error}」時應退回泛用碼`
+    );
+  }
+});
+
+test('L4 signIn 失敗:合法形狀的 body.error 照舊原樣帶出', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv();
+  env.server.failNext({ status: 400, body: { error: 'x'.repeat(40) } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.deepEqual(transientOf(env), { code: 'x'.repeat(40), kind: 'config' });
+});

@@ -151,6 +151,17 @@
     return 'internal_error';
   }
 
+  // 後端 body.error 會原樣變成使用者看得到的錯誤碼(config 類的提示直接把
+  // 它印出來)，先夾擠成錯誤碼該有的形狀;不符一律退回泛用碼，不讓任意字串
+  // 經由這條路徑落到畫面上。
+  var ERROR_CODE_PATTERN = /^[a-z0-9_]{1,40}$/;
+
+  function codeFromExchange(exchange) {
+    var raw = exchange && exchange.body ? exchange.body.error : null;
+    if (typeof raw === 'string' && ERROR_CODE_PATTERN.test(raw)) return raw;
+    return 'sign_in_failed';
+  }
+
   function syncError(code) {
     var err = new Error(code);
     err.code = code;
@@ -999,11 +1010,7 @@
 
     function finishSignIn(ctx, result, exchange) {
       if (!exchange || !exchange.ok || !exchange.authToken) {
-        throw syncError(
-          exchange && exchange.body && typeof exchange.body.error === 'string'
-            ? exchange.body.error
-            : 'sign_in_failed'
-        );
+        throw syncError(codeFromExchange(exchange));
       }
       var user = (exchange.body && exchange.body.user) || {};
       var userId = typeof user.id === 'string' ? user.id : null;

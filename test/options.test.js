@@ -4260,3 +4260,18 @@ test('L9 帳號入口:已登入的同步錯誤(有 email)維持 error 卡片，�
   ctx.doc.ids.acctRetryBtn.fire('click');
   assert.deepEqual(ctx.runtime.calls[ctx.runtime.calls.length - 1], { type: 'sync.now' });
 });
+
+test('L5 帳號入口:status=syncing 但沒有 email／displayName 時同樣退回未登入卡片(縱深)', async () => {
+  // 與 error 同一道守衛:沒有帳號就沒有東西可同步，轉圈的頭像框只會讓使用者
+  // 以為自己登入著。
+  const ctx = makeAccountCtx(() => anonState({ status: 'syncing' }));
+  await ctx.controller.init();
+  await settle();
+
+  assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, '沒有帳號資訊時只能顯示登入鈕');
+  assert.equal(ctx.doc.ids.acctTrigger.hidden, true, '不得畫出頭像觸發鈕');
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '不得畫出帳號選單');
+  assert.equal(ctx.doc.ids.statusDot.hidden, true);
+  assert.equal(ctx.doc.ids.acctHeaderName.textContent, '', '不得留下空白名字');
+  assert.equal(ctx.doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNote'), '沒登入就不能說已同步');
+});

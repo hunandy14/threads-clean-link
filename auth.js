@@ -23,6 +23,10 @@
 
   var GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
   var GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
+
+  // 授權回呼 fragment 裡屬於「授權伺服器自己出的事」的 error 值(RFC 6749
+  // 4.1.2.1)，歸暫時性;其餘非 access_denied 的 error 一律是設定問題。
+  var OAUTH_TRANSIENT_ERRORS = ['server_error', 'temporarily_unavailable'];
   var SCOPE = 'openid email profile';
 
   // 失敗一律帶 err.code——分類的唯一來源(對照表見 sync.js 的
@@ -43,6 +47,9 @@
     { re: /user interaction required/i, code: 'interaction_required' },
     { re: /could not be loaded|timed out/i, code: 'auth_page_unreachable' },
     { re: /incognito/i, code: 'incognito_not_supported' },
+    // Chromium 的 kInvalidClientId／kInvalidRedirect:client 沒登記、redirect
+    // URI 對不上，都是打包出去就錯的設定問題，重試一百次都一樣。
+    { re: /invalid oauth2|did not redirect/i, code: 'oauth_config_error' },
   ];
 
   function codeForLastError(message) {
@@ -93,12 +100,17 @@
     var params = new URLSearchParams(fragment);
     var oauthError = params.get('error');
     if (oauthError) {
-      // access_denied 是使用者在同意頁按了拒絕，與關掉視窗同一類;其餘一律是
-      // OAuth 設定對不上(client 未登記、redirect_uri 未授權……)，重試無用，
-      // 原始值留在 detail 供回報。
+      // access_denied 是使用者在同意頁按了拒絕，與關掉視窗同一類。
       if (oauthError === 'access_denied') {
         throw authError('sign_in_cancelled', '授權失敗:' + oauthError);
       }
+      // server_error／temporarily_unavailable 是授權伺服器自己出的事(RFC 6749
+      // 4.1.2.1)，與授權頁載不起來同一類:等一下再試有機會成功。
+      if (OAUTH_TRANSIENT_ERRORS.indexOf(oauthError) !== -1) {
+        throw authError('auth_page_unreachable', '授權失敗:' + oauthError, oauthError);
+      }
+      // 其餘一律是 OAuth 設定對不上(client 未登記、redirect_uri 未授權……)，
+      // 重試無用，原始值留在 detail 供回報。
       throw authError('oauth_config_error', '授權失敗:' + oauthError, oauthError);
     }
     var idToken = params.get('id_token');

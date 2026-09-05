@@ -621,3 +621,31 @@ test('L2 exchangeWithBackend:fetch 例外(含 redirect:"error" 被拒)→ networ
     assert.equal(thrown.code, 'network_error');
   }
 });
+
+test('L2 launchWebAuthFlow:Chromium 的設定錯誤訊息歸 oauth_config_error', async () => {
+  // kInvalidClientId／kInvalidRedirect:client 沒登記、redirect URI 對不上。
+  // 這兩串與「授權頁載不起來」長得像，但重試永遠不會成功，不能歸暫時性。
+  for (const message of ['Invalid OAuth2 Client ID.', 'Did not redirect to the right URL.']) {
+    const err = await signInFailure({ lastError: { message } });
+    assert.equal(err.code, 'oauth_config_error', `lastError「${message}」是設定錯誤，不是暫時性`);
+  }
+});
+
+test('L2 redirect fragment:授權伺服器自己出的事歸 auth_page_unreachable', () => {
+  // RFC 6749 4.1.2.1:server_error／temporarily_unavailable 描述的是授權端
+  // 的暫時狀況，與我們的設定無關，等一下再試有機會成功。
+  for (const oauthError of ['server_error', 'temporarily_unavailable']) {
+    let thrown = null;
+    try {
+      TCLAuth.extractIdTokenFromRedirect(
+        `${AUTH_REDIRECT_URI}#error=${oauthError}`,
+        AUTH_REDIRECT_URI
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown, '應丟例外');
+    assert.equal(thrown.code, 'auth_page_unreachable', `${oauthError} 應歸暫時性`);
+    assert.equal(thrown.detail, oauthError, '原始 error 值仍要留在 detail');
+  }
+});
