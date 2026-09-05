@@ -278,20 +278,35 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 ## 8. 隱私權政策 URL
 
 ```
+https://metalinkclearer.com/privacy/#browser-extension
+```
+
+備援連結(GitHub README 錨點):
+
+```
 https://github.com/hunandy14/threads-clean-link#運作原理與隱私
 ```
 
-**驗證結果(已實測，非推測)**:直接 `curl` 抓取 `https://github.com/hunandy14/threads-clean-link/blob/main/README.md` 的渲染後 HTML，確認 GitHub 為〈運作原理與隱私〉這個 `##` 標題產出了:
+**0.6.0 送審狀態說明**:本擴充功能 0.6.0 版送審時，Chrome Web Store 表單填寫的隱私權政策 URL 暫時仍是上方「備援連結」(README 錨點);待這個版本過審上架後，才切換成官網連結作為正式 URL，屆時 README 錨點改列為備援。
 
-```html
-<a id="user-content-運作原理與隱私" class="anchor"
-   aria-label="Permalink: 運作原理與隱私"
-   href="#運作原理與隱私">
+**驗證結果(已實測，非推測)**:對官網連結執行
+
+```
+curl -sIL https://metalinkclearer.com/privacy/
 ```
 
-`href` 值與上面這個 anchor URL 的 `#` 後半段完全一致，是 GitHub 標題錨點的標準做法(`href="#slug"` 對應 `id="user-content-slug"`)，點擊會正確捲動到隱私聲明段落。**此連結可直接使用，不需要改用 README 頂部連結。**
+實際回應依序是:
 
-若之後 README 標題文字有任何調動，錨點會跟著變，屆時需要重新用同樣方式驗證一次。
+```
+HTTP/1.1 302 Found
+Location: https://metalinkclearer.com/zh-tw/privacy/
+
+HTTP/1.1 200 OK
+```
+
+確認該連結會先 302 導向繁中版隱私權政策頁，最終回 200，頁面存在且可正常存取。該頁面內有 `id="browser-extension"` 的錨點，對應〈瀏覽器擴充(Threads Clean Link)〉這一節，也就是本擴充功能專屬的隱私權說明段落;URL 中 `#browser-extension` 這段與此錨點 id 完全一致，點擊會正確捲動到該段落。
+
+若之後官網該節的錨點 id 有任何調動，需要重新用同樣方式驗證一次。
 
 ---
 
