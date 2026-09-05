@@ -501,7 +501,11 @@ test('T1 打包白名單：sync.js 必須進 build-release.ps1 的 $includeFiles
 // T2 — 認證狀態機
 // ============================================================================
 
-test('T2 signIn：權限未授予時只 contains 不 request，state 轉 error/permission_required', async () => {
+// 【翻轉既有斷言／L1／L4】原本斷言 state 轉 error ＋ 落地
+// lastError='permission_required'。在瀏覽器權限對話框按拒絕是使用者自己
+// 中止，與關掉授權視窗同一類：沒有 token 就沒有錯誤態（L1），登入失敗一律
+// 不寫 syncState（L4），改以一次性的 transientError 廣播。
+test('T2 signIn：權限未授予時只 contains 不 request，狀態維持未登入（L1／L4）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ granted: false });
   const engine = TCLSync.create(env.deps);
@@ -513,8 +517,12 @@ test('T2 signIn：權限未授予時只 contains 不 request，state 轉 error/p
   assert.deepEqual(env.auth.calls.signIn, [], '權限未授予時不得進入授權流程');
   assert.deepEqual(env.server.requests, [], '權限未授予時不得對後端發任何請求');
   const state = await engine.getState();
-  assert.equal(state.status, 'error');
-  assert.equal(state.lastError, 'permission_required');
+  assert.equal(state.status, 'signed_out');
+  assert.equal(state.lastError, null, '權限沒拿到不是「同步失敗」，不得落地');
+  assert.deepEqual(env.lastState().transientError, {
+    code: 'permission_required',
+    kind: 'cancelled',
+  });
 });
 
 test('T2 signIn：token 取自 set-auth-token 標頭並存進 storage.local.syncAuth（D10）', async () => {
@@ -2117,10 +2125,11 @@ test('T2 signIn：送給後端的 nonce 是 auth 模組回報的那一枚（M2�
   assert.equal(env.storage.syncAuth().token, env.server.currentToken(), '登入應完成');
 });
 
-// 【翻轉既有斷言／M2】原本由 session 讀回值比對，讀不回同一枚就丟
+// 【翻轉既有斷言／M2、L4】原本由 session 讀回值比對，讀不回同一枚就丟
 // nonce_mismatch；那道比對隨 session nonce 一起移除。真正的重放防護在
 // auth.js：signInWithGoogle 用 launch 當下的 nonce 驗 id_token payload，
-// 對不上就整條丟例外，引擎在 catch 記 lastError、不換 token。
+// 對不上就整條丟例外，引擎在 catch 廣播一次性 transientError、不換 token
+// ——登入沒成功，syncState 一格都不動（L4）。
 test('T2 signIn：auth 模組的 nonce 比對失敗時整條拒收，不換 token（M2）', async () => {
   const TCLSync = loadSync();
   const err = new Error('nonce 不符');
@@ -2132,7 +2141,8 @@ test('T2 signIn：auth 模組的 nonce 比對失敗時整條拒收，不換 toke
 
   assert.deepEqual(env.auth.calls.exchange, [], 'nonce 對不上就不得拿 id_token 去換 token');
   assert.equal((env.storage.syncAuth() || {}).token, undefined, '不得留下任何 token');
-  assert.equal(env.storage.syncState().lastError, 'nonce_mismatch');
+  assert.equal(env.storage.syncState(), null, '登入失敗不寫 syncState（L4）');
+  assert.deepEqual(env.lastState().transientError, { code: 'nonce_mismatch', kind: 'config' });
 });
 
 test('T2 每個請求都關掉自動跟隨轉址（redirect:"error"）', async () => {
