@@ -2489,3 +2489,342 @@ test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally
     '旗標沒放回去的話，TTL 到期前這台裝置的同步全被擋掉'
   );
 });
+
+// ============================================================================
+// L1／L3／L4 — 登入失敗分類:沒有 token 就不可能是 error，失敗不落地
+// ============================================================================
+//
+// 現象(調查報告):使用者把 Google 視窗關掉 → auth 丟一個無 code 的 Error →
+// 引擎一律記 lastError='sign_in_failed' 落地並廣播 error → statusOf 在沒有
+// token 的情況下照樣回 'error' → 設定頁畫出「空白名字＋紅點＋同步失敗:」的
+// 幽靈帳號卡片，重試鈕送 sync.now(沒 token 直接 return)，刪雲端彈假的成功
+// toast，popup 顯示「已同步」。
+//
+// 三條不變量把這一整串堵死:
+//   L1 沒有 token 時 status 只可能是 signed_out(session_expired 仍以
+//      signed_out ＋ lastError 呈現，維持既有的「登入過期」卡片)。
+//   L3 登入期錯誤分三類:cancelled(使用者自己中止)／transient(等一下再試)／
+//      config(設定錯了，重試無用，要回報錯誤碼)。
+//   L4 登入失敗**不寫** syncState.lastError——它描述的是「已登入的同步出了
+//      事」;登入根本沒成功時寫進去，就成了沒有帳號的錯誤狀態。改為在該次
+//      廣播上掛一次性的 state.transientError，getState() 不帶(重整即乾淨)。
+
+function codedError(code) {
+  const err = new Error(code);
+  err.code = code;
+  return err;
+}
+
+/** 這一輪廣播出去的一次性登入錯誤。 */
+function transientOf(env) {
+  const state = env.lastState();
+  return state ? state.transientError : undefined;
+}
+
+function syncStateWrites(env) {
+  return env.storage.writes.filter((w) => !w.removed && w.keys.indexOf('syncState') !== -1);
+}
+
+test('L3 sync.js 匯出登入失敗的分類集合(cancelled／transient，其餘為 config)', () => {
+  const TCLSync = loadSync();
+  assert.deepEqual(TCLSync.SIGN_IN_CANCELLED, ['sign_in_cancelled', 'permission_required']);
+  assert.deepEqual(TCLSync.SIGN_IN_TRANSIENT, [
+    'interaction_required',
+    'auth_page_unreachable',
+    'incognito_not_supported',
+    'network_error',
+    'id_token_expired',
+    'misconfigured',
+    'rate_limited',
+    'sign_in_failed',
+  ]);
+  // 兩集合必須互斥:同一個 code 同時算取消又算暫時性的話，UI 端要嘛靜音吞掉
+  // 一次真的故障，要嘛對使用者自己按的取消跳錯誤。
+  const overlap = TCLSync.SIGN_IN_CANCELLED.filter(
+    (c) => TCLSync.SIGN_IN_TRANSIENT.indexOf(c) !== -1
+  );
+  assert.deepEqual(overlap, []);
+});
+
+test('L1 沒有 token 時 status 只可能是 signed_out，任何 lastError 都不例外', async () => {
+  const TCLSync = loadSync();
+  const codes = [
+    'sign_in_failed',
+    'permission_required',
+    'client_id_missing',
+    'nonce_mismatch',
+    'rate_limited',
+    'forbidden_origin',
+    'clear_guard_invalid',
+    'session_expired',
+  ];
+  for (const code of codes) {
+    const env = makeEnv({ local: { syncState: { email: 'user@example.com', lastError: code } } });
+    const engine = TCLSync.create(env.deps);
+    const state = await engine.getState();
+    await settle();
+    assert.equal(state.status, 'signed_out', `lastError=${code} 但沒有 token，狀態只能是未登入`);
+    assert.equal(state.lastError, code, 'lastError 本身照舊帶出去(登入過期卡片靠它分辨)');
+  }
+});
+
+// 調查矩陣的取消／暫時性／設定三類，逐條走完整條 signIn。這些 code 由
+// auth.js 決定(見 test/auth.test.js 的 L2 段)，本表只驗引擎怎麼分類。
+test('L4 signIn 失敗:三類錯誤都不寫 lastError，只廣播一次性 transientError', async () => {
+  const TCLSync = loadSync();
+  const cases = [
+    // 矩陣 1「關窗」與矩陣 2「access_denied」在 auth.js 出口是同一個 code。
+    { code: 'sign_in_cancelled', kind: 'cancelled' },
+    { code: 'interaction_required', kind: 'transient' },
+    // 矩陣 4「授權頁載不起來」。
+    { code: 'auth_page_unreachable', kind: 'transient' },
+    { code: 'incognito_not_supported', kind: 'transient' },
+    // 矩陣 5「網路錯誤」。
+    { code: 'network_error', kind: 'transient' },
+    { code: 'id_token_expired', kind: 'transient' },
+    { code: 'rate_limited', kind: 'transient' },
+    // 矩陣 7「aud 不符」。
+    { code: 'client_id_mismatch', kind: 'config' },
+    // 矩陣 8「redirect 前綴不符」。
+    { code: 'redirect_mismatch', kind: 'config' },
+    { code: 'oauth_config_error', kind: 'config' },
+    { code: 'nonce_mismatch', kind: 'config' },
+    { code: 'issuer_mismatch', kind: 'config' },
+    { code: 'bad_request', kind: 'config' },
+  ];
+  for (const c of cases) {
+    const env = makeEnv({
+      auth: { signInError: codedError(c.code) },
+      // 先前留下的錯誤碼(例如上一次已登入時的同步失敗)必須原封不動。
+      local: { syncState: { email: 'user@example.com', lastError: 'clear_guard_invalid' } },
+    });
+    const engine = TCLSync.create(env.deps);
+    await engine.signIn();
+    await settle(10);
+
+    assert.deepEqual(syncStateWrites(env), [], `${c.code}:登入失敗不得寫 syncState`);
+    assert.equal(
+      env.storage.syncState().lastError,
+      'clear_guard_invalid',
+      `${c.code}:既有 lastError 維持原值`
+    );
+    assert.equal((env.storage.syncAuth() || {}).token, undefined, `${c.code}:不得留下 token`);
+
+    assert.equal(env.stateBroadcasts().length, 1, `${c.code}:失敗只廣播一次`);
+    const state = env.lastState();
+    assert.equal(state.status, 'signed_out', `${c.code}:沒有 token 就不是 error(L1)`);
+    assert.deepEqual(
+      state.transientError,
+      { code: c.code, kind: c.kind },
+      `${c.code} 應歸類為 ${c.kind}`
+    );
+
+    // 一次性:重新問一次狀態就不該再看到它，否則重整頁面錯誤會復活。
+    const after = await engine.getState();
+    await settle();
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(after, 'transientError'),
+      false,
+      `${c.code}:getState() 不得帶 transientError`
+    );
+    assert.equal(after.status, 'signed_out');
+  }
+});
+
+// 無 code 的例外(auth.js 漏了對照、或第三方丟出來的 Error)退回泛用碼，
+// 而泛用碼屬於 transient——「請稍後再試」是這種未知失敗唯一誠實的說法。
+test('L4 signIn 失敗:例外沒帶 code 時退回 sign_in_failed，歸為 transient', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ auth: { signInError: new Error('授權流程未回傳 redirect URL') } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.deepEqual(syncStateWrites(env), []);
+  assert.deepEqual(transientOf(env), { code: 'sign_in_failed', kind: 'transient' });
+});
+
+// 矩陣 3:使用者在瀏覽器權限對話框按拒絕。這是「使用者自己中止」，與關窗
+// 同一類，不該留下錯誤狀態。
+test('L4 signIn 失敗:權限未授予歸為 cancelled，不寫 lastError', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ granted: false });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.deepEqual(syncStateWrites(env), [], '權限沒拿到不是「同步失敗」，不得落地');
+  assert.equal(env.lastState().status, 'signed_out');
+  assert.deepEqual(transientOf(env), { code: 'permission_required', kind: 'cancelled' });
+});
+
+// 矩陣 6:後端 503。
+test('L4 signIn 失敗:後端 503 歸為 transient，不寫 lastError', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv();
+  env.server.failNext({ status: 503 });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.deepEqual(syncStateWrites(env), []);
+  assert.equal(env.lastState().status, 'signed_out');
+  assert.deepEqual(transientOf(env), { code: 'misconfigured', kind: 'transient' });
+});
+
+// 後端 4xx 的 body.error 是設定面的訊息(契約沒對上)，重試不會變好。
+test('L4 signIn 失敗:後端 400 的 body.error 歸為 config', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv();
+  env.server.failNext({ status: 400, body: { error: 'bad_request' } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.deepEqual(syncStateWrites(env), []);
+  assert.deepEqual(transientOf(env), { code: 'bad_request', kind: 'config' });
+});
+
+// 矩陣 10:後端回 200 卻沒給 set-auth-token。沒有 token 就不算登入成功。
+test('L4 signIn 失敗:回應缺 set-auth-token 時不算登入，歸為 transient', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv();
+  env.server.failNext({
+    status: 200,
+    body: { user: { id: 'user-abc', email: 'someone@example.com' }, redirect: false },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  assert.equal((env.storage.syncAuth() || {}).token, undefined, '沒有 token 不得寫入 syncAuth');
+  assert.deepEqual(syncStateWrites(env), [], '沒登入成功就不該寫 userId／email，也不該寫 lastError');
+  assert.equal(env.lastState().status, 'signed_out');
+  assert.deepEqual(transientOf(env), { code: 'sign_in_failed', kind: 'transient' });
+  assert.deepEqual(env.syncPosts(), [], '登入沒成功不得接著跑同步');
+});
+
+// 矩陣 9:CLIENT_ID_BY_API_BASE 漏配(D5 的三個 apiBase 少一個)。這是打包
+// 出去就錯的設定問題，使用者重試一百次都一樣。
+test('L4 signIn 失敗:client_id 漏配歸為 config，且不進授權流程', async () => {
+  const TCLSync = loadSync();
+  const saved = TCLSync.CLIENT_ID_BY_API_BASE[PRODUCTION_BASE];
+  delete TCLSync.CLIENT_ID_BY_API_BASE[PRODUCTION_BASE];
+  try {
+    const env = makeEnv();
+    const engine = TCLSync.create(env.deps);
+    await engine.signIn();
+    await settle(10);
+
+    assert.deepEqual(env.auth.calls.signIn, [], '沒有 client_id 就不該開授權視窗');
+    assert.deepEqual(syncStateWrites(env), []);
+    assert.equal(env.lastState().status, 'signed_out');
+    assert.deepEqual(transientOf(env), { code: 'client_id_missing', kind: 'config' });
+  } finally {
+    TCLSync.CLIENT_ID_BY_API_BASE[PRODUCTION_BASE] = saved;
+  }
+});
+
+// 矩陣 11:SW 被回收後重建(等同使用者重整設定頁)。一次性錯誤只活在那一次
+// 廣播裡，重來一次就是乾淨的未登入。
+test('L4 signIn 失敗後重建引擎:getState 為 signed_out、無 lastError、無 transientError', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ auth: { signInError: codedError('sign_in_cancelled') } });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  const later = env.recreate(TCLSync, false);
+  const state = await later.getState();
+  await settle();
+
+  assert.equal(state.status, 'signed_out');
+  assert.equal(state.lastError, null, '登入失敗不該留下任何錯誤碼給下一輪');
+  assert.equal(state.email, null);
+  assert.equal(state.displayName, null);
+  assert.equal(Object.prototype.hasOwnProperty.call(state, 'transientError'), false);
+});
+
+// ---- 從不變量推導的隱藏案例 ----
+
+// 已登入時同步出錯(lastError=rate_limited)→ 登出 → 再登入被使用者取消。
+// 登出把 syncState 整包重設，取消又不寫任何東西，因此絕不該看到上一輪的
+// rate_limited 借屍還魂。
+test('L1／L4 已登入 error 態 → 登出 → 再登入取消:不得殘留舊 lastError', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, syncState: { lastError: 'rate_limited' }, history: [entry()] });
+  const engine = TCLSync.create(env.deps);
+  await engine.signOut();
+  await settle(10);
+
+  env.auth.signInWithGoogle = () => Promise.reject(codedError('sign_in_cancelled'));
+  await engine.signIn();
+  await settle(10);
+
+  const state = await engine.getState();
+  await settle();
+  assert.equal(state.status, 'signed_out');
+  assert.equal(state.lastError, null, '登出已清乾淨，取消登入不得把舊錯誤寫回來');
+  assert.deepEqual(transientOf(env), { code: 'sign_in_cancelled', kind: 'cancelled' });
+});
+
+// 權限被拒之後立刻再按一次登入(使用者這次同意了):不得卡在任何中間態，
+// 也不得因為上一輪殘留的旗標而拒絕重試。
+test('L1 權限拒絕後立刻再點登入:不得卡在 syncing，第二次要能真的登入', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ granted: false });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(10);
+
+  const statuses = env.stateBroadcasts().map((m) => m.state.status);
+  assert.deepEqual(
+    statuses.filter((s) => s === 'syncing' || s === 'error'),
+    [],
+    '沒有 token 的整段期間不得出現 syncing／error'
+  );
+
+  env.permissions.granted = true;
+  await engine.signIn();
+  await settle(12);
+
+  assert.equal(env.storage.syncAuth().token, env.server.currentToken(), '第二次應真的完成登入');
+  assert.equal(env.lastState().status, 'signed_in');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(env.lastState(), 'transientError'),
+    false,
+    '成功的那一次不該帶著上一輪的錯誤'
+  );
+});
+
+// ---- L9:已登入之後的錯誤維持原行為，這次改動不得把它們一起靜音 ----
+
+test('L9 已登入時 429:仍是 error ＋ lastError，供設定頁畫錯誤列與重試鈕', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  env.server.failNext({ status: 429, retryAfter: 30 });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(10);
+
+  const state = await engine.getState();
+  await settle();
+  assert.equal(state.status, 'error', '有 token 的同步失敗照舊是 error');
+  assert.equal(state.lastError, 'rate_limited');
+  assert.equal(state.email, 'someone@example.com', '錯誤列要顯示是哪個帳號出的事');
+});
+
+test('L9 token 過期(401):仍以 signed_out ＋ session_expired 呈現登入過期', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(10);
+
+  const state = await engine.getState();
+  await settle();
+  assert.equal(state.status, 'signed_out');
+  assert.equal(state.lastError, 'session_expired');
+  assert.equal(state.email, 'someone@example.com', '過期卡片要說得出過期的是哪個帳號');
+});

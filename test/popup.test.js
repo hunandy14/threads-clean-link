@@ -469,3 +469,111 @@ test('雲端同步狀態列:setSyncState(接線層轉呼叫 background 的 sync.
   controller.setSyncState({ status: 'nonsense' });
   assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
 });
+
+// ============================================================================
+// L8 — 沒有帳號資訊就是「未啟用」，不論 status
+// ============================================================================
+//
+// 調查報告的最後一格:登入失敗後引擎送來 status='error'(舊行為)，popup 的
+// 狀態列只認 'signed_out'，於是走到「已同步 · …」那條分支，對一個根本沒登入
+// 的使用者顯示「已同步」。判準改成看有沒有帳號:沒有 email 也沒有 displayName
+// 就沒有帳號可同步，這比 status 更難被上游的形狀走樣騙過(縱深)。
+
+const PP_NOW = 1000000;
+
+function makeSyncRowCtx() {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  const controller = popup.createPopupController({
+    document: doc,
+    storage: storage.sync,
+    i18n,
+    now: () => PP_NOW,
+  });
+  return { popup, doc, controller };
+}
+
+test('L8 雲端同步狀態列:沒有 email／displayName 時一律顯示未啟用，不論 status', async () => {
+  const ctx = makeSyncRowCtx();
+  await ctx.controller.init();
+  await settle();
+
+  for (const status of ['signed_in', 'syncing', 'error', 'signed_out']) {
+    ctx.controller.setSyncState({
+      status,
+      email: null,
+      displayName: null,
+      avatarUrl: null,
+      // 上一位使用者留下的時間戳:沒有帳號時它不代表任何東西，更不該被
+      // 拿去組「已同步 · 2 分鐘前」。
+      lastSyncedAt: PP_NOW - 2 * 60 * 1000,
+      pendingCount: 0,
+      lastError: status === 'error' ? 'sign_in_failed' : null,
+      apiBase: '',
+    });
+
+    assert.equal(
+      ctx.doc.elements.syncStatusText.textContent,
+      i18n.t('zh', 'ppSyncInactive'),
+      `status=${status} 但沒有帳號資訊，不得顯示「已同步」`
+    );
+  }
+});
+
+test('L8 雲端同步狀態列:登入失敗(sync.getState 回 error 且無帳號)時顯示未啟用', async () => {
+  const popup = loadPopup();
+  const storage = createChromeStorage({ langPref: 'zh' });
+  const doc = createCheckboxDocument(SYNC_IDS);
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => ({
+      status: 'error',
+      email: null,
+      displayName: null,
+      lastSyncedAt: PP_NOW - 60 * 1000,
+      pendingCount: 0,
+      lastError: 'sign_in_failed',
+      apiBase: '',
+    }),
+  });
+  const controller = popup.createPopupController({
+    document: doc,
+    storage: storage.sync,
+    i18n,
+    runtime,
+    now: () => PP_NOW,
+  });
+
+  await controller.init();
+  await settle();
+
+  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
+});
+
+test('L8 雲端同步狀態列:有帳號時仍照常顯示「已同步 · 相對時間」(不得誤殺)', async () => {
+  const ctx = makeSyncRowCtx();
+  await ctx.controller.init();
+  await settle();
+
+  // displayName 單獨存在也算有帳號(後端沒回 email 的邊角情況)。
+  for (const identity of [{ email: 'user@example.com', displayName: null }, { email: null, displayName: 'Hong' }]) {
+    ctx.controller.setSyncState(
+      Object.assign(
+        {
+          status: 'signed_in',
+          avatarUrl: null,
+          lastSyncedAt: PP_NOW - 2 * 60 * 1000,
+          pendingCount: 0,
+          lastError: null,
+          apiBase: '',
+        },
+        identity
+      )
+    );
+
+    assert.equal(
+      ctx.doc.elements.syncStatusText.textContent,
+      i18n.fmt('zh', 'ppSyncActive', { t: i18n.fmt('zh', 'opRelMin', { n: 2 }) })
+    );
+  }
+});
