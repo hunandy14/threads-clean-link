@@ -99,10 +99,36 @@
   // 避免每次開頁都吃掉後端限流桶的額度(與手機端共用同一桶)。
   var STALE_MS = SYNC_PERIOD_MINUTES * 60000;
 
-  // 「已登出」與「出錯」的分野:session_expired 描述的是一次正常的登出轉場
-  // (token 到期／被撤銷)，UI 該顯示未登入卡片而非錯誤;其餘 lastError 都是
-  // 真的出了事，狀態為 error。
-  var SIGNED_OUT_ERRORS = ['session_expired'];
+  // 登入期失敗的三分類(L3)。分類決定 UI 出不出聲、怎麼出聲:
+  //
+  //   cancelled 使用者自己中止(關窗、同意頁按拒絕、瀏覽器權限對話框按拒絕)。
+  //             他知道自己做了什麼，不必再被通知一次。
+  //   transient 等一下再試有機會成功(授權頁載不起來、斷網、後端 503、限流、
+  //             未歸類的未知失敗)。只需要一句「請稍後再試」。
+  //   config    以上皆非:打包出去就錯的設定問題(client_id 漏配、redirect_uri
+  //             未登記、aud／iss 對不上、契約不符)。重試一百次都一樣，要讓
+  //             使用者報得出錯誤碼。
+  //
+  // 兩份清單必須互斥:同一個碼同時算取消又算暫時性的話，UI 端要嘛靜音吞掉
+  // 一次真的故障，要嘛對使用者自己按的取消跳錯誤。列不到的一律歸 config——
+  // 保守的預設，未知的設定問題至少報得出碼。
+  var SIGN_IN_CANCELLED = ['sign_in_cancelled', 'permission_required'];
+  var SIGN_IN_TRANSIENT = [
+    'interaction_required',
+    'auth_page_unreachable',
+    'incognito_not_supported',
+    'network_error',
+    'id_token_expired',
+    'misconfigured',
+    'rate_limited',
+    'sign_in_failed',
+  ];
+
+  function signInKindOf(code) {
+    if (SIGN_IN_CANCELLED.indexOf(code) !== -1) return 'cancelled';
+    if (SIGN_IN_TRANSIENT.indexOf(code) !== -1) return 'transient';
+    return 'config';
+  }
 
   // 重試永遠不會成功的錯誤:forbidden_origin 是「沒帶 Bearer 且來源不對」，
   // 亦即程式錯誤或後端 allowlist 設定錯誤（契約第 7 點明寫「別重試」）。
@@ -420,11 +446,12 @@
 
     // ---- 狀態與廣播(計劃 5.2／5.3) ----
 
+    // 沒有 token 時 status 只可能是 signed_out(L1)。lastError 描述的是「已
+    // 登入的同步出了事」，在沒有帳號的狀態下它至多是一句說明文字(登入過期
+    // 卡片靠 session_expired 分辨)，不足以把畫面推成錯誤態——那會畫出一張
+    // 空白名字＋紅點＋「同步失敗:」的幽靈帳號卡片，上頭每一顆按鈕都是死的。
     function statusOf(ctx) {
-      if (!ctx.token) {
-        var code = ctx.state.lastError;
-        return code && SIGNED_OUT_ERRORS.indexOf(code) === -1 ? 'error' : 'signed_out';
-      }
+      if (!ctx.token) return 'signed_out';
       if (inflight) return 'syncing';
       return ctx.state.lastError ? 'error' : 'signed_in';
     }
@@ -448,17 +475,32 @@
       };
     }
 
-    function emitState(ctx, history, statusOverride) {
-      broadcast({ type: 'sync.stateChanged', state: buildState(ctx, history, statusOverride) });
+    // transientError 是一次性欄位:只掛在這一次廣播上，不落 storage、
+    // getState() 也不帶(L4)。重整頁面等於這件事沒發生過。
+    function emitState(ctx, history, statusOverride, transientError) {
+      var state = buildState(ctx, history, statusOverride);
+      if (transientError) state.transientError = transientError;
+      broadcast({ type: 'sync.stateChanged', state: state });
     }
 
     /** 讀最新持久狀態，組出計劃 5.2 形狀並廣播。 */
-    function broadcastState(statusOverride) {
+    function broadcastState(statusOverride, transientError) {
       return loadContext().then(function (ctx) {
         return readHistory().then(function (history) {
-          emitState(ctx, history, statusOverride);
+          emitState(ctx, history, statusOverride, transientError);
         });
       });
+    }
+
+    /**
+     * 登入失敗的唯一出口(L4)。不寫 syncState——連把 lastError 清成 null 都
+     * 不寫:這一格描述的是「已登入的同步出了事」，登入根本沒成功時動它，要嘛
+     * 造出一個沒有帳號的錯誤狀態，要嘛把上一輪真正的同步錯誤抹掉。改為在這
+     * 一次廣播上掛一次性的 transientError，由 UI 依 kind 決定出不出聲。
+     */
+    function failSignIn(err) {
+      var code = err && err.code ? err.code : 'sign_in_failed';
+      return broadcastState(undefined, { code: code, kind: signInKindOf(code) });
     }
 
     // ---- HTTP ----
@@ -918,20 +960,15 @@
           if (!granted) {
             // SW 端只探不求:chrome.permissions.request 必須在使用者手勢內
             // 呼叫，SW 自行發起一律失敗。請求端在 options 頁的登入按鈕。
-            ctx.state.lastError = 'permission_required';
-            return saveState(ctx.state).then(function () {
-              return broadcastState('error');
-            });
+            // 使用者在權限對話框按拒絕與關掉授權視窗同一類:自己中止的。
+            return failSignIn(syncError('permission_required'));
           }
           // clientId 依 apiBase 對應(D5):白名單只有三個 apiBase，理論上
           // 這裡不可能找不到，但找不到就代表 CLIENT_ID_BY_API_BASE 漏配，
           // 拒絕登入好過拿錯 client 的 id_token 去撞後端的 aud 檢查。
           var clientId = CLIENT_ID_BY_API_BASE[ctx.apiBase];
           if (typeof clientId !== 'string' || !clientId) {
-            ctx.state.lastError = 'client_id_missing';
-            return saveState(ctx.state).then(function () {
-              return broadcastState('error');
-            });
+            return failSignIn(syncError('client_id_missing'));
           }
           // nonce 由引擎生成、交給 auth 模組帶進授權請求。**不落 storage**:
           // 重放防護整段在 auth.js 內完成(launch 時送出的那枚與 id_token
@@ -955,12 +992,7 @@
                   return finishSignIn(ctx, result, exchange);
                 });
             })
-            .catch(function (err) {
-              ctx.state.lastError = err && err.code ? err.code : 'sign_in_failed';
-              return saveState(ctx.state).then(function () {
-                return broadcastState('error');
-              });
-            });
+            .catch(failSignIn);
         });
       });
     }
@@ -1316,6 +1348,9 @@
     CLIENT_ID_PRODUCTION: CLIENT_ID_PRODUCTION,
     CLIENT_ID_STAGING: CLIENT_ID_STAGING,
     CLIENT_ID_BY_API_BASE: CLIENT_ID_BY_API_BASE,
+    SIGN_IN_CANCELLED: SIGN_IN_CANCELLED,
+    SIGN_IN_TRANSIENT: SIGN_IN_TRANSIENT,
+    signInKindOf: signInKindOf,
     MAX_UPSERTS: MAX_UPSERTS,
     MAX_DELETES: MAX_DELETES,
     MAX_SEEN_ROWS: MAX_SEEN_ROWS,
