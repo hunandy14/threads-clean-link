@@ -133,7 +133,13 @@
     function updateSyncRow() {
       var textEl = getCheckbox('syncStatusText');
       if (!textEl || !i18n) return;
-      if (syncState.status === 'signed_out') {
+      // 判準是「有沒有帳號」而不只是 status(L8):沒有 email 也沒有 displayName
+      // 就沒有帳號可同步，上一位使用者留下的 lastSyncedAt 更不該被組成
+      // 「已同步 · 2 分鐘前」。這比只認 status 更難被上游的形狀走樣騙過。
+      var hasIdentity =
+        (typeof syncState.email === 'string' && syncState.email !== '') ||
+        (typeof syncState.displayName === 'string' && syncState.displayName !== '');
+      if (!hasIdentity || syncState.status === 'signed_out') {
         textEl.textContent = i18n.t(currentLocale, 'ppSyncInactive');
         return;
       }

@@ -1185,6 +1185,10 @@
       var hasIdentity = nonEmptyString(s.email) !== null || nonEmptyString(s.displayName) !== null;
       if (s.status === 'signed_out' && s.lastError === 'session_expired' && hasIdentity) return 'expired';
       if (s.status === 'signed_out') return 'signedOut';
+      // 縱深:引擎在沒有 token 時只送 signed_out(sync.js 的 statusOf)，但真
+      // 的收到無身分的 error 也不畫幽靈帳號卡片——沒有 email／displayName 就
+      // 沒有帳號可重試，那張卡片的每一顆按鈕都是死的。
+      if (s.status === 'error' && !hasIdentity) return 'signedOut';
       if (s.status === 'syncing') return 'syncing';
       if (s.status === 'error') return 'error';
       return 'signedIn';
@@ -1395,7 +1399,45 @@
     // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫
     // (比照 setHistory/setSyncSettings 的既有模式:controller 只暴露方法，
     // 訊息監聽掛在 -init.js)。
+    /**
+     * 這一次廣播帶的一次性登入失敗(L5)。分類由引擎給(sync.js 的
+     * signInKindOf)，本頁只決定出不出聲:
+     *
+     *   cancelled 靜音——使用者自己按的取消，不必再被通知一次。唯一例外是
+     *             permission_required:在瀏覽器權限對話框按拒絕之後畫面毫無
+     *             動靜，需要一句話解釋為什麼什麼都沒發生(沿用既有文案)。
+     *   transient 一句「請稍後再試」，不顯示錯誤碼(對使用者沒有意義)。
+     *   config    重試無用，帶出錯誤碼讓使用者報得出來。
+     */
+    function reportSignInFailure(transient) {
+      if (!transient || typeof transient !== 'object') return;
+      var code = nonEmptyString(transient.code);
+      if (code === null) return;
+      if (transient.kind === 'cancelled') {
+        if (code === 'permission_required') toast(tt('opSyncPermissionDenied'));
+        return;
+      }
+      if (transient.kind === 'transient') {
+        toast(tt('opAccountSignInFailed'));
+        return;
+      }
+      toast(tf('opAccountSignInConfigError', { code: code }));
+    }
+
+    // 有沒有可用的雲端工作階段。未登入與登入過期都沒有 token，任何需要
+    // Bearer 的動作(sync.now／sync.deleteCloud)送到 background 也只會直接
+    // return——按鈕看起來能按、按下去什麼都沒有，比停用更糟(刪雲端那顆還會
+    // 彈一句樂觀的「已刪除雲端資料」，等於謊報)。這一態唯一有意義的動作是
+    // 重新登入。
+    function hasCloudSession() {
+      var mode = accountMode(syncState);
+      return mode !== 'signedOut' && mode !== 'expired';
+    }
+
     function setSyncState(state) {
+      // transientError 只活在這一次廣播裡，normalizeSyncCardState 不留它
+      // (它不屬於持久狀態形狀)，因此先取下來。
+      var transient = state ? state.transientError : null;
       syncState = normalizeSyncCardState(state);
       renderAccount(syncState);
       // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
@@ -1405,6 +1447,7 @@
         pendingDeleteCloudToast = false;
         if (syncState.lastError) toast(tt('opAccountErrorPrefix') + syncState.lastError);
       }
+      reportSignInFailure(transient);
     }
 
     // 登入前的權限關卡:先探(contains)，缺才求(request)。使用者拒絕就不送出
@@ -1586,12 +1629,14 @@
       });
       on('acctRetryBtn', 'click', function () {
         closeAcctMenu();
+        if (!hasCloudSession()) return;
         sendSyncAction({ type: 'sync.now' });
       });
       on('acctSyncNowBtn', 'click', function () {
         var btn = byId('acctSyncNowBtn');
         if (btn && btn.disabled) return;
         closeAcctMenu();
+        if (!hasCloudSession()) return;
         sendSyncAction({ type: 'sync.now' });
       });
       on('acctSignOutBtn', 'click', function () {
@@ -1602,6 +1647,7 @@
       // 這些紀錄不會再上傳到雲端(避免與清除全部紀錄的本機刪除混淆)。
       on('acctDeleteBtn', 'click', function () {
         closeAcctMenu();
+        if (!hasCloudSession()) return;
         openConfirm({
           titleKey: 'opAccountDeleteCloud',
           okKey: 'opSyncDeleteConfirmDo',
