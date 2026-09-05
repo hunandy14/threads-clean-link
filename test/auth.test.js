@@ -420,3 +420,232 @@ test('exchangeWithBackend:回應不是 JSON 時 body 為 null，不整個丟例�
     globalThis.fetch = savedFetch;
   }
 });
+
+// ============================================================================
+// L2 — 登入失敗一律帶 err.code(分類的唯一來源)
+// ============================================================================
+//
+// 使用者把 Google 視窗關掉、授權頁載不起來、id_token 的 aud 對不上……在
+// auth.js 眼裡全部只是「一個 Error」，訊息還是中文散文;引擎接到之後只能一
+// 律記成 sign_in_failed，UI 端因此分不出「使用者自己取消」與「設定錯了」。
+// 分類的唯一來源是 `err.code`:本節逐條釘住 launchWebAuthFlow 的
+// chrome.runtime.lastError 對照、redirect fragment 的錯誤、payload 驗證的四
+// 種不符，以及後端交換的網路例外。訊息文字不在契約內(既有斷言仍以中文訊息
+// 比對，兩者並存)。
+
+const AUTH_REDIRECT_URI = REDIRECT_URI;
+
+// chrome 全域只在呼叫當下被讀取(auth.js 內是裸 `chrome` 參照)，因此逐條
+// 測試各自注入自己的替身，跑完還原——測試檔共用同一個 Node realm。
+function withFakeChrome(impl, fn) {
+  const had = Object.prototype.hasOwnProperty.call(globalThis, 'chrome');
+  const saved = globalThis.chrome;
+  globalThis.chrome = impl;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (had) globalThis.chrome = saved;
+      else delete globalThis.chrome;
+    });
+}
+
+// 假 chrome.identity:launchWebAuthFlow 依 opts 決定「回一串 redirectUrl」或
+// 「設 chrome.runtime.lastError 後回 undefined」(真實 API 的失敗形狀)。
+function identityChrome(opts) {
+  return {
+    runtime: { lastError: opts.lastError || undefined },
+    identity: {
+      getRedirectURL: () => AUTH_REDIRECT_URI,
+      launchWebAuthFlow(details, callback) {
+        callback(opts.redirectUrl);
+      },
+    },
+  };
+}
+
+/** 跑一次 signInWithGoogle，回傳它丟出來的例外(沒丟就丟測試用的哨兵)。 */
+async function signInFailure(opts, overrides) {
+  let thrown = null;
+  let resolved = false;
+  await withFakeChrome(identityChrome(opts), async () => {
+    try {
+      await TCLAuth.signInWithGoogle(
+        Object.assign({ clientId: CLIENT_ID, nonce: 'nonce-abc' }, overrides)
+      );
+      resolved = true;
+    } catch (err) {
+      thrown = err;
+    }
+  });
+  assert.equal(resolved, false, 'signInWithGoogle 應該失敗，測試前提不成立');
+  return thrown;
+}
+
+/** 同步呼叫的錯誤碼取用器。 */
+function codeOfThrow(fn) {
+  try {
+    fn();
+  } catch (err) {
+    return err && err.code;
+  }
+  assert.fail('應丟例外');
+}
+
+test('L2 launchWebAuthFlow:chrome.runtime.lastError 逐條對照成 err.code', async () => {
+  const cases = [
+    // 使用者在 Google 同意頁按「取消」／直接關掉視窗。
+    { message: 'The user did not approve access.', code: 'sign_in_cancelled' },
+    { message: 'canceled', code: 'sign_in_cancelled' },
+    { message: 'User interaction required.', code: 'interaction_required' },
+    { message: 'Authorization page could not be loaded.', code: 'auth_page_unreachable' },
+    { message: 'The operation timed out.', code: 'auth_page_unreachable' },
+    { message: 'Cannot use identity API in incognito mode.', code: 'incognito_not_supported' },
+    // 對不上任何一條的訊息才退回泛用碼。
+    { message: 'Unexpected wobble', code: 'sign_in_failed' },
+  ];
+  for (const c of cases) {
+    const err = await signInFailure({ lastError: { message: c.message } });
+    assert.equal(err.code, c.code, `lastError「${c.message}」應對照成 ${c.code}`);
+  }
+});
+
+test('L2 launchWebAuthFlow:沒有 lastError 但 redirectUrl 為空 → sign_in_cancelled', async () => {
+  // 關掉授權視窗最常見的形狀:callback 收到 undefined，lastError 沒設。
+  for (const redirectUrl of [undefined, null, '']) {
+    const err = await signInFailure({ redirectUrl });
+    assert.equal(
+      err.code,
+      'sign_in_cancelled',
+      `redirectUrl 為 ${String(redirectUrl)} 時應判為使用者取消，不是系統故障`
+    );
+  }
+});
+
+test('L2 redirect fragment:access_denied 是取消，其他 error 是設定錯誤(帶 detail)', () => {
+  assert.equal(
+    codeOfThrow(() =>
+      TCLAuth.extractIdTokenFromRedirect(`${AUTH_REDIRECT_URI}#error=access_denied`, AUTH_REDIRECT_URI)
+    ),
+    'sign_in_cancelled',
+    'access_denied 是使用者在同意頁按了拒絕，不該報成故障'
+  );
+
+  let configErr = null;
+  try {
+    TCLAuth.extractIdTokenFromRedirect(
+      `${AUTH_REDIRECT_URI}#error=invalid_client`,
+      AUTH_REDIRECT_URI
+    );
+  } catch (err) {
+    configErr = err;
+  }
+  assert.ok(configErr, '應丟例外');
+  assert.equal(configErr.code, 'oauth_config_error');
+  assert.equal(configErr.detail, 'invalid_client', '原始 error 值要留在 detail，回報時才問得出所以然');
+});
+
+test('L2 redirect fragment:前綴不符 → redirect_mismatch，缺 id_token → sign_in_failed', () => {
+  const token = fakeJwt(validPayload());
+  assert.equal(
+    codeOfThrow(() =>
+      TCLAuth.extractIdTokenFromRedirect(`https://evil.example/callback#id_token=${token}`, AUTH_REDIRECT_URI)
+    ),
+    'redirect_mismatch'
+  );
+  assert.equal(
+    codeOfThrow(() =>
+      TCLAuth.extractIdTokenFromRedirect(`${AUTH_REDIRECT_URI}#token_type=bearer`, AUTH_REDIRECT_URI)
+    ),
+    'sign_in_failed'
+  );
+});
+
+test('L2 verifyIdTokenPayload:aud／nonce／iss／exp 四種不符各有自己的 code', () => {
+  const expected = { clientId: CLIENT_ID, nonce: 'nonce-abc' };
+  assert.equal(
+    codeOfThrow(() =>
+      TCLAuth.verifyIdTokenPayload(validPayload({ aud: 'other.apps.googleusercontent.com' }), expected)
+    ),
+    'client_id_mismatch'
+  );
+  assert.equal(
+    codeOfThrow(() =>
+      TCLAuth.verifyIdTokenPayload(validPayload(), { clientId: CLIENT_ID, nonce: 'another-nonce' })
+    ),
+    'nonce_mismatch'
+  );
+  assert.equal(
+    codeOfThrow(() => TCLAuth.verifyIdTokenPayload(validPayload({ iss: 'https://evil.example' }), expected)),
+    'issuer_mismatch'
+  );
+  assert.equal(
+    codeOfThrow(() =>
+      TCLAuth.verifyIdTokenPayload(validPayload({ exp: Math.floor(Date.now() / 1000) - 1 }), expected)
+    ),
+    'id_token_expired'
+  );
+  const noExp = validPayload();
+  delete noExp.exp;
+  assert.equal(
+    codeOfThrow(() => TCLAuth.verifyIdTokenPayload(noExp, expected)),
+    'id_token_expired',
+    '缺 exp 與已過期同屬一類:這枚 token 的有效期不可信'
+  );
+});
+
+test('L2 signInWithGoogle:驗證失敗的 code 原樣往上丟，不被吞成泛用碼', async () => {
+  const token = fakeJwt(validPayload({ aud: 'other.apps.googleusercontent.com' }));
+  const err = await signInFailure({ redirectUrl: `${AUTH_REDIRECT_URI}#id_token=${token}` });
+  assert.equal(err.code, 'client_id_mismatch');
+});
+
+test('L2 exchangeWithBackend:fetch 例外(含 redirect:"error" 被拒)→ network_error', async () => {
+  const savedFetch = globalThis.fetch;
+  // 斷網與「後端回了 3xx，redirect:'error' 讓 fetch 直接 reject」在這一層是
+  // 同一種形狀:fetch 丟 TypeError。兩者都不是設定錯誤，重試有機會成功。
+  for (const boom of [new TypeError('Failed to fetch'), new TypeError('Failed to fetch: redirect')]) {
+    globalThis.fetch = () => Promise.reject(boom);
+    let thrown = null;
+    try {
+      await TCLAuth.exchangeWithBackend({
+        apiBase: 'https://api.metalinkclearer.workers.dev',
+        idToken: 'fake.id.token',
+        nonce: 'nonce-abc',
+      });
+    } catch (err) {
+      thrown = err;
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+    assert.ok(thrown, 'fetch 失敗時應丟例外');
+    assert.equal(thrown.code, 'network_error');
+  }
+});
+
+test('L2 launchWebAuthFlow:Chromium 的設定錯誤訊息歸 oauth_config_error', async () => {
+  // kInvalidClientId／kInvalidRedirect:client 沒登記、redirect URI 對不上。
+  // 這兩串與「授權頁載不起來」長得像，但重試永遠不會成功，不能歸暫時性。
+  for (const message of ['Invalid OAuth2 Client ID.', 'Did not redirect to the right URL.']) {
+    const err = await signInFailure({ lastError: { message } });
+    assert.equal(err.code, 'oauth_config_error', `lastError「${message}」是設定錯誤，不是暫時性`);
+  }
+});
+
+test('L2 redirect fragment:授權伺服器自己出的事歸 auth_page_unreachable', () => {
+  // RFC 6749 4.1.2.1:server_error／temporarily_unavailable 描述的是授權端
+  // 的暫時狀況，與我們的設定無關，等一下再試有機會成功。
+  for (const oauthError of ['server_error', 'temporarily_unavailable']) {
+    let thrown = null;
+    try {
+      TCLAuth.extractIdTokenFromRedirect(
+        `${AUTH_REDIRECT_URI}#error=${oauthError}`,
+        AUTH_REDIRECT_URI
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    assert.ok(thrown, '應丟例外');
+    assert.equal(thrown.code, 'auth_page_unreachable', `${oauthError} 應歸暫時性`);
+    assert.equal(thrown.detail, oauthError, '原始 error 值仍要留在 detail');
+  }
+});

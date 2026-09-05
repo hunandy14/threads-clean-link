@@ -176,6 +176,10 @@
       // 使用者在瀏覽器的權限對話框按了拒絕:登入流程就此中止，需要讓他知道
       // 為什麼什麼都沒發生。
       opSyncPermissionDenied: '未取得權限，無法登入',
+      // 登入失敗的一次性提示(L5)。取消不出聲，暫時性只說「再試一次」——錯誤
+      // 碼對使用者沒有意義;設定錯誤重試無用，要讓他報得出這串碼。
+      opAccountSignInFailed: '登入失敗，請稍後再試',
+      opAccountSignInConfigError: '登入設定有誤，請回報錯誤碼：{code}',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
       opDeviceNoteSynced: '已同步至你的 Google 帳號',
       // 刪除雲端資料是 fire-and-forget(sendSyncAction 不等回應)，送出當下
@@ -323,6 +327,8 @@
       opSyncDeleteConfirmDesc: 'Records stored in the cloud will be permanently deleted and cannot be recovered. Your local history on this device is unaffected, but it will not be re-uploaded; links you clean afterward will still sync normally.',
       opSyncDeleteConfirmDo: 'Delete',
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
+      opAccountSignInFailed: 'Sign-in failed, please try again later',
+      opAccountSignInConfigError: 'Sign-in is misconfigured. Please report this code: {code}',
       opDeviceNoteSynced: 'Synced to your Google account',
       // Delete-cloud is fire-and-forget (sendSyncAction does not await a
       // reply): show an optimistic toast right away, and if the next

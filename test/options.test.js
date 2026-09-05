@@ -3819,7 +3819,7 @@ test('雲端同步權限:使用者拒絕授權時顯示 toast 說明，不留下
   await settle();
 
   assert.equal(
-    ctx.doc.ids.toast.textContent,
+    toastTextOf(ctx),
     i18n.t('zh', 'opSyncPermissionDenied'),
     '拒絕授權後畫面必須說明為什麼什麼都沒發生'
   );
@@ -4017,4 +4017,261 @@ test('mergeImportedEntries:超量時墓碑優先淘汰，一般最舊的一筆�
   assert.equal(urls.indexOf('https://www.threads.com/@u/post/Q9999'), -1, '墓碑被優先淘汰');
   assert.ok(urls.indexOf('https://www.threads.com/@u/post/Q9998') !== -1, '一般最舊的一筆存活');
   assert.equal(urls[0], 'https://www.threads.com/@u/post/NEWCARD');
+});
+
+// ============================================================================
+// L5／L6／L7 — 沒有帳號資訊時不得畫出幽靈帳號卡片
+// ============================================================================
+//
+// 引擎端的 L1／L4 之外，設定頁自己也要有一道縱深:即使 background 送來
+// status='error' 卻沒有 email／displayName(舊版引擎、訊息被冒名、或引擎某
+// 天又走樣)，畫面上也不該出現「空白名字＋紅點＋同步失敗:」的幽靈帳號——
+// 那張卡片的每一顆按鈕都是死的(重試送 sync.now 沒 token 直接 return，刪雲
+// 端彈假的成功 toast)。
+//
+// 一次性的登入失敗改走 state.transientError({ code, kind })，由本頁決定要不
+// 要出聲:cancelled 靜音(使用者自己按的取消)、transient 一句「請稍後再試」、
+// config 帶錯誤碼請使用者回報。
+
+/** 組一份沒有任何身分資訊的 state(引擎在沒有 token 時該送的形狀)。 */
+function anonState(over) {
+  return Object.assign(
+    {
+      status: 'signed_out',
+      email: null,
+      displayName: null,
+      avatarUrl: null,
+      lastSyncedAt: null,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: '',
+    },
+    over
+  );
+}
+
+/** toast 節點是懶建立的(doc stub 只在 getElementById 時才生節點):沒彈過就是空字串。 */
+function toastTextOf(ctx) {
+  const el = ctx.doc.ids.toast;
+  return el ? el.textContent : '';
+}
+
+function makeAccountCtx(getState) {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime(getState ? { 'sync.getState': getState } : {});
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 100000,
+    runtime,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+test('L5 帳號入口:status=error 但沒有 email／displayName 時退回未登入卡片(縱深)', async () => {
+  const ctx = makeAccountCtx(() => anonState({ status: 'error', lastError: 'sign_in_failed' }));
+  await ctx.controller.init();
+  await settle();
+
+  assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, '沒有帳號資訊時只能顯示登入鈕');
+  assert.equal(ctx.doc.ids.acctTrigger.hidden, true, '不得畫出頭像觸發鈕');
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '不得畫出帳號選單');
+  assert.equal(ctx.doc.ids.statusDot.hidden, true, '不得亮紅點');
+  assert.equal(ctx.doc.ids.acctErrorRow.hidden, true, '不得顯示「同步失敗:」錯誤列');
+  assert.equal(ctx.doc.ids.acctHeaderName.textContent, '', '不得留下空白名字');
+  assert.equal(ctx.doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNote'), '沒登入就不能說已同步');
+});
+
+test('L5 帳號入口:transientError 為 cancelled 時靜音(使用者自己取消的不算錯誤)', async () => {
+  const ctx = makeAccountCtx();
+  await ctx.controller.init();
+  await settle();
+  assert.equal(toastTextOf(ctx), '', '前置:尚未有任何 toast');
+
+  ctx.controller.setSyncState(
+    anonState({ transientError: { code: 'sign_in_cancelled', kind: 'cancelled' } })
+  );
+
+  assert.equal(toastTextOf(ctx), '', '關掉 Google 視窗不該跳任何提示');
+  assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, '取消後仍是未登入卡片');
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+  assert.equal(ctx.doc.ids.statusDot.hidden, true);
+});
+
+test('L5 帳號入口:cancelled 的 permission_required 沿用既有的「未取得權限」toast', async () => {
+  const ctx = makeAccountCtx();
+  await ctx.controller.init();
+  await settle();
+
+  ctx.controller.setSyncState(
+    anonState({ transientError: { code: 'permission_required', kind: 'cancelled' } })
+  );
+
+  assert.equal(
+    toastTextOf(ctx),
+    i18n.t('zh', 'opSyncPermissionDenied'),
+    '權限被拒是唯一需要解釋「為什麼什麼都沒發生」的取消，沿用既有文案不另造鍵'
+  );
+  assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false);
+});
+
+test('L5 帳號入口:transientError 為 transient 時提示「請稍後再試」，不顯示錯誤碼', async () => {
+  for (const code of ['auth_page_unreachable', 'network_error', 'misconfigured', 'sign_in_failed']) {
+    const ctx = makeAccountCtx();
+    await ctx.controller.init();
+    await settle();
+
+    ctx.controller.setSyncState(anonState({ transientError: { code, kind: 'transient' } }));
+
+    assert.equal(
+      toastTextOf(ctx),
+      i18n.t('zh', 'opAccountSignInFailed'),
+      `${code}:暫時性失敗只需要「稍後再試」，錯誤碼對使用者沒有意義`
+    );
+    assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, `${code}:仍是未登入卡片`);
+    assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+    assert.equal(ctx.doc.ids.statusDot.hidden, true);
+  }
+});
+
+test('L5 帳號入口:transientError 為 config 時帶出錯誤碼請使用者回報', async () => {
+  for (const code of ['redirect_mismatch', 'client_id_missing', 'oauth_config_error']) {
+    const ctx = makeAccountCtx();
+    await ctx.controller.init();
+    await settle();
+
+    ctx.controller.setSyncState(anonState({ transientError: { code, kind: 'config' } }));
+
+    assert.equal(
+      toastTextOf(ctx),
+      i18n.fmt('zh', 'opAccountSignInConfigError', { code }),
+      `${code}:設定錯誤重試無用，要讓使用者報得出這串碼`
+    );
+    assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, `${code}:仍是未登入卡片`);
+    assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+    assert.equal(ctx.doc.ids.statusDot.hidden, true);
+  }
+});
+
+test('L5 i18n:登入失敗的兩則文案兩語系齊備，設定錯誤那則帶 {code} 插值', () => {
+  for (const locale of ['zh', 'en']) {
+    const failed = i18n.STRINGS[locale].opAccountSignInFailed;
+    const config = i18n.STRINGS[locale].opAccountSignInConfigError;
+    assert.equal(typeof failed, 'string');
+    assert.ok(failed && failed.length > 0, `${locale}:opAccountSignInFailed 不得為空`);
+    assert.equal(typeof config, 'string');
+    assert.ok(
+      config && config.indexOf('{code}') !== -1,
+      `${locale}:opAccountSignInConfigError 必須帶 {code} 插值，否則使用者報不出錯誤碼`
+    );
+  }
+  assert.equal(i18n.t('zh', 'opAccountSignInFailed'), '登入失敗，請稍後再試');
+});
+
+test('L6 帳號入口:沒有 token 的任何狀態下，重試／立即同步都不得送 sync.now', async () => {
+  // 兩種沒有 token 的狀態:引擎走樣送來的 error(無身分)，與登入過期卡片。
+  const states = [
+    anonState({ status: 'error', lastError: 'sign_in_failed' }),
+    anonState({
+      status: 'signed_out',
+      lastError: 'session_expired',
+      email: 'user@example.com',
+      displayName: 'Hong',
+    }),
+  ];
+  for (const state of states) {
+    const ctx = makeAccountCtx(() => state);
+    await ctx.controller.init();
+    await settle();
+
+    ctx.doc.ids.acctRetryBtn.fire('click');
+    ctx.doc.ids.acctSyncNowBtn.fire('click');
+    await settle();
+
+    const nows = ctx.runtime.calls.filter((c) => c && c.type === 'sync.now');
+    assert.deepEqual(
+      nows,
+      [],
+      `${state.lastError}:沒有 token 時 sync.now 到了 background 也只會直接 return，等於按鈕壞掉`
+    );
+    // 這一態真的需要動作時，唯一有意義的訊息是重新登入。
+    const others = ctx.runtime.calls.filter((c) => c && c.type !== 'sync.getState');
+    assert.ok(
+      others.every((c) => c.type === 'sync.signIn'),
+      `${state.lastError}:這一態只允許送 sync.signIn，實收 ${JSON.stringify(others)}`
+    );
+  }
+});
+
+test('L7 帳號入口:沒有 token 時按刪雲端資料，不送 sync.deleteCloud 也不彈「已刪除」toast', async () => {
+  const states = [
+    anonState({ status: 'signed_out' }),
+    anonState({ status: 'error', lastError: 'sign_in_failed' }),
+    anonState({
+      status: 'signed_out',
+      lastError: 'session_expired',
+      email: 'user@example.com',
+      displayName: 'Hong',
+    }),
+  ];
+  for (const state of states) {
+    const ctx = makeAccountCtx(() => state);
+    await ctx.controller.init();
+    await settle();
+
+    ctx.doc.ids.acctDeleteBtn.fire('click');
+    if (!ctx.doc.ids.confirmOverlay.hidden) ctx.doc.ids.confirmOk.fire('click');
+    await settle();
+
+    assert.ok(
+      ctx.runtime.calls.every((c) => c && c.type !== 'sync.deleteCloud'),
+      `${state.status}/${state.lastError}:沒有 token 時刪雲端只會失敗，不該送出`
+    );
+    assert.notEqual(
+      toastTextOf(ctx),
+      i18n.t('zh', 'opToastCloudDeleted'),
+      `${state.status}/${state.lastError}:不得謊報已刪除雲端資料`
+    );
+  }
+});
+
+test('L9 帳號入口:已登入的同步錯誤(有 email)維持 error 卡片，重試照舊送 sync.now', async () => {
+  const ctx = makeAccountCtx(() => ({
+    status: 'error',
+    email: 'user@example.com',
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: 100,
+    pendingCount: 2,
+    lastError: 'rate_limited',
+    apiBase: '',
+  }));
+  await ctx.controller.init();
+  await settle();
+
+  assert.equal(ctx.doc.ids.acctSignInBtn.hidden, true, '有帳號資訊時仍是登入態卡片');
+  assert.equal(ctx.doc.ids.acctErrorRow.hidden, false);
+  assert.equal(ctx.doc.ids.statusDot.classList.contains('is-danger'), true);
+
+  ctx.doc.ids.acctTrigger.fire('click');
+  ctx.doc.ids.acctRetryBtn.fire('click');
+  assert.deepEqual(ctx.runtime.calls[ctx.runtime.calls.length - 1], { type: 'sync.now' });
+});
+
+test('L5 帳號入口:status=syncing 但沒有 email／displayName 時同樣退回未登入卡片(縱深)', async () => {
+  // 與 error 同一道守衛:沒有帳號就沒有東西可同步，轉圈的頭像框只會讓使用者
+  // 以為自己登入著。
+  const ctx = makeAccountCtx(() => anonState({ status: 'syncing' }));
+  await ctx.controller.init();
+  await settle();
+
+  assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, '沒有帳號資訊時只能顯示登入鈕');
+  assert.equal(ctx.doc.ids.acctTrigger.hidden, true, '不得畫出頭像觸發鈕');
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '不得畫出帳號選單');
+  assert.equal(ctx.doc.ids.statusDot.hidden, true);
+  assert.equal(ctx.doc.ids.acctHeaderName.textContent, '', '不得留下空白名字');
+  assert.equal(ctx.doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNote'), '沒登入就不能說已同步');
 });
