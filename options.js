@@ -1785,13 +1785,11 @@
       }
       return tt('opDeviceUnknown');
     }
-    // 行內改名把名稱清空時要送什麼:本機這台退回 background 隨清單帶回的
-    // 預設名(§10 的 Chrome on <OS>)，別台算不出預設名，退回原名——空字串
-    // 送到 handler 只會被回 bad_device_name(§12)。
+    // 行內改名把名稱清空時要送什麼:本機這台退回清單回應頂層的 defaultName
+    // (§10 的 Chrome on <OS>，UI 端算不出 OS)，別台沒有預設名可算，退回原名
+    // ——空字串送到 handler 只會被回 bad_device_name(§12)。
     function fallbackDeviceName(device) {
       if (isCurrentDevice(device)) {
-        var own = nonEmptyString(device.defaultName);
-        if (own !== null) return own;
         var shared = deviceCache ? nonEmptyString(deviceCache.defaultName) : null;
         if (shared !== null) return shared;
       }

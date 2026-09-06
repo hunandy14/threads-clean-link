@@ -4463,9 +4463,6 @@ function makeDevices(patch) {
     {
       deviceId: DEV_THIS,
       name: 'My Laptop',
-      // 本機這台被改過名後，行內編輯清空要回退的預設名(§10)。UI 端算不出
-      // OS，只能由 background 隨清單帶回。
-      defaultName: 'Chrome on Windows',
       platform: 'chrome_extension',
       createdAt: DEV_NOW - 60 * DEV_DAY,
       lastSeenAt: DEV_NOW - 2 * DEV_DAY,
@@ -4487,6 +4484,11 @@ function deviceListOk(devices) {
     ok: true,
     devices: devices || makeDevices(),
     currentDeviceId: DEV_THIS,
+    // 本機這台的預設名只掛在回應頂層(§12):UI 端算不出 OS，只能由
+    // background 以 TCLCore.defaultDeviceName(os) 算好隨清單帶回，逐台裝置
+    // 物件上沒有這個欄位。本機這台被改過名之後，行內編輯清空要回退的就是
+    // 它(§10)。
+    defaultName: 'Chrome on Windows',
     fetchedAt: DEV_NOW,
   };
 }
