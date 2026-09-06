@@ -2877,3 +2877,918 @@ test('L4 signIn 失敗:合法形狀的 body.error 照舊原樣帶出', async () 
 
   assert.deepEqual(transientOf(env), { code: 'x'.repeat(40), kind: 'config' });
 });
+
+// ============================================================================
+// T11 — 裝置歸屬（0.7）：sync 請求的 device 區塊、裝置清單快取、改名與移除
+// ============================================================================
+// 契約來源：tmp/device-attribution-plan.md §3（sync 請求擴充）、§4（清單快取
+// 與取得）、§5（改名／移除）、§12 與四段增補（引擎介面與死鎖守則）；
+// tmp/cloud-sync-plan-full.md §9；docs/cloud-sync.md 4.4／5.1／D23–D26。
+// 後端形狀由 test/helpers/mock-sync-server.js 的三支 devices 端點代言。
+//
+// 引擎新介面（本節釘定）：
+//   engine.listDevices({ force })  → { ok:true, devices, currentDeviceId, fetchedAt }
+//                                  或 { ok:false, code }
+//   engine.renameDevice(id, name)  → { ok:true, device } 或 { ok:false, code }
+//   engine.removeDevice(id)        → { ok:true } 或 { ok:false, code }
+//   deps.getLocalDevice()          → Promise<{ deviceId, name, platform } | null>
+//
+// 本節刻意**不釘 `devicesStale` 旗標存在哪個鍵**（§4 只說「設旗標」）：一律
+// 以行為斷言——同步當場零 GET、下一次 listDevices() 即使快取新鮮也要打、再
+// 下一次不打（旗標已清）。實作可自由選擇存進 syncDevices 記錄或另開一鍵。
+
+const DEVICE_LOCAL_ID = '11111111-1111-4111-8111-111111111111';
+const DEVICE_OTHER_ID = '22222222-2222-4222-8222-222222222222';
+const DEVICE_THIRD_ID = '33333333-3333-4333-8333-333333333333';
+const DEVICE_LOCAL_NAME = 'Chrome on Windows';
+
+function localDeviceOf(over = {}) {
+  return Object.assign(
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME, platform: 'chrome_extension' },
+    over
+  );
+}
+
+/** 快取／清單裡一列裝置的完整五欄形狀（api-spec 4.7）。 */
+function deviceRow(deviceId, name, over = {}) {
+  return Object.assign(
+    {
+      deviceId,
+      name,
+      platform: 'chrome_extension',
+      createdAt: T0 - 86_400_000,
+      lastSeenAt: T0 - 60_000,
+    },
+    over
+  );
+}
+
+/**
+ * makeEnv 之上再掛裝置歸屬需要的兩樣東西：
+ *   1. `deps.getLocalDevice`（§12 增補二，名稱固定），一律**非同步**結算——
+ *      同 tick 直接 resolve 會放過「在 writeChain 回呼內呼叫」的死鎖。
+ *   2. 側錄引擎自己發出的每一次請求（`env.server.requestsTo` 只認完整路徑，
+ *      而 `/api/v1/devices/:id` 帶變數；另外種資料用的直接 fetch 也不該被
+ *      算進引擎的請求數）。
+ */
+function makeDeviceEnv(opts = {}) {
+  const env = makeEnv(Object.assign({ signedIn: true }, opts));
+  const device = opts.device === null ? null : localDeviceOf(opts.device);
+  env.localDevice = device;
+  env.getLocalDeviceCalls = [];
+  if (opts.omitGetLocalDevice !== true) {
+    env.deps.getLocalDevice = function () {
+      env.getLocalDeviceCalls.push(env.now());
+      return new Promise((resolve) => setTimeout(() => resolve(device), 0));
+    };
+  }
+
+  const log = [];
+  const innerFetch = env.deps.fetch;
+  env.deps.fetch = function (input, init) {
+    let body = null;
+    try {
+      body = init && typeof init.body === 'string' ? JSON.parse(init.body) : null;
+    } catch (e) {
+      body = null;
+    }
+    log.push({
+      method: ((init && init.method) || 'GET').toUpperCase(),
+      path: new URL(String(input)).pathname,
+      body,
+    });
+    return innerFetch(input, init);
+  };
+
+  env.engineLog = log;
+  /** 引擎發出的請求（路徑完全相符；省略 path 代表只看方法）。 */
+  env.engineRequests = (method, path) =>
+    log.filter((r) => r.method === method && (path === undefined || r.path === path));
+  env.engineRequestsUnder = (method, prefix) =>
+    log.filter((r) => r.method === method && r.path.indexOf(prefix) === 0);
+  env.devicesCache = () => env.storage.localData.syncDevices;
+  /** 對本機身分鍵 `syncDevice` 的寫入（含 remove）。 */
+  env.localDeviceWrites = () =>
+    env.storage.writes.filter((w) => w.keys.indexOf('syncDevice') !== -1);
+  return env;
+}
+
+/** 直接用 PUT 把裝置種進 mock 伺服器（不經引擎，因此不進 env.engineLog）。 */
+async function seedServerDevices(env, rows) {
+  for (const row of rows) {
+    // 每台之間推進時鐘，GET 的 lastSeenAt DESC 排序才是確定的。
+    env.advance(1000);
+    const res = await env.server.fetch(PRODUCTION_BASE + '/api/v1/devices/' + row.deviceId, {
+      method: 'PUT',
+      credentials: 'omit',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok-seeded' },
+      body: JSON.stringify({ name: row.name, platform: row.platform || 'chrome_extension' }),
+    });
+    if (res.status !== 200) {
+      throw new Error('seedServerDevices 種不進去：' + row.deviceId + ' → ' + res.status);
+    }
+  }
+}
+
+/**
+ * 把 writeChain 換成**真的序列化**的版本（background.js 的 enqueueHistoryWrite
+ * 就是這個語意）。§12 增補四：引擎若在 writeChain(fn) 的回呼內才呼叫
+ * getLocalDevice（它自己也要進同一條鏈），就是在鏈上等自己＝死鎖。
+ */
+function serializeWriteChain(env) {
+  let tail = Promise.resolve();
+  env.deps.writeChain = function (fn) {
+    const run = tail.then(function () {
+      env.storage.chainDepth.value += 1;
+      return Promise.resolve()
+        .then(fn)
+        .finally(function () {
+          env.storage.chainDepth.value -= 1;
+        });
+    });
+    tail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  };
+}
+
+/** getLocalDevice 改成走 writeChain（模擬 background 的真實行為）。 */
+function chainedGetLocalDevice(env) {
+  env.deps.getLocalDevice = function () {
+    env.getLocalDeviceCalls.push(env.now());
+    return env.deps.writeChain(function () {
+      return new Promise((resolve) => setTimeout(() => resolve(env.localDevice), 0));
+    });
+  };
+}
+
+/**
+ * 在時限（tick 數，非牆鐘）內等一個 promise 結算。死鎖時回 false，讓測試以
+ * 斷言失敗收場，而不是整支測試檔卡住。
+ */
+async function settledWithin(promise, rounds = 300) {
+  let done = false;
+  promise.then(
+    () => {
+      done = true;
+    },
+    () => {
+      done = true;
+    }
+  );
+  for (let i = 0; i < rounds && !done; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return done;
+}
+
+// ---- §3 sync 請求的 device 區塊 ----
+
+test('T11/D23 sync 請求：每輪只有第一個 POST 帶頂層 device 區塊', async () => {
+  const TCLSync = loadSync();
+  const history = [];
+  for (let i = 0; i < 120; i += 1) {
+    const at = T0 - 100_000 - i;
+    const url = `https://www.threads.com/@d${i}/post/DEVX${String(i).padStart(6, '0')}`;
+    history.push(entry({ id: `loc-${i}`, url, at, receivedAt: at, seen: [{ at, kind: 'strip' }] }));
+  }
+  const env = makeDeviceEnv({ history });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(30);
+
+  const posts = env.syncPosts();
+  assert.ok(posts.length >= 3, `120 筆至少切三批，實際 ${posts.length} 批`);
+  assert.deepEqual(
+    posts[0].body.device,
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME, platform: 'chrome_extension' },
+    'device 區塊三欄取自 deps.getLocalDevice()'
+  );
+  posts.slice(1).forEach((req, i) => {
+    assert.equal(
+      req.body.device,
+      undefined,
+      `第 ${i + 2} 個 POST 不得再帶 device（D23：一輪一次就夠，其餘是白費的寫入）`
+    );
+  });
+});
+
+test('T11/D23 sync 請求：hasMore 續拉的 POST 也不得再帶 device 區塊', async () => {
+  const TCLSync = loadSync();
+  const seedItems = [];
+  for (let i = 0; i < 260; i += 1) {
+    const at = T0 - 400_000 + i;
+    const url = `https://www.threads.com/@p${i}/post/PULL${String(i).padStart(6, '0')}`;
+    seedItems.push({ id: `srv-${i}`, original: url, cleaned: url, receivedAt: at, seen: [{ at }] });
+  }
+  const env = makeDeviceEnv({ history: [] });
+  env.server.seed(seedItems);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(40);
+
+  const posts = env.syncPosts();
+  assert.ok(posts.length >= 2, 'hasMore 必須續拉，才測得到續頁那條組 body 的路徑');
+  assert.ok(posts[0].body.device, '第一個 POST 仍要帶 device');
+  posts.slice(1).forEach((req, i) => {
+    assert.equal(req.body.device, undefined, `續拉第 ${i + 1} 頁不得帶 device`);
+  });
+});
+
+test('T11 sync 請求：deps 沒有 getLocalDevice（舊版接線）時不帶 device，同步照常', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    omitGetLocalDevice: true,
+    history: [entry({ id: 'a', url: POST_A })],
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(15);
+
+  const posts = env.syncPosts();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.device, undefined, 'dep 缺席時整個鍵不輸出，不得送 null／undefined');
+  assert.deepEqual(
+    posts[0].body.upserts.map((it) => it.id),
+    ['a'],
+    '沒有裝置身分也要照常推送'
+  );
+  assert.equal(env.storage.history()[0].dirty, false, '照常 ack');
+});
+
+test('T11 sync 請求：getLocalDevice 回 null 時不帶 device 區塊', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({ device: null, history: [entry({ id: 'a', url: POST_A })] });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(15);
+
+  assert.equal(
+    env.syncPosts()[0].body.device,
+    undefined,
+    'storage 抽風拿不到身分時，同步不能連帶掛掉'
+  );
+  assert.equal(env.storage.history()[0].dirty, false);
+});
+
+test('T11 推：seen[].deviceId 隨 item 上雲（tcl-core 透傳）', async () => {
+  const TCLSync = loadSync();
+  const at = T0 - 90_000;
+  const env = makeDeviceEnv({
+    history: [
+      entry({
+        id: 'a',
+        url: POST_A,
+        at,
+        receivedAt: at,
+        seen: [{ at, kind: 'strip', deviceId: DEVICE_LOCAL_ID }],
+      }),
+    ],
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(15);
+
+  const item = env.syncPosts()[0].body.upserts[0];
+  assert.equal(
+    item.seen[0].deviceId,
+    DEVICE_LOCAL_ID,
+    'seen 的歸屬要一起上雲，否則別台永遠看不到來源'
+  );
+});
+
+test('T11 拉：雲端 seen[].deviceId 落地進本機 history', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({ history: [] });
+  env.server.seed([
+    {
+      id: 'srv-b',
+      original: POST_B,
+      cleaned: POST_B,
+      receivedAt: T0 - 20_000,
+      seen: [{ at: T0 - 20_000, source: 'share', deviceId: DEVICE_OTHER_ID }],
+    },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(15);
+
+  const list = env.storage.history();
+  assert.equal(list.length, 1);
+  assert.equal(
+    list[0].seen[0].deviceId,
+    DEVICE_OTHER_ID,
+    '拉回來的歸屬要落地，詳細視窗才畫得出來源裝置'
+  );
+});
+
+// ---- §4 listDevices：GET、30 秒節流、快取 ----
+
+test('T11 listDevices：無快取時打一次 GET，回應形狀完整並寫進 syncDevices', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv();
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const res = await engine.listDevices();
+  await settle(15);
+
+  assert.equal(res.ok, true);
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    1,
+    '沒有快取就打一次，且只打一次'
+  );
+  assert.deepEqual(
+    res.devices.map((d) => d.deviceId).sort(),
+    [DEVICE_LOCAL_ID, DEVICE_OTHER_ID].sort()
+  );
+  res.devices.forEach((d) => {
+    assert.deepEqual(
+      Object.keys(d).sort(),
+      ['createdAt', 'deviceId', 'lastSeenAt', 'name', 'platform'],
+      '嚴格五欄，不夾帶內部欄位'
+    );
+  });
+  assert.equal(res.currentDeviceId, DEVICE_LOCAL_ID);
+  assert.equal(typeof res.fetchedAt, 'number');
+
+  const cache = env.devicesCache();
+  assert.ok(cache, 'syncDevices 快取必須落地，SW 被殺後開帳號選單才不用再打一次');
+  assert.equal(cache.fetchedAt, res.fetchedAt);
+  assert.deepEqual(
+    cache.devices.map((d) => d.deviceId).sort(),
+    [DEVICE_LOCAL_ID, DEVICE_OTHER_ID].sort()
+  );
+});
+
+test('T11 listDevices：快取未滿 30 秒且未 force 直接回快取，過期才重新取得', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 5000,
+        devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME)],
+      },
+    },
+  });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const fresh = await engine.listDevices();
+  await settle(10);
+  assert.equal(fresh.ok, true);
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    0,
+    '30 秒內不得再打：後端限流桶與手機端共用'
+  );
+  assert.deepEqual(
+    fresh.devices.map((d) => d.deviceId),
+    [DEVICE_LOCAL_ID],
+    '回的是快取內容'
+  );
+  assert.equal(fresh.fetchedAt, T0 - 5000, 'fetchedAt 沿用快取的時間，不是這一刻');
+
+  env.advance(31_000);
+  const stale = await engine.listDevices();
+  await settle(15);
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    1,
+    '超過 30 秒才重新取得'
+  );
+  assert.equal(stale.devices.length, 2);
+});
+
+test('T11 listDevices：force 為真時無視新鮮快取照打 GET', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME)],
+      },
+    },
+  });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const res = await engine.listDevices({ force: true });
+  await settle(15);
+  assert.equal(env.engineRequests('GET', '/api/v1/devices').length, 1);
+  assert.equal(res.devices.length, 2, 'force 要拿到伺服器最新的清單');
+  assert.equal(env.devicesCache().devices.length, 2, '快取要被覆寫');
+});
+
+test('T11 listDevices：未登入回 signed_out 且零請求', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({ signedIn: false });
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const res = await engine.listDevices({ force: true });
+  await settle(10);
+  assert.deepEqual(res, { ok: false, code: 'signed_out' });
+  assert.equal(env.engineLog.length, 0, '沒有 token 就不該有任何往返');
+});
+
+test('T11 listDevices：GET 失敗（429／5xx／斷網）回 code，既有快取原封不動', async () => {
+  const TCLSync = loadSync();
+  const seededCache = {
+    fetchedAt: T0 - 5000,
+    devices: [
+      deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME),
+      deviceRow(DEVICE_OTHER_ID, '書房桌機'),
+    ],
+  };
+  const env = makeDeviceEnv({ local: { syncDevices: JSON.parse(JSON.stringify(seededCache)) } });
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  // 斷網那一筆的 `offline` 依 docs/cloud-sync.md:172 的公開契約（§12 同列）。
+  const cases = [
+    [{ status: 429, code: 'rate_limited', retryAfter: 30 }, 'rate_limited'],
+    [{ status: 503, code: 'server_error' }, 'server_error'],
+    [{ kind: 'network' }, 'offline'],
+  ];
+  for (const [failure, code] of cases) {
+    env.server.failNext(failure);
+    const res = await engine.listDevices({ force: true });
+    await settle(15);
+    assert.equal(res.ok, false, `${code}：失敗不得回 ok`);
+    assert.equal(res.code, code);
+    assert.deepEqual(
+      env.devicesCache(),
+      seededCache,
+      `${code}：失敗不清既有快取，畫面不該一斷網就變空`
+    );
+  }
+});
+
+test('T11 listDevices：currentDeviceId 一律取自 getLocalDevice()', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({ device: { deviceId: DEVICE_THIRD_ID, name: '筆電' } });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+    { deviceId: DEVICE_THIRD_ID, name: '筆電' },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const res = await engine.listDevices({ force: true });
+  await settle(15);
+  assert.equal(res.currentDeviceId, DEVICE_THIRD_ID, 'currentDeviceId 不從清單猜，只認本機身分');
+});
+
+test('T11/D25 devicesStale：拉到不認識的 deviceId 只設旗標，當場不打 GET', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    history: [],
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 5000,
+        devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME)],
+      },
+    },
+  });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+  ]);
+  env.server.seed([
+    {
+      id: 'srv-b',
+      original: POST_B,
+      cleaned: POST_B,
+      receivedAt: T0 - 20_000,
+      seen: [{ at: T0 - 20_000, source: 'share', deviceId: DEVICE_OTHER_ID }],
+    },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  await engine.syncNow();
+  await settle(20);
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    0,
+    '同步中途不得順手打 devices：每一輪都多一次往返，限流桶吃不消'
+  );
+
+  const first = await engine.listDevices();
+  await settle(15);
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    1,
+    '旗標為真時視同 force：快取雖新鮮，但已知它漏了一台'
+  );
+  assert.equal(first.devices.length, 2);
+
+  const second = await engine.listDevices();
+  await settle(15);
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    1,
+    '旗標必須在刷新後清掉，否則往後每次開框都強制往返'
+  );
+  assert.equal(second.devices.length, 2);
+});
+
+// ---- §5 renameDevice ----
+
+test('T11 renameDevice：PUT /api/v1/devices/:id 帶新名字，成功後更新快取那一台', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [
+          deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME),
+          deviceRow(DEVICE_OTHER_ID, '舊名字'),
+        ],
+      },
+    },
+  });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '舊名字' },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.renameDevice, 'function', 'engine.renameDevice 尚未實作（§12 引擎介面）');
+
+  const res = await engine.renameDevice(DEVICE_OTHER_ID, '書房桌機');
+  await settle(15);
+
+  const puts = env.engineRequestsUnder('PUT', '/api/v1/devices/');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].path, `/api/v1/devices/${DEVICE_OTHER_ID}`, 'deviceId 走路徑，不走 body');
+  assert.equal(puts[0].body.name, '書房桌機');
+
+  assert.equal(res.ok, true);
+  assert.equal(res.device.deviceId, DEVICE_OTHER_ID);
+  assert.equal(res.device.name, '書房桌機');
+
+  const cached = env.devicesCache().devices;
+  assert.equal(
+    cached.find((d) => d.deviceId === DEVICE_OTHER_ID).name,
+    '書房桌機',
+    '快取要同步改名'
+  );
+  assert.equal(
+    cached.find((d) => d.deviceId === DEVICE_LOCAL_ID).name,
+    DEVICE_LOCAL_NAME,
+    '只動被改名的那一台'
+  );
+});
+
+test('T11 renameDevice：422 原樣透出 code，快取不動', async () => {
+  const TCLSync = loadSync();
+  const seededCache = {
+    fetchedAt: T0 - 1000,
+    devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME), deviceRow(DEVICE_OTHER_ID, '舊名字')],
+  };
+  const env = makeDeviceEnv({ local: { syncDevices: JSON.parse(JSON.stringify(seededCache)) } });
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.renameDevice, 'function', 'engine.renameDevice 尚未實作（§12 引擎介面）');
+
+  env.server.failNext({ status: 422, code: 'bad_device_name' });
+  const res = await engine.renameDevice(DEVICE_OTHER_ID, '   ');
+  await settle(15);
+
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'bad_device_name', '422 的 body.error 原樣帶出，UI 才畫得出對的提示');
+  assert.deepEqual(env.devicesCache(), seededCache, '失敗要能還原，快取不得先被改掉');
+});
+
+test('T11/D24 PUT 只在改名時出現：整輪同步、開清單、登入都零 PUT', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({ history: [entry({ id: 'a', url: POST_A })] });
+  await seedServerDevices(env, [{ deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME }]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  await engine.syncNow();
+  await settle(20);
+  await engine.listDevices({ force: true });
+  await settle(15);
+  await engine.signIn();
+  await settle(20);
+
+  assert.deepEqual(
+    env.engineRequests('PUT'),
+    [],
+    'PUT 不得當心跳（D24）：首次註冊交給 sync 內嵌的 device 區塊'
+  );
+  assert.ok(env.syncPosts().length >= 1, '同步本身要真的跑過，零 PUT 才有意義');
+});
+
+// ---- §5 removeDevice ----
+
+test('T11 removeDevice：DELETE 成功後從快取移除該台', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [
+          deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME),
+          deviceRow(DEVICE_OTHER_ID, '書房桌機'),
+          deviceRow(DEVICE_THIRD_ID, '舊筆電'),
+        ],
+      },
+    },
+  });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+    { deviceId: DEVICE_THIRD_ID, name: '舊筆電' },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.removeDevice, 'function', 'engine.removeDevice 尚未實作（§12 引擎介面）');
+
+  const res = await engine.removeDevice(DEVICE_THIRD_ID);
+  await settle(15);
+
+  const deletes = env.engineRequestsUnder('DELETE', '/api/v1/devices/');
+  assert.equal(deletes.length, 1);
+  assert.equal(deletes[0].path, `/api/v1/devices/${DEVICE_THIRD_ID}`);
+  assert.equal(res.ok, true);
+  assert.deepEqual(
+    env.devicesCache().devices.map((d) => d.deviceId),
+    [DEVICE_LOCAL_ID, DEVICE_OTHER_ID],
+    '移除後快取要少一台，不必等下一次 GET'
+  );
+});
+
+test('T11 removeDevice：伺服器回 404 也算成功（冪等）', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME), deviceRow(DEVICE_THIRD_ID, '舊筆電')],
+      },
+    },
+  });
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.removeDevice, 'function', 'engine.removeDevice 尚未實作（§12 引擎介面）');
+
+  env.server.failNext({ status: 404, code: 'not_found' });
+  const res = await engine.removeDevice(DEVICE_THIRD_ID);
+  await settle(15);
+
+  assert.equal(res.ok, true, '別台已經被移除過＝目的已達成，不該對使用者報錯');
+  assert.deepEqual(
+    env.devicesCache().devices.map((d) => d.deviceId),
+    [DEVICE_LOCAL_ID]
+  );
+});
+
+test('T11 removeDevice：失敗時原樣透出 code，快取不動', async () => {
+  const TCLSync = loadSync();
+  const seededCache = {
+    fetchedAt: T0 - 1000,
+    devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME), deviceRow(DEVICE_THIRD_ID, '舊筆電')],
+  };
+  const env = makeDeviceEnv({ local: { syncDevices: JSON.parse(JSON.stringify(seededCache)) } });
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.removeDevice, 'function', 'engine.removeDevice 尚未實作（§12 引擎介面）');
+
+  env.server.failNext({ status: 503, code: 'server_error' });
+  const res = await engine.removeDevice(DEVICE_THIRD_ID);
+  await settle(15);
+
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'server_error');
+  assert.deepEqual(env.devicesCache(), seededCache, '沒刪成功就不得從畫面上消失');
+});
+
+// ---- §4 三守則：devices 回應不得動到本機資料 ----
+
+test('T11/D25 清單變短不刪本地：history 與 syncDevice 零寫入', async () => {
+  const TCLSync = loadSync();
+  const at = T0 - 90_000;
+  const env = makeDeviceEnv({
+    history: [
+      entry({
+        id: 'a',
+        url: POST_A,
+        at,
+        receivedAt: at,
+        dirty: false,
+        serverUpdatedAt: T0 - 80_000,
+        seen: [{ at, kind: 'strip', deviceId: DEVICE_OTHER_ID }],
+      }),
+      entry({
+        id: 'b',
+        url: POST_B,
+        at,
+        receivedAt: at,
+        dirty: false,
+        serverUpdatedAt: T0 - 80_000,
+        seen: [{ at, kind: 'strip', deviceId: DEVICE_THIRD_ID }],
+      }),
+    ],
+    local: {
+      syncDevice: {
+        deviceId: DEVICE_LOCAL_ID,
+        name: DEVICE_LOCAL_NAME,
+        platform: 'chrome_extension',
+        createdAt: T0 - 86_400_000,
+      },
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [
+          deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME),
+          deviceRow(DEVICE_OTHER_ID, '書房桌機'),
+          deviceRow(DEVICE_THIRD_ID, '舊筆電'),
+        ],
+      },
+    },
+  });
+  // 伺服器上只剩一台：另外兩台（含本機）已在別處被移除。
+  await seedServerDevices(env, [{ deviceId: DEVICE_THIRD_ID, name: '舊筆電' }]);
+  const before = JSON.parse(JSON.stringify(env.storage.history()));
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const res = await engine.listDevices({ force: true });
+  await settle(15);
+
+  assert.equal(res.ok, true);
+  assert.deepEqual(
+    res.devices.map((d) => d.deviceId),
+    [DEVICE_THIRD_ID]
+  );
+  assert.deepEqual(
+    env.storage.historyWrites(),
+    [],
+    'devices 回應不得觸發任何 history 寫入：清單只用於 join，不是刪除依據（D25）'
+  );
+  assert.deepEqual(env.localDeviceWrites(), [], '更不得動到本機身分 syncDevice');
+  assert.deepEqual(env.storage.history(), before, 'history 逐欄不變，歸屬不明的事件照留');
+});
+
+test('T11/D25 本機這台不在清單時 currentDeviceId 仍是本機 id', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME)],
+      },
+    },
+  });
+  await seedServerDevices(env, [{ deviceId: DEVICE_THIRD_ID, name: '舊筆電' }]);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const res = await engine.listDevices({ force: true });
+  await settle(15);
+  assert.equal(
+    res.devices.some((d) => d.deviceId === DEVICE_LOCAL_ID),
+    false,
+    '前提：清單裡沒有本機'
+  );
+  assert.equal(
+    res.currentDeviceId,
+    DEVICE_LOCAL_ID,
+    'currentDeviceId 是本機身分，不是「清單裡的本機」；否則這台會變成可移除'
+  );
+});
+
+// ---- §12 增補四：死鎖守則 ----
+
+test('T11 死鎖守則：getLocalDevice 走 writeChain 時整輪同步仍要跑完', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({ history: [entry({ id: 'a', url: POST_A })] });
+  serializeWriteChain(env);
+  chainedGetLocalDevice(env);
+  const engine = TCLSync.create(env.deps);
+
+  const running = engine.syncNow();
+  const finished = await settledWithin(running);
+  assert.equal(
+    finished,
+    true,
+    '引擎在 writeChain 回呼內呼叫 getLocalDevice＝在序列鏈上等自己（§12 增補四），身分要在進鏈前先取好'
+  );
+  await running;
+  await settle(20);
+  assert.ok(env.getLocalDeviceCalls.length >= 1, '這輪本來就該取一次身分');
+  assert.equal(env.storage.history()[0].dirty, false);
+});
+
+test('T11 死鎖守則：getLocalDevice 走 writeChain 時 listDevices 仍要跑完', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv();
+  await seedServerDevices(env, [{ deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME }]);
+  serializeWriteChain(env);
+  chainedGetLocalDevice(env);
+  const engine = TCLSync.create(env.deps);
+  assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+
+  const running = engine.listDevices({ force: true });
+  const finished = await settledWithin(running);
+  assert.equal(finished, true, 'listDevices 也要在進鏈前就取好本機身分（§12 增補四）');
+  const res = await running;
+  await settle(15);
+  assert.equal(res.ok, true);
+  assert.equal(res.currentDeviceId, DEVICE_LOCAL_ID);
+});
+
+// ---- 登出／刪雲端與快取 ----
+
+test('T11 signOut：清掉 syncDevices 快取，syncDevice 原封不動', async () => {
+  const TCLSync = loadSync();
+  const localDevice = {
+    deviceId: DEVICE_LOCAL_ID,
+    name: DEVICE_LOCAL_NAME,
+    platform: 'chrome_extension',
+    createdAt: T0 - 86_400_000,
+  };
+  const env = makeDeviceEnv({
+    local: {
+      syncDevice: Object.assign({}, localDevice),
+      syncDevices: { fetchedAt: T0 - 1000, devices: [deviceRow(DEVICE_OTHER_ID, '書房桌機')] },
+    },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.signOut();
+  await settle(20);
+
+  assert.equal(env.devicesCache(), undefined, '留著就會在下一位使用者眼前秀出上一個帳號的裝置');
+  assert.deepEqual(env.storage.localData.syncDevice, localDevice, '登出不是換一台新裝置');
+});
+
+test('T11 deleteCloud：清掉 syncDevices 快取，syncDevice 原封不動', async () => {
+  const TCLSync = loadSync();
+  const localDevice = {
+    deviceId: DEVICE_LOCAL_ID,
+    name: DEVICE_LOCAL_NAME,
+    platform: 'chrome_extension',
+    createdAt: T0 - 86_400_000,
+  };
+  const env = makeDeviceEnv({
+    local: {
+      syncDevice: Object.assign({}, localDevice),
+      syncDevices: { fetchedAt: T0 - 1000, devices: [deviceRow(DEVICE_OTHER_ID, '書房桌機')] },
+    },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.deleteCloud();
+  await settle(20);
+
+  assert.equal(env.devicesCache(), undefined, '雲端資料都刪了，別台裝置的快取沒有留著的道理');
+  assert.deepEqual(env.storage.localData.syncDevice, localDevice, '刪雲端不重生本機身分');
+});
+
+// ---- 舊版相容 ----
+
+test('T11 舊版相容：seen 無 deviceId 的既有資料，同步行為與既有測試一致（煙霧）', async () => {
+  const TCLSync = loadSync();
+  const at = T0 - 90_000;
+  const env = makeDeviceEnv({
+    history: [entry({ id: 'a', url: POST_A, at, receivedAt: at, seen: [{ at, kind: 'strip' }] })],
+  });
+  env.server.seed([
+    {
+      id: 'srv-b',
+      original: POST_B,
+      cleaned: POST_B,
+      receivedAt: T0 - 20_000,
+      seen: [{ at: T0 - 20_000, source: 'share' }],
+    },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(20);
+
+  const posts = env.syncPosts();
+  assert.equal(posts.length, 1);
+  const item = posts[0].body.upserts[0];
+  assert.equal('deviceId' in item.seen[0], false, '本機舊事件不補歸屬（D22）');
+
+  const list = env.storage.history();
+  assert.equal(list.length, 2, '一推一拉，筆數不變');
+  const pulled = list.find((e) => e.url === POST_B);
+  assert.equal('deviceId' in pulled.seen[0], false, '雲端沒帶歸屬就不要憑空生一個');
+  assert.equal(list.find((e) => e.url === POST_A).dirty, false, '照常 ack');
+  assert.notEqual(env.storage.syncState().cursor, '0', 'cursor 照常前進');
+});
