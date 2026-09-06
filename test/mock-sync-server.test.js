@@ -27,7 +27,7 @@
 // 3. lastSeenAt 節流維持嚴格「距上次 >30 分鐘」。
 // 4. sync 內嵌 device 首次註冊缺 platform ＝ 無效區塊，靜默丟棄不建立。
 // 5. DELETE 的 deviceId 驗證先於冪等：爛 id 回 422 `bad_device_id`。
-// 6. sync 內嵌註冊同樣觸發 200 台淘汰。
+// 6. sync 內嵌註冊同樣觸發超過裝置上限的淘汰。
 // 7. GET 每項嚴格五欄。
 //
 // 備註：契約寫「Bearer＋csrfGuard＋per-user 限流」，但既有 mock 並未實作 origin
@@ -37,7 +37,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createMockSyncServer, RATE_LIMIT_MAX } = require('./helpers/mock-sync-server.js');
+const { createMockSyncServer, RATE_LIMIT_MAX, MAX_DEVICES } = require('./helpers/mock-sync-server.js');
 
 const BASE = 'https://api.metalinkclearer.workers.dev';
 const T0 = 1_700_000_000_000;
@@ -49,7 +49,7 @@ const DEV_B = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const DEV_ZERO = '00000000-0000-0000-0000-000000000000';
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/g;
 
-// 上限 200 台的批次備料用：由序號生成合法形狀的 UUID。
+// 塞滿裝置上限的批次備料用：由序號生成合法形狀的 UUID。
 function uuidOf(n) {
   return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 }
@@ -587,7 +587,7 @@ test('sync：GET links 與 changes 回填的 seen 帶 deviceId，舊事件為 nu
 });
 
 // ============================================================================
-// 每帳號 200 台上限
+// 每帳號裝置上限
 // ============================================================================
 
 // 塞滿 n 台裝置：每台間隔 61 秒，讓 lastSeenAt 嚴格遞增（淘汰順序可預期），
@@ -602,31 +602,31 @@ async function seedDevices(h, count) {
 
 function assertEvictedOldest(devices, newDeviceId) {
   const ids = devices.map((d) => d.deviceId);
-  assert.equal(devices.length, 200, '維持 200 台');
+  assert.equal(devices.length, MAX_DEVICES, '維持在上限台數');
   assert.equal(ids.includes(newDeviceId), true, '新裝置留下');
   assert.equal(ids.includes(uuidOf(0)), false, 'lastSeenAt 最舊者被淘汰');
   assert.equal(ids.includes(uuidOf(1)), true, '只淘汰溢位的那一台');
 }
 
-test('每帳號上限 200 台：PUT 超過時淘汰 lastSeenAt 最舊者且不回錯', async () => {
+test('超過裝置上限：PUT 超過時淘汰 lastSeenAt 最舊者且不回錯', async () => {
   const h = harness();
-  await seedDevices(h, 200);
-  assert.equal((await devicesOf(h)).devices.length, 200);
+  await seedDevices(h, MAX_DEVICES);
+  assert.equal((await devicesOf(h)).devices.length, MAX_DEVICES);
 
-  const overflow = await h.putDevice(uuidOf(200), { name: 'd200', platform: 'chrome_extension' });
+  const overflow = await h.putDevice(uuidOf(MAX_DEVICES), { name: `d${MAX_DEVICES}`, platform: 'chrome_extension' });
   assert.equal(overflow.status, 200, '超過上限不回錯');
 
-  assertEvictedOldest((await devicesOf(h)).devices, uuidOf(200));
+  assertEvictedOldest((await devicesOf(h)).devices, uuidOf(MAX_DEVICES));
 });
 
-test('每帳號上限 200 台：sync 內嵌註冊同樣觸發淘汰', async () => {
+test('超過裝置上限：sync 內嵌註冊同樣觸發淘汰', async () => {
   const h = harness();
-  await seedDevices(h, 200);
+  await seedDevices(h, MAX_DEVICES);
 
   const res = await h.sync({
     upserts: [linkItem()],
     deletes: [],
-    device: { deviceId: DEV_A, name: '第 201 台', platform: 'chrome_extension' },
+    device: { deviceId: DEV_A, name: '溢位的那一台', platform: 'chrome_extension' },
   });
   assert.equal(res.status, 200, '超過上限不回錯');
   const body = await res.json();
