@@ -3276,7 +3276,10 @@ function makeDeviceSyncStub() {
 //   syncApi       注入沙箱的 TCLSync（預設用替身；傳真模組即跑真引擎）
 function loadBackgroundForDevices(opts = {}) {
   const sync = opts.syncApi ? null : makeDeviceSyncStub();
-  const storage = makeDeviceStorage({ saveHistory: true }, opts.localSeed || {}, opts.delayMs || 0);
+  // opts.storage：沿用前一次載入的 storage 替身，模擬 SW 被回收後重新啟動
+  // ——storage.local 的內容留著，模組層的 memo 則跟著新 realm 重來。
+  const storage =
+    opts.storage || makeDeviceStorage({ saveHistory: true }, opts.localSeed || {}, opts.delayMs || 0);
   const onMessageListeners = [];
   const onInstalledListeners = [];
   const onClickedListeners = [];
@@ -3393,6 +3396,13 @@ function lastSeenEvent(entry) {
   return entry.seen[entry.seen.length - 1];
 }
 
+// background.js 在 vm 的另一個 realm 內執行，它產生的物件字面值繼承的是那個
+// realm 的 Object.prototype，deepStrictEqual 比 prototype 會直接判不等。凡是拿
+// 沙箱回傳的物件比形狀，一律先展開成本 realm 的新物件再比。
+function plain(value) {
+  return Object.assign({}, value);
+}
+
 // 呼叫 background 注入給引擎的 getLocalDevice（§12 引擎介面）。先斷言它存在，
 // 讓「還沒接線」是一次斷言失敗而不是 TypeError 炸掉整支測試。
 function localDeviceOf(bg) {
@@ -3476,6 +3486,31 @@ test('B1 ensureDevice:不掛 onInstalled——沒觸發 onInstalled 也要能初
 
   const device = bg.device();
   assert.ok(device && device.deviceId, 'onInstalled 從未觸發，syncDevice 仍須由惰性初始化產生');
+});
+
+test('B1 ensureDevice:全新安裝零紀錄時，getLocalDevice() 回傳後身分就必須落地，SW 回收重載仍是同一組 deviceId', async () => {
+  // 只同步、從不留紀錄的使用者（saveHistory 關閉，或單純還沒淨化過任何連結）
+  // 一樣會註冊裝置。若新身分只放在記憶體、等下一次 recordHistory 順手寫進
+  // storage，SW 一被回收就整組消失，下次同步換一枚 UUID，雲端每隔一陣子就多
+  // 一台幽靈裝置。落地必須由 getLocalDevice 自己完成，與紀錄路徑無關。
+  const first = loadBackgroundForDevices({ platformOs: 'win' });
+
+  const device = await localDeviceOf(first);
+
+  assert.match(device.deviceId, DEVICE_UUID_LOWER, '前提：getLocalDevice 回得出身分');
+  assert.equal(
+    first.device() && first.device().deviceId,
+    device.deviceId,
+    'getLocalDevice() 回傳的當下，syncDevice 就必須已經寫進 storage.local（不得等下一次 recordHistory 順便寫）'
+  );
+  assert.equal(first.history().length, 0, '前提：全程沒有寫過任何紀錄');
+
+  // SW 被回收後重新啟動：storage.local 留著，模組層的 memo 從零開始。
+  const second = loadBackgroundForDevices({ platformOs: 'win', storage: first.storage });
+  const again = await localDeviceOf(second);
+
+  assert.equal(again.deviceId, device.deviceId, 'SW 回收重載後必須讀回同一組 deviceId，不得重生');
+  assert.equal(first.storage.deviceWriteCount(), 1, 'syncDevice 全程只准寫一次');
 });
 
 // ---- §2 四條紀錄路徑帶 deviceId ----
@@ -3692,8 +3727,8 @@ test('B4 dispatch 簽名改為 (engine, message):list 的 force 要原樣轉給 
 
   const calls = bg.sync.callsTo('listDevices');
   assert.equal(calls.length, 2, 'list 應轉呼叫 engine.listDevices');
-  assert.deepEqual(calls[0].args[0], { force: true }, 'force:true 要原樣帶進去（dispatch 必須把 message 交給 handler）');
-  assert.deepEqual(calls[1].args[0], { force: undefined }, '未帶 force 時以 undefined 傳入，不自行改寫成 true');
+  assert.deepEqual(plain(calls[0].args[0]), { force: true }, 'force:true 要原樣帶進去（dispatch 必須把 message 交給 handler）');
+  assert.deepEqual(plain(calls[1].args[0]), { force: undefined }, '未帶 force 時以 undefined 傳入，不自行改寫成 true');
 });
 
 test('B4 dispatch 簽名改動後，既有五個 sync.* 仍照常轉呼叫引擎（回歸）', async () => {
@@ -3719,7 +3754,7 @@ test('B4 rename 自驗:deviceId 非 UUID 回 { ok:false, code:bad_device_id }，
     const res = await bg.send({ type: 'sync.devices.rename', deviceId, name: 'Pixel' }, EXT_PAGE_SENDER);
     assert.equal(res.responded, true, `deviceId=${String(deviceId)} 仍須回應（拒絕也要回）`);
     assert.deepEqual(
-      res.response,
+      plain(res.response),
       { ok: false, code: 'bad_device_id' },
       `deviceId=${String(deviceId)} 應被 handler 自驗擋下`
     );
@@ -3735,7 +3770,7 @@ test('B4 rename 自驗:name 非字串、trim 後為空、超過 80 code point �
     const res = await bg.send({ type: 'sync.devices.rename', deviceId: OTHER_DEVICE_ID, name }, EXT_PAGE_SENDER);
     assert.equal(res.responded, true, `name=${JSON.stringify(name)} 仍須回應`);
     assert.deepEqual(
-      res.response,
+      plain(res.response),
       { ok: false, code: 'bad_device_name' },
       `name=${JSON.stringify(name)} 應被擋下`
     );
@@ -3825,8 +3860,8 @@ test('B4 remove:本機這台回 { ok:false, code:current_device } 且不呼叫�
     EXT_PAGE_SENDER
   );
 
-  assert.deepEqual(lower.response, { ok: false, code: 'current_device' });
-  assert.deepEqual(upper.response, { ok: false, code: 'current_device' }, '大寫寫法也要先正規化再比對，不得漏擋');
+  assert.deepEqual(plain(lower.response), { ok: false, code: 'current_device' });
+  assert.deepEqual(plain(upper.response), { ok: false, code: 'current_device' }, '大寫寫法也要先正規化再比對，不得漏擋');
   assert.deepEqual(bg.sync.callsTo('removeDevice'), [], '這台裝置不得送出 DELETE');
   assert.deepEqual(bg.device(), SEEDED_DEVICE, '被擋下的 remove 不得動到 syncDevice');
 });
@@ -3844,7 +3879,7 @@ test('B4 remove:別台轉呼叫 engine.removeDevice(deviceId) 並原樣回傳；
   assert.equal(calls[0].args[0], OTHER_DEVICE_ID, 'deviceId 轉小寫後交給引擎');
 
   const bad = await bg.send({ type: 'sync.devices.remove', deviceId: 'nope' }, EXT_PAGE_SENDER);
-  assert.deepEqual(bad.response, { ok: false, code: 'bad_device_id' });
+  assert.deepEqual(plain(bad.response), { ok: false, code: 'bad_device_id' });
   assert.equal(bg.sync.callsTo('removeDevice').length, 1, '不合格的 deviceId 不得再打一次引擎');
 });
 
