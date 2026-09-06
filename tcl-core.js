@@ -344,6 +344,37 @@
     );
   }
 
+  // deviceId 的形狀驗證:8-4-4-4-12 的 hex，大小寫不敏感。**不驗版本位與
+  // variant 位**——裝置 id 可能來自舊版本機生成或匯入檔，只要能當識別碼與路徑
+  // 參數就收;全零同樣視為合法形狀。
+  var UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  // seen[].deviceId 正規化:形狀不合(含非字串)回傳 undefined，呼叫端據此讓整
+  // 個鍵不輸出;形狀通過則一律轉小寫——伺服器存小寫，本機不對齊時拿 deviceId
+  // 去 join 裝置清單會落空，同一台裝置在時間軸上會顯示成未知裝置。
+  function normalizeDeviceId(value) {
+    if (typeof value !== 'string' || !UUID_SHAPE_RE.test(value)) return undefined;
+    return value.toLowerCase();
+  }
+
+  // chrome.runtime.getPlatformInfo().os → 裝置預設顯示名的對照表。
+  var DEVICE_OS_NAMES = {
+    win: 'Chrome on Windows',
+    mac: 'Chrome on macOS',
+    linux: 'Chrome on Linux',
+    cros: 'Chrome on ChromeOS',
+    android: 'Chrome on Android',
+  };
+
+  // 註冊裝置時的預設顯示名。認不出的 os 值(含拿不到 os)退成 'Chrome'——名字只
+  // 是給使用者辨識用的可改欄位，寧可少講也不寫 'Unknown' 這種讀起來像故障的字。
+  function defaultDeviceName(os) {
+    if (typeof os !== 'string') return 'Chrome';
+    return Object.prototype.hasOwnProperty.call(DEVICE_OS_NAMES, os)
+      ? DEVICE_OS_NAMES[os]
+      : 'Chrome';
+  }
+
   // seen[].kind → 雲端 seen[].source(D4):share→share，strip/menu/icon→
   // clipboard。kind 缺席的種子紀錄不對應任何來源事件，回 undefined 讓呼叫端
   // 整個 source 鍵不輸出——硬塞 clipboard 等於對雲端謊報沒發生過的來源。
@@ -385,7 +416,10 @@
     if (Array.isArray(entry.seen) && entry.seen.length > 0) {
       item.seen = entry.seen.slice(-LIMITS.SEEN_MAX).map(function (s) {
         var source = seenSourceOf(s.kind);
-        return source === undefined ? { at: s.at } : { at: s.at, source: source };
+        var event = source === undefined ? { at: s.at } : { at: s.at, source: source };
+        // deviceId 直接沿用本機已消毒的值;無值時整個鍵不輸出。
+        if (typeof s.deviceId === 'string' && s.deviceId) event.deviceId = s.deviceId;
+        return event;
       });
     }
     return item;
@@ -400,7 +434,9 @@
       var record = list[i];
       if (!record || typeof record !== 'object') continue;
       var kind = record.kind !== undefined ? record.kind : seenKindOf(record.source);
-      out.push(kind === undefined ? { at: record.at } : { at: record.at, kind: kind });
+      var event = kind === undefined ? { at: record.at } : { at: record.at, kind: kind };
+      if (record.deviceId !== undefined) event.deviceId = record.deviceId;
+      out.push(event);
     }
     return out;
   }
@@ -523,6 +559,10 @@
   // 版補種的起始紀錄無來源標籤),kind 有值則需在 KIND_LIST 白名單內，否則整
   // 筆丟棄。非陣列回傳空陣列。裁到 SEEN_MAX 上限(**函式內裁切**，對 merge 端
   // 無行為差:concat 後照樣再裁)。
+  //
+  // deviceId 的**唯一閘門**:形狀不合只丟該欄位、事件本身照留——歸屬不明的事
+  // 件仍是使用者看得到的紀錄。缺席就缺席，不補 null(上雲時 null 會被伺服器
+  // 當成「明確清空」)。
   function sanitizeSeenList(value) {
     if (!Array.isArray(value)) return [];
     var out = [];
@@ -530,12 +570,16 @@
       var record = value[i];
       if (!record || typeof record !== 'object') continue;
       if (typeof record.at !== 'number' || !isFinite(record.at)) continue;
+      var event;
       if (record.kind === undefined) {
-        out.push({ at: record.at });
-        continue;
+        event = { at: record.at };
+      } else {
+        if (typeof record.kind !== 'string' || KIND_LIST.indexOf(record.kind) === -1) continue;
+        event = { at: record.at, kind: record.kind };
       }
-      if (typeof record.kind !== 'string' || KIND_LIST.indexOf(record.kind) === -1) continue;
-      out.push({ at: record.at, kind: record.kind });
+      var deviceId = normalizeDeviceId(record.deviceId);
+      if (deviceId !== undefined) event.deviceId = deviceId;
+      out.push(event);
     }
     return out.slice(-LIMITS.SEEN_MAX);
   }
@@ -777,6 +821,7 @@
     sanitizeDisplayName: sanitizeDisplayName,
     sanitizeAvatarUrl: sanitizeAvatarUrl,
     randomUuid: randomUuid,
+    defaultDeviceName: defaultDeviceName,
     toSyncItem: toSyncItem,
     fromSyncItem: fromSyncItem,
     stripControlChars: stripControlChars,
