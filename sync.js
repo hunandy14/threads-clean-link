@@ -1364,6 +1364,25 @@
     }
 
     /**
+     * devices 三支共用的失敗出口。401 不是「這一支端點失敗」而是整枚 token 死
+     * 了，因此比照 runSync／verifySession／deleteCloud 轉進 handleSessionExpired
+     * ——清 token、記 lastError、停掉兩支 alarm、廣播 signed_out。只把碼往上丟
+     * 的話，使用者會停在「已登入」的畫面，同步在背景一輪一輪地失敗，直到下一
+     * 次剛好有別條路徑也撞上 401 才被發現。
+     *
+     * 任何情況都不動 devices 快取:畫面不該一斷網就變空。
+     */
+    function failDevices(err) {
+      var code = err && err.code ? err.code : 'internal_error';
+      if (code === 'session_expired') {
+        return handleSessionExpired().then(function () {
+          return { ok: false, code: code };
+        });
+      }
+      return Promise.resolve({ ok: false, code: code });
+    }
+
+    /**
      * 拉回來的 changes 出現快取裡沒有的 deviceId 時，**只**把 stale 旗標寫進
      * 快取(D25)，當場不打 GET:每一輪同步都順手多一次往返，共用的限流桶吃不
      * 消。旗標與快取同一個物件，SW 被回收也還在(§12 增補五);listDevices 見到
@@ -1446,9 +1465,7 @@
                   };
                 });
               })
-              .catch(function (err) {
-                return { ok: false, code: err && err.code ? err.code : 'internal_error' };
-              });
+              .catch(failDevices);
           });
         });
       });
@@ -1476,10 +1493,8 @@
               });
             });
           })
-          .catch(function (err) {
-            // 失敗不動快取:樂觀更新的還原由 UI 端負責，引擎這邊維持原樣。
-            return { ok: false, code: err && err.code ? err.code : 'internal_error' };
-          });
+          // 失敗不動快取:樂觀更新的還原由 UI 端負責，引擎這邊維持原樣。
+          .catch(failDevices);
       });
     }
 
@@ -1503,9 +1518,7 @@
               });
             });
           })
-          .catch(function (err) {
-            return { ok: false, code: err && err.code ? err.code : 'internal_error' };
-          });
+          .catch(failDevices);
       });
     }
 
