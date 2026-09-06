@@ -2893,9 +2893,15 @@ test('L4 signIn 失敗:合法形狀的 body.error 照舊原樣帶出', async () 
 //   engine.removeDevice(id)        → { ok:true } 或 { ok:false, code }
 //   deps.getLocalDevice()          → Promise<{ deviceId, name, platform } | null>
 //
-// 本節刻意**不釘 `devicesStale` 旗標存在哪個鍵**（§4 只說「設旗標」）：一律
-// 以行為斷言——同步當場零 GET、下一次 listDevices() 即使快取新鮮也要打、再
-// 下一次不打（旗標已清）。實作可自由選擇存進 syncDevices 記錄或另開一鍵。
+// 錯誤碼沿用引擎既有的共用碼（PM 裁決）：`network_error`／`rate_limited`／
+// `session_expired`，5xx 缺 body.error 時走 sync.js 的 `defaultCodeFor`。裝置
+// 不另開一套碼——同一種故障兩套講法，UI 端就得維護兩條映射。
+//
+// `devicesStale` 旗標落在 `chrome.storage.local.syncDevices.stale`（與快取同一
+// 個物件，PM 裁決）：MV3 的 SW 隨時被回收，旗標只存記憶體的話「別台裝置剛出
+// 現」這件事會在下一次喚醒時整個蒸發，使用者永遠看到一份缺一台的清單。多數
+// 斷言仍走行為（同步當場零 GET → 下次視同 force → 再下次不打），另補一支直接
+// 驗跨 SW 實例。
 
 const DEVICE_LOCAL_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_OTHER_ID = '22222222-2222-4222-8222-222222222222';
@@ -3320,11 +3326,16 @@ test('T11 listDevices：GET 失敗（429／5xx／斷網）回 code，既有快�
   const engine = TCLSync.create(env.deps);
   assert.equal(typeof engine.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
 
-  // 斷網那一筆的 `offline` 依 docs/cloud-sync.md:172 的公開契約（§12 同列）。
+  // 【PM 裁決】devices 三端點的錯誤碼**沿用引擎既有的共用碼**，不為裝置另
+  // 開一套：斷網 `network_error`（sync.js:546）、429 由 body.error 帶回
+  // `rate_limited`、5xx 缺 body.error 時走 sync.js 的 `defaultCodeFor`
+  // （503 → `misconfigured`）。§12 列的 `offline`／`server_error` 是文件先
+  // 行的措辭，整合時改文件而不是改引擎——同一份錯誤碼兩套講法，UI 端就得為
+  // 同一種故障維護兩條映射。
   const cases = [
     [{ status: 429, code: 'rate_limited', retryAfter: 30 }, 'rate_limited'],
-    [{ status: 503, code: 'server_error' }, 'server_error'],
-    [{ kind: 'network' }, 'offline'],
+    [{ status: 503, body: {} }, 'misconfigured'],
+    [{ kind: 'network' }, 'network_error'],
   ];
   for (const [failure, code] of cases) {
     env.server.failNext(failure);
@@ -3408,6 +3419,55 @@ test('T11/D25 devicesStale：拉到不認識的 deviceId 只設旗標，當場�
     '旗標必須在刷新後清掉，否則往後每次開框都強制往返'
   );
   assert.equal(second.devices.length, 2);
+});
+
+test('T11/D25 devicesStale 落地 syncDevices.stale：SW 回收重建引擎後仍視同 force', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    history: [],
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 5000,
+        devices: [deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME)],
+      },
+    },
+  });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+  ]);
+  env.server.seed([
+    {
+      id: 'srv-b',
+      original: POST_B,
+      cleaned: POST_B,
+      receivedAt: T0 - 20_000,
+      seen: [{ at: T0 - 20_000, source: 'share', deviceId: DEVICE_OTHER_ID }],
+    },
+  ]);
+
+  const first = TCLSync.create(env.deps);
+  await first.syncNow();
+  await settle(20);
+  assert.equal(
+    env.devicesCache().stale,
+    true,
+    '旗標要跟快取寫在同一個物件裡：只存記憶體的話，SW 一被回收就忘了有台沒見過的裝置'
+  );
+
+  // SW 被回收後重建：記憶體狀態全沒了，只剩 storage。
+  const revived = env.recreate(TCLSync, false);
+  assert.equal(typeof revived.listDevices, 'function', 'engine.listDevices 尚未實作（§12 引擎介面）');
+  const res = await revived.listDevices();
+  await settle(15);
+
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    1,
+    '新引擎讀到落地的旗標，即使快取仍新鮮也要視同 force'
+  );
+  assert.equal(res.devices.length, 2);
+  assert.notEqual(env.devicesCache().stale, true, '刷新後旗標要一併清掉，不能永遠強制往返');
 });
 
 // ---- §5 renameDevice ----
@@ -3570,12 +3630,14 @@ test('T11 removeDevice：失敗時原樣透出 code，快取不動', async () =>
   const engine = TCLSync.create(env.deps);
   assert.equal(typeof engine.removeDevice, 'function', 'engine.removeDevice 尚未實作（§12 引擎介面）');
 
-  env.server.failNext({ status: 503, code: 'server_error' });
+  // 錯誤碼沿用引擎共用碼（PM 裁決）：5xx 缺 body.error 走 sync.js 的
+  // defaultCodeFor，503 → misconfigured。
+  env.server.failNext({ status: 503, body: {} });
   const res = await engine.removeDevice(DEVICE_THIRD_ID);
   await settle(15);
 
   assert.equal(res.ok, false);
-  assert.equal(res.code, 'server_error');
+  assert.equal(res.code, 'misconfigured');
   assert.deepEqual(env.devicesCache(), seededCache, '沒刪成功就不得從畫面上消失');
 });
 
