@@ -968,6 +968,12 @@
           ]);
         })
         .then(function () {
+          // 別台裝置的快取描述的是「這個帳號底下有哪些裝置」。過期後重新登
+          // 入的可能是另一個 Google 帳號，留著就會在新使用者眼前先閃出上一
+          // 位的裝置名。本機身分 syncDevice 不動(D21)。
+          return localRemove(DEVICES_CACHE_KEY);
+        })
+        .then(function () {
           return broadcastState('signed_out');
         });
     }
@@ -1062,7 +1068,12 @@
           // 任何清空，留著只會擋掉新帳號真正的清空水位線(D19)。
           if (!switched) return undefined;
           ctx.clearGuard = null;
-          return forgetSelfClear();
+          return forgetSelfClear().then(function () {
+            // 別台裝置的清單同樣屬於前一個帳號(D25):鏡像欄位都重置了，這份
+            // 顯示層快取沒有獨活下來的道理，留著就是把上一位使用者的裝置名
+            // 秀給新使用者看。同帳號重新登入不清——那不是換人。
+            return localRemove(DEVICES_CACHE_KEY);
+          });
         })
         .then(function () {
           return saveToken(exchange.authToken);

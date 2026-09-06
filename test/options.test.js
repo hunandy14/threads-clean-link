@@ -950,7 +950,7 @@ function makeNode(tag, ownerDoc) {
       if (n.parentNode === node) n.parentNode = null;
       return n;
     },
-    // <input> 進入編輯態時的全選,行為上對測試無影響，補上避免炸。
+    // <input> 進入編輯態時的全選，行為上對測試無影響，補上避免炸。
     select() {},
     addEventListener(type, fn) {
       if (!listeners[type]) listeners[type] = [];
@@ -3682,7 +3682,7 @@ test('帳號選單:開啟時焦點進第一個可用項目，方向鍵在項目�
   // 已登入/非錯誤/非過期態下，第一個可用項目是「立即同步」。
   assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSyncNowBtn, '開啟時焦點應落在第一個可用項目');
 
-  // 【規格翻轉,D16(2026-09-07 更新)】選單順序納入「管理裝置」:立即同步 →
+  // 【規格翻轉，D16(2026-09-07 更新)】選單順序納入「管理裝置」:立即同步 →
   // 管理裝置 → 登出 → 刪除雲端資料。裝置管理屬帳號層級、非破壞性，排在
   // 登出之前;破壞性的刪除雲端資料仍固定壓軸。方向鍵導覽是選單順序的鏡
   // 像，四項都要在循環內。
@@ -3739,7 +3739,7 @@ test('帳號選單:管理裝置隱藏時(登入過期)方向鍵仍為原三項�
   ];
   assert.equal(ctx.doc.activeElement, order[0], '開啟時聚焦第一個可用項目');
 
-  // 走完一整圈再多一步,確認循環長度就是三，中途一次都不落在隱藏的管理裝置。
+  // 走完一整圈再多一步，確認循環長度就是三，中途一次都不落在隱藏的管理裝置。
   for (let i = 1; i <= order.length; i++) {
     ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
     assert.equal(

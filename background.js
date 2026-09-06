@@ -319,6 +319,9 @@ let localDevicePromise = null;
 let unsavedDevice = null;
 
 // 讀到既有值一律採用(重生 deviceId 等於在雲端變成另一台裝置);沒有才生成。
+// 既有值先過 TCLCore.normalizeDeviceId:大寫寫法歸一成小寫(伺服器存小寫，不
+// 對齊就 join 不到自己這台);形狀根本不合(storage 損毀、手改過)才重生——當不
+// 成識別碼的值留著，這台裝置就永遠註冊不上雲端。
 // 呼叫端注意:ensureDevice 自己佔一段 historyWriteChain，不得在鏈上的工作內
 // 第一次呼叫它，否則等於在鏈上等自己(死鎖)。recordHistory 因此在掛上本次寫
 // 入之前就先呼叫。
@@ -328,7 +331,16 @@ function ensureDevice() {
     if (!hasStorageLocal()) return null;
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const existing = stored && stored[DEVICE_KEY];
-    if (existing && typeof existing === 'object' && typeof existing.deviceId === 'string') return existing;
+    const existingId =
+      existing && typeof existing === 'object'
+        ? TCLCore.normalizeDeviceId(existing.deviceId)
+        : undefined;
+    if (existingId !== undefined) {
+      // 形狀合法就不是重寫的理由:只在記憶體裡把它歸一成小寫交出去。
+      return existingId === existing.deviceId
+        ? existing
+        : Object.assign({}, existing, { deviceId: existingId });
+    }
     const device = {
       deviceId: TCLCore.randomUuid(),
       platform: 'chrome_extension',
@@ -385,12 +397,17 @@ async function getLocalDevice() {
   if (!device) return null;
   // 引擎拿到的 deviceId 之後會出現在雲端資料裡，本機這邊不能只留在記憶體。
   await persistDevice();
+  // 交出去的 deviceId 一律正規化:引擎拿它組請求的 device 區塊與
+  // currentDeviceId，handleDevicesRemove 拿它擋「移除自己這台」，兩邊大小寫
+  // 不一致就比不中。ensureDevice 已經歸一過，這裡是縱深。
+  const deviceId = TCLCore.normalizeDeviceId(device.deviceId);
+  if (deviceId === undefined) return null;
   const name =
     typeof device.name === 'string' && device.name !== ''
       ? device.name
       : TCLCore.defaultDeviceName(await detectPlatformOs());
   return {
-    deviceId: device.deviceId,
+    deviceId,
     name,
     platform: typeof device.platform === 'string' ? device.platform : 'chrome_extension',
   };
@@ -511,8 +528,11 @@ async function handleDevicesRemove(engine, message) {
   const deviceId = TCLCore.normalizeDeviceId(message && message.deviceId);
   if (deviceId === undefined) return { ok: false, code: 'bad_device_id' };
   // 這台裝置自己不得被移除:UI 那顆按鈕是 disabled，handler 再擋一次。
+  // 兩邊都跑過 normalizeDeviceId 才比:參數已經歸一，本機那份若因舊資料而是
+  // 大寫寫法，直接比就比不中——使用者正在用的這台會被送進 DELETE。
   const local = await getLocalDevice();
-  if (local && local.deviceId === deviceId) return { ok: false, code: 'current_device' };
+  const localId = local ? TCLCore.normalizeDeviceId(local.deviceId) : undefined;
+  if (localId !== undefined && localId === deviceId) return { ok: false, code: 'current_device' };
   return engine.removeDevice(deviceId);
 }
 
