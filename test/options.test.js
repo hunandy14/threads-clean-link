@@ -998,6 +998,28 @@ function makeNode(tag, ownerDoc) {
   return node;
 }
 
+// options.html 的靜態巢狀關係:key 是子節點的 id，value 是它在 HTML 裡所屬
+// 的容器 id。真實 document.getElementById 只找得到「還在文件樹裡」的節點——
+// 容器被 textContent='' 清空後，原本掛在裡面的靜態節點就查不到了(回 null)。
+// 扁平 id 表的 stub 永遠回同一個物件，看不見這個差異，會把「節點被清掉之後
+// 再也拿不回來」這類 bug 一路放行(回歸:renderDetailDeviceRow 先清空
+// #detailDeviceRow 再判 null 早退，第二次開帶歸屬的紀錄時「裝置」列永久消失)。
+// 需要這種保真度的 id 逐一登記在這裡，其餘 id 維持原本的扁平行為。
+const STATIC_PARENT_ID = {
+  detailDeviceName: 'detailDeviceRow',
+};
+
+function isInSubtree(root, node) {
+  if (!root || !node) return false;
+  const stack = [root];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (cur === node) return true;
+    (cur.children || []).forEach((c) => stack.push(c));
+  }
+  return false;
+}
+
 function makeDocumentStub() {
   const byId = {};
   const docListeners = {};
@@ -1006,7 +1028,15 @@ function makeDocumentStub() {
     documentElement: makeNode('html'),
     activeElement: null,
     getElementById(id) {
-      if (!byId[id]) byId[id] = makeNode('#' + id, doc);
+      const parentId = STATIC_PARENT_ID[id];
+      if (!byId[id]) {
+        byId[id] = makeNode('#' + id, doc);
+        // 比照 options.html 掛進靜態容器，讓「被搬離容器」這件事測得出來。
+        if (parentId) doc.getElementById(parentId).appendChild(byId[id]);
+      }
+      // 已經不在容器的子樹裡 → 比照真實 DOM 回 null。doc.ids 仍握有節點
+      // 參照，測試要斷言殘留內容時可直接讀 doc.ids[id]。
+      if (parentId && !isInSubtree(byId[parentId], byId[id])) return null;
       return byId[id];
     },
     createElement(tag) {
@@ -5125,4 +5155,127 @@ test('裝置管理:卡面不出現任何裝置圖示或裝置名(D27，防人手
 
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   assert.equal(html.includes('entry-device-icon'), false, 'options.html 不得留卡面裝置圖示的樣式/標記');
+});
+
+// ============================================================
+// 裝置管理:審查回合補的回歸測試(R1–R3)。
+// ============================================================
+
+// R1 阻斷級:renderDetailDeviceRow 先 row.textContent='' 再判 null——沒有歸屬
+// 的那條路徑清空容器後直接 return，把靜態的 #detailDeviceName 永久移出文件樹;
+// 下一次開有歸屬的紀錄時 byId('detailDeviceName') 回 null 早退，「裝置」列從此
+// 不再出現。使用者只要看過一筆 0.6.x 的舊紀錄就會踩到，且重整前不會恢復。
+test('裝置管理:先看無歸屬紀錄、再看有歸屬紀錄時「裝置」列仍要畫出來(回歸:靜態節點被清空後永久消失)', async () => {
+  const history = [
+    // 帶 deviceId 的新紀錄(排清單第 0 列)。
+    {
+      url: CARD_URL_A,
+      kind: 'share',
+      at: DEV_ENTRY_AT,
+      seen: [{ at: DEV_ENTRY_AT, kind: 'share', deviceId: DEV_PIXEL }],
+    },
+    // 完全沒有 deviceId 的舊紀錄(0.6.x 寫進來的，排第 1 列)。
+    {
+      url: CARD_URL_B,
+      kind: 'share',
+      at: DEV_ENTRY_AT - DEV_DAY,
+      seen: [{ at: DEV_ENTRY_AT - DEV_DAY, kind: 'share' }],
+    },
+  ];
+  const ctx = makeDeviceCtx({ history });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  ctx.doc.ids.rows.children[1].fire('click');
+  assert.equal(ctx.doc.ids.detailDeviceRow.hidden, true, '前置:無歸屬紀錄整列不畫');
+  ctx.doc.ids.detailClose.fire('click');
+  await settle();
+
+  ctx.doc.ids.rows.children[0].fire('click');
+  assert.equal(
+    ctx.doc.ids.detailDeviceRow.hidden,
+    false,
+    '看過無歸屬紀錄之後，有歸屬的紀錄仍要畫出「裝置」列'
+  );
+  assert.equal(ctx.doc.ids.detailDeviceName.textContent, 'Pixel 8', '名稱要正確填回');
+});
+
+// R2:登出/登入過期時清單一定拉不到，對話框留在畫面上只會是一框永遠轉不出
+// 東西的死內容(帳號選單的管理裝置項這時已經收掉，使用者也沒有正規途徑再開
+// 一次)。焦點跟著回帳號觸發鈕，不留在被撤掉的對話框裡。
+test('裝置管理:對話框開著時廣播登出或登入過期，對話框收起且焦點回帳號觸發鈕', async () => {
+  const EXPIRED_STATE = Object.assign({}, DEV_SIGNED_IN_STATE, {
+    status: 'signed_out',
+    lastError: 'session_expired',
+  });
+
+  for (const [label, state] of [
+    ['登出', DEV_SIGNED_OUT_STATE],
+    ['登入過期', EXPIRED_STATE],
+  ]) {
+    const ctx = makeDeviceCtx();
+    await ctx.controller.init();
+    await settle();
+    await openDevicesDialog(ctx);
+    assert.equal(ctx.doc.ids.devicesOverlay.hidden, false, '前置(' + label + '):對話框應開著');
+
+    ctx.controller.setSyncState(state);
+    await settle();
+
+    assert.equal(
+      ctx.doc.ids.devicesOverlay.hidden,
+      true,
+      label + '廣播後應收起裝置對話框'
+    );
+    assert.equal(
+      ctx.doc.activeElement,
+      ctx.doc.ids.acctTrigger,
+      label + '廣播後焦點應回 #acctTrigger，不留在已撤掉的對話框內'
+    );
+  }
+});
+
+// R3:本機這台從未改過名時 syncDevice.name 缺席，預設名由 background 隨清單
+// 回應以頂層 defaultName 帶回(§10/§12)。顯示層只看每台自己的 name/defaultName
+// 就會把自己這台講成「未知裝置」——使用者看著自己正在用的瀏覽器被標成未知，
+// 是這頁最不該出現的字。別台沒有名字才真的無從得知。
+test('裝置管理:本機這台 name 缺席時列上顯示清單回應的頂層 defaultName，別台缺席才是未知裝置', async () => {
+  const devices = makeDevices({
+    [DEV_THIS]: { name: undefined, defaultName: undefined },
+    [DEV_PIXEL]: { name: undefined },
+  });
+  const ctx = makeDeviceCtx({
+    listResponses: [
+      {
+        ok: true,
+        devices,
+        currentDeviceId: DEV_THIS,
+        defaultName: 'Chrome on Windows',
+        fetchedAt: DEV_NOW,
+      },
+    ],
+  });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const thisRow = rowById(ctx.doc, DEV_THIS);
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(thisRow, '應畫出本機這台的列');
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+
+  assert.ok(
+    joinedText(thisRow).includes('Chrome on Windows'),
+    '本機這台沒有自訂名時，顯示清單回應帶回的預設名'
+  );
+  assert.equal(
+    joinedText(thisRow).includes('未知裝置'),
+    false,
+    '不得把使用者正在用的這台講成未知裝置'
+  );
+  assert.ok(
+    joinedText(pixelRow).includes('未知裝置'),
+    '別台沒有名字、也算不出預設名時才顯示未知裝置'
+  );
 });

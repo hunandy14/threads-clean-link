@@ -148,3 +148,18 @@ test('locales:裝置管理的 i18n key(計畫 §6)在 zh 與 en 皆存在且非�
     assert.ok(!value.includes(','), `zh.${key} 不得含半形逗號 ","`);
   }
 });
+
+// ---- 7. 英文文案的單複數(R4) ----
+//
+// opDevicesSubtitle 是裝置對話框標題列右側的副標，n 由清單長度代入。英文
+// 直接寫死複數的 devices，只有一台時就會印出「1 devices syncing」——這是
+// 使用者第一次登入、只註冊了這台裝置時必定看到的畫面。
+test('locales:en 的 opDevicesSubtitle 在只有一台時不得印出「1 devices」', () => {
+  const i18n = require(path.join(REPO_ROOT, 'i18n.js'));
+
+  const one = i18n.fmt('en', 'opDevicesSubtitle', { n: 1 });
+  assert.ok(
+    !one.includes('1 devices'),
+    `en.opDevicesSubtitle 在 n=1 時不得出現「1 devices」，實際:${one}`
+  );
+});
