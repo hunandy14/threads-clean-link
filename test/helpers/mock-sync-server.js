@@ -39,7 +39,7 @@
 // - `GET /api/v1/devices`：`{ devices: [...] }`，嚴格五欄、lastSeenAt DESC、不分頁。
 // - `PUT /api/v1/devices/:deviceId`：建立時 platform 必填、改名可省；每次都更新
 //   lastSeenAt（30 分鐘節流只套 sync 內嵌路徑）。
-// - `DELETE /api/v1/devices/:deviceId`：驗證先於冪等，`link_seen.deviceId` 不動。
+// - `DELETE /api/v1/devices/:deviceId`：驗證先於冪等，已上傳事件的 `seen[].deviceId` 不動。
 // - sync 頂層 `device` 區塊與 `seen[].deviceId`：upsert 不覆寫 name、無效靜默丟棄、
 //   回應不帶 `devices`。
 // - deviceId UUID 形狀（大小寫不敏感、不驗版本位、存小寫）；name 剝控制字元＋trim
@@ -435,6 +435,8 @@ function createMockSyncServer(options = {}) {
    * platform 缺或不在枚舉／name 正規化後為空）靜默丟棄，不影響連結同步。
    * 已存在的裝置不覆寫 name（改名一律走 PUT）；lastSeenAt 只在距上次嚴格
    * 超過 30 分鐘、或 platform 改變時寫入。
+   *
+   * 與 PUT 的不對稱：PUT 改名可省 platform，sync 內嵌一律必填。
    */
   function upsertDeviceFromSync(raw, at) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
@@ -509,7 +511,7 @@ function createMockSyncServer(options = {}) {
     return jsonResponse(200, { device: deviceView(row) });
   }
 
-  // ---- 端點：DELETE /api/v1/devices/:deviceId（冪等；link_seen.deviceId 不動） ----
+  // ---- 端點：DELETE /api/v1/devices/:deviceId（冪等；已上傳事件的 seen[].deviceId 不動） ----
   function handleDeleteDevice(rawDeviceId, headers, at) {
     if (!authed(headers)) return unauthorized();
     if (rateLimited(at)) return rateLimitedResponse();

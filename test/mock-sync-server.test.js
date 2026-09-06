@@ -12,7 +12,7 @@
 //   lastSeenAt DESC，不分頁。
 // - `PUT /api/v1/devices/:deviceId` body `{ name, platform? }` → 200 `{ device }`；
 //   建立時 platform 必填、改名可省；每次呼叫都更新 lastSeenAt。
-// - `DELETE /api/v1/devices/:deviceId` → 冪等 200 `{ ok: true }`；link_seen.device_id 不動。
+// - `DELETE /api/v1/devices/:deviceId` → 冪等 200 `{ ok: true }`；已上傳事件的 seen[].deviceId 不動。
 // - `POST /api/v1/links/sync` 可選頂層 `device` 區塊與 `seen[].deviceId`；
 //   upsert 不覆寫 name、lastSeenAt 只在 >30 分鐘或 platform 改變時寫入、
 //   無效輸入靜默丟棄、回應不帶 `devices`。
@@ -392,7 +392,7 @@ test('DELETE /api/v1/devices：deviceId 非 UUID 回 422 bad_device_id', async (
   assert.deepEqual(await res.json(), { error: 'bad_device_id' });
 });
 
-test('DELETE /api/v1/devices：link_seen 的 deviceId 不動', async () => {
+test('DELETE /api/v1/devices：已上傳事件的 seen[].deviceId 不動', async () => {
   const h = harness();
   await h.putDevice(DEV_A, { name: '桌機', platform: 'chrome_extension' });
   await h.sync({
@@ -405,7 +405,7 @@ test('DELETE /api/v1/devices：link_seen 的 deviceId 不動', async () => {
 
   const links = await (await h.listLinks()).json();
   assert.equal(links.items.length, 1);
-  assert.equal(links.items[0].seen[0].deviceId, DEV_A, '裝置移除不清 link_seen.device_id');
+  assert.equal(links.items[0].seen[0].deviceId, DEV_A, '裝置移除不清事件上的 deviceId');
 
   // 回填路徑（sync 帶 since）看到的也是原 deviceId。
   const back = await (await h.sync({ upserts: [], deletes: [], since: '0' })).json();
