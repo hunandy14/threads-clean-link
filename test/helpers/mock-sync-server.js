@@ -44,7 +44,7 @@
 //   回應不帶 `devices`。
 // - deviceId UUID 形狀（大小寫不敏感、不驗版本位、存小寫）；name 剝控制字元＋trim
 //   ＋截 80 code point，空即 422 `bad_device_name`。
-// - 每帳號 200 台上限，PUT 與 sync 內嵌皆觸發淘汰 lastSeenAt 最舊者，不回錯。
+// - 每帳號裝置數有上限，超過時 PUT 與 sync 內嵌皆觸發淘汰 lastSeenAt 最舊者，不回錯。
 // - 裝置三端點與 `/api/v1/links` 共用同一個 per-user 限流桶。
 //
 // ============================================================================
@@ -77,7 +77,7 @@ const SEEN_SOURCES = ['share', 'clipboard'];
 // ---- 裝置歸屬常數（plan-full §9／api-spec 4.7） ----
 const DEVICE_PLATFORMS = ['android', 'ios', 'chrome_extension'];
 const DEVICE_NAME_MAX = 80; // code point，emoji 算 1
-const MAX_DEVICES = 200; // 每帳號上限，溢位淘汰 lastSeenAt 最舊者
+const MAX_DEVICES = 6; // mock 的每帳號裝置上限（測試專用小值；真實上限由後端決定，插件不假設）
 const DEVICE_LAST_SEEN_THROTTLE_MS = 30 * 60_000; // 只套用在 sync 內嵌路徑
 // UUID 形狀：大小寫不敏感、不驗版本／變體位，全零亦合法。
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -412,7 +412,7 @@ function createMockSyncServer(options = {}) {
     };
   }
 
-  // 每帳號上限 200 台：溢位時淘汰 lastSeenAt 最舊者，不回錯、不通知客戶端。
+  // 超過每帳號裝置上限時淘汰 lastSeenAt 最舊者，不回錯、不通知客戶端。
   function evictDevices() {
     while (state.devices.size > MAX_DEVICES) {
       let oldest = null;
