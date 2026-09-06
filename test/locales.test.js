@@ -131,6 +131,15 @@ test('locales:裝置管理的 i18n key(計畫 §6)在 zh 與 en 皆存在且非�
     'opDeviceLastSync',
     'opDeviceUnknown',
     'opDeviceRegisteredToast',
+    // §12 增補一／三後才補進 i18n.js 的那批，當初漏了掛進本清單——沒被
+    // parity 覆蓋的 key 就是「哪天只加了 zh、en 缺一顆」不會有人發現。
+    'opDevicesTitle',
+    'opDevicesSubtitle',
+    'opDeviceAddedOn',
+    'opDeviceNameAria',
+    'opDevicesLoadError',
+    'opDeviceRenameFailed',
+    'opDeviceRemoveFailed',
   ];
 
   for (const locale of ['zh', 'en']) {

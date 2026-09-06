@@ -3911,6 +3911,86 @@ test('T11 deleteCloud：清掉 syncDevices 快取，syncDevice 原封不動', as
   assert.deepEqual(env.storage.localData.syncDevice, localDevice, '刪雲端不重生本機身分');
 });
 
+// ---- 登入過期與換帳號與快取（整體審查 S4）----
+//
+// syncDevices 描述的是「這個帳號底下有哪些裝置」，因此帳號一換就得丟。
+// signOut 與 deleteCloud 已經會清，但還有兩條同樣換人的路：401 過期後重新
+// 登入的可能是另一個 Google 帳號；而 signIn 的換帳號分支重設了所有鏡像
+// 欄位卻獨漏這一份快取。漏掉的後果不是「多打一次 GET」，而是下一位使用者
+// 一開裝置對話框就看到前一位使用者的裝置名稱。
+// （反之同一個帳號重新登入不得清：那不是換人，清掉只是白白多一次往返。）
+
+/** 這一組測試共用的本機身分（落地形狀，含 createdAt）。 */
+function seededLocalDevice() {
+  return {
+    deviceId: DEVICE_LOCAL_ID,
+    name: DEVICE_LOCAL_NAME,
+    platform: 'chrome_extension',
+    createdAt: T0 - 86_400_000,
+  };
+}
+function seededDevicesCache() {
+  return { fetchedAt: T0 - 1000, devices: [deviceRow(DEVICE_OTHER_ID, '書房桌機')] };
+}
+
+test('T11 session 過期（401）：清掉 syncDevices 快取，syncDevice 原封不動', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    history: [entry()],
+    local: { syncDevice: seededLocalDevice(), syncDevices: seededDevicesCache() },
+  });
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(20);
+
+  assert.equal(env.storage.syncState().lastError, 'session_expired', '前提：真的走了過期處理');
+  assert.equal(
+    env.devicesCache(),
+    undefined,
+    '過期後重新登入的可能是另一個帳號，舊快取留著就會秀給下一位使用者看'
+  );
+  assert.deepEqual(
+    env.storage.localData.syncDevice,
+    seededLocalDevice(),
+    'session 過期不是換一台新裝置'
+  );
+});
+
+test('T11 換帳號登入：清掉 syncDevices 快取；同一個帳號重新登入則保留', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: { syncDevice: seededLocalDevice(), syncDevices: seededDevicesCache() },
+  });
+  const engine = TCLSync.create(env.deps);
+
+  await engine.signIn();
+  await settle(20);
+  assert.equal(env.storage.syncState().userId, 'user-abc', '前提：同一個帳號重新登入');
+  assert.deepEqual(
+    env.devicesCache(),
+    seededDevicesCache(),
+    '同帳號重登不是換人，快取照舊可用'
+  );
+
+  // 換 B 帳號登入：mock 的 sign-in 一律回自己的 user，換掉它就是換人。
+  env.server.setUser({ id: 'user-zzz', email: 'other@example.com' });
+  await engine.signIn();
+  await settle(20);
+
+  assert.equal(env.storage.syncState().userId, 'user-zzz', '前提：真的換了帳號');
+  assert.equal(
+    env.devicesCache(),
+    undefined,
+    '鏡像欄位都重設了，別台裝置的快取沒有獨活下來的道理'
+  );
+  assert.deepEqual(
+    env.storage.localData.syncDevice,
+    seededLocalDevice(),
+    '換帳號不是換一台新裝置（D21）'
+  );
+});
+
 // ---- 舊版相容 ----
 
 test('T11 舊版相容：seen 無 deviceId 的既有資料，同步行為與既有測試一致（煙霧）', async () => {
