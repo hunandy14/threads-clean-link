@@ -423,10 +423,17 @@
     var pad = function (n) {
       return n < 10 ? '0' + n : String(n);
     };
-    return (
-      d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
-      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
-    );
+    return formatDateOnly(ts) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  // 裝置列的「新增於」只取日期(YYYY-MM-DD):註冊時分對辨認哪一台沒有幫助，
+  // 而且第二行還要並排「最後同步 <相對時間>」，塞不下完整時間戳。
+  function formatDateOnly(ts) {
+    var d = new Date(ts);
+    var pad = function (n) {
+      return n < 10 ? '0' + n : String(n);
+    };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
   }
 
   // 「時間軸」顯示邏輯，對齊手機版 history-detail-dialog.tsx——
@@ -613,6 +620,21 @@
     // 就把樂觀 toast 蓋成錯誤訊息」，見 acctDeleteBtn 的 click handler 與
     // setSyncState。
     var pendingDeleteCloudToast = false;
+    // 裝置清單快取(純顯示層，計畫 §4):{ devices, currentDeviceId, defaultName }。
+    // null 代表「還沒有任何清單」——與「取到 0 台」是兩回事，後者要畫空狀態。
+    // 取清單失敗一律不清這份快取(§12)，只把 devicesLoadError 立起來。
+    var deviceCache = null;
+    var devicesLoadError = false;
+    // 裝置列的節點登錄簿(deviceId → { row, nameRow, nameBtn, pill, renameBtn,
+    // input })。最小 DOM stub 沒有 querySelector，行內改名要改哪幾顆節點全
+    // 靠這份登錄簿定位;renderDevices 每次重建列時整份重置。
+    var deviceRowRefs = {};
+    // 清單往返的節流(§12 增補「台數來源」):一次往返同時服務「開選單看台數」
+    // 與「開對話框看清單」兩件事——第一次開選單時完全沒有清單可顯示，先打一
+    // 次把台數填上;之後每次開對話框才再打一次刷新(30 秒節流在引擎端)，同一
+    // 輪「開選單→開對話框」不重複往返。
+    var devicesEverFetched = false;
+    var devicesFetchedThisMenu = false;
     // chrome.storage.local.syncState 的帳號同步狀態(計劃 4.2，與上面那顆
     // 卡片狀態是兩回事)。刪除與清除全部依它的 userId 分流(D6:未登入行為與
     // 現況完全一致)。
@@ -1030,7 +1052,7 @@
     // 目前疊在最上層、開著的對話框(決定 Tab trap 的作用範圍):時間軸與
     // 刪除確認會疊在詳細視窗之上，匯入是獨立頂層框，優先序由上而下。
     function topmostOverlayId() {
-      var order = ['timelineOverlay', 'confirmOverlay', 'overlay', 'detailOverlay'];
+      var order = ['timelineOverlay', 'confirmOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'];
       for (var i = 0; i < order.length; i++) {
         var el = byId(order[i]);
         if (el && !el.hidden) return order[i];
@@ -1052,7 +1074,9 @@
     // 不變。
     function openConfirm(opts) {
       var titleText = byId('confirmTitleText');
-      if (titleText) titleText.textContent = tt(opts.titleKey);
+      // 標題多數是靜態 i18n key(titleKey)，但移除裝置那一句要把裝置名插進
+      // 去，改由呼叫端組好字面字串經 opts.title 傳進來。
+      if (titleText) titleText.textContent = typeof opts.title === 'string' ? opts.title : tt(opts.titleKey);
       var descEl = byId('confirmDesc');
       if (descEl) descEl.textContent = opts.desc;
       var okBtn = byId('confirmOk');
@@ -1256,6 +1280,21 @@
         }
         var menuEl = byId('acctMenu');
         if (menuEl) menuEl.hidden = true;
+        // 沒有帳號就沒有裝置清單可管:整項連同台數收掉，快取一併丟掉(它是
+        // 綁在這個帳號上的顯示層資料，留著只會在下次登入時先閃出舊台數)。
+        var manageBtn0 = byId('acctManageDevicesBtn');
+        if (manageBtn0) {
+          manageBtn0.hidden = true;
+          manageBtn0.disabled = false;
+        }
+        deviceCache = null;
+        devicesLoadError = false;
+        devicesEverFetched = false;
+        renderDeviceCount();
+        // 開著的裝置對話框要一起收掉:沒有帳號就拉不到清單，留在畫面上只會
+        // 是一框死內容，而選單裡的入口這時已經收起，使用者也沒有正規途徑
+        // 再開一次。焦點跟著回帳號觸發鈕。
+        closeDevicesDialog();
         var deviceNoteEl0 = byId('deviceNote');
         if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
 
@@ -1394,6 +1433,24 @@
 
       // deviceNote:expired 態的同步實質上沒在跑(等待重新登入)，比照
       // signedOut 顯示「僅保存於這台裝置」，避免謊報已同步。
+      // 管理裝置:登入過期時同樣沒有可用的工作階段(清單一定拉不到)，比照
+      // 未登入收掉，只留「重新登入」這條有意義的路。同步中則比照上面的
+      // 「立即同步」停用——這一輪同步本來就可能註冊/更新裝置，讓人在資料
+      // 正要變的當下進去改名或移除，只會拿到馬上被蓋掉的結果。
+      var manageBtn = byId('acctManageDevicesBtn');
+      if (manageBtn) {
+        manageBtn.hidden = mode === 'expired';
+        manageBtn.disabled = mode === 'syncing';
+      }
+      if (mode === 'expired') {
+        // 同上:沒有可用的工作階段就拉不到清單，開著的對話框收起來。快取
+        // 留著讓紀錄詳細的裝置名還 join 得到(同一個帳號，只是 token 過期)，
+        // 但重新登入後要再打一次，免得台數停在過期前那一刻。
+        devicesEverFetched = false;
+        closeDevicesDialog();
+      }
+      renderDeviceCount();
+
       var deviceSynced = mode === 'signedIn' || mode === 'syncing' || mode === 'error';
       var deviceNoteEl = byId('deviceNote');
       if (deviceNoteEl) deviceNoteEl.textContent = tt(deviceSynced ? 'opDeviceNoteSynced' : 'opDeviceNote');
@@ -1518,12 +1575,19 @@
       var retryBtn = byId('acctRetryBtn');
       var reSignInBtn = byId('acctReSignInBtn');
       var syncBtn = byId('acctSyncNowBtn');
+      var manageDevicesBtn = byId('acctManageDevicesBtn');
       var signOutBtn = byId('acctSignOutBtn');
       var deleteBtn = byId('acctDeleteBtn');
       var list = [];
       if (retryBtn && errorRow && !errorRow.hidden) list.push(retryBtn);
       if (reSignInBtn && expiredRow && !expiredRow.hidden) list.push(reSignInBtn);
       if (syncBtn && !syncBtn.disabled) list.push(syncBtn);
+      // 管理裝置(D16):排在立即同步之後、登出之前。隱藏(未登入/登入過期)
+      // 與停用(同步中)兩態都必須跟著退出導覽序列——無條件納入會讓方向鍵停
+      // 在看不見或按不動的項目上，畫面看起來就是「按了方向鍵焦點消失」。
+      if (manageDevicesBtn && !manageDevicesBtn.hidden && !manageDevicesBtn.disabled) {
+        list.push(manageDevicesBtn);
+      }
       if (signOutBtn) list.push(signOutBtn);
       if (deleteBtn) list.push(deleteBtn);
       return list;
@@ -1544,6 +1608,14 @@
       var items = acctMenuFocusableItems();
       if (items[0] && typeof items[0].focus === 'function') {
         try { items[0].focus(); } catch (e) {}
+      }
+      // 「管理裝置」右側的台數要有東西可顯示，第一次開選單先取一次清單
+      // (不 force，引擎有快取就直接回快取)。之後每次開對話框才再刷新一次，
+      // 開選單本身不再往返——選單開合遠比裝置變動頻繁。
+      devicesFetchedThisMenu = false;
+      if (!devicesEverFetched && canLoadDevices()) {
+        devicesFetchedThisMenu = true;
+        loadDevices(false);
       }
     }
     function closeAcctMenu() {
@@ -1666,6 +1738,501 @@
             toast(tt('opToastCloudDeleted'));
           },
         });
+      });
+    }
+
+    // ---- 裝置管理(0.7 裝置歸屬:帳號選單入口 + 裝置對話框)----
+    //
+    // UI 只透過三則訊息與 background 往來(計畫 §12):sync.devices.list /
+    // rename / remove，回應一律 { ok:true, ... } 或 { ok:false, code }。
+    // 清單純粹是顯示層與 join 用的快取，不參與 history/seen 的任何寫入。
+
+    // 名稱上限 80 code point(§12);handler 端會再驗一次，這裡只是先擋住
+    // 使用者打超過。
+    var DEVICE_NAME_MAX = 80;
+    var DEVICE_PLATFORM_ICONS = {
+      chrome_extension: '#i-chrome',
+      android: '#i-smartphone',
+      ios: '#i-smartphone',
+    };
+    function devicePlatformIcon(platform) {
+      return Object.prototype.hasOwnProperty.call(DEVICE_PLATFORM_ICONS, platform)
+        ? DEVICE_PLATFORM_ICONS[platform]
+        : '#i-monitor-smartphone';
+    }
+
+    function deviceById(deviceId) {
+      if (!deviceCache) return null;
+      for (var i = 0; i < deviceCache.devices.length; i++) {
+        if (deviceCache.devices[i].deviceId === deviceId) return deviceCache.devices[i];
+      }
+      return null;
+    }
+    function isCurrentDevice(device) {
+      return !!(deviceCache && device && device.deviceId === deviceCache.currentDeviceId);
+    }
+    // 本機這台從未改過名時 syncDevice.name 缺席，預設名由 background 隨清單
+    // 回應以頂層 defaultName 帶回(§12 增補)——UI 端算不出 OS，只能拿它。別台
+    // 的名字只有伺服器給得出來，給不出來就真的無從得知;把使用者正在用的這台
+    // 標成「未知裝置」則是這一頁最不該出現的字。
+    function deviceDisplayName(device) {
+      if (!device) return tt('opDeviceUnknown');
+      var name = nonEmptyString(device.name);
+      if (name !== null) return name;
+      if (isCurrentDevice(device)) {
+        var fallback = deviceCache ? nonEmptyString(deviceCache.defaultName) : null;
+        if (fallback !== null) return fallback;
+      }
+      return tt('opDeviceUnknown');
+    }
+    // 行內改名把名稱清空時要送什麼:本機這台退回清單回應頂層的 defaultName
+    // (§10 的 Chrome on <OS>，UI 端算不出 OS)，別台沒有預設名可算，退回原名
+    // ——空字串送到 handler 只會被回 bad_device_name(§12)。
+    function fallbackDeviceName(device) {
+      if (isCurrentDevice(device)) {
+        var shared = deviceCache ? nonEmptyString(deviceCache.defaultName) : null;
+        if (shared !== null) return shared;
+      }
+      return deviceDisplayName(device);
+    }
+
+    function canLoadDevices() {
+      return hasCloudSession() && !!runtime && typeof runtime.sendMessage === 'function';
+    }
+    // 三則裝置訊息共用的送出通道:回應原樣送回(含 { ok:false })，runtime
+    // 缺席/拋例外/沒人接聽一律退成 null，由呼叫端當失敗處理。
+    function sendDeviceMessage(message) {
+      if (!runtime || typeof runtime.sendMessage !== 'function') return Promise.resolve(null);
+      var result;
+      try {
+        result = runtime.sendMessage(message);
+      } catch (e) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(result).then(
+        function (res) {
+          return res;
+        },
+        function () {
+          return null;
+        }
+      );
+    }
+
+    function applyDeviceList(res) {
+      if (res && res.ok === true && Array.isArray(res.devices)) {
+        deviceCache = {
+          devices: res.devices.slice(),
+          currentDeviceId: nonEmptyString(res.currentDeviceId),
+          defaultName: nonEmptyString(res.defaultName),
+        };
+        devicesLoadError = false;
+      } else {
+        // 失敗不清既有快取(§12):這次拉不到不代表那些裝置沒了，清掉只會讓
+        // 開著的對話框整片消失。
+        devicesLoadError = true;
+      }
+      renderDeviceCount();
+      renderDevices();
+    }
+
+    function loadDevices(force) {
+      if (!canLoadDevices()) return Promise.resolve();
+      devicesEverFetched = true;
+      var message = { type: 'sync.devices.list' };
+      if (force) message.force = true;
+      return sendDeviceMessage(message).then(applyDeviceList);
+    }
+
+    // 帳號選單「管理裝置」右側的台數:0 台時整個 span 收掉，不顯示「0 台」。
+    function renderDeviceCount() {
+      var el = byId('acctDeviceCount');
+      if (!el) return;
+      var n = deviceCache ? deviceCache.devices.length : 0;
+      el.hidden = n === 0;
+      el.textContent = n === 0 ? '' : tf('opDeviceCount', { n: n });
+    }
+
+    // 本機這台置頂，其餘 lastSeenAt 由新到舊。
+    function sortedDevices() {
+      if (!deviceCache) return [];
+      return deviceCache.devices.slice().sort(function (a, b) {
+        var aCurrent = isCurrentDevice(a);
+        var bCurrent = isCurrentDevice(b);
+        if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
+        return (finiteOrNull(b.lastSeenAt) || 0) - (finiteOrNull(a.lastSeenAt) || 0);
+      });
+    }
+
+    function buildDeviceRow(device) {
+      var current = isCurrentDevice(device);
+      var name = deviceDisplayName(device);
+      var refs = {};
+
+      var row = document.createElement('div');
+      row.className = 'device-row';
+      row.dataset.id = device.deviceId;
+
+      var iconWrap = document.createElement('span');
+      iconWrap.className = 'device-platform-icon';
+      iconWrap.appendChild(svgUse(devicePlatformIcon(device.platform), 'icon'));
+      row.appendChild(iconWrap);
+
+      var textWrap = document.createElement('div');
+      textWrap.className = 'device-text';
+      var nameRow = document.createElement('div');
+      nameRow.className = 'device-name-row';
+      refs.nameRow = nameRow;
+
+      // 名稱本身就是改名的入口(點名稱＝改名)，外觀維持純文字。
+      var nameBtn = document.createElement('button');
+      nameBtn.type = 'button';
+      nameBtn.className = 'device-name';
+      nameBtn.dataset.act = 'rename';
+      nameBtn.textContent = name;
+      nameBtn.addEventListener('click', function () {
+        startDeviceRename(device.deviceId);
+      });
+      nameRow.appendChild(nameBtn);
+      refs.nameBtn = nameBtn;
+
+      if (current) {
+        var pill = document.createElement('span');
+        pill.className = 'device-pill';
+        pill.textContent = tt('opDeviceThisDevice');
+        nameRow.appendChild(pill);
+        refs.pill = pill;
+      }
+      textWrap.appendChild(nameRow);
+
+      // 第二行:「新增於 <日期> · 最後同步 <相對時間>」(§10)。相對時間開框
+      // 時算一次就好，不進 60 秒 ticker。
+      var sub = document.createElement('div');
+      sub.className = 'device-sub';
+      var addedEl = document.createElement('span');
+      addedEl.textContent = tf('opDeviceAddedOn', { d: formatDateOnly(device.createdAt) });
+      sub.appendChild(addedEl);
+      var sepEl = document.createElement('span');
+      sepEl.textContent = ' · ';
+      sub.appendChild(sepEl);
+      var lastEl = document.createElement('span');
+      lastEl.textContent = tf('opDeviceLastSync', { t: relTime(device.lastSeenAt) });
+      sub.appendChild(lastEl);
+      textWrap.appendChild(sub);
+      row.appendChild(textWrap);
+
+      // 右側兩顆 ghost 圖示鈕，浮現規則比照紀錄卡的 .entry-quick。
+      var actions = document.createElement('div');
+      actions.className = 'device-actions';
+      var renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'device-quick-btn';
+      renameBtn.dataset.act = 'rename';
+      renameBtn.title = tt('opDeviceRename');
+      renameBtn.setAttribute('aria-label', tt('opDeviceRename') + ' ' + name);
+      renameBtn.appendChild(svgUse('#i-pencil', 'icon'));
+      renameBtn.addEventListener('click', function () {
+        startDeviceRename(device.deviceId);
+      });
+      actions.appendChild(renameBtn);
+      refs.renameBtn = renameBtn;
+
+      // 正在使用的這台不可移除:按鈕 disabled，說明同時掛在外層 span 的
+      // title(停用的按鈕不觸發原生提示)。
+      var trashTitle = current ? tt('opDeviceRemoveDisabled') : tt('opDeviceRemove');
+      var slot = document.createElement('span');
+      slot.className = 'device-action-slot';
+      slot.title = trashTitle;
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'device-quick-btn danger';
+      removeBtn.dataset.act = 'remove';
+      removeBtn.title = trashTitle;
+      removeBtn.setAttribute('aria-label', trashTitle);
+      removeBtn.disabled = current;
+      removeBtn.appendChild(svgUse('#i-trash', 'icon'));
+      removeBtn.addEventListener('click', function () {
+        requestDeviceRemove(device.deviceId);
+      });
+      slot.appendChild(removeBtn);
+      actions.appendChild(slot);
+      row.appendChild(actions);
+
+      deviceRowRefs[device.deviceId] = refs;
+      return row;
+    }
+
+    // 空狀態的圖示/文案/按鈕由 JS 重建:#deviceEmptySyncBtn 是靜態節點，
+    // 清空容器後再掛回去，事件繫結因此不會掉。
+    function renderDeviceEmpty() {
+      var emptyEl = byId('deviceEmpty');
+      if (!emptyEl) return;
+      var syncBtn = byId('deviceEmptySyncBtn');
+      emptyEl.textContent = '';
+      emptyEl.appendChild(svgUse('#i-monitor-smartphone', 'icon'));
+      var textEl = document.createElement('span');
+      textEl.textContent = tt('opDeviceEmpty');
+      emptyEl.appendChild(textEl);
+      if (syncBtn) emptyEl.appendChild(syncBtn);
+    }
+
+    function renderDevices() {
+      var errorEl = byId('devicesError');
+      if (errorEl) {
+        errorEl.hidden = !devicesLoadError;
+        errorEl.textContent = devicesLoadError ? tt('opDevicesLoadError') : '';
+      }
+
+      var rows = sortedDevices();
+      var hintEl = byId('devicesHint');
+      if (hintEl) hintEl.textContent = rows.length === 0 ? '' : tf('opDevicesSubtitle', { n: rows.length });
+
+      var listEl = byId('deviceList');
+      if (listEl) {
+        deviceRowRefs = {};
+        listEl.textContent = '';
+        rows.forEach(function (device) {
+          listEl.appendChild(buildDeviceRow(device));
+        });
+        listEl.hidden = rows.length === 0;
+      }
+
+      var emptyEl = byId('deviceEmpty');
+      if (emptyEl) {
+        // 取清單失敗時不畫空狀態:上面已經有一句錯誤，再說「找不到裝置」
+        // 會被讀成裝置真的沒了。
+        emptyEl.hidden = rows.length !== 0 || devicesLoadError;
+        if (!emptyEl.hidden) renderDeviceEmpty();
+      }
+    }
+
+    function openDevicesDialog() {
+      closeAcctMenu();
+      var overlay = byId('devicesOverlay');
+      if (!overlay) return;
+      renderDevices();
+      overlay.hidden = false;
+      // closeAcctMenu 已把焦點還給 #acctTrigger，這裡記下的就是關閉後要回
+      // 去的落點。
+      rememberFocus('devices');
+      focusInto('devicesOverlay', 'devicesClose');
+      // 這一輪開選單時已經取過清單就不重複往返(見 devicesFetchedThisMenu)。
+      if (!devicesFetchedThisMenu) loadDevices(false);
+      devicesFetchedThisMenu = false;
+    }
+
+    function closeDevicesDialog() {
+      var overlay = byId('devicesOverlay');
+      if (overlay) overlay.hidden = true;
+      restoreFocus('devices');
+    }
+
+    // 行內改名:名稱位置換成 <input>(maxlength 80、預填目前名稱)，Enter/失焦
+    // 送出，Esc 還原不送。收尾只改這一列，不整份重畫——重畫會在
+    // mousedown→blur 之後把節點換掉，接著那一下 click 就落空。
+    function startDeviceRename(deviceId) {
+      var refs = deviceRowRefs[deviceId];
+      var device = deviceById(deviceId);
+      if (!refs || !device || refs.input) return;
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'device-name-input';
+      input.maxLength = DEVICE_NAME_MAX;
+      input.value = deviceDisplayName(device);
+      input.setAttribute('aria-label', tt('opDeviceNameAria'));
+      refs.input = input;
+      refs.nameBtn.hidden = true;
+      if (refs.pill) refs.pill.hidden = true;
+      refs.nameRow.insertBefore(input, refs.nameBtn);
+
+      var done = false;
+      function finish(save, refocus) {
+        if (done) return;
+        done = true;
+        var raw = typeof input.value === 'string' ? input.value : '';
+        if (input.parentNode) input.parentNode.removeChild(input);
+        refs.input = null;
+        refs.nameBtn.hidden = false;
+        if (refs.pill) refs.pill.hidden = false;
+        if (refocus && typeof refs.nameBtn.focus === 'function') {
+          try { refs.nameBtn.focus(); } catch (e) {}
+        }
+        if (!save) return;
+        var next = raw.trim();
+        submitDeviceRename(device, next === '' ? fallbackDeviceName(device) : next);
+      }
+
+      input.addEventListener('keydown', function (ev) {
+        if (!ev) return;
+        if (ev.key === 'Enter') {
+          if (ev.preventDefault) ev.preventDefault();
+          finish(true, true);
+        } else if (ev.key === 'Escape') {
+          // 擋掉冒泡:這顆 Esc 是「取消編輯」，不該順手把裝置對話框也關掉。
+          if (ev.preventDefault) ev.preventDefault();
+          if (ev.stopPropagation) ev.stopPropagation();
+          finish(false, true);
+        }
+      });
+      input.addEventListener('blur', function () {
+        finish(true, false);
+      });
+
+      if (typeof input.focus === 'function') {
+        try { input.focus(); } catch (e) {}
+      }
+      if (typeof input.select === 'function') {
+        try { input.select(); } catch (e) {}
+      }
+    }
+
+    // 樂觀更新 → 送出 → 失敗還原並 toast(§5)。只動這一列的節點與快取，
+    // 不重畫整份清單。
+    function submitDeviceRename(device, name) {
+      var previous = deviceDisplayName(device);
+      var refs = deviceRowRefs[device.deviceId];
+      setDeviceRowName(device, refs, name);
+      sendDeviceMessage({ type: 'sync.devices.rename', deviceId: device.deviceId, name: name }).then(
+        function (res) {
+          if (res && res.ok === true) {
+            var confirmed = res.device ? nonEmptyString(res.device.name) : null;
+            if (confirmed !== null) setDeviceRowName(device, refs, confirmed);
+            return;
+          }
+          setDeviceRowName(device, refs, previous);
+          toast(tt('opDeviceRenameFailed'));
+        }
+      );
+    }
+    function setDeviceRowName(device, refs, name) {
+      device.name = name;
+      if (!refs) return;
+      if (refs.nameBtn) refs.nameBtn.textContent = name;
+      if (refs.renameBtn) refs.renameBtn.setAttribute('aria-label', tt('opDeviceRename') + ' ' + name);
+    }
+
+    // 移除:先跳共用確認框，講明「只是從清單移除，不等於登出」。
+    function requestDeviceRemove(deviceId) {
+      var device = deviceById(deviceId);
+      if (!device || isCurrentDevice(device)) return;
+      openConfirm({
+        title: tf('opDeviceRemoveTitle', { name: deviceDisplayName(device) }),
+        okKey: 'opDeviceRemove',
+        tone: 'danger',
+        icon: '#i-trash',
+        desc: tt('opDeviceRemoveDesc'),
+        action: function () {
+          submitDeviceRemove(device);
+        },
+      });
+    }
+    function submitDeviceRemove(device) {
+      sendDeviceMessage({ type: 'sync.devices.remove', deviceId: device.deviceId }).then(function (res) {
+        if (!(res && res.ok === true)) {
+          // 失敗不樂觀刪:那一列留著，只用 toast 說明。
+          toast(tt('opDeviceRemoveFailed'));
+          return;
+        }
+        if (deviceCache) {
+          deviceCache.devices = deviceCache.devices.filter(function (d) {
+            return d.deviceId !== device.deviceId;
+          });
+        }
+        renderDeviceCount();
+        renderDevices();
+      });
+    }
+
+    // ---- 紀錄側的裝置顯示(詳細視窗 kv 列 + 時間軸列尾)----
+    //
+    // 三守則(計畫 §4):清單只用於 join;join 不到顯示「未知裝置」;deviceId
+    // 整個缺席(0.6.x 寫進來的早期事件)就不畫，不假裝有歸屬。卡面一律不加
+    // 任何裝置標示(D27)。
+
+    // 單一 seen 事件的來源裝置名;沒帶 deviceId 回 null(不畫)。
+    function seenDeviceName(record) {
+      var deviceId = record ? nonEmptyString(record.deviceId) : null;
+      if (deviceId === null) return null;
+      var device = deviceById(deviceId);
+      return device ? deviceDisplayName(device) : tt('opDeviceUnknown');
+    }
+
+    // 詳細視窗那一列取「最近一筆帶 deviceId 的 seen 事件」(§12 增補):條目
+    // 本身沒有裝置欄位，最後一次在哪台機器上碰到它才是使用者想知道的。
+    function latestSeenDeviceId(entry) {
+      var seen = entry && Array.isArray(entry.seen) ? entry.seen : [];
+      var bestAt = null;
+      var bestId = null;
+      seen.forEach(function (record) {
+        if (!record || typeof record.at !== 'number' || !isFinite(record.at)) return;
+        var deviceId = nonEmptyString(record.deviceId);
+        if (deviceId === null) return;
+        if (bestAt === null || record.at > bestAt) {
+          bestAt = record.at;
+          bestId = deviceId;
+        }
+      });
+      return bestId;
+    }
+
+    // 平台圖示會隨裝置變動，整列內容每次重建;#detailDeviceName 是靜態節點，
+    // 清空容器後再掛回去(其餘 kv 列的取值方式因此不受影響)。
+    function renderDetailDeviceRow(entry) {
+      var row = byId('detailDeviceRow');
+      var nameEl = byId('detailDeviceName');
+      if (!row || !nameEl) return;
+      var deviceId = latestSeenDeviceId(entry);
+      if (deviceId === null) {
+        // 不畫的路徑不得清空容器:#detailDeviceName 是掛在這一列裡的靜態
+        // 節點，清掉就永久移出文件樹，之後 byId 一律回 null，下一筆有歸屬
+        // 的紀錄會連整列一起不見(只要看過一筆 0.6.x 的舊紀錄就會踩到)。
+        nameEl.textContent = '';
+        row.hidden = true;
+        return;
+      }
+      var device = deviceById(deviceId);
+      nameEl.textContent = device ? deviceDisplayName(device) : tt('opDeviceUnknown');
+      // 平台圖示隨裝置變動，整列重建;#detailDeviceName 上面已經取到手，
+      // 清空後再掛回去。
+      row.textContent = '';
+
+      var keyEl = document.createElement('span');
+      keyEl.className = 'detail-key';
+      keyEl.textContent = tt('opDevicesTitle');
+      row.appendChild(keyEl);
+      var valueEl = document.createElement('div');
+      valueEl.className = 'detail-value detail-device-value';
+      valueEl.appendChild(svgUse(devicePlatformIcon(device ? device.platform : null), 'icon'));
+      valueEl.appendChild(nameEl);
+      row.appendChild(valueEl);
+      row.hidden = false;
+    }
+
+    function bindDevices() {
+      on('acctManageDevicesBtn', 'click', function () {
+        var btn = byId('acctManageDevicesBtn');
+        if (btn && btn.disabled) return;
+        openDevicesDialog();
+      });
+      on('devicesClose', 'click', closeDevicesDialog);
+      on('devicesOverlay', 'click', function (ev) {
+        var overlay = byId('devicesOverlay');
+        if (overlay && ev.target === overlay) closeDevicesDialog();
+      });
+      // 空狀態的「立即同步」:同步一次讓這台註冊上去，再強制重取清單。
+      on('deviceEmptySyncBtn', 'click', function () {
+        if (!canLoadDevices()) return;
+        var hadNone = !deviceCache || deviceCache.devices.length === 0;
+        sendDeviceMessage({ type: 'sync.now' })
+          .then(function () {
+            return loadDevices(true);
+          })
+          .then(function () {
+            if (hadNone && deviceCache && deviceCache.devices.length > 0) {
+              toast(tt('opDeviceRegisteredToast'));
+            }
+          });
       });
     }
 
@@ -1967,6 +2534,8 @@
         });
       }
 
+      renderDetailDeviceRow(e);
+
       var recordedTimeEl = byId('detailRecordedTime');
       if (recordedTimeEl) recordedTimeEl.textContent = formatAbsoluteTime(e.at);
 
@@ -2092,6 +2661,15 @@
         kindSpan.textContent = '　· ' + tt(KINDS[record.kind].key);
         textEl.appendChild(kindSpan);
       }
+      // 該筆事件的來源裝置(§12 增補:時間軸逐事件各自顯示)。缺 deviceId 的
+      // 早期事件不畫這個 span，不寫「未知裝置」(D27)。
+      var deviceName = seenDeviceName(record);
+      if (deviceName !== null) {
+        var deviceSpan = document.createElement('span');
+        deviceSpan.className = 'timeline-device';
+        deviceSpan.textContent = deviceName;
+        textEl.appendChild(deviceSpan);
+      }
       row.appendChild(textEl);
       return row;
     }
@@ -2191,6 +2769,11 @@
           var timelineOverlay = byId('timelineOverlay');
           if (timelineOverlay && !timelineOverlay.hidden) {
             dismissTimelineOverlay();
+            return;
+          }
+          var devicesOverlay = byId('devicesOverlay');
+          if (devicesOverlay && !devicesOverlay.hidden) {
+            closeDevicesDialog();
             return;
           }
           var overlay = byId('detailOverlay');
@@ -2494,6 +3077,7 @@
         bindDetailDialog();
         bindChartTooltip();
         bindAccount();
+        bindDevices();
         renderAll();
 
         // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_CARD_STATE(未登入)完成首次

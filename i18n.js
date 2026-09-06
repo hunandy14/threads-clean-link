@@ -187,6 +187,36 @@
       // 錯誤 toast(沿用 opAccountErrorPrefix + lastError，不另造重複鍵)。
       opToastCloudDeleted: '已刪除雲端資料',
 
+      // ---- 裝置管理(0.7 裝置歸屬):帳號選單入口與裝置對話框 ----
+      // 選單項右側的台數只印數字＋量詞，0 台時整個 span 收掉不顯示。
+      opAccountManageDevices: '管理裝置',
+      opDeviceCount: '{n} 台',
+      opDevicesTitle: '裝置',
+      opDevicesSubtitle: '{n} 台裝置正在同步',
+      // 裝置列第二行同時給「新增於」與「最後同步」，讓同名的兩台機器
+      // 靠時間自行辨認(計畫 §10:不加序號、不做一次性提示)。
+      opDeviceAddedOn: '新增於 {d}',
+      opDeviceLastSync: '最後同步 {t}',
+      opDeviceThisDevice: '這台裝置',
+      opDeviceRename: '重新命名',
+      // 行內改名的 input 沒有可見標籤，aria-label 補上。
+      opDeviceNameAria: '裝置名稱',
+      opDeviceRemove: '移除',
+      // 正在使用的這台不可移除:垃圾桶停用，說明掛在外層 span 的 title
+      // (停用的按鈕不觸發原生提示)。
+      opDeviceRemoveDisabled: '無法移除正在使用的裝置',
+      opDeviceRemoveTitle: '移除「{name}」？',
+      // 講清楚移除只是從清單拿掉，不等於把那台裝置登出。
+      opDeviceRemoveDesc: '這只會把它從裝置清單移除，不會將它登出。如果那台裝置仍然登入，下次同步時會再次出現。',
+      opDeviceEmpty: '找不到裝置，同步一次即可註冊這台裝置',
+      opDeviceRegisteredToast: '已將這台裝置加入清單',
+      // 取清單失敗時的錯誤列:既有的列保留不清掉，只在上方加這一句。
+      opDevicesLoadError: '無法取得裝置清單，請稍後再試',
+      opDeviceRenameFailed: '重新命名失敗，請稍後再試',
+      opDeviceRemoveFailed: '移除失敗，請稍後再試',
+      // 紀錄的 seen 事件帶了 deviceId、但那台裝置已不在清單裡(已移除)。
+      opDeviceUnknown: '未知裝置',
+
       // ---- popup:雲端同步狀態列(唯讀，點擊導向 options 頁的雲端同步卡片) ----
       ppSyncInactive: '雲端同步：未啟用',
       ppSyncActive: '已同步 · {t}',
@@ -335,6 +365,30 @@
       // stateChanged carries a lastError, replace it with an error toast
       // (reuses opAccountErrorPrefix + lastError — no separate key).
       opToastCloudDeleted: 'Cloud data deleted',
+
+      // ---- Device management (0.7 device attribution) ----
+      // English has no measure word, so the menu count prints the bare
+      // number; the span is hidden entirely at zero.
+      opAccountManageDevices: 'Manage devices',
+      opDeviceCount: '{n}',
+      opDevicesTitle: 'Devices',
+      // 台數是 1 的機率很高(第一次登入只有這台)，用不吃單複數的寫法。
+      opDevicesSubtitle: 'Syncing {n} device(s)',
+      opDeviceAddedOn: 'Added {d}',
+      opDeviceLastSync: 'Last synced {t}',
+      opDeviceThisDevice: 'This device',
+      opDeviceRename: 'Rename',
+      opDeviceNameAria: 'Device name',
+      opDeviceRemove: 'Remove',
+      opDeviceRemoveDisabled: 'You cannot remove the device you are using',
+      opDeviceRemoveTitle: 'Remove "{name}"?',
+      opDeviceRemoveDesc: 'This only removes it from the device list; it will not be signed out. If that device is still signed in, it will show up again on its next sync.',
+      opDeviceEmpty: 'No devices found. Sync once to register this device.',
+      opDeviceRegisteredToast: 'This device has been added to the list',
+      opDevicesLoadError: 'Could not load your devices. Please try again later.',
+      opDeviceRenameFailed: 'Rename failed. Please try again later.',
+      opDeviceRemoveFailed: 'Remove failed. Please try again later.',
+      opDeviceUnknown: 'Unknown device',
 
       ppSyncInactive: 'Cloud sync: off',
       ppSyncActive: 'Synced · {t}',
