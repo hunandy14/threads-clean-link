@@ -3641,6 +3641,83 @@ test('T11 removeDevice：失敗時原樣透出 code，快取不動', async () =>
   assert.deepEqual(env.devicesCache(), seededCache, '沒刪成功就不得從畫面上消失');
 });
 
+// ---- 401：devices 三支必須走既有的 session 過期處理 ----
+//
+// 【為什麼不能只回 code】401 代表整枚 token 死了，不是「這一支端點失敗」。
+// 引擎既有的每一條路徑（runSync／verifySession／deleteCloud，見 sync.js:1170／
+// 1220／1301）撞到 401 都轉進 handleSessionExpired()：清 token、記
+// lastError、停掉兩支 alarm、廣播 signed_out。devices 三支若只把碼往上丟，
+// 使用者會停在「已登入」的畫面，同步在背景一輪一輪地失敗，直到下一次剛好有
+// 別條路徑也撞上 401 才被發現——而在裝置對話框裡，那可能是好幾天以後。
+
+/** devices 三支撞 401 之後，狀態必須與既有 401 測試（:663／:861）一致。 */
+async function assertSessionExpiredAftermath(env, engine, res) {
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'session_expired', '401 的碼沿用引擎共用碼');
+  assert.equal((env.storage.syncAuth() || {}).token, null, 'token 必須清掉，留著只會每一輪再撞一次 401');
+  assert.equal(env.storage.syncState().lastError, 'session_expired');
+  const state = await engine.getState();
+  assert.equal(state.status, 'signed_out', '畫面要翻成登入過期，不能停在已登入');
+  assert.equal(
+    (env.lastState() || {}).status,
+    'signed_out',
+    '要廣播出去，設定頁與 popup 才會同步翻頁'
+  );
+}
+
+test('T11 listDevices 撞 401：回 session_expired 並走既有的過期處理', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv();
+  const engine = TCLSync.create(env.deps);
+
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const res = await engine.listDevices({ force: true });
+  await settle(20);
+
+  assert.equal(env.engineRequests('GET', '/api/v1/devices').length, 1, '前提：真的打出去了');
+  await assertSessionExpiredAftermath(env, engine, res);
+});
+
+test('T11 renameDevice 撞 401：回 session_expired 並走既有的過期處理', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [deviceRow(DEVICE_OTHER_ID, '舊名字')],
+      },
+    },
+  });
+  const engine = TCLSync.create(env.deps);
+
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const res = await engine.renameDevice(DEVICE_OTHER_ID, '書房桌機');
+  await settle(20);
+
+  assert.equal(env.engineRequestsUnder('PUT', '/api/v1/devices/').length, 1, '前提：真的打出去了');
+  await assertSessionExpiredAftermath(env, engine, res);
+});
+
+test('T11 removeDevice 撞 401：回 session_expired 並走既有的過期處理', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [deviceRow(DEVICE_THIRD_ID, '舊筆電')],
+      },
+    },
+  });
+  const engine = TCLSync.create(env.deps);
+
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const res = await engine.removeDevice(DEVICE_THIRD_ID);
+  await settle(20);
+
+  assert.equal(env.engineRequestsUnder('DELETE', '/api/v1/devices/').length, 1, '前提：真的打出去了');
+  await assertSessionExpiredAftermath(env, engine, res);
+});
+
 // ---- §4 三守則：devices 回應不得動到本機資料 ----
 
 test('T11/D25 清單變短不刪本地：history 與 syncDevice 零寫入', async () => {
@@ -3736,6 +3813,16 @@ test('T11/D25 本機這台不在清單時 currentDeviceId 仍是本機 id', asyn
 });
 
 // ---- §12 增補四：死鎖守則 ----
+//
+// 【鑑別力說明（審查者提問）】兩支的強度不對等，刻意保留：
+//   syncNow 那支有真正的負向對照——引擎本來就會為了寫 history 進 writeChain，
+//   把 getLocalDevice 挪進那個回呼內就是巢狀入鏈，序列鏈上等自己，測試立刻卡
+//   死轉紅。這是 §12 增補四真正在防的那個 bug。
+//   listDevices 那支沒有負向對照：它整條路徑不碰 history、從不進 writeChain，
+//   因此「包進 writeChain」這個突變在這條路徑上根本構造不出來，測試怎麼寫都
+//   會綠。保留它是為了釘住「往後即使 listDevices 開始寫 history 也不得在鏈內
+//   取身分」，並加上一條 getLocalDevice 確實被呼叫過的斷言，避免它退化成一支
+//   什麼都沒驗到的白綠燈。
 
 test('T11 死鎖守則：getLocalDevice 走 writeChain 時整輪同步仍要跑完', async () => {
   const TCLSync = loadSync();
@@ -3773,6 +3860,9 @@ test('T11 死鎖守則：getLocalDevice 走 writeChain 時 listDevices 仍要跑
   await settle(15);
   assert.equal(res.ok, true);
   assert.equal(res.currentDeviceId, DEVICE_LOCAL_ID);
+  // 這一條確保測試不是靠「根本沒問身分」而白白綠著：listDevices 若哪天不再
+  // 呼叫 getLocalDevice，currentDeviceId 就只能從清單反查，D26 當場破功。
+  assert.ok(env.getLocalDeviceCalls.length >= 1, 'listDevices 必須真的取過本機身分');
 });
 
 // ---- 登出／刪雲端與快取 ----
