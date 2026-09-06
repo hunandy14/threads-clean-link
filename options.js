@@ -1291,6 +1291,10 @@
         devicesLoadError = false;
         devicesEverFetched = false;
         renderDeviceCount();
+        // 開著的裝置對話框要一起收掉:沒有帳號就拉不到清單，留在畫面上只會
+        // 是一框死內容，而選單裡的入口這時已經收起，使用者也沒有正規途徑
+        // 再開一次。焦點跟著回帳號觸發鈕。
+        closeDevicesDialog();
         var deviceNoteEl0 = byId('deviceNote');
         if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
 
@@ -1437,6 +1441,13 @@
       if (manageBtn) {
         manageBtn.hidden = mode === 'expired';
         manageBtn.disabled = mode === 'syncing';
+      }
+      if (mode === 'expired') {
+        // 同上:沒有可用的工作階段就拉不到清單，開著的對話框收起來。快取
+        // 留著讓紀錄詳細的裝置名還 join 得到(同一個帳號，只是 token 過期)，
+        // 但重新登入後要再打一次，免得台數停在過期前那一刻。
+        devicesEverFetched = false;
+        closeDevicesDialog();
       }
       renderDeviceCount();
 
@@ -1760,12 +1771,19 @@
     function isCurrentDevice(device) {
       return !!(deviceCache && device && device.deviceId === deviceCache.currentDeviceId);
     }
+    // 本機這台從未改過名時 syncDevice.name 缺席，預設名由 background 隨清單
+    // 回應以頂層 defaultName 帶回(§12 增補)——UI 端算不出 OS，只能拿它。別台
+    // 的名字只有伺服器給得出來，給不出來就真的無從得知;把使用者正在用的這台
+    // 標成「未知裝置」則是這一頁最不該出現的字。
     function deviceDisplayName(device) {
       if (!device) return tt('opDeviceUnknown');
       var name = nonEmptyString(device.name);
       if (name !== null) return name;
-      var fallback = nonEmptyString(device.defaultName);
-      return fallback !== null ? fallback : tt('opDeviceUnknown');
+      if (isCurrentDevice(device)) {
+        var fallback = deviceCache ? nonEmptyString(deviceCache.defaultName) : null;
+        if (fallback !== null) return fallback;
+      }
+      return tt('opDeviceUnknown');
     }
     // 行內改名把名稱清空時要送什麼:本機這台退回 background 隨清單帶回的
     // 預設名(§10 的 Chrome on <OS>)，別台算不出預設名，退回原名——空字串
@@ -2167,14 +2185,19 @@
       var nameEl = byId('detailDeviceName');
       if (!row || !nameEl) return;
       var deviceId = latestSeenDeviceId(entry);
-      row.textContent = '';
       if (deviceId === null) {
+        // 不畫的路徑不得清空容器:#detailDeviceName 是掛在這一列裡的靜態
+        // 節點，清掉就永久移出文件樹，之後 byId 一律回 null，下一筆有歸屬
+        // 的紀錄會連整列一起不見(只要看過一筆 0.6.x 的舊紀錄就會踩到)。
         nameEl.textContent = '';
         row.hidden = true;
         return;
       }
       var device = deviceById(deviceId);
       nameEl.textContent = device ? deviceDisplayName(device) : tt('opDeviceUnknown');
+      // 平台圖示隨裝置變動，整列重建;#detailDeviceName 上面已經取到手，
+      // 清空後再掛回去。
+      row.textContent = '';
 
       var keyEl = document.createElement('span');
       keyEl.className = 'detail-key';

@@ -372,7 +372,8 @@
       opAccountManageDevices: 'Manage devices',
       opDeviceCount: '{n}',
       opDevicesTitle: 'Devices',
-      opDevicesSubtitle: '{n} devices syncing',
+      // 台數是 1 的機率很高(第一次登入只有這台)，用不吃單複數的寫法。
+      opDevicesSubtitle: 'Syncing {n} device(s)',
       opDeviceAddedOn: 'Added {d}',
       opDeviceLastSync: 'Last synced {t}',
       opDeviceThisDevice: 'This device',
@@ -385,8 +386,8 @@
       opDeviceEmpty: 'No devices found. Sync once to register this device.',
       opDeviceRegisteredToast: 'This device has been added to the list',
       opDevicesLoadError: 'Could not load your devices. Please try again later.',
-      opDeviceRenameFailed: 'Rename failed, please try again later',
-      opDeviceRemoveFailed: 'Remove failed, please try again later',
+      opDeviceRenameFailed: 'Rename failed. Please try again later.',
+      opDeviceRemoveFailed: 'Remove failed. Please try again later.',
       opDeviceUnknown: 'Unknown device',
 
       ppSyncInactive: 'Cloud sync: off',
