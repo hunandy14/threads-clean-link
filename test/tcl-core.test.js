@@ -391,6 +391,9 @@ test('capHistory:超限時墓碑優先淘汰(筆數與位元組兩路徑)', () =
 //     **不得補 null**(輸出 null 會被伺服器當成「明確清空」)。
 //   - deviceId 需 UUID 形狀:大小寫不敏感、不驗版本位、全零合法。髒值只丟
 //     該欄位，事件本身照樣保留(歸屬不明的事件仍是使用者看得到的紀錄)。
+//   - 形狀通過後**一律正規化為小寫**(§9:伺服器存小寫)。自產與伺服器回傳
+//     本來就是小寫，只有匯入檔可能帶大寫;本機不對齊的話，顯示時拿 deviceId
+//     去 join 裝置清單會落空，同一台裝置變成「未知裝置」。
 //   - 衝突規則不新增:unionSeen 維持 a 優先，fromSyncItem 把雲端那份排 a，
 //     等於伺服器歸屬勝出。SEEN_MAX 裁切行為不變。
 //   - defaultDeviceName 是純函式對照表，拿不到 OS 退成 'Chrome'，
@@ -400,12 +403,13 @@ test('capHistory:超限時墓碑優先淘汰(筆數與位元組兩路徑)', () =
 const DEV_A = '11111111-2222-4333-8444-555555555555';
 const DEV_B = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const DEV_UPPER = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE';
+const DEV_UPPER_LOWER = DEV_UPPER.toLowerCase(); // 正規化後的期望值
 const DEV_V1 = '11111111-2222-1333-c444-555555555555'; // 版本位與 variant 皆非 v4
 const DEV_ZERO = '00000000-0000-0000-0000-000000000000';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 test.describe('裝置歸屬:seen[].deviceId 透傳', () => {
-  test('sanitizeSeenList:合法 UUID 形狀保留(含大寫／非 v4 版本位／全零)', () => {
+  test('sanitizeSeenList:合法 UUID 形狀保留並正規化為小寫(不驗版本位、全零合法)', () => {
     const out = C.sanitizeSeenList([
       { at: 1, kind: 'share', deviceId: DEV_A },
       { at: 2, deviceId: DEV_UPPER }, // 缺 kind 的種子紀錄也帶得動 deviceId
@@ -414,10 +418,12 @@ test.describe('裝置歸屬:seen[].deviceId 透傳', () => {
     ]);
     assert.deepEqual(out, [
       { at: 1, kind: 'share', deviceId: DEV_A },
-      { at: 2, deviceId: DEV_UPPER },
+      // 大寫進、小寫出:形狀驗證大小寫不敏感，存下來的一律小寫。
+      { at: 2, deviceId: DEV_UPPER_LOWER },
       { at: 3, kind: 'menu', deviceId: DEV_V1 },
       { at: 4, kind: 'icon', deviceId: DEV_ZERO },
     ]);
+    for (const record of out) assert.match(record.deviceId, UUID_RE);
   });
 
   test('sanitizeSeenList:deviceId 髒值只丟該欄位，事件本身保留', () => {
@@ -519,7 +525,9 @@ test.describe('裝置歸屬:toSyncItem／fromSyncItem 的 deviceId 往返', () =
     assert.equal(Object.prototype.hasOwnProperty.call(item.seen[1], 'deviceId'), false);
   });
 
-  test('fromSyncItem:雲端 seen[].deviceId 映射回本機 seen[].deviceId', () => {
+  // 伺服器存的本來就是小寫;這裡餵一筆大寫是防匯入檔／舊資料經雲端往返後
+  // 漏掉正規化——本機一律以小寫落地才 join 得到裝置清單。
+  test('fromSyncItem:雲端 seen[].deviceId 映射回本機並正規化為小寫', () => {
     const entry = C.fromSyncItem(
       {
         id: 'entry-1',
@@ -535,7 +543,7 @@ test.describe('裝置歸屬:toSyncItem／fromSyncItem 的 deviceId 往返', () =
     );
     assert.deepEqual(entry.seen, [
       { at: 1000, kind: 'share', deviceId: DEV_A },
-      { at: 2000, kind: 'share', deviceId: DEV_UPPER },
+      { at: 2000, kind: 'share', deviceId: DEV_UPPER_LOWER },
     ]);
   });
 
