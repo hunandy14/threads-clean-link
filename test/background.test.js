@@ -4083,6 +4083,31 @@ test('B5 getLocalDevice:尚未初始化時自行完成 ensureDevice，回新生�
   assert.equal(device.name, 'Chrome on Linux');
   assert.equal(bg.device().deviceId, device.deviceId, '產生的身分要落地到 storage.local.syncDevice');
 });
+test('B5 getLocalDevice:本機改名後同一實例立即回新名（不必等 SW 重載）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, platformOs: 'win' });
+  bg.sync.results.renameDevice = {
+    ok: true,
+    device: { deviceId: LOCAL_DEVICE_ID, name: '工作機 A', platform: 'chrome_extension' },
+  };
+
+  // 改名前先取一次，讓 ensureDevice 的 memo 就位（下一輪 sync 的 device 區塊即
+  // 取自這支）。
+  const before = await localDeviceOf(bg);
+  assert.equal(before.name, 'Chrome on Windows', '前提：改名前是預設名');
+
+  const res = await bg.send(
+    { type: 'sync.devices.rename', deviceId: LOCAL_DEVICE_ID, name: '工作機 A' },
+    EXT_PAGE_SENDER
+  );
+  await settle(400);
+  assert.equal(res.response && res.response.ok, true, '前提：引擎回成功');
+
+  // 不重載 background：同一個 SW 實例內再問一次。
+  const after = await localDeviceOf(bg);
+  assert.equal(after.name, '工作機 A', '改名成功後 memo 必須跟著更新，否則下一輪 sync 仍送舊名');
+  assert.equal(after.deviceId, LOCAL_DEVICE_ID, '改名不得動到 deviceId');
+  assert.equal(bg.device().name, '工作機 A', 'storage 那份鏡像同樣要是新名');
+});
 
 // ---- 審查預警 N3：遷移時的 seen 重新消毒 ----
 //
