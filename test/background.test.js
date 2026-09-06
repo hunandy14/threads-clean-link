@@ -3101,3 +3101,863 @@ test('S3 合併:seen[] 聯集仍裁到 50 筆，且新欄位照樣帶齊', async
   );
   assert.equal(e.id, 'cap-id-0000-4000-8000-000000000000');
 });
+
+// ============================================================================
+// 裝置身分與事件歸屬（車道 B，0.7）
+// ----------------------------------------------------------------------------
+// 唯一真相源：tmp/device-attribution-plan.md §1／§2／§5／§12（訊息協議定稿）、
+// tmp/cloud-sync-plan-full.md §9「客戶端契約」。本區塊只驗 background.js 這一側：
+// 裝置識別碼的產生與存放、四條紀錄路徑的事件歸屬、devices 三訊息的路由與參數
+// 自驗；引擎本體（listDevices／renameDevice／removeDevice 的網路行為）屬 sync.js，
+// 這裡一律注入替身。
+// ============================================================================
+
+// storage.local 的兩個裝置鍵（§12）。syncDevice 是本機這台的身分，永不因登出、
+// 刪雲端、清紀錄、匯入而消失；syncDevices 是別台的純顯示快取，登出與刪雲端要清。
+const DEVICE_KEY = 'syncDevice';
+const DEVICES_CACHE_KEY = 'syncDevices';
+
+// 伺服器存小寫，本機一律對齊小寫（TCLCore.normalizeDeviceId 的契約）。
+const DEVICE_UUID_LOWER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const LOCAL_DEVICE_ID = '11111111-2222-4333-8444-555555555555';
+const OTHER_DEVICE_ID = '99999999-8888-4777-8666-555555555555';
+const SEEDED_DEVICE = {
+  deviceId: LOCAL_DEVICE_ID,
+  platform: 'chrome_extension',
+  createdAt: 1700000000000,
+};
+
+// 三個 post，讓四條紀錄路徑各寫各的卡、互不合併。
+const DEV_POST_SHARE = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
+const DEV_POST_STRIP = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvQ';
+const DEV_POST_ICON = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvR';
+
+// 「已清除」的兩種合法落地寫法：鍵被 remove 掉，或被寫成 null。
+function isCleared(value) {
+  return value === undefined || value === null;
+}
+
+// ---- 裝置測試專用的 storage 替身 ----
+//
+// 不沿用 createChromeStorage 的原因有二：(1) 它的區域沒有 remove()，真引擎的
+// session 清理與「清掉 syncDevices」兩條路徑都需要；(2) 併發初始化測試要能把
+// 每一次 get/set 的延遲調大，把讀改寫之間的視窗撐開，逼出真實時序下的競態。
+// 【時序紀律】沿用全檔慣例：一律 setTimeout 延遲結算，絕不同 tick resolve。
+function makeDeviceStorage(syncSeed = {}, localSeed = {}, delayMs = 0) {
+  function makeArea(seed) {
+    const data = Object.assign({}, seed);
+    const calls = { get: [], set: [], remove: [] };
+
+    function has(key) {
+      return Object.prototype.hasOwnProperty.call(data, key);
+    }
+    function read(keys) {
+      if (keys === null || keys === undefined) return Object.assign({}, data);
+      if (typeof keys === 'string') return has(keys) ? { [keys]: data[keys] } : {};
+      if (Array.isArray(keys)) {
+        const out = {};
+        keys.forEach((k) => {
+          if (has(k)) out[k] = data[k];
+        });
+        return out;
+      }
+      const out = Object.assign({}, keys);
+      Object.keys(keys).forEach((k) => {
+        if (has(k)) out[k] = data[k];
+      });
+      return out;
+    }
+    function later(fn) {
+      return new Promise((resolve) => setTimeout(() => resolve(fn()), delayMs));
+    }
+
+    const api = {
+      get(keys) {
+        calls.get.push(keys);
+        return later(() => read(keys));
+      },
+      set(items) {
+        calls.set.push(Object.assign({}, items));
+        return later(() => {
+          Object.assign(data, items);
+        });
+      },
+      remove(keys) {
+        const list = Array.isArray(keys) ? keys : [keys];
+        calls.remove.push(list.slice());
+        return later(() => {
+          list.forEach((k) => {
+            delete data[k];
+          });
+        });
+      },
+    };
+    return { data, calls, api, snapshot: () => Object.assign({}, data) };
+  }
+
+  const syncArea = makeArea(syncSeed);
+  const localArea = makeArea(localSeed);
+  const sessionArea = makeArea({});
+
+  return {
+    localCalls: localArea.calls,
+    api: {
+      sync: syncArea.api,
+      local: localArea.api,
+      session: sessionArea.api,
+      onChanged: { addListener: () => {} },
+    },
+    localSnapshot: () => localArea.snapshot(),
+    // 側錄中真正寫過 syncDevice 鍵的次數——併發初始化只准寫一次。
+    deviceWriteCount() {
+      return localArea.calls.set.filter((items) =>
+        Object.prototype.hasOwnProperty.call(items, DEVICE_KEY)
+      ).length;
+    },
+  };
+}
+
+// devices 三方法齊備的 TCLSync 替身。回傳值可逐一設定，讓 handler 的
+// 「原樣回傳」與「不呼叫引擎」兩類斷言都驗得到。
+function makeDeviceSyncStub() {
+  const createCalls = [];
+  const calls = [];
+  const results = {
+    listDevices: { ok: true, devices: [], currentDeviceId: LOCAL_DEVICE_ID, fetchedAt: 0 },
+    renameDevice: { ok: true, device: { deviceId: OTHER_DEVICE_ID, name: 'renamed' } },
+    removeDevice: { ok: true },
+  };
+  const engine = {};
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud', 'verifySession', 'notifyRecorded', 'onAlarm'].forEach(
+    (name) => {
+      engine[name] = (...args) => {
+        calls.push({ name, args });
+        return Promise.resolve({ status: 'signed_out' });
+      };
+    }
+  );
+  ['listDevices', 'renameDevice', 'removeDevice'].forEach((name) => {
+    engine[name] = (...args) => {
+      calls.push({ name, args });
+      return Promise.resolve(results[name]);
+    };
+  });
+  return {
+    createCalls,
+    calls,
+    engine,
+    results,
+    names() {
+      return calls.map((c) => c.name);
+    },
+    callsTo(name) {
+      return calls.filter((c) => c.name === name);
+    },
+    api: {
+      ALARM_NAME: 'tcl-sync',
+      DEBOUNCE_MS: 2000,
+      SYNC_PERIOD_MINUTES: 5,
+      API_BASE_PRODUCTION: 'https://api.metalinkclearer.workers.dev',
+      API_BASE_STAGING: 'https://api-staging.metalinkclearer.workers.dev',
+      create(deps) {
+        createCalls.push(deps);
+        return engine;
+      },
+    },
+  };
+}
+
+// opts：
+//   localSeed     storage.local 預填（syncDevice／syncDevices／history）
+//   delayMs       storage 每次操作的延遲（併發測試用）
+//   platformOs    chrome.runtime.getPlatformInfo() 回的 os
+//   platformInfo  'reject'（API 存在但 reject）／'absent'（整支 API 不存在）
+//   syncApi       注入沙箱的 TCLSync（預設用替身；傳真模組即跑真引擎）
+function loadBackgroundForDevices(opts = {}) {
+  const sync = opts.syncApi ? null : makeDeviceSyncStub();
+  const storage = makeDeviceStorage({ saveHistory: true }, opts.localSeed || {}, opts.delayMs || 0);
+  const onMessageListeners = [];
+  const onInstalledListeners = [];
+  const onClickedListeners = [];
+  const onAlarmListeners = [];
+  const broadcasts = [];
+  const fetchCalls = [];
+  const fetchImpl =
+    opts.fetch ||
+    (async (url) => {
+      fetchCalls.push(url);
+      if (url === SHARE_URL) return fetchResult(`${CLEAN_POST_URL}?xmt=AQGabc`);
+      return fetchResult(url, NO_OG_HTML);
+    });
+
+  const chrome = {
+    runtime: {
+      id: EXTENSION_ID,
+      onInstalled: { addListener: (fn) => onInstalledListeners.push(fn) },
+      onMessage: { addListener: (fn) => onMessageListeners.push(fn) },
+      sendMessage: (message) => {
+        broadcasts.push(message);
+        return Promise.resolve(undefined);
+      },
+    },
+    contextMenus: {
+      removeAll: async () => {},
+      create: () => {},
+      onClicked: { addListener: (fn) => onClickedListeners.push(fn) },
+    },
+    notifications: { create: () => {} },
+    scripting: { executeScript: async () => [{ result: { ok: true } }] },
+    tabs: { TAB_ID_NONE: -1, query: async () => [] },
+    alarms: {
+      create: () => {},
+      clear: async () => true,
+      get: async () => undefined,
+      getAll: async () => [],
+      onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
+    },
+    permissions: { contains: (d, cb) => cb(true), request: (d, cb) => cb(true) },
+    storage: storage.api,
+  };
+  // 預設名的 OS 來源。MV3 的 chrome.runtime.getPlatformInfo() 回 Promise；
+  // 'absent' 模擬舊環境或測試沙箱沒有這支 API 的情形。
+  if (opts.platformInfo !== 'absent') {
+    chrome.runtime.getPlatformInfo =
+      opts.platformInfo === 'reject'
+        ? () => Promise.reject(new Error('unavailable'))
+        : () => Promise.resolve({ os: opts.platformOs || 'win', arch: 'x86-64', nacl_arch: 'x86-64' });
+  }
+
+  const sandbox = {
+    chrome,
+    TCLSync: opts.syncApi || sync.api,
+    fetch: fetchImpl,
+    console,
+    URL,
+    URLSearchParams,
+    setTimeout,
+    clearTimeout,
+    crypto,
+  };
+  runInSandbox(SRC, sandbox);
+
+  return {
+    sync,
+    sandbox,
+    storage,
+    broadcasts,
+    fetchCalls,
+    deps() {
+      return sync ? sync.createCalls[0] : undefined;
+    },
+    device() {
+      return storage.localSnapshot()[DEVICE_KEY];
+    },
+    history() {
+      return storage.localSnapshot().history || [];
+    },
+    fireInstalled() {
+      onInstalledListeners.slice().forEach((fn) => fn({ reason: 'update' }));
+    },
+    installedListenerCount() {
+      return onInstalledListeners.length;
+    },
+    click(info, tab) {
+      onClickedListeners[0](info, tab);
+    },
+    // 自動路徑（bridge → SW）：cleanedNotice 不需要回應。
+    notice(message) {
+      onMessageListeners.slice().forEach((fn) => fn(message, { id: EXTENSION_ID }, () => {}));
+    },
+    // 擴充頁 → SW：送一則訊息並等回應，沒人接手時回 responded:false。
+    send(message, sender) {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = (payload) => {
+          if (done) return;
+          done = true;
+          resolve(payload);
+        };
+        onMessageListeners.slice().forEach((fn) => {
+          fn(message, sender || EXT_PAGE_SENDER, (response) => finish({ responded: true, response }));
+        });
+        setTimeout(() => finish({ responded: false, response: undefined }), 200);
+      });
+    },
+  };
+}
+
+// 取一張卡最後一筆 seen 事件（本次寫入的那一筆）。
+function lastSeenEvent(entry) {
+  assert.ok(Array.isArray(entry && entry.seen) && entry.seen.length > 0, 'entry 應有 seen[]');
+  return entry.seen[entry.seen.length - 1];
+}
+
+// 呼叫 background 注入給引擎的 getLocalDevice（§12 引擎介面）。先斷言它存在，
+// 讓「還沒接線」是一次斷言失敗而不是 TypeError 炸掉整支測試。
+function localDeviceOf(bg) {
+  const deps = bg.deps();
+  assert.equal(
+    typeof (deps && deps.getLocalDevice),
+    'function',
+    'background 應把 getLocalDevice 注入給 TCLSync.create（§12 引擎介面，由 ensureDevice 供給）'
+  );
+  return deps.getLocalDevice();
+}
+
+// ---- §1 ensureDevice：惰性初始化 ----
+
+test('B1 ensureDevice:首次記錄時寫入 syncDevice——小寫 UUID、platform 為 chrome_extension、帶 createdAt，且不寫 name 鍵', async () => {
+  const bg = loadBackgroundForDevices();
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  await settle(400);
+
+  const device = bg.device();
+  assert.ok(device && typeof device === 'object', 'storage.local.syncDevice 應在首次記錄時就落地（§1 惰性初始化）');
+  assert.match(device.deviceId, DEVICE_UUID_LOWER, 'deviceId 必須是小寫 UUID（伺服器存小寫，本機不對齊就 join 不到）');
+  assert.equal(device.platform, 'chrome_extension', 'platform 為契約枚舉的 chrome_extension');
+  assert.equal(typeof device.createdAt, 'number', 'createdAt 為毫秒時間戳');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(device, 'name'),
+    false,
+    'name 缺席代表「用預設名」（§12）；註冊時不得先把預設名固化進 storage'
+  );
+});
+
+test('B1 ensureDevice:已存在的 syncDevice 原樣採用，不覆寫 deviceId 與 createdAt', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  await settle(400);
+
+  assert.deepEqual(bg.device(), SEEDED_DEVICE, '既有身分一律採用——重生 deviceId 等於在雲端變成另一台裝置');
+  assert.equal(bg.storage.deviceWriteCount(), 0, '讀到既有值就不該再寫一次 syncDevice');
+});
+
+test('B1 ensureDevice:併發初始化只產生一組 deviceId（延遲 storage 撐開讀改寫視窗）', async () => {
+  // 每次 storage 操作延遲 12ms：不做 memo、不走 writeChain 序列化的實作，會在
+  // 這段視窗內讓多路各自「讀到空、各生一個、各寫一次」，最後一個寫入者獲勝。
+  const bg = loadBackgroundForDevices({ delayMs: 12 });
+  const deps = bg.deps();
+  assert.equal(
+    typeof (deps && deps.getLocalDevice),
+    'function',
+    'background 應注入 getLocalDevice 給引擎（§12 引擎介面，由 ensureDevice 供給）'
+  );
+
+  // 同時走兩種入口：紀錄漏斗與引擎的 getLocalDevice，兩邊都會觸發初始化。
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_STRIP, kind: 'strip' });
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_ICON, kind: 'icon' });
+  const results = await Promise.all([
+    deps.getLocalDevice(),
+    deps.getLocalDevice(),
+    deps.getLocalDevice(),
+    deps.getLocalDevice(),
+    deps.getLocalDevice(),
+  ]);
+  await settle(800);
+
+  const ids = new Set(results.map((r) => r && r.deviceId));
+  bg.history().forEach((entry) => ids.add(lastSeenEvent(entry).deviceId));
+  assert.equal(ids.size, 1, `併發初始化只准產生一組 deviceId，實際 ${[...ids].join(' / ')}`);
+  assert.equal(bg.storage.deviceWriteCount(), 1, 'syncDevice 只准寫一次（memo 加 writeChain 序列化）');
+  assert.match([...ids][0], DEVICE_UUID_LOWER);
+});
+
+test('B1 ensureDevice:不掛 onInstalled——沒觸發 onInstalled 也要能初始化（升級使用者不會漏）', async () => {
+  const bg = loadBackgroundForDevices();
+  assert.ok(bg.installedListenerCount() > 0, '前提：background 有註冊 onInstalled 監聽器');
+
+  // 刻意不呼叫 fireInstalled()。
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  await settle(400);
+
+  const device = bg.device();
+  assert.ok(device && device.deviceId, 'onInstalled 從未觸發，syncDevice 仍須由惰性初始化產生');
+});
+
+// ---- §2 四條紀錄路徑帶 deviceId ----
+
+test('B2 歸屬:share 路徑寫入的 seen 事件帶本機 deviceId', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  await settle(400);
+
+  const event = lastSeenEvent(bg.history()[0]);
+  assert.equal(event.kind, 'share');
+  assert.equal(event.deviceId, LOCAL_DEVICE_ID, 'share 事件應帶本機 deviceId');
+});
+
+test('B2 歸屬:strip 路徑寫入的 seen 事件帶本機 deviceId', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_STRIP, kind: 'strip' });
+  await settle(400);
+
+  const event = lastSeenEvent(bg.history()[0]);
+  assert.equal(event.kind, 'strip');
+  assert.equal(event.deviceId, LOCAL_DEVICE_ID, 'strip 事件應帶本機 deviceId');
+});
+
+test('B2 歸屬:icon 路徑寫入的 seen 事件帶本機 deviceId', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_ICON, kind: 'icon' });
+  await settle(400);
+
+  const event = lastSeenEvent(bg.history()[0]);
+  assert.equal(event.kind, 'icon');
+  assert.equal(event.deviceId, LOCAL_DEVICE_ID, 'icon 事件應帶本機 deviceId');
+});
+
+test('B2 歸屬:menu（右鍵）路徑寫入的 seen 事件帶本機 deviceId', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  bg.click({ linkUrl: SHARE_URL }, { id: 7 });
+  await settle(800);
+
+  const history = bg.history();
+  assert.equal(history.length, 1, '前提：右鍵路徑寫入了一筆紀錄');
+  const event = lastSeenEvent(history[0]);
+  assert.equal(event.kind, 'menu');
+  assert.equal(event.deviceId, LOCAL_DEVICE_ID, 'menu 事件應帶本機 deviceId');
+});
+
+test('B2 歸屬:合併既有卡時只有新事件帶 deviceId，舊事件不補（§2 舊事件不補）', async () => {
+  const now = Date.now();
+  const existing = {
+    url: DEV_POST_SHARE,
+    kind: 'share',
+    at: now - 60 * 1000,
+    seen: [{ at: now - 60 * 1000, kind: 'share' }],
+    id: 'merge-id-0000-4000-8000-000000000000',
+    postKey: 'threads:DbezfB0gYvP',
+    original: DEV_POST_SHARE,
+    receivedAt: now - 60 * 1000,
+    dirty: false,
+    serverUpdatedAt: null,
+    deletedAt: null,
+  };
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, history: [existing] },
+  });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'icon' });
+  await settle(400);
+
+  const entry = bg.history()[0];
+  assert.equal(entry.seen.length, 2, '同卡合併：舊事件保留、新事件接在尾端');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(entry.seen[0], 'deviceId'),
+    false,
+    '舊事件不得回填 deviceId——它可能根本不是這台裝置產生的'
+  );
+  assert.equal(entry.seen[1].deviceId, LOCAL_DEVICE_ID, '本次新事件帶本機 deviceId');
+});
+
+// ---- §1 清除路徑不動 syncDevice ----
+//
+// 這兩支載入真的 sync.js（而非替身），因為要驗的是引擎清理路徑對兩個裝置鍵的
+// 取捨：syncDevice 一定要留、syncDevices 一定要清。引擎的其他行為由
+// test/sync.test.js 負責，這裡不重複。
+const REAL_SYNC = require('../sync.js');
+
+function deviceJsonResponse(payload, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
+  };
+}
+
+test('B3 清除:signOut 之後 syncDevice 原值不變，syncDevices（別台快取）被清', async () => {
+  const bg = loadBackgroundForDevices({
+    syncApi: REAL_SYNC,
+    // 不放 token：signOut 走純本機清理，不需要打 sign-out 端點。
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [DEVICES_CACHE_KEY]: { fetchedAt: 1, devices: [{ deviceId: OTHER_DEVICE_ID, name: 'Pixel' }] },
+      syncVerifiedAt: Date.now(),
+      history: [],
+    },
+    fetch: async () => deviceJsonResponse({ ok: true }),
+  });
+
+  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER);
+  assert.equal(result.responded, true, '前提：sync.signOut 有人接手');
+  await settle(600);
+
+  const local = bg.storage.localSnapshot();
+  assert.deepEqual(local[DEVICE_KEY], SEEDED_DEVICE, '登出不清 syncDevice（契約 §9：登出不清，重灌才算新裝置）');
+  assert.equal(isCleared(local[DEVICES_CACHE_KEY]), true, 'signOut 要清掉別台裝置快取 syncDevices');
+});
+
+test('B3 清除:deleteCloud 之後 syncDevice 原值不變，syncDevices 被清', async () => {
+  const bg = loadBackgroundForDevices({
+    syncApi: REAL_SYNC,
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [DEVICES_CACHE_KEY]: { fetchedAt: 1, devices: [{ deviceId: OTHER_DEVICE_ID, name: 'Pixel' }] },
+      syncAuth: { token: 'test-token' },
+      syncVerifiedAt: Date.now(),
+      history: [],
+    },
+    fetch: async () => deviceJsonResponse({ ok: true, clearedAt: Date.now() }),
+  });
+
+  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
+  assert.equal(result.responded, true, '前提：sync.deleteCloud 有人接手');
+  await settle(800);
+
+  const local = bg.storage.localSnapshot();
+  assert.deepEqual(local[DEVICE_KEY], SEEDED_DEVICE, '刪雲端不清 syncDevice');
+  assert.equal(isCleared(local[DEVICES_CACHE_KEY]), true, 'deleteCloud 要清掉別台裝置快取 syncDevices');
+});
+
+test('B3 清除:options 清空與匯入覆寫 history 之後，syncDevice 未被重生（同一組 deviceId 繼續使用）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  await settle(400);
+
+  // 模擬 options.js 的「清除全部紀錄」與「匯入 JSON」：兩者都只整包覆寫
+  // history 鍵，不經 background，也絕不該連帶影響 syncDevice。
+  await bg.storage.api.local.set({ history: [] });
+  await bg.storage.api.local.set({
+    history: [
+      {
+        url: DEV_POST_ICON,
+        kind: 'icon',
+        at: Date.now() - 1000,
+        seen: [{ at: Date.now() - 1000, kind: 'icon', deviceId: OTHER_DEVICE_ID }],
+      },
+    ],
+  });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_STRIP, kind: 'strip' });
+  await settle(400);
+
+  assert.deepEqual(bg.device(), SEEDED_DEVICE, '清空與匯入都不得動到 syncDevice');
+  const fresh = bg.history().find((e) => e.url === DEV_POST_STRIP);
+  assert.ok(fresh, '前提：覆寫後的新紀錄有寫進去');
+  assert.equal(lastSeenEvent(fresh).deviceId, LOCAL_DEVICE_ID, '覆寫後仍以同一組 deviceId 歸屬');
+  assert.equal(bg.storage.deviceWriteCount(), 0, 'syncDevice 全程未被寫過');
+});
+
+// ---- §12 devices 三訊息 ----
+
+const DEVICE_MESSAGE_TYPES = ['sync.devices.list', 'sync.devices.rename', 'sync.devices.remove'];
+
+test('B4 訊息:三個 sync.devices.* 都掛進 SYNC_MESSAGE_HANDLERS，擴充頁送來都有回應', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const list = await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
+  const rename = await bg.send(
+    { type: 'sync.devices.rename', deviceId: OTHER_DEVICE_ID, name: 'Pixel' },
+    EXT_PAGE_SENDER
+  );
+  const remove = await bg.send({ type: 'sync.devices.remove', deviceId: OTHER_DEVICE_ID }, EXT_PAGE_SENDER);
+
+  assert.equal(list.responded, true, 'sync.devices.list 必須有人回應');
+  assert.equal(rename.responded, true, 'sync.devices.rename 必須有人回應');
+  assert.equal(remove.responded, true, 'sync.devices.remove 必須有人回應');
+});
+
+test('B4 訊息:content script 與其他擴充送來的 sync.devices.* 一律忽略（沿用既有拒絕形狀）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  for (const type of DEVICE_MESSAGE_TYPES) {
+    const fromContent = await bg.send({ type, deviceId: OTHER_DEVICE_ID, name: 'x' }, CONTENT_SCRIPT_SENDER);
+    assert.equal(fromContent.responded, false, `${type}：content script 送來不得回應`);
+    const fromOther = await bg.send({ type, deviceId: OTHER_DEVICE_ID, name: 'x' }, OTHER_EXTENSION_SENDER);
+    assert.equal(fromOther.responded, false, `${type}：其他擴充送來不得回應`);
+  }
+  assert.deepEqual(
+    bg.sync.calls.filter((c) => ['listDevices', 'renameDevice', 'removeDevice'].includes(c.name)),
+    [],
+    '被拒的 sender 一律不得碰到引擎'
+  );
+});
+
+test('B4 dispatch 簽名改為 (engine, message):list 的 force 要原樣轉給 engine.listDevices({ force })', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send({ type: 'sync.devices.list', force: true }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
+
+  const calls = bg.sync.callsTo('listDevices');
+  assert.equal(calls.length, 2, 'list 應轉呼叫 engine.listDevices');
+  assert.deepEqual(calls[0].args[0], { force: true }, 'force:true 要原樣帶進去（dispatch 必須把 message 交給 handler）');
+  assert.deepEqual(calls[1].args[0], { force: undefined }, '未帶 force 時以 undefined 傳入，不自行改寫成 true');
+});
+
+test('B4 dispatch 簽名改動後，既有五個 sync.* 仍照常轉呼叫引擎（回歸）', async () => {
+  const bg = loadBackgroundForDevices();
+
+  await bg.send({ type: 'sync.getState' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.signIn' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.now' }, EXT_PAGE_SENDER);
+  await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
+
+  const names = bg.sync.names();
+  ['getState', 'signIn', 'signOut', 'syncNow', 'deleteCloud'].forEach((m) => {
+    assert.ok(names.includes(m), `既有 sync.* 應仍轉呼叫引擎的 ${m}`);
+  });
+});
+
+test('B4 rename 自驗:deviceId 非 UUID 回 { ok:false, code:bad_device_id }，不碰引擎', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const bad = ['not-a-uuid', '', null, undefined, 42, `${OTHER_DEVICE_ID}x`];
+  for (const deviceId of bad) {
+    const res = await bg.send({ type: 'sync.devices.rename', deviceId, name: 'Pixel' }, EXT_PAGE_SENDER);
+    assert.equal(res.responded, true, `deviceId=${String(deviceId)} 仍須回應（拒絕也要回）`);
+    assert.deepEqual(
+      res.response,
+      { ok: false, code: 'bad_device_id' },
+      `deviceId=${String(deviceId)} 應被 handler 自驗擋下`
+    );
+  }
+  assert.deepEqual(bg.sync.callsTo('renameDevice'), [], '參數不合格時不得呼叫引擎');
+});
+
+test('B4 rename 自驗:name 非字串、trim 後為空、超過 80 code point 回 bad_device_name，不碰引擎', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const bad = ['', '   ', '\n\t ', null, undefined, 7, {}, 'A'.repeat(81), '好'.repeat(81)];
+  for (const name of bad) {
+    const res = await bg.send({ type: 'sync.devices.rename', deviceId: OTHER_DEVICE_ID, name }, EXT_PAGE_SENDER);
+    assert.equal(res.responded, true, `name=${JSON.stringify(name)} 仍須回應`);
+    assert.deepEqual(
+      res.response,
+      { ok: false, code: 'bad_device_name' },
+      `name=${JSON.stringify(name)} 應被擋下`
+    );
+  }
+  assert.deepEqual(bg.sync.callsTo('renameDevice'), [], 'name 不合格時不得呼叫引擎');
+
+  // 對照組：40 個 emoji 共 40 個 code point（UTF-16 長度 80）必須放行——上限
+  // 是 code point 不是 length，用 String.prototype.length 判斷會誤殺合法名字。
+  const emojiName = '😀'.repeat(40);
+  const ok = await bg.send(
+    { type: 'sync.devices.rename', deviceId: OTHER_DEVICE_ID, name: emojiName },
+    EXT_PAGE_SENDER
+  );
+  assert.equal(ok.response && ok.response.ok, true, '80 code point 以內的 emoji 名必須放行');
+  assert.equal(bg.sync.callsTo('renameDevice').length, 1, '合法 name 應轉呼叫引擎');
+});
+
+test('B4 rename:大寫 deviceId 先正規化成小寫再交給引擎，name 傳 trim 後的值', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(
+    { type: 'sync.devices.rename', deviceId: OTHER_DEVICE_ID.toUpperCase(), name: '  Pixel 9  ' },
+    EXT_PAGE_SENDER
+  );
+
+  const calls = bg.sync.callsTo('renameDevice');
+  assert.equal(calls.length, 1, 'rename 應轉呼叫 engine.renameDevice');
+  assert.equal(calls[0].args[0], OTHER_DEVICE_ID, 'deviceId 應經 TCLCore.normalizeDeviceId 轉小寫');
+  assert.equal(calls[0].args[1], 'Pixel 9', 'name 應傳 trim 後的值');
+});
+
+test('B4 rename:引擎回應原樣回傳（handler 不改寫形狀）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+  bg.sync.results.renameDevice = { ok: false, code: 'offline' };
+
+  const res = await bg.send(
+    { type: 'sync.devices.rename', deviceId: OTHER_DEVICE_ID, name: 'Pixel' },
+    EXT_PAGE_SENDER
+  );
+
+  assert.deepEqual(res.response, { ok: false, code: 'offline' }, '引擎的失敗碼要原樣透出給 UI');
+});
+
+test('B4 rename:改本機這台成功後，syncDevice.name 同步寫入新名', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+  bg.sync.results.renameDevice = {
+    ok: true,
+    device: { deviceId: LOCAL_DEVICE_ID, name: '書房桌機', platform: 'chrome_extension' },
+  };
+
+  const res = await bg.send(
+    { type: 'sync.devices.rename', deviceId: LOCAL_DEVICE_ID, name: '書房桌機' },
+    EXT_PAGE_SENDER
+  );
+  await settle(400);
+
+  assert.equal(res.response && res.response.ok, true, '前提：引擎回成功');
+  const device = bg.device();
+  assert.equal(device.name, '書房桌機', '本機這台改名成功後要同寫 syncDevice.name（§5 與 §12）');
+  assert.equal(device.deviceId, LOCAL_DEVICE_ID, '改名不得動到 deviceId');
+  assert.equal(device.createdAt, SEEDED_DEVICE.createdAt, '改名不得動到 createdAt');
+});
+
+test('B4 rename:改別台成功不得寫進本機的 syncDevice.name', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+  bg.sync.results.renameDevice = {
+    ok: true,
+    device: { deviceId: OTHER_DEVICE_ID, name: 'Pixel 9', platform: 'android' },
+  };
+
+  await bg.send({ type: 'sync.devices.rename', deviceId: OTHER_DEVICE_ID, name: 'Pixel 9' }, EXT_PAGE_SENDER);
+  await settle(400);
+
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(bg.device(), 'name'),
+    false,
+    '本機名稱以本機為準（D26），改別台不得污染 syncDevice.name'
+  );
+});
+
+test('B4 remove:本機這台回 { ok:false, code:current_device } 且不呼叫引擎', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const lower = await bg.send({ type: 'sync.devices.remove', deviceId: LOCAL_DEVICE_ID }, EXT_PAGE_SENDER);
+  const upper = await bg.send(
+    { type: 'sync.devices.remove', deviceId: LOCAL_DEVICE_ID.toUpperCase() },
+    EXT_PAGE_SENDER
+  );
+
+  assert.deepEqual(lower.response, { ok: false, code: 'current_device' });
+  assert.deepEqual(upper.response, { ok: false, code: 'current_device' }, '大寫寫法也要先正規化再比對，不得漏擋');
+  assert.deepEqual(bg.sync.callsTo('removeDevice'), [], '這台裝置不得送出 DELETE');
+  assert.deepEqual(bg.device(), SEEDED_DEVICE, '被擋下的 remove 不得動到 syncDevice');
+});
+
+test('B4 remove:別台轉呼叫 engine.removeDevice(deviceId) 並原樣回傳；deviceId 非 UUID 回 bad_device_id', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const ok = await bg.send(
+    { type: 'sync.devices.remove', deviceId: OTHER_DEVICE_ID.toUpperCase() },
+    EXT_PAGE_SENDER
+  );
+  assert.deepEqual(ok.response, { ok: true }, '引擎回應原樣透出');
+  const calls = bg.sync.callsTo('removeDevice');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args[0], OTHER_DEVICE_ID, 'deviceId 轉小寫後交給引擎');
+
+  const bad = await bg.send({ type: 'sync.devices.remove', deviceId: 'nope' }, EXT_PAGE_SENDER);
+  assert.deepEqual(bad.response, { ok: false, code: 'bad_device_id' });
+  assert.equal(bg.sync.callsTo('removeDevice').length, 1, '不合格的 deviceId 不得再打一次引擎');
+});
+
+test('B4 list:引擎的失敗回應原樣透出（失敗碼不得被 handler 改寫）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+  bg.sync.results.listDevices = { ok: false, code: 'signed_out' };
+
+  const res = await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
+
+  assert.deepEqual(res.response, { ok: false, code: 'signed_out' });
+});
+
+// ---- §12 getLocalDevice 供給 ----
+
+test('B5 getLocalDevice:回 { deviceId, name, platform }，name 缺席時用 defaultDeviceName(os)——win 對應 Chrome on Windows', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    platformOs: 'win',
+  });
+  const deps = bg.deps();
+  assert.equal(typeof (deps && deps.getLocalDevice), 'function', 'background 應注入 getLocalDevice');
+
+  const device = await deps.getLocalDevice();
+
+  assert.deepEqual(Object.keys(device).sort(), ['deviceId', 'name', 'platform'], '形狀為 §12 的三個鍵');
+  assert.equal(device.deviceId, LOCAL_DEVICE_ID);
+  assert.equal(device.platform, 'chrome_extension');
+  assert.equal(device.name, 'Chrome on Windows', 'name 缺席時回 TCLCore.defaultDeviceName(os)');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(bg.device(), 'name'),
+    false,
+    '預設名只在讀取時計算，不得回寫固化進 syncDevice'
+  );
+});
+
+test('B5 getLocalDevice:mac 與 android 的預設名依 TCLCore.defaultDeviceName 對照', async () => {
+  const mac = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, platformOs: 'mac' });
+  const android = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, platformOs: 'android' });
+
+  assert.equal((await localDeviceOf(mac)).name, 'Chrome on macOS');
+  assert.equal((await localDeviceOf(android)).name, 'Chrome on Android');
+});
+
+test('B5 getLocalDevice:getPlatformInfo 拒絕或整支缺席時，預設名退成 Chrome', async () => {
+  const rejected = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    platformInfo: 'reject',
+  });
+  const absent = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    platformInfo: 'absent',
+  });
+
+  assert.equal((await localDeviceOf(rejected)).name, 'Chrome', 'getPlatformInfo 拒絕時不得整支拋錯');
+  assert.equal((await localDeviceOf(absent)).name, 'Chrome', '舊環境沒有 getPlatformInfo 也要有名字');
+});
+
+test('B5 getLocalDevice:syncDevice.name 有值時以它為準，不用預設名', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: Object.assign({}, SEEDED_DEVICE, { name: '書房桌機' }) },
+    platformOs: 'win',
+  });
+
+  const device = await localDeviceOf(bg);
+
+  assert.equal(device.name, '書房桌機', '本機名稱一律以 syncDevice.name 為準（D26）');
+});
+
+test('B5 getLocalDevice:尚未初始化時自行完成 ensureDevice，回新生成的 deviceId', async () => {
+  const bg = loadBackgroundForDevices({ platformOs: 'linux' });
+
+  const device = await localDeviceOf(bg);
+  await settle(400);
+
+  assert.match(device.deviceId, DEVICE_UUID_LOWER);
+  assert.equal(device.name, 'Chrome on Linux');
+  assert.equal(bg.device().deviceId, device.deviceId, '產生的身分要落地到 storage.local.syncDevice');
+});
+
+// ---- 審查預警 N3：遷移時的 seen 重新消毒 ----
+//
+// fillHistorySchema 目前用「消毒前後的陣列長度是否相同」決定要不要換上新的
+// seen（background.js 的 fillHistorySchema）。髒 deviceId 只會讓該筆事件少一個
+// 鍵、不會讓整筆被丟掉，陣列長度不變，於是舊陣列原樣留下，髒值躲過遷移繼續留
+// 在 storage、之後照樣上雲。判準必須改成逐筆比較，或一律以消毒結果為準。
+test('B6 遷移:seen 事件帶髒 deviceId（陣列長度不變）經 migrateHistorySchema 後仍須被剝除', async () => {
+  const now = Date.now();
+  const dirtyEntry = {
+    url: DEV_POST_SHARE,
+    kind: 'share',
+    at: now - 1000,
+    // 七個雲端欄位全帶齊，fillHistorySchema 的 missing 為 false，唯一可能觸發
+    // 改寫的就是 seen 消毒這一條。
+    id: 'dirty-id-0000-4000-8000-000000000000',
+    postKey: 'threads:DbezfB0gYvP',
+    original: DEV_POST_SHARE,
+    receivedAt: now - 1000,
+    dirty: true,
+    serverUpdatedAt: null,
+    deletedAt: null,
+    seen: [{ at: now - 1000, kind: 'share', deviceId: 'not-a-uuid' }],
+  };
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, history: [dirtyEntry] },
+  });
+
+  bg.fireInstalled();
+  await settle(800);
+
+  const event = bg.history()[0].seen[0];
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(event, 'deviceId'),
+    false,
+    '髒 deviceId 必須被遷移剝除——長度比較的短路讓它整個躲過消毒（審查預警 N3）'
+  );
+});
