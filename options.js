@@ -1283,7 +1283,10 @@
         // 沒有帳號就沒有裝置清單可管:整項連同台數收掉，快取一併丟掉(它是
         // 綁在這個帳號上的顯示層資料，留著只會在下次登入時先閃出舊台數)。
         var manageBtn0 = byId('acctManageDevicesBtn');
-        if (manageBtn0) manageBtn0.hidden = true;
+        if (manageBtn0) {
+          manageBtn0.hidden = true;
+          manageBtn0.disabled = false;
+        }
         deviceCache = null;
         devicesLoadError = false;
         devicesEverFetched = false;
@@ -1427,9 +1430,14 @@
       // deviceNote:expired 態的同步實質上沒在跑(等待重新登入)，比照
       // signedOut 顯示「僅保存於這台裝置」，避免謊報已同步。
       // 管理裝置:登入過期時同樣沒有可用的工作階段(清單一定拉不到)，比照
-      // 未登入收掉，只留「重新登入」這條有意義的路。
+      // 未登入收掉，只留「重新登入」這條有意義的路。同步中則比照上面的
+      // 「立即同步」停用——這一輪同步本來就可能註冊/更新裝置，讓人在資料
+      // 正要變的當下進去改名或移除，只會拿到馬上被蓋掉的結果。
       var manageBtn = byId('acctManageDevicesBtn');
-      if (manageBtn) manageBtn.hidden = mode === 'expired';
+      if (manageBtn) {
+        manageBtn.hidden = mode === 'expired';
+        manageBtn.disabled = mode === 'syncing';
+      }
       renderDeviceCount();
 
       var deviceSynced = mode === 'signedIn' || mode === 'syncing' || mode === 'error';
@@ -1556,12 +1564,19 @@
       var retryBtn = byId('acctRetryBtn');
       var reSignInBtn = byId('acctReSignInBtn');
       var syncBtn = byId('acctSyncNowBtn');
+      var manageDevicesBtn = byId('acctManageDevicesBtn');
       var signOutBtn = byId('acctSignOutBtn');
       var deleteBtn = byId('acctDeleteBtn');
       var list = [];
       if (retryBtn && errorRow && !errorRow.hidden) list.push(retryBtn);
       if (reSignInBtn && expiredRow && !expiredRow.hidden) list.push(reSignInBtn);
       if (syncBtn && !syncBtn.disabled) list.push(syncBtn);
+      // 管理裝置(D16):排在立即同步之後、登出之前。隱藏(未登入/登入過期)
+      // 與停用(同步中)兩態都必須跟著退出導覽序列——無條件納入會讓方向鍵停
+      // 在看不見或按不動的項目上，畫面看起來就是「按了方向鍵焦點消失」。
+      if (manageDevicesBtn && !manageDevicesBtn.hidden && !manageDevicesBtn.disabled) {
+        list.push(manageDevicesBtn);
+      }
       if (signOutBtn) list.push(signOutBtn);
       if (deleteBtn) list.push(deleteBtn);
       return list;
@@ -2175,6 +2190,8 @@
 
     function bindDevices() {
       on('acctManageDevicesBtn', 'click', function () {
+        var btn = byId('acctManageDevicesBtn');
+        if (btn && btn.disabled) return;
         openDevicesDialog();
       });
       on('devicesClose', 'click', closeDevicesDialog);
