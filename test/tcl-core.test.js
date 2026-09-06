@@ -480,12 +480,22 @@ test.describe('裝置歸屬:seen[].deviceId 透傳', () => {
   });
 
   test('unionSeen:SEEN_MAX 裁切行為不因 deviceId 改變', () => {
-    const a = Array.from({ length: 40 }, (_, i) => ({ at: i, kind: 'share', deviceId: DEV_A }));
-    const b = Array.from({ length: 40 }, (_, i) => ({ at: 40 + i, kind: 'icon', deviceId: DEV_B }));
+    // 兩份各 per 筆，per 取 0.8×SEEN_MAX——同時滿足 per < SEEN_MAX(裁切後開頭
+    // 仍落在 a)與 2×per > SEEN_MAX(確實裁掉東西)，deviceId 才驗得到沒在裁切
+    // 邊界上錯位。
+    const max = C.LIMITS.SEEN_MAX;
+    const per = Math.ceil(max * 0.8);
+    const dropped = 2 * per - max;
+    const a = Array.from({ length: per }, (_, i) => ({ at: i, kind: 'share', deviceId: DEV_A }));
+    const b = Array.from({ length: per }, (_, i) => ({
+      at: per + i,
+      kind: 'icon',
+      deviceId: DEV_B,
+    }));
     const out = C.unionSeen(a, b);
-    assert.equal(out.length, C.LIMITS.SEEN_MAX);
-    assert.equal(out[0].at, 30, '最舊的 30 筆仍被裁掉');
-    assert.equal(out[out.length - 1].at, 79);
+    assert.equal(out.length, max);
+    assert.equal(out[0].at, dropped, '最舊的 ' + dropped + ' 筆仍被裁掉');
+    assert.equal(out[out.length - 1].at, 2 * per - 1);
     assert.equal(out[0].deviceId, DEV_A);
     assert.equal(out[out.length - 1].deviceId, DEV_B);
   });

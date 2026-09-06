@@ -351,7 +351,8 @@
 
   // seen[].deviceId 正規化:形狀不合(含非字串)回傳 undefined，呼叫端據此讓整
   // 個鍵不輸出;形狀通過則一律轉小寫——伺服器存小寫，本機不對齊時拿 deviceId
-  // 去 join 裝置清單會落空，同一台裝置在時間軸上會顯示成未知裝置。
+  // 去 join 裝置清單會落空，同一台裝置在時間軸上會顯示成未知裝置。獨立匯出供
+  // 裝置註冊與事件寫入路徑共用，免得各處各養一份 UUID 正則。
   function normalizeDeviceId(value) {
     if (typeof value !== 'string' || !UUID_SHAPE_RE.test(value)) return undefined;
     return value.toLowerCase();
@@ -822,6 +823,7 @@
     sanitizeAvatarUrl: sanitizeAvatarUrl,
     randomUuid: randomUuid,
     defaultDeviceName: defaultDeviceName,
+    normalizeDeviceId: normalizeDeviceId,
     toSyncItem: toSyncItem,
     fromSyncItem: fromSyncItem,
     stripControlChars: stripControlChars,
