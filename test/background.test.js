@@ -2716,7 +2716,7 @@ function loadBackgroundForSync(opts = {}) {
         onMessageListeners.slice().forEach((fn) => {
           fn(message, sender, (response) => finish({ responded: true, response }));
         });
-        setTimeout(() => finish({ responded: false, response: undefined }), 200);
+        setTimeout(() => finish({ responded: false, response: undefined }), opts.timeoutMs || 200);
       });
     },
   };
@@ -3373,7 +3373,11 @@ function loadBackgroundForDevices(opts = {}) {
       onMessageListeners.slice().forEach((fn) => fn(message, { id: EXTENSION_ID }, () => {}));
     },
     // 擴充頁 → SW：送一則訊息並等回應，沒人接手時回 responded:false。
-    send(message, sender) {
+    // opts.timeoutMs：判定「沒人接手」的等待上限。預設 200ms 對替身引擎綽綽有
+    // 餘；接真 sync.js 的測試要放寬——真引擎的冷啟（loadContext 讀六個鍵、
+    // resetMirrorFields 走 writeChain、alarms 清理）在慢機器上會超過 200ms，
+    // 那時 sendResponse 還沒回來就被判成無人接手，變成偶發假紅燈。
+    send(message, sender, opts = {}) {
       return new Promise((resolve) => {
         let done = false;
         const finish = (payload) => {
@@ -3623,7 +3627,8 @@ test('B3 清除:signOut 之後 syncDevice 原值不變，syncDevices（別台快
     fetch: async () => deviceJsonResponse({ ok: true }),
   });
 
-  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER);
+  // 真引擎冷啟比替身慢得多，接手判定放寬到 2 秒（settle 不動）。
+  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
   assert.equal(result.responded, true, '前提：sync.signOut 有人接手');
   await settle(600);
 
@@ -3645,7 +3650,8 @@ test('B3 清除:deleteCloud 之後 syncDevice 原值不變，syncDevices 被清'
     fetch: async () => deviceJsonResponse({ ok: true, clearedAt: Date.now() }),
   });
 
-  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
+  // 真引擎冷啟比替身慢得多，接手判定放寬到 2 秒（settle 不動）。
+  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
   assert.equal(result.responded, true, '前提：sync.deleteCloud 有人接手');
   await settle(800);
 
@@ -3890,6 +3896,67 @@ test('B4 list:引擎的失敗回應原樣透出（失敗碼不得被 handler 改
   const res = await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
 
   assert.deepEqual(res.response, { ok: false, code: 'signed_out' });
+});
+
+test('B4 list:成功回應補頂層 defaultName，等於本機預設名（§12 增補）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, platformOs: 'win' });
+  bg.sync.results.listDevices = { ok: true, devices: [], currentDeviceId: LOCAL_DEVICE_ID, fetchedAt: 123 };
+
+  const res = await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
+
+  // UI 的行內改名欄清空時要退回預設名，那個名字只有 background 算得出來
+  // （getPlatformInfo 在 options 頁拿不到），因此隨 list 一起送。
+  assert.deepEqual(plain(res.response), {
+    ok: true,
+    devices: [],
+    currentDeviceId: LOCAL_DEVICE_ID,
+    fetchedAt: 123,
+    defaultName: 'Chrome on Windows',
+  });
+});
+
+test('B4 list:syncDevice.name 已自訂時，defaultName 仍是預設名而非自訂名', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: Object.assign({}, SEEDED_DEVICE, { name: '書房桌機' }) },
+    platformOs: 'win',
+  });
+  bg.sync.results.listDevices = { ok: true, devices: [], currentDeviceId: LOCAL_DEVICE_ID, fetchedAt: 1 };
+
+  const res = await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
+
+  assert.equal(
+    res.response.defaultName,
+    'Chrome on Windows',
+    'defaultName 是「清空欄位要退回的那個名字」，不是目前生效的名字'
+  );
+});
+
+test('B4 list:引擎回應已帶 defaultName 時不覆蓋', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, platformOs: 'win' });
+  bg.sync.results.listDevices = {
+    ok: true,
+    devices: [],
+    currentDeviceId: LOCAL_DEVICE_ID,
+    fetchedAt: 1,
+    defaultName: 'X',
+  };
+
+  const res = await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
+
+  assert.equal(res.response.defaultName, 'X', '引擎自己給了 defaultName 就以它為準，handler 不得蓋掉');
+});
+
+test('B4 list:失敗回應不得補 defaultName（形狀只准 { ok:false, code }）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, platformOs: 'win' });
+  bg.sync.results.listDevices = { ok: false, code: 'offline' };
+
+  const res = await bg.send({ type: 'sync.devices.list' }, EXT_PAGE_SENDER);
+
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(res.response, 'defaultName'),
+    false,
+    '失敗回應維持 { ok:false, code } 兩鍵'
+  );
 });
 
 // ---- §12 getLocalDevice 供給 ----
