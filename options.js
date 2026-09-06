@@ -1748,8 +1748,18 @@
     // 清單純粹是顯示層與 join 用的快取，不參與 history/seen 的任何寫入。
 
     // 名稱上限 80 code point(§12);handler 端會再驗一次，這裡只是先擋住
-    // 使用者打超過。
+    // 使用者打超過。**不掛 input.maxLength**:那顆屬性以 UTF-16 單位計數，
+    // 設成 80 等於讓使用者打到第 41 個 emoji 就被瀏覽器擋住，而合法上限是
+    // 80 個 code point。長度改由送出前的 clampDeviceName 把關。
     var DEVICE_NAME_MAX = 80;
+
+    // 以 code point 截到上限。走 Array.from 的 iterator，不會切在代理對中間
+    // 切出半顆 emoji;handler 端以同一個單位驗，超長直接送過去只會被回
+    // bad_device_name，使用者只看得到一句「重新命名失敗」。
+    function clampDeviceName(name) {
+      var points = Array.from(name);
+      return points.length <= DEVICE_NAME_MAX ? name : points.slice(0, DEVICE_NAME_MAX).join('');
+    }
     var DEVICE_PLATFORM_ICONS = {
       chrome_extension: '#i-chrome',
       android: '#i-smartphone',
@@ -1759,6 +1769,13 @@
       return Object.prototype.hasOwnProperty.call(DEVICE_PLATFORM_ICONS, platform)
         ? DEVICE_PLATFORM_ICONS[platform]
         : '#i-monitor-smartphone';
+    }
+
+    // 清單「從未取得過」(deviceCache 為 null)與「取到了但這個 id 不在裡面」
+    // 是兩回事:前者不該畫任何歸屬，後者才是「未知裝置」。使用者只要沒開過
+    // 帳號選單或裝置對話框就一定落在前者。
+    function hasDeviceList() {
+      return deviceCache !== null;
     }
 
     function deviceById(deviceId) {
@@ -2027,8 +2044,8 @@
       restoreFocus('devices');
     }
 
-    // 行內改名:名稱位置換成 <input>(maxlength 80、預填目前名稱)，Enter/失焦
-    // 送出，Esc 還原不送。收尾只改這一列，不整份重畫——重畫會在
+    // 行內改名:名稱位置換成 <input>(預填目前名稱)，Enter/失焦送出，Esc 還原
+    // 不送;長度上限見 clampDeviceName。收尾只改這一列，不整份重畫——重畫會在
     // mousedown→blur 之後把節點換掉，接著那一下 click 就落空。
     function startDeviceRename(deviceId) {
       var refs = deviceRowRefs[deviceId];
@@ -2038,7 +2055,6 @@
       var input = document.createElement('input');
       input.type = 'text';
       input.className = 'device-name-input';
-      input.maxLength = DEVICE_NAME_MAX;
       input.value = deviceDisplayName(device);
       input.setAttribute('aria-label', tt('opDeviceNameAria'));
       refs.input = input;
@@ -2060,7 +2076,7 @@
         }
         if (!save) return;
         var next = raw.trim();
-        submitDeviceRename(device, next === '' ? fallbackDeviceName(device) : next);
+        submitDeviceRename(device, next === '' ? fallbackDeviceName(device) : clampDeviceName(next));
       }
 
       input.addEventListener('keydown', function (ev) {
@@ -2150,10 +2166,13 @@
     // 整個缺席(0.6.x 寫進來的早期事件)就不畫，不假裝有歸屬。卡面一律不加
     // 任何裝置標示(D27)。
 
-    // 單一 seen 事件的來源裝置名;沒帶 deviceId 回 null(不畫)。
+    // 單一 seen 事件的來源裝置名;沒帶 deviceId、或本頁根本還沒取過裝置清單
+    // 時回 null(不畫)。後者是關鍵:清單沒到手時每一筆都 join 不到，全標成
+    // 「未知裝置」等於告訴使用者那些裝置都已經不在了。
     function seenDeviceName(record) {
       var deviceId = record ? nonEmptyString(record.deviceId) : null;
       if (deviceId === null) return null;
+      if (!hasDeviceList()) return null;
       var device = deviceById(deviceId);
       return device ? deviceDisplayName(device) : tt('opDeviceUnknown');
     }
@@ -2183,7 +2202,8 @@
       var nameEl = byId('detailDeviceName');
       if (!row || !nameEl) return;
       var deviceId = latestSeenDeviceId(entry);
-      if (deviceId === null) {
+      // 沒有歸屬、或清單一次都沒取過(join 不出任何名字)都走不畫的路徑。
+      if (deviceId === null || !hasDeviceList()) {
         // 不畫的路徑不得清空容器:#detailDeviceName 是掛在這一列裡的靜態
         // 節點，清掉就永久移出文件樹，之後 byId 一律回 null，下一筆有歸屬
         // 的紀錄會連整列一起不見(只要看過一筆 0.6.x 的舊紀錄就會踩到)。
@@ -2811,6 +2831,14 @@
       // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderAccount
       // 必須排在它後面才能把已登入態的文案蓋回去。
       renderAccount(syncState);
+      // 裝置列整批是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃，
+      // applyI18nDom 掃不到它們。對話框開著時切語言，「這台裝置」pill 與動作
+      // 鈕的 aria-label 會停在舊語言，而且沒有「關掉再開」以外的自我修復。
+      // 只在開著時重畫:關著時重建整份清單毫無用處，卻會在每一次 renderAll
+      // (setHistory／設定變更)把使用者正開著的行內改名 input 換掉。開框本身
+      // 就會 renderDevices，關著期間錯過的語言變更下次開框補得回來。
+      var devicesOverlay = byId('devicesOverlay');
+      if (devicesOverlay && !devicesOverlay.hidden) renderDevices();
     }
 
     // ---- 選單/對話框/工具列佈線 ----

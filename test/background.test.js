@@ -3517,6 +3517,64 @@ test('B1 ensureDevice:全新安裝零紀錄時，getLocalDevice() 回傳後身�
   assert.equal(first.storage.deviceWriteCount(), 1, 'syncDevice 全程只准寫一次');
 });
 
+// ---- 整體審查回歸（2026-09-07）：deviceId 正規化 ----
+//
+// TCLCore.normalizeDeviceId 是形狀閘門，但 ensureDevice 只看「是不是字串」
+// 就採用。storage 裡的值可能是大寫（舊版本機生成、匯入檔、使用者手改），
+// 也可能根本不是 UUID（檔案損毀）。兩種都會在雲端上異化，大寫那種更陰：
+// handleDevicesRemove 拿已正規化的參數去比未正規化的本機 id，比不中就
+// 把使用者正在用的這台送進 DELETE。
+// 全數字的 LOCAL_DEVICE_ID 大小寫一樣，驗不出正規化；這組帶 hex 字母。
+const MIXED_DEVICE_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const MIXED_DEVICE_ID_UPPER = MIXED_DEVICE_ID.toUpperCase();
+
+test('B1 ensureDevice:storage 裡的 deviceId 是大寫時，getLocalDevice 回小寫，且 remove 擋得住這台', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: Object.assign({}, SEEDED_DEVICE, { deviceId: MIXED_DEVICE_ID_UPPER }),
+    },
+  });
+
+  const local = await localDeviceOf(bg);
+  assert.equal(
+    local.deviceId,
+    MIXED_DEVICE_ID,
+    'getLocalDevice 回傳前要正規化成小寫（伺服器存小寫，不對齊就 join 不到自己這台）'
+  );
+  assert.equal(bg.storage.deviceWriteCount(), 0, '形狀合法就不是重生的理由，不得重寫 syncDevice');
+
+  const res = await bg.send(
+    { type: 'sync.devices.remove', deviceId: MIXED_DEVICE_ID },
+    EXT_PAGE_SENDER
+  );
+  assert.deepEqual(
+    plain(res.response),
+    { ok: false, code: 'current_device' },
+    '兩邊寫法不同不得讓使用者把正在用的這台移除掉'
+  );
+  assert.equal(bg.sync.callsTo('removeDevice').length, 0, '被擋下的 remove 不得打到引擎');
+});
+
+test('B1 ensureDevice:storage 裡的 deviceId 形狀不合時重生一組合法 id 並落地', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: { deviceId: 'garbage', platform: 'chrome_extension', createdAt: 1700000000000 },
+    },
+  });
+
+  const local = await localDeviceOf(bg);
+  assert.match(
+    local.deviceId,
+    DEVICE_UUID_LOWER,
+    '髒值當不成識別碼：當路徑參數會被伺服器退件，seen 也會被 sanitizeSeenList 剝掉'
+  );
+
+  await settle(400);
+  const device = bg.device();
+  assert.match(device.deviceId, DEVICE_UUID_LOWER, '重生的身分要落地，SW 回收後不得又換一組');
+  assert.equal(device.deviceId, local.deviceId, '落地的與回傳的必須是同一組');
+});
+
 // ---- §2 四條紀錄路徑帶 deviceId ----
 
 test('B2 歸屬:share 路徑寫入的 seen 事件帶本機 deviceId', async () => {

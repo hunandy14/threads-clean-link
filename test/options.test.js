@@ -950,7 +950,7 @@ function makeNode(tag, ownerDoc) {
       if (n.parentNode === node) n.parentNode = null;
       return n;
     },
-    // <input> 進入編輯態時的全選,行為上對測試無影響，補上避免炸。
+    // <input> 進入編輯態時的全選，行為上對測試無影響，補上避免炸。
     select() {},
     addEventListener(type, fn) {
       if (!listeners[type]) listeners[type] = [];
@@ -3682,7 +3682,7 @@ test('帳號選單:開啟時焦點進第一個可用項目，方向鍵在項目�
   // 已登入/非錯誤/非過期態下，第一個可用項目是「立即同步」。
   assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSyncNowBtn, '開啟時焦點應落在第一個可用項目');
 
-  // 【規格翻轉,D16(2026-09-07 更新)】選單順序納入「管理裝置」:立即同步 →
+  // 【規格翻轉，D16(2026-09-07 更新)】選單順序納入「管理裝置」:立即同步 →
   // 管理裝置 → 登出 → 刪除雲端資料。裝置管理屬帳號層級、非破壞性，排在
   // 登出之前;破壞性的刪除雲端資料仍固定壓軸。方向鍵導覽是選單順序的鏡
   // 像，四項都要在循環內。
@@ -3739,7 +3739,7 @@ test('帳號選單:管理裝置隱藏時(登入過期)方向鍵仍為原三項�
   ];
   assert.equal(ctx.doc.activeElement, order[0], '開啟時聚焦第一個可用項目');
 
-  // 走完一整圈再多一步,確認循環長度就是三，中途一次都不落在隱藏的管理裝置。
+  // 走完一整圈再多一步，確認循環長度就是三，中途一次都不落在隱藏的管理裝置。
   for (let i = 1; i <= order.length; i++) {
     ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
     assert.equal(
@@ -4858,7 +4858,11 @@ test('裝置管理:移除失敗({ok:false})時該列保留，並以 toast 回報
 
 // ---- 行內改名 ----
 
-test('裝置管理:點鉛筆進入行內編輯(maxlength 80、值預填)，Enter 送 sync.devices.rename 並更新名稱', async () => {
+// 【規格翻轉，整體審查 S3】原斷言要求 input.maxLength 為 80。上限的單位是
+// code point(§12)，maxlength 卻以 UTF-16 單位計數，兩者只在純 BMP 字元下才
+// 相等——設 80 等於讓使用者打到第 41 個 emoji 就被瀏覽器擋住。長度改由送出
+// 前以 code point 截斷把關，DOM 層不再設會截半的上限。
+test('裝置管理:點鉛筆進入行內編輯(值預填)，Enter 送 sync.devices.rename 並更新名稱', async () => {
   const ctx = makeDeviceCtx();
   await ctx.controller.init();
   await settle();
@@ -4872,7 +4876,10 @@ test('裝置管理:點鉛筆進入行內編輯(maxlength 80、值預填)，Enter
 
   const input = nameInputOf(rowById(ctx.doc, DEV_PIXEL));
   assert.ok(input, '點鉛筆應把名稱換成 <input>');
-  assert.equal(input.maxLength, 80, '名稱上限 80 code point(§12)');
+  assert.ok(
+    !(input.maxLength > 0) || input.maxLength >= 160,
+    'DOM 層不得掛上會把 80 code point 名稱截半的 maxlength(§12 上限以 code point 計)'
+  );
   assert.equal(input.value, 'Pixel 8', '值應預填目前名稱');
 
   input.value = '我的手機';
@@ -5280,4 +5287,126 @@ test('裝置管理:本機這台 name 缺席時列上顯示清單回應的頂層 
     joinedText(pixelRow).includes('未知裝置'),
     '別台沒有名字、也算不出預設名時才顯示未知裝置'
   );
+});
+
+// ---- 整體審查回歸(2026-09-07) ----
+
+// F1:「從未取得過清單」與「取到了但 join 不到」是兩件事，deviceCache 為 null
+// 時把每一筆有歸屬的紀錄都標成「未知裝置」，等於告訴使用者那些裝置已經不在
+// 了。使用者只要沒開過帳號選單/裝置對話框就一定落在這條路徑上——也就是絕大
+// 多數只是來翻紀錄的人。沒有清單就不畫歸屬(§4 三守則的前提是「有清單」)。
+test('裝置管理:從未取得清單(deviceCache 為 null)時不標「未知裝置」，詳細視窗裝置列不畫', async () => {
+  const ctx = makeDeviceCtx({ history: deviceHistory() });
+  await ctx.controller.init();
+  await settle();
+
+  // 刻意不開帳號選單/裝置對話框:清單一次都沒往返過。
+  assert.equal(callsOfType(ctx.runtime, 'sync.devices.list').length, 0, '前置:沒有任何清單往返');
+
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(ctx.doc.ids.detailDeviceRow.hidden, true, '沒有清單可 join 就整列不畫');
+  assert.equal(ctx.doc.ids.detailDeviceName.textContent, '', '不得留下殘字');
+
+  ctx.doc.ids.detailTimelineBtn.fire('click');
+  const tRows = ctx.doc.ids.detailTimeline.children;
+  assert.equal(tRows.length, 2, '兩筆 seen 各一列');
+  tRows.forEach((row) => {
+    assert.equal(
+      joinedText(row).includes('未知裝置'),
+      false,
+      '沒有清單時時間軸不得出現「未知裝置」'
+    );
+  });
+
+  // 對照組:清單取過了、這筆的 deviceId 就是不在裡面(裝置已被移除)——這才是
+  // 「未知裝置」該出現的唯一情境(既有行為，不得被上面那條放寬掉)。
+  const joined = makeDeviceCtx({ history: deviceHistory(DEV_GONE) });
+  await joined.controller.init();
+  await settle();
+  await warmDeviceCache(joined);
+  joined.doc.ids.rows.children[0].fire('click');
+  assert.equal(joined.doc.ids.detailDeviceRow.hidden, false, '有清單但 join 不到仍要畫列');
+  assert.equal(joined.doc.ids.detailDeviceName.textContent, '未知裝置', 'join 不到才是未知裝置');
+});
+
+// S2:語言切換由 renderAll 統一重畫，但裝置列是 JS 逐一 createElement 出來的
+// (沒有 data-i18n 可掃)，renderAll 不管它就整片停在舊語言。對話框沒有「關掉
+// 再開」以外的自我修復途徑，使用者在設定頁改語言時對話框正開著是常態。
+test('裝置管理:對話框開著時切換語言，裝置列文案(pill 與動作鈕 aria-label)跟著換', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const before = rowById(ctx.doc, DEV_THIS);
+  assert.ok(before, '前置:應畫出本機這台的列');
+  assert.ok(joinedText(before).includes('這台裝置'), '前置:pill 為中文');
+
+  ctx.controller.setSyncSettings({ langPref: { newValue: 'en', oldValue: 'zh' } });
+  await settle();
+
+  const after = rowById(ctx.doc, DEV_THIS);
+  assert.ok(after, '換語言後該列仍在');
+  assert.ok(joinedText(after).includes('This device'), 'pill 應換成 en 的 opDeviceThisDevice');
+  assert.equal(joinedText(after).includes('這台裝置'), false, '不得殘留舊語言');
+
+  // 名稱鈕本身也帶 dataset.act="rename"(點名稱＝改名)，這裡要的是右側那顆
+  // 帶 aria-label 的鉛筆鈕。
+  const renameBtn = walkNodes(after, []).filter(
+    (n) =>
+      n.dataset && n.dataset.act === 'rename' && classListOf(n).indexOf('device-quick-btn') !== -1
+  )[0];
+  assert.ok(renameBtn, '該列應有鉛筆鈕');
+  assert.equal(
+    renameBtn.getAttribute('aria-label'),
+    i18n.t('en', 'opDeviceRename') + ' My Laptop',
+    '螢幕閱讀器唸的 aria-label 同樣要換語言'
+  );
+});
+
+// S3:名稱上限是 80 **code point**(§12，handler 端以 Array.from().length 驗)。
+// input 的 maxlength 卻是以 UTF-16 單位計數:掛 80 等於只讓使用者打 40 個
+// emoji，而 UI 又完全不截斷，81 個 code point 的名字會原樣送到 handler 被回
+// bad_device_name——上限兩端各錯一邊。
+const DEV_EMOJI = '🐶'; // 一個 code point、兩個 UTF-16 單位
+test('裝置管理:名稱長度以 code point 計——80 個 emoji 原樣送出，81 個才截到 80', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const exact = DEV_EMOJI.repeat(80);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+  actBtn(pixelRow, 'rename').fire('click');
+  const pixelInput = nameInputOf(rowById(ctx.doc, DEV_PIXEL));
+  assert.ok(pixelInput, '點鉛筆應把名稱換成 <input>');
+  assert.ok(
+    !(pixelInput.maxLength > 0) || pixelInput.maxLength >= 160,
+    'maxlength 以 UTF-16 單位計數，設成 80 會讓合法的 80 code point 名稱打不完'
+  );
+  pixelInput.value = exact;
+  pixelInput.fire('keydown', keyEvent('Enter'));
+  await settle();
+
+  const sent = callsOfType(ctx.runtime, 'sync.devices.rename');
+  assert.equal(sent.length, 1, '應送出一次改名');
+  assert.equal(Array.from(sent[0].name).length, 80, '80 個 emoji 是 80 code point，不得被截成 40');
+  assert.equal(sent[0].name, exact, '在上限之內就原樣送出');
+
+  const macRow = rowById(ctx.doc, DEV_MAC);
+  assert.ok(macRow, '應畫出 mac 那一列');
+  actBtn(macRow, 'rename').fire('click');
+  const macInput = nameInputOf(rowById(ctx.doc, DEV_MAC));
+  assert.ok(macInput, '點鉛筆應把名稱換成 <input>');
+  macInput.value = DEV_EMOJI.repeat(81);
+  macInput.fire('keydown', keyEvent('Enter'));
+  await settle();
+
+  const overflow = callsOfType(ctx.runtime, 'sync.devices.rename').slice(-1)[0];
+  assert.equal(overflow.deviceId, DEV_MAC, '第二次改的是 mac 那一列');
+  assert.equal(Array.from(overflow.name).length, 80, '超過上限時以 code point 截到 80');
+  assert.equal(overflow.name, exact, '截斷不得切在代理對中間(切出半顆 emoji)');
 });
