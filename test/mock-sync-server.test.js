@@ -21,6 +21,15 @@
 //
 // 錯誤 body 形狀沿用既有總表：`{ "error": "<code>" }`（mock 既有 401／415／422 皆同）。
 //
+// PM 裁決（2026-09-07，後端會話離線期間暫行）：
+// 1. name 正規化 ＝ 剝控制字元 ＋ trim，純空白同樣 422 `bad_device_name`。
+// 2. 裝置三端點與 `/api/v1/links` **共用**同一個 per-user 限流桶（契約字面）。
+// 3. lastSeenAt 節流維持嚴格「距上次 >30 分鐘」。
+// 4. sync 內嵌 device 首次註冊缺 platform ＝ 無效區塊，靜默丟棄不建立。
+// 5. DELETE 的 deviceId 驗證先於冪等：爛 id 回 422 `bad_device_id`。
+// 6. sync 內嵌註冊同樣觸發 200 台淘汰。
+// 7. GET 每項嚴格五欄。
+//
 // 備註：契約寫「Bearer＋csrfGuard＋per-user 限流」，但既有 mock 並未實作 origin
 // 檢查（403 `forbidden_origin` 只能靠 `failNext` 注入），故本檔不測 403。
 'use strict';
@@ -28,7 +37,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
+const { createMockSyncServer, RATE_LIMIT_MAX } = require('./helpers/mock-sync-server.js');
 
 const BASE = 'https://api.metalinkclearer.workers.dev';
 const T0 = 1_700_000_000_000;
@@ -261,6 +270,19 @@ test('PUT /api/v1/devices：name 正規化後為空回 422 bad_device_name', asy
   assert.deepEqual((await devicesOf(h)).devices, []);
 });
 
+test('PUT /api/v1/devices：name 只有空白時 trim 後為空，回 422 bad_device_name', async () => {
+  const h = harness();
+  const blank = await h.putDevice(DEV_A, { name: '   ', platform: 'chrome_extension' });
+  assert.equal(blank.status, 422);
+  assert.deepEqual(await blank.json(), { error: 'bad_device_name' });
+  assert.deepEqual((await devicesOf(h)).devices, [], '不得留下空名裝置');
+
+  // 正規化 ＝ 剝控制字元 ＋ trim：前後空白剝掉後還有字就照收。
+  const kept = await h.putDevice(DEV_A, { name: '  桌機  ', platform: 'chrome_extension' });
+  assert.equal(kept.status, 200);
+  assert.equal((await kept.json()).device.name, '桌機');
+});
+
 test('PUT /api/v1/devices：deviceId 非 UUID 回 422 bad_device_id', async () => {
   const h = harness();
   for (const bad of ['not-a-uuid', '1234', '11111111-2222-4333-8444-55555555555', 'zzzzzzzz-2222-4333-8444-555555555555']) {
@@ -479,6 +501,28 @@ test('sync：無效 device 區塊靜默丟棄，連結照常同步且不回錯',
   }
 });
 
+test('sync：內嵌 device 首次註冊缺 platform 視為無效，靜默丟棄不建立', async () => {
+  const h = harness();
+  await h.putDevice(DEV_B, { name: '既有裝置', platform: 'android' });
+
+  const res = await h.sync({
+    upserts: [linkItem()],
+    deletes: [],
+    device: { deviceId: DEV_A, name: 'Chrome on Windows' },
+  });
+  assert.equal(res.status, 200, '不得回錯');
+  const body = await res.json();
+  assert.equal(body.error, undefined);
+  assert.equal(body.applied.upserts.length, 1, '連結照常同步');
+
+  const { devices } = await devicesOf(h);
+  assert.deepEqual(
+    devices.map((d) => d.deviceId),
+    [DEV_B],
+    '缺 platform 的新裝置不得建立，既有裝置不受影響'
+  );
+});
+
 test('sync：seen[].deviceId 非 UUID 視為未提供', async () => {
   const h = harness();
   await h.sync({
@@ -546,23 +590,66 @@ test('sync：GET links 與 changes 回填的 seen 帶 deviceId，舊事件為 nu
 // 每帳號 200 台上限
 // ============================================================================
 
-test('每帳號上限 200 台：超過時淘汰 lastSeenAt 最舊者且不回錯', async () => {
-  const h = harness();
-  // 每台間隔 61 秒，順便讓 per-user 限流視窗（60 次／60 秒）不會誤觸。
-  for (let i = 0; i < 200; i += 1) {
+// 塞滿 n 台裝置：每台間隔 61 秒，讓 lastSeenAt 嚴格遞增（淘汰順序可預期），
+// 同時讓共用的 per-user 限流視窗（60 次／60 秒）每輪歸零。
+async function seedDevices(h, count) {
+  for (let i = 0; i < count; i += 1) {
     const res = await h.putDevice(uuidOf(i), { name: `d${i}`, platform: 'chrome_extension' });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 200, `第 ${i} 台裝置應建立成功`);
     h.advance(61_000);
   }
+}
+
+function assertEvictedOldest(devices, newDeviceId) {
+  const ids = devices.map((d) => d.deviceId);
+  assert.equal(devices.length, 200, '維持 200 台');
+  assert.equal(ids.includes(newDeviceId), true, '新裝置留下');
+  assert.equal(ids.includes(uuidOf(0)), false, 'lastSeenAt 最舊者被淘汰');
+  assert.equal(ids.includes(uuidOf(1)), true, '只淘汰溢位的那一台');
+}
+
+test('每帳號上限 200 台：PUT 超過時淘汰 lastSeenAt 最舊者且不回錯', async () => {
+  const h = harness();
+  await seedDevices(h, 200);
   assert.equal((await devicesOf(h)).devices.length, 200);
 
   const overflow = await h.putDevice(uuidOf(200), { name: 'd200', platform: 'chrome_extension' });
   assert.equal(overflow.status, 200, '超過上限不回錯');
 
-  const { devices } = await devicesOf(h);
-  const ids = devices.map((d) => d.deviceId);
-  assert.equal(devices.length, 200, '維持 200 台');
-  assert.equal(ids.includes(uuidOf(200)), true, '新裝置留下');
-  assert.equal(ids.includes(uuidOf(0)), false, 'lastSeenAt 最舊者被淘汰');
-  assert.equal(ids.includes(uuidOf(1)), true, '只淘汰溢位的那一台');
+  assertEvictedOldest((await devicesOf(h)).devices, uuidOf(200));
+});
+
+test('每帳號上限 200 台：sync 內嵌註冊同樣觸發淘汰', async () => {
+  const h = harness();
+  await seedDevices(h, 200);
+
+  const res = await h.sync({
+    upserts: [linkItem()],
+    deletes: [],
+    device: { deviceId: DEV_A, name: '第 201 台', platform: 'chrome_extension' },
+  });
+  assert.equal(res.status, 200, '超過上限不回錯');
+  const body = await res.json();
+  assert.equal(body.applied.upserts.length, 1, '連結照常同步');
+
+  assertEvictedOldest((await devicesOf(h)).devices, DEV_A);
+});
+
+test('裝置三端點與 links 共用 per-user 限流桶，超量回 429 rate_limited', async () => {
+  const h = harness();
+  // 時鐘不動：60 次都落在同一個 60 秒視窗內，把桶打滿。
+  for (let i = 0; i < RATE_LIMIT_MAX; i += 1) {
+    const res = await h.listLinks();
+    assert.equal(res.status, 200, `第 ${i + 1} 次 links 請求應在額度內`);
+  }
+
+  const list = await h.listDevices();
+  assert.equal(list.status, 429);
+  assert.deepEqual(await list.json(), { error: 'rate_limited', retryAfter: 60 });
+  assert.equal(list.headers.get('retry-after'), '60');
+
+  const put = await h.putDevice(DEV_A, { name: '桌機', platform: 'chrome_extension' });
+  assert.equal(put.status, 429, 'PUT 也吃同一個桶');
+  const del = await h.deleteDevice(DEV_A);
+  assert.equal(del.status, 429, 'DELETE 也吃同一個桶');
 });
