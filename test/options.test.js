@@ -930,8 +930,28 @@ function makeNode(tag, ownerDoc) {
     },
     appendChild(n) {
       this.children.push(n);
+      n.parentNode = node;
       return n;
     },
+    // 行內編輯(裝置改名)要在既有節點前插入 input、收尾再把 input 拔掉;
+    // parentNode 也一併記錄，讓「拿到 input 就能移除自己」這種真實 DOM
+    // 寫法在 stub 下也成立。ref 不在子節點內時退化成 append(比照真 DOM
+    // 會丟 NotFoundError 過於嚴苛，測試只需要順序正確)。
+    insertBefore(n, ref) {
+      const idx = this.children.indexOf(ref);
+      if (idx === -1) this.children.push(n);
+      else this.children.splice(idx, 0, n);
+      n.parentNode = node;
+      return n;
+    },
+    removeChild(n) {
+      const idx = this.children.indexOf(n);
+      if (idx !== -1) this.children.splice(idx, 1);
+      if (n.parentNode === node) n.parentNode = null;
+      return n;
+    },
+    // <input> 進入編輯態時的全選,行為上對測試無影響，補上避免炸。
+    select() {},
     addEventListener(type, fn) {
       if (!listeners[type]) listeners[type] = [];
       listeners[type].push(fn);
@@ -4303,4 +4323,746 @@ test('L5 帳號入口:status=syncing 但沒有 email／displayName 時同樣退�
   assert.equal(ctx.doc.ids.statusDot.hidden, true);
   assert.equal(ctx.doc.ids.acctHeaderName.textContent, '', '不得留下空白名字');
   assert.equal(ctx.doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNote'), '沒登入就不能說已同步');
+});
+
+// ============================================================
+// 裝置管理(0.7 裝置歸屬)——帳號選單入口、裝置對話框、行內改名/移除，
+// 以及紀錄詳細視窗的裝置顯示。規格:tmp/device-attribution-plan.md
+// §6(UI 落點與 i18n key)、§10(列上直接顯示「新增於 <日期> · 最後同步
+// <相對時間>」)、§12(訊息協議定稿)。UI 定案:device-page-demo.html。
+//
+// 【DOM 契約】以下落點由本組測試釘死，實作端須照此產生節點:
+//   - 帳號選單:#acctManageDevicesBtn(選單項)、#acctDeviceCount(右側台數)
+//   - 對話框:#devicesOverlay、#devicesClose、#deviceList、#deviceEmpty、
+//     #deviceEmptySyncBtn、#devicesError(取清單失敗時的錯誤列)
+//   - 裝置列:直接掛在 #deviceList 底下，row.dataset.id = deviceId;列內
+//     兩顆動作鈕以 dataset.act 標記('rename' / 'remove')
+//   - 詳細視窗:#detailDeviceRow、#detailDeviceName
+//   - 時間軸:每列 kind 之後接一個 className 為 'timeline-device' 的 span
+//   節點一律以 createElement/createElementNS 產生(計畫 §6)，不得走
+//   innerHTML——名稱是使用者可自訂的字串，等於別台裝置寫進本頁的內容。
+//
+// 【訊息協議】UI 只透過 runtime.sendMessage 送 sync.devices.list /
+// rename / remove 三則訊息(§12)，測試以 stub 回應，不碰 background/sync。
+// ============================================================
+
+// UUID v4 形狀(TCLCore.normalizeDeviceId 的門檻)。
+const DEV_THIS = '11111111-1111-4111-8111-111111111111';
+const DEV_PIXEL = '22222222-2222-4222-8222-222222222222';
+const DEV_MAC = '33333333-3333-4333-8333-333333333333';
+// 只出現在紀錄的 seen[] 裡、不在裝置清單內的 id(已移除的裝置)。
+const DEV_GONE = '44444444-4444-4444-8444-444444444444';
+
+const DEV_MIN = 60000;
+const DEV_HOUR = 3600000;
+const DEV_DAY = 86400000;
+const DEV_NOW = 1767225600000;
+
+// 本機這台刻意給「最舊」的 lastSeenAt:排序規則是「本機置頂、其餘
+// lastSeenAt DESC」，若本機也最新就分不出是置頂還是純 DESC。
+// 期望順序:this(置頂) → mac(30 分鐘前) → pixel(3 小時前)。
+function makeDevices(patch) {
+  const list = [
+    {
+      deviceId: DEV_PIXEL,
+      name: 'Pixel 8',
+      platform: 'android',
+      createdAt: DEV_NOW - 30 * DEV_DAY,
+      lastSeenAt: DEV_NOW - 3 * DEV_HOUR,
+    },
+    {
+      deviceId: DEV_THIS,
+      name: 'My Laptop',
+      // 本機這台被改過名後，行內編輯清空要回退的預設名(§10)。UI 端算不出
+      // OS，只能由 background 隨清單帶回。
+      defaultName: 'Chrome on Windows',
+      platform: 'chrome_extension',
+      createdAt: DEV_NOW - 60 * DEV_DAY,
+      lastSeenAt: DEV_NOW - 2 * DEV_DAY,
+    },
+    {
+      deviceId: DEV_MAC,
+      name: 'Chrome on macOS',
+      platform: 'chrome_extension',
+      createdAt: DEV_NOW - 90 * DEV_DAY,
+      lastSeenAt: DEV_NOW - 30 * DEV_MIN,
+    },
+  ];
+  if (!patch) return list;
+  return list.map((d) => Object.assign({}, d, patch[d.deviceId] || {}));
+}
+
+function deviceListOk(devices) {
+  return {
+    ok: true,
+    devices: devices || makeDevices(),
+    currentDeviceId: DEV_THIS,
+    fetchedAt: DEV_NOW,
+  };
+}
+
+const DEV_SIGNED_IN_STATE = {
+  status: 'signed_in',
+  email: 'user@example.com',
+  displayName: 'Hong',
+  avatarUrl: null,
+  lastSyncedAt: DEV_NOW - DEV_MIN,
+  pendingCount: 0,
+  lastError: null,
+  apiBase: '',
+};
+
+// 最小 DOM stub 的 getElementById 是「用到才補建」，doc.ids 只認 options.js
+// 實際碰過的 id。裝置管理這批節點在 options.html 裡是靜態存在的，這裡先一次
+// 補齊，讓斷言即使在實作尚未讀取該節點時也還是斷言失敗(而不是讀 undefined
+// 炸成 TypeError)。
+const DEV_STUB_IDS = [
+  'acctTrigger',
+  'acctMenu',
+  'acctManageDevicesBtn',
+  'acctDeviceCount',
+  'devicesOverlay',
+  'devicesClose',
+  'devicesError',
+  'deviceList',
+  'deviceEmpty',
+  'deviceEmptySyncBtn',
+  'detailOverlay',
+  'detailDeviceRow',
+  'detailDeviceName',
+  'detailTimeline',
+  'detailTimelineBtn',
+  'confirmOverlay',
+  'confirmTitleText',
+  'confirmDesc',
+  'confirmOk',
+  'rows',
+  'toast',
+];
+
+const DEV_SIGNED_OUT_STATE = {
+  status: 'signed_out',
+  email: null,
+  displayName: null,
+  avatarUrl: null,
+  lastSyncedAt: null,
+  pendingCount: 0,
+  lastError: null,
+  apiBase: '',
+};
+
+// listResponses 是佇列:每次 sync.devices.list 取一則，最後一則會重複沿用
+// (多數測試只需要固定回應，需要「第一次成功、第二次失敗」時才給兩則)。
+function makeDeviceCtx(opts) {
+  const o = opts || {};
+  const listQueue = o.listResponses ? o.listResponses.slice() : [deviceListOk(o.devices)];
+  const renameHandler =
+    o.rename || ((m) => ({ ok: true, device: { deviceId: m.deviceId, name: m.name } }));
+  const removeHandler = o.remove || (() => ({ ok: true }));
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: o.history || [] });
+  const doc = makeDocumentStub();
+  DEV_STUB_IDS.forEach((id) => doc.getElementById(id));
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => (o.signedOut ? DEV_SIGNED_OUT_STATE : DEV_SIGNED_IN_STATE),
+    'sync.devices.list': () => (listQueue.length > 1 ? listQueue.shift() : listQueue[0]),
+    'sync.devices.rename': (m) => renameHandler(m),
+    'sync.devices.remove': (m) => removeHandler(m),
+    'sync.now': () => ({ ok: true }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => DEV_NOW,
+    runtime,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+// 最小 DOM stub 的 getElementById 會即時補建節點，補建出來的節點 hidden
+// 預設 false——既有的 Esc/Tab 處理會把它們當成「開著的浮層」。開裝置對話框
+// 前先把其餘浮層釘成關閉態，讓斷言只反映裝置對話框自己的狀態。
+async function openDevicesDialog(ctx) {
+  ['detailOverlay', 'timelineOverlay', 'overlay', 'confirmOverlay', 'devicesOverlay'].forEach(
+    (id) => {
+      ctx.doc.getElementById(id).hidden = true;
+    }
+  );
+  ctx.doc.ids.acctTrigger.fire('click');
+  await settle();
+  ctx.doc.ids.acctManageDevicesBtn.fire('click');
+  await settle();
+}
+
+// 詳細視窗的裝置名走清單快取 join(計畫 §4)，先開一次對話框把快取灌熱。
+async function warmDeviceCache(ctx) {
+  await openDevicesDialog(ctx);
+  ctx.doc.ids.devicesClose.fire('click');
+  await settle();
+}
+
+function walkNodes(node, out) {
+  out.push(node);
+  (node.children || []).forEach((c) => walkNodes(c, out));
+  return out;
+}
+function joinedText(node) {
+  return walkNodes(node, [])
+    .map((n) => n.textContent || '')
+    .join(' ');
+}
+function useHrefs(node) {
+  return walkNodes(node, [])
+    .filter((n) => n.tag === 'use')
+    .map((n) => n.getAttribute('href'));
+}
+function classListOf(node) {
+  const cls = node.className || node.getAttribute('class') || '';
+  return String(cls).split(/\s+/);
+}
+function findByClass(node, cls) {
+  return walkNodes(node, []).filter((n) => classListOf(n).indexOf(cls) !== -1);
+}
+function deviceRows(doc) {
+  return doc.getElementById('deviceList').children;
+}
+function rowById(doc, id) {
+  return deviceRows(doc).filter((r) => r.dataset && r.dataset.id === id)[0] || null;
+}
+function actBtn(row, act) {
+  return walkNodes(row, []).filter((n) => n.dataset && n.dataset.act === act)[0] || null;
+}
+function nameInputOf(row) {
+  return walkNodes(row, []).filter((n) => n.tag === 'input')[0] || null;
+}
+function callsOfType(runtime, type) {
+  return runtime.calls.filter((c) => c && c.type === type);
+}
+function keyEvent(key) {
+  return { key: key, preventDefault() {}, stopPropagation() {} };
+}
+
+// 紀錄側:最新一筆 seen 帶 deviceId、較舊那筆缺席(缺席列不畫)。
+const DEV_ENTRY_AT = DEV_NOW - 5 * DEV_MIN;
+function deviceHistory(deviceId) {
+  return [
+    {
+      url: CARD_URL_A,
+      kind: 'share',
+      at: DEV_ENTRY_AT,
+      seen: [
+        { at: DEV_ENTRY_AT, kind: 'share', deviceId: deviceId || DEV_PIXEL },
+        { at: DEV_ENTRY_AT - DEV_HOUR, kind: 'strip' },
+      ],
+    },
+  ];
+}
+
+// ---- 帳號選單入口 ----
+
+test('裝置管理:帳號選單在「立即同步」與「登出」之間有管理裝置項，右側顯示台數', async () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.ok(html.includes('id="acctManageDevicesBtn"'), 'options.html 應有 #acctManageDevicesBtn 選單項');
+  assert.ok(html.includes('id="acctDeviceCount"'), 'options.html 應有 #acctDeviceCount 台數');
+  const syncIdx = html.indexOf('id="acctSyncNowBtn"');
+  const manageIdx = html.indexOf('id="acctManageDevicesBtn"');
+  const signOutIdx = html.indexOf('id="acctSignOutBtn"');
+  assert.ok(syncIdx < manageIdx && manageIdx < signOutIdx, '管理裝置應插在立即同步與登出之間(§6)');
+
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  ctx.doc.ids.acctTrigger.fire('click');
+  await settle();
+
+  assert.equal(ctx.doc.ids.acctManageDevicesBtn.hidden, false, '已登入時應顯示管理裝置項');
+  assert.equal(ctx.doc.ids.acctDeviceCount.hidden, false, '有裝置時應顯示台數');
+  assert.equal(
+    ctx.doc.ids.acctDeviceCount.textContent,
+    i18n.fmt('zh', 'opDeviceCount', { n: 3 }),
+    '台數取自 sync.devices.list 回應的 devices.length'
+  );
+});
+
+test('裝置管理:清單為 0 台時台數整個收掉，不顯示「0 台」', async () => {
+  const ctx = makeDeviceCtx({ listResponses: [deviceListOk([])] });
+  await ctx.controller.init();
+  await settle();
+  ctx.doc.ids.acctTrigger.fire('click');
+  await settle();
+
+  assert.equal(ctx.doc.ids.acctManageDevicesBtn.hidden, false, '0 台仍可進對話框(空狀態有立即同步)');
+  assert.equal(ctx.doc.ids.acctDeviceCount.hidden, true, '0 台時台數 span 應隱藏');
+});
+
+test('裝置管理:未登入時管理裝置項隱藏，且不送 sync.devices.list', async () => {
+  const ctx = makeDeviceCtx({ signedOut: true });
+  await ctx.controller.init();
+  await settle();
+
+  assert.equal(ctx.doc.ids.acctManageDevicesBtn.hidden, true, '未登入時不得出現管理裝置項');
+  assert.equal(ctx.doc.ids.acctDeviceCount.hidden, true, '台數也一併收掉');
+  assert.equal(callsOfType(ctx.runtime, 'sync.devices.list').length, 0, '未登入不打裝置清單');
+});
+
+// ---- 對話框與裝置列 ----
+
+test('裝置管理:點管理裝置關閉選單並開啟對話框，開啟時送 sync.devices.list', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+
+  const before = ctx.runtime.calls.length;
+  await openDevicesDialog(ctx);
+
+  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '點下去應收合帳號選單');
+  assert.equal(ctx.doc.ids.devicesOverlay.hidden, false, '應開啟裝置對話框');
+  assert.ok(
+    ctx.runtime.calls.slice(before).some((c) => c && c.type === 'sync.devices.list'),
+    '開啟對話框時應送 sync.devices.list(§4 ①)'
+  );
+});
+
+test('裝置管理:裝置列本機置頂、其餘 lastSeenAt DESC，含平台圖示/名稱/這台裝置 pill/第二行時間', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const rows = deviceRows(ctx.doc);
+  assert.equal(rows.length, 3, '三台裝置應各畫一列');
+  assert.deepEqual(
+    rows.map((r) => r.dataset.id),
+    [DEV_THIS, DEV_MAC, DEV_PIXEL],
+    '本機置頂，其餘依 lastSeenAt DESC'
+  );
+
+  const thisRow = rowById(ctx.doc, DEV_THIS);
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(thisRow, '應畫出本機這台的列');
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+
+  // 平台圖示:chrome_extension → #i-chrome，android/ios → #i-smartphone。
+  assert.ok(useHrefs(thisRow).indexOf('#i-chrome') !== -1, 'chrome_extension 應用 #i-chrome');
+  assert.ok(useHrefs(pixelRow).indexOf('#i-smartphone') !== -1, 'android 應用 #i-smartphone');
+
+  // 名稱與「這台裝置」pill(文案照抄 demo)。
+  assert.ok(joinedText(thisRow).includes('My Laptop'), '應顯示裝置名稱');
+  assert.ok(joinedText(thisRow).includes('這台裝置'), '本機這台應帶「這台裝置」pill');
+  assert.equal(joinedText(pixelRow).includes('這台裝置'), false, '別台不得帶 pill');
+
+  // 第二行:「新增於 <日期> · 最後同步 <相對時間>」(§10)。日期不硬編換算
+  // 後的字串(換時區就炸)，只驗格式;相對時間走既有 relTime 文案。
+  const pixelText = joinedText(pixelRow);
+  assert.match(pixelText, /\d{4}-\d{2}-\d{2}/, '第二行應含「新增於」的日期');
+  assert.ok(
+    pixelText.includes(i18n.fmt('zh', 'opRelHour', { n: 3 })),
+    '第二行應含「最後同步」的相對時間(3 小時前)'
+  );
+  assert.ok(
+    joinedText(thisRow).includes(i18n.fmt('zh', 'opRelDays', { n: 2 })),
+    '本機這台的相對時間為 2 天前'
+  );
+});
+
+test('裝置管理:裝置名以文字節點呈現，含標籤的名稱不會走 innerHTML 通道', async () => {
+  const evil = '<b>hax</b> Mac';
+  const ctx = makeDeviceCtx({ devices: makeDevices({ [DEV_MAC]: { name: evil } }) });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const macRow = rowById(ctx.doc, DEV_MAC);
+  assert.ok(macRow, '應畫出 mac 那一列');
+  assert.ok(joinedText(macRow).includes(evil), '名稱應原樣以文字呈現');
+  assert.equal(
+    walkNodes(macRow, []).some((n) => 'innerHTML' in n),
+    false,
+    '裝置列不得以 innerHTML 產生(§6:一律 createElement)'
+  );
+});
+
+// ---- 移除 ----
+
+test('裝置管理:本機這台的移除鈕 disabled，別台移除先跳確認框(文案照 demo)，確認後送 sync.devices.remove', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const thisRow = rowById(ctx.doc, DEV_THIS);
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(thisRow, '應畫出本機這台的列');
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+
+  const thisRemove = actBtn(thisRow, 'remove');
+  assert.ok(thisRemove, '每一列都應有 dataset.act="remove" 的移除鈕');
+  assert.equal(thisRemove.disabled, true, '正在使用的裝置不可移除');
+
+  const pixelRemove = actBtn(pixelRow, 'remove');
+  assert.ok(pixelRemove, 'Pixel 8 那一列應有移除鈕');
+  pixelRemove.fire('click');
+
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '移除應先開確認框，不直接刪');
+  assert.equal(
+    ctx.doc.ids.confirmTitleText.textContent,
+    '移除「Pixel 8」？',
+    '確認框標題帶裝置名(opDeviceRemoveTitle)'
+  );
+  assert.equal(
+    ctx.doc.ids.confirmDesc.textContent,
+    '這只會把它從裝置清單移除，不會將它登出。如果那台裝置仍然登入，下次同步時會再次出現。',
+    '確認框內文照 demo(opDeviceRemoveDesc)'
+  );
+  assert.equal(ctx.doc.ids.confirmOk.textContent, '移除', '確認鈕文案為「移除」(opDeviceRemove)');
+  assert.equal(
+    callsOfType(ctx.runtime, 'sync.devices.remove').length,
+    0,
+    '尚未確認，不得送出移除'
+  );
+
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'sync.devices.remove'),
+    [{ type: 'sync.devices.remove', deviceId: DEV_PIXEL }],
+    '確認後才送 sync.devices.remove(§12)'
+  );
+  assert.deepEqual(
+    deviceRows(ctx.doc).map((r) => r.dataset.id),
+    [DEV_THIS, DEV_MAC],
+    '成功後該列消失'
+  );
+  assert.equal(
+    ctx.doc.ids.acctDeviceCount.textContent,
+    i18n.fmt('zh', 'opDeviceCount', { n: 2 }),
+    '台數應同步更新'
+  );
+});
+
+test('裝置管理:移除失敗({ok:false})時該列保留，並以 toast 回報', async () => {
+  const ctx = makeDeviceCtx({ remove: () => ({ ok: false, code: 'server_error' }) });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+  const removeBtn = actBtn(pixelRow, 'remove');
+  assert.ok(removeBtn, 'Pixel 8 那一列應有移除鈕');
+  removeBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    deviceRows(ctx.doc).map((r) => r.dataset.id),
+    [DEV_THIS, DEV_MAC, DEV_PIXEL],
+    '失敗時該列必須留著，不能樂觀刪掉'
+  );
+  assert.notEqual(ctx.doc.ids.toast.textContent, '', '失敗應有 toast，不留下「按了沒反應」');
+});
+
+// ---- 行內改名 ----
+
+test('裝置管理:點鉛筆進入行內編輯(maxlength 80、值預填)，Enter 送 sync.devices.rename 並更新名稱', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+  const renameBtn = actBtn(pixelRow, 'rename');
+  assert.ok(renameBtn, '每一列都應有 dataset.act="rename" 的鉛筆鈕');
+  renameBtn.fire('click');
+
+  const input = nameInputOf(rowById(ctx.doc, DEV_PIXEL));
+  assert.ok(input, '點鉛筆應把名稱換成 <input>');
+  assert.equal(input.maxLength, 80, '名稱上限 80 code point(§12)');
+  assert.equal(input.value, 'Pixel 8', '值應預填目前名稱');
+
+  input.value = '我的手機';
+  input.fire('keydown', keyEvent('Enter'));
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'sync.devices.rename'),
+    [{ type: 'sync.devices.rename', deviceId: DEV_PIXEL, name: '我的手機' }],
+    'Enter 應送出改名訊息(§12)'
+  );
+  await settle();
+
+  const after = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(after, '改名後該列仍在');
+  assert.equal(nameInputOf(after), null, '收尾應把 input 撤掉');
+  assert.ok(joinedText(after).includes('我的手機'), '成功後名稱應更新');
+});
+
+test('裝置管理:行內編輯按 Esc 還原原名且不送改名訊息', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+  const renameBtn = actBtn(pixelRow, 'rename');
+  assert.ok(renameBtn, 'Pixel 8 那一列應有鉛筆鈕');
+  renameBtn.fire('click');
+
+  const input = nameInputOf(rowById(ctx.doc, DEV_PIXEL));
+  assert.ok(input, '點鉛筆應把名稱換成 <input>');
+  input.value = '亂改的名字';
+  input.fire('keydown', keyEvent('Escape'));
+  await settle();
+
+  assert.equal(callsOfType(ctx.runtime, 'sync.devices.rename').length, 0, 'Esc 不得送出改名');
+  const after = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(after, 'Esc 後該列仍在');
+  assert.equal(nameInputOf(after), null, 'Esc 應收掉 input');
+  assert.ok(joinedText(after).includes('Pixel 8'), 'Esc 應還原原名');
+  assert.equal(joinedText(after).includes('亂改的名字'), false, '不得殘留未存的輸入');
+  assert.equal(
+    ctx.doc.ids.devicesOverlay.hidden,
+    false,
+    'Esc 由 input 自己吃掉，不得順手關掉裝置對話框'
+  );
+});
+
+test('裝置管理:名稱清空送出時回退預設名——本機這台用 defaultName，別台維持原名', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+  const pixelRename = actBtn(pixelRow, 'rename');
+  assert.ok(pixelRename, 'Pixel 8 那一列應有鉛筆鈕');
+  pixelRename.fire('click');
+  const pixelInput = nameInputOf(rowById(ctx.doc, DEV_PIXEL));
+  assert.ok(pixelInput, '點鉛筆應把名稱換成 <input>');
+  pixelInput.value = '   ';
+  pixelInput.fire('keydown', keyEvent('Enter'));
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'sync.devices.rename'),
+    [{ type: 'sync.devices.rename', deviceId: DEV_PIXEL, name: 'Pixel 8' }],
+    '別台清空時退回原名送出，不得送空字串(handler 端會回 bad_device_name)'
+  );
+
+  const thisRow = rowById(ctx.doc, DEV_THIS);
+  assert.ok(thisRow, '應畫出本機這台的列');
+  const thisRename = actBtn(thisRow, 'rename');
+  assert.ok(thisRename, '本機這台的列應有鉛筆鈕');
+  thisRename.fire('click');
+  const thisInput = nameInputOf(rowById(ctx.doc, DEV_THIS));
+  assert.ok(thisInput, '點鉛筆應把名稱換成 <input>');
+  thisInput.value = '';
+  thisInput.fire('keydown', keyEvent('Enter'));
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'sync.devices.rename').slice(-1),
+    [{ type: 'sync.devices.rename', deviceId: DEV_THIS, name: 'Chrome on Windows' }],
+    '本機這台清空時回退 TCLCore.defaultDeviceName 的預設名(§10)'
+  );
+});
+
+test('裝置管理:改名失敗({ok:false})時還原舊名，並以 toast 回報', async () => {
+  const ctx = makeDeviceCtx({ rename: () => ({ ok: false, code: 'server_error' }) });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+  const renameBtn = actBtn(pixelRow, 'rename');
+  assert.ok(renameBtn, 'Pixel 8 那一列應有鉛筆鈕');
+  renameBtn.fire('click');
+  const input = nameInputOf(rowById(ctx.doc, DEV_PIXEL));
+  assert.ok(input, '點鉛筆應把名稱換成 <input>');
+  input.value = '改不動的名字';
+  input.fire('keydown', keyEvent('Enter'));
+  await settle();
+
+  const after = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(after, '失敗後該列仍在');
+  assert.ok(joinedText(after).includes('Pixel 8'), '失敗應還原舊名(樂觀更新回滾)');
+  assert.equal(joinedText(after).includes('改不動的名字'), false, '不得留下沒存進去的名字');
+  assert.notEqual(ctx.doc.ids.toast.textContent, '', '失敗應有 toast');
+});
+
+// ---- 空狀態 ----
+
+test('裝置管理:0 台時顯示空狀態與立即同步鈕，點下去送 sync.now 後重新取清單', async () => {
+  const ctx = makeDeviceCtx({
+    listResponses: [deviceListOk([]), deviceListOk(makeDevices().slice(1, 2))],
+  });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  assert.equal(deviceRows(ctx.doc).length, 0, '0 台不畫任何列');
+  assert.equal(ctx.doc.ids.deviceList.hidden, true, '空狀態時清單容器收起');
+  assert.equal(ctx.doc.ids.deviceEmpty.hidden, false, '應顯示空狀態');
+  assert.ok(
+    joinedText(ctx.doc.ids.deviceEmpty).includes('找不到裝置，同步一次即可註冊這台裝置'),
+    '空狀態文案照 demo(opDeviceEmpty)'
+  );
+
+  const before = ctx.runtime.calls.length;
+  ctx.doc.ids.deviceEmptySyncBtn.fire('click');
+  await settle();
+
+  const after = ctx.runtime.calls.slice(before);
+  assert.ok(
+    after.some((c) => c && c.type === 'sync.now'),
+    '立即同步鈕應送 sync.now'
+  );
+  assert.ok(
+    after.some((c) => c && c.type === 'sync.devices.list'),
+    '同步完應重新取清單，讓剛註冊的這台顯示出來'
+  );
+  assert.equal(deviceRows(ctx.doc).length, 1, '重新取回的清單應畫出來');
+});
+
+// ---- 取清單失敗 ----
+
+test('裝置管理:取清單失敗時對話框顯示錯誤列，先前已有的列保留不清掉', async () => {
+  const ctx = makeDeviceCtx({
+    listResponses: [deviceListOk(), { ok: false, code: 'offline' }],
+  });
+  await ctx.controller.init();
+  await settle();
+
+  await openDevicesDialog(ctx);
+  assert.equal(deviceRows(ctx.doc).length, 3, '前置:第一次開啟應取到三台');
+  ctx.doc.ids.devicesClose.fire('click');
+  await settle();
+
+  await openDevicesDialog(ctx);
+  assert.notEqual(ctx.doc.ids.devicesError.textContent, '', '失敗應顯示錯誤列');
+  assert.equal(ctx.doc.ids.devicesError.hidden, false, '錯誤列應顯示');
+  assert.equal(deviceRows(ctx.doc).length, 3, '失敗不清既有快取(§12)');
+});
+
+// ---- Esc 疊層順序 ----
+
+test('裝置管理:Esc 逐層關閉——先關移除確認框，再關裝置對話框，焦點回帳號觸發鈕', async () => {
+  const ctx = makeDeviceCtx();
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '應畫出 Pixel 8 那一列');
+  const removeBtn = actBtn(pixelRow, 'remove');
+  assert.ok(removeBtn, 'Pixel 8 那一列應有移除鈕');
+  removeBtn.fire('click');
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '前置:確認框應開啟');
+
+  ctx.doc.fire('keydown', keyEvent('Escape'));
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, true, '第一次 Esc 只關確認框');
+  assert.equal(ctx.doc.ids.devicesOverlay.hidden, false, '裝置對話框仍開著');
+
+  ctx.doc.fire('keydown', keyEvent('Escape'));
+  assert.equal(ctx.doc.ids.devicesOverlay.hidden, true, '第二次 Esc 關裝置對話框');
+  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctTrigger, '關閉後焦點回 #acctTrigger');
+});
+
+// ---- 紀錄詳細視窗 ----
+
+test('裝置管理:詳細視窗畫出「裝置」kv 列，時間軸每列 kind 後接裝置名，deviceId 缺席的列不畫', async () => {
+  const ctx = makeDeviceCtx({ history: deviceHistory() });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(ctx.doc.ids.detailDeviceRow.hidden, false, 'seen 帶 deviceId 時應畫「裝置」列');
+  assert.equal(ctx.doc.ids.detailDeviceName.textContent, 'Pixel 8', '名稱由清單快取 join');
+  assert.ok(
+    useHrefs(ctx.doc.ids.detailDeviceRow).indexOf('#i-smartphone') !== -1,
+    'kv 列的圖示跟著平台走'
+  );
+
+  ctx.doc.ids.detailTimelineBtn.fire('click');
+  const tRows = ctx.doc.ids.detailTimeline.children;
+  assert.equal(tRows.length, 2, '兩筆 seen 各一列');
+  const newest = tRows[0].children[1];
+  assert.equal(newest.children.length, 3, '帶 deviceId 的列在 kind 之後多一個裝置名 span');
+  assert.equal(newest.children[2].className, 'timeline-device', '裝置名走 .timeline-device 小字');
+  assert.equal(newest.children[2].textContent, 'Pixel 8', '該事件的裝置名');
+  assert.equal(
+    tRows[1].children[1].children.length,
+    2,
+    'deviceId 缺席的事件只有時間與 kind，不畫裝置名'
+  );
+});
+
+test('裝置管理:seen 的 deviceId 在清單裡查不到時顯示「未知裝置」', async () => {
+  const ctx = makeDeviceCtx({ history: deviceHistory(DEV_GONE) });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(ctx.doc.ids.detailDeviceRow.hidden, false, 'join 不到仍要畫列(§4 三守則)');
+  assert.equal(ctx.doc.ids.detailDeviceName.textContent, '未知裝置', 'join 不到時的文案(opDeviceUnknown)');
+});
+
+test('裝置管理:seen 全無 deviceId 的早期紀錄，詳細視窗整列不畫(D27)', async () => {
+  const history = [
+    {
+      url: CARD_URL_A,
+      kind: 'share',
+      at: DEV_ENTRY_AT,
+      seen: [
+        { at: DEV_ENTRY_AT, kind: 'share' },
+        { at: DEV_ENTRY_AT - DEV_HOUR, kind: 'strip' },
+      ],
+    },
+  ];
+  const ctx = makeDeviceCtx({ history });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(ctx.doc.ids.detailDeviceRow.hidden, true, '沒有歸屬就整列不畫，不寫「未知裝置」');
+  assert.equal(ctx.doc.ids.detailDeviceName.textContent, '', '不得留下殘字');
+
+  ctx.doc.ids.detailTimelineBtn.fire('click');
+  const tRows = ctx.doc.ids.detailTimeline.children;
+  assert.equal(tRows.length, 2, '兩筆 seen 各一列');
+  tRows.forEach((row) => {
+    assert.equal(row.children[1].children.length, 2, '每列都只有時間與 kind');
+  });
+});
+
+// ---- 卡面守則(D27) ----
+
+test('裝置管理:卡面不出現任何裝置圖示或裝置名(D27，防人手癢)', async () => {
+  const ctx = makeDeviceCtx({ history: deviceHistory() });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  const card = ctx.doc.ids.rows.children[0];
+  assert.ok(card, '前置:應渲染出一張卡片');
+  const hrefs = useHrefs(card);
+  ['#i-chrome', '#i-smartphone', '#i-monitor-smartphone'].forEach((href) => {
+    assert.equal(hrefs.indexOf(href), -1, '卡面不得出現平台圖示 ' + href);
+  });
+  assert.equal(findByClass(card, 'entry-device-icon').length, 0, '卡面不得有裝置圖示節點');
+  assert.equal(joinedText(card).includes('Pixel 8'), false, '卡面不得出現裝置名');
+
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.equal(html.includes('entry-device-icon'), false, 'options.html 不得留卡面裝置圖示的樣式/標記');
 });

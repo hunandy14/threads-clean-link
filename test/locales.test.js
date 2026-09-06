@@ -107,3 +107,44 @@ test('locales:extName 與 extDesc 皆未超過 Chrome Web Store 字數上限', (
     );
   }
 });
+
+// ---- 6. 裝置管理(0.7 裝置歸屬)的 i18n key 兩語齊備 ----
+//
+// i18n.test.js 既有的 parity 測試只保證「zh 與 en 的鍵集合一致」——兩邊
+// 同時漏掉某個 key 一樣全綠。這裡按計畫 §6 的清單逐一釘住存在性，讓漏加
+// 文案在測試階段就爆，而不是等到 UI 上顯示出裸 key。
+// 文案本身走 i18n.js 的內建字典(非 _locales/，後者只給 manifest 的
+// extName/extDesc)，故從 i18n.js 讀。
+test('locales:裝置管理的 i18n key(計畫 §6)在 zh 與 en 皆存在且非空', () => {
+  const i18n = require(path.join(REPO_ROOT, 'i18n.js'));
+
+  const DEVICE_KEYS = [
+    'opAccountManageDevices',
+    'opDeviceCount',
+    'opDeviceThisDevice',
+    'opDeviceRename',
+    'opDeviceRemove',
+    'opDeviceRemoveDisabled',
+    'opDeviceRemoveTitle',
+    'opDeviceRemoveDesc',
+    'opDeviceEmpty',
+    'opDeviceLastSync',
+    'opDeviceUnknown',
+    'opDeviceRegisteredToast',
+  ];
+
+  for (const locale of ['zh', 'en']) {
+    for (const key of DEVICE_KEYS) {
+      const value = i18n.STRINGS[locale][key];
+      assert.equal(typeof value, 'string', `${locale}.${key} 應為字串`);
+      assert.ok(value.length > 0, `${locale}.${key} 不得為空字串`);
+    }
+  }
+
+  // 中文語句一律全形逗號(全域規範)。
+  for (const key of DEVICE_KEYS) {
+    const value = i18n.STRINGS.zh[key];
+    if (typeof value !== 'string') continue;
+    assert.ok(!value.includes(','), `zh.${key} 不得含半形逗號 ","`);
+  }
+});
