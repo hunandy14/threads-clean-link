@@ -304,12 +304,12 @@ function storageAreaAdapter(name) {
 
 // 本機這台的身分:{ deviceId, name?, platform, createdAt }。登出、刪雲端、清
 // 紀錄、匯入一律不碰它——重灌擴充才算換一台新裝置。name 缺席代表「用預設
-// 名」,預設名只在讀取時算(見 getLocalDevice),不固化進 storage。
+// 名」，預設名只在讀取時算(見 getLocalDevice)，不固化進 storage。
 const DEVICE_KEY = 'syncDevice';
 
 // 惰性初始化的 memo。不掛 onInstalled:那支只在安裝/更新的當下觸發一次，錯過
 // 就永遠不會有身分。實際的讀改寫掛在 enqueueHistoryWrite 的序列鏈上，與
-// recordHistory、兩支遷移串行,併發呼叫不會各生一組 deviceId 互相覆蓋。
+// recordHistory、兩支遷移串行，併發呼叫不會各生一組 deviceId 互相覆蓋。
 let localDevicePromise = null;
 
 // 已產生但尚未落地的新身分。刻意不在 ensureDevice 內就 storage.set:紀錄路徑
@@ -338,7 +338,7 @@ function ensureDevice() {
     return device;
   }).catch((err) => {
     console.warn('[threads-clean-link] 裝置身分初始化失敗', err);
-    // 失敗不長期卡住:清掉 memo 讓下一次呼叫重試,別讓一次 storage 抽風害得
+    // 失敗不長期卡住:清掉 memo 讓下一次呼叫重試，別讓一次 storage 抽風害得
     // 這個 SW 實例往後所有事件都沒有歸屬。
     if (localDevicePromise === pending) localDevicePromise = null;
     return null;
@@ -362,7 +362,7 @@ function persistDevice() {
 }
 
 // 預設名的 OS 來源。getPlatformInfo 在舊環境可能整支不存在、也可能 reject，
-// 兩種都退成 undefined 讓 TCLCore.defaultDeviceName 回 'Chrome'。探測結果 memo,
+// 兩種都退成 undefined 讓 TCLCore.defaultDeviceName 回 'Chrome'。探測結果 memo，
 // 一個 SW 實例內只問一次。
 let platformOsPromise = null;
 
@@ -379,7 +379,7 @@ function detectPlatformOs() {
 }
 
 // 引擎介面(計劃 §12):sync.js 靠這支取得請求的 device 區塊與 currentDeviceId。
-// 名稱一律以本機的 syncDevice.name 為準(D26),缺席才算預設名。
+// 名稱一律以本機的 syncDevice.name 為準(D26)，缺席才算預設名。
 async function getLocalDevice() {
   const device = await ensureDevice();
   if (!device) return null;
@@ -497,7 +497,13 @@ async function handleDevicesRename(engine, message) {
   const name = normalizeDeviceName(message && message.name);
   if (name === undefined) return { ok: false, code: 'bad_device_name' };
   const response = await engine.renameDevice(deviceId, name);
-  if (response && response.ok === true) await rememberLocalDeviceName(deviceId, name);
+  // 伺服器已經改好了，本機那份鏡像寫不進去只是下次讀到舊名，不能反過來把
+  // 成功的回應吞成 undefined 讓 UI 以為改名失敗。
+  if (response && response.ok === true) {
+    await rememberLocalDeviceName(deviceId, name).catch((err) => {
+      console.warn('[threads-clean-link] 本機裝置名寫入失敗', err);
+    });
+  }
   return response;
 }
 
