@@ -426,7 +426,12 @@ async function rememberLocalDeviceName(deviceId, name) {
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const current = stored && stored[DEVICE_KEY];
     if (!current || typeof current !== 'object') return;
-    await chrome.storage.local.set({ [DEVICE_KEY]: Object.assign({}, current, { name }) });
+    const next = Object.assign({}, current, { name });
+    await chrome.storage.local.set({ [DEVICE_KEY]: next });
+    // memo 是這個 SW 實例內 getLocalDevice 的唯一來源:落地了卻不換掉它，改完
+    // 名之後的每一輪同步都還在送舊名，要等 SW 回收重載才會對齊。deviceId 補
+    // 上正規化後的值，維持「memo 交出去的一律已歸一」。
+    localDevicePromise = Promise.resolve(Object.assign({}, next, { deviceId }));
   });
 }
 
