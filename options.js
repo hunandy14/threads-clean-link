@@ -2834,8 +2834,11 @@
       // 裝置列整批是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃，
       // applyI18nDom 掃不到它們。對話框開著時切語言，「這台裝置」pill 與動作
       // 鈕的 aria-label 會停在舊語言，而且沒有「關掉再開」以外的自我修復。
-      // 對話框沒開時這一步只是重填隱藏節點的內容，沒有副作用。
-      renderDevices();
+      // 只在開著時重畫:關著時重建整份清單毫無用處，卻會在每一次 renderAll
+      // (setHistory／設定變更)把使用者正開著的行內改名 input 換掉。開框本身
+      // 就會 renderDevices，關著期間錯過的語言變更下次開框補得回來。
+      var devicesOverlay = byId('devicesOverlay');
+      if (devicesOverlay && !devicesOverlay.hidden) renderDevices();
     }
 
     // ---- 選單/對話框/工具列佈線 ----

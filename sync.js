@@ -1381,7 +1381,9 @@
      * 的話，使用者會停在「已登入」的畫面，同步在背景一輪一輪地失敗，直到下一
      * 次剛好有別條路徑也撞上 401 才被發現。
      *
-     * 任何情況都不動 devices 快取:畫面不該一斷網就變空。
+     * 除 session_expired 外一律不動 devices 快取:畫面不該一斷網就變空。
+     * session_expired 轉進 handleSessionExpired，快取依 4.2 的清除規則在那裡
+     * 一併清掉。
      */
     function failDevices(err) {
       var code = err && err.code ? err.code : 'internal_error';

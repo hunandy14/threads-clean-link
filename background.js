@@ -305,6 +305,8 @@ function storageAreaAdapter(name) {
 // 本機這台的身分:{ deviceId, name?, platform, createdAt }。登出、刪雲端、清
 // 紀錄、匯入一律不碰它——重灌擴充才算換一台新裝置。name 缺席代表「用預設
 // 名」，預設名只在讀取時算(見 getLocalDevice)，不固化進 storage。
+// 直接讀這個 key 的人必須自行 TCLCore.normalizeDeviceId(裡頭躺的可能是大寫
+// 寫法或損毀值);經 ensureDevice／getLocalDevice 取得的一律已歸一。
 const DEVICE_KEY = 'syncDevice';
 
 // 惰性初始化的 memo。不掛 onInstalled:那支只在安裝/更新的當下觸發一次，錯過
