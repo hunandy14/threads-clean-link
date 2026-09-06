@@ -3652,8 +3652,19 @@ test('帳號選單:開啟時焦點進第一個可用項目，方向鍵在項目�
   // 已登入/非錯誤/非過期態下，第一個可用項目是「立即同步」。
   assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSyncNowBtn, '開啟時焦點應落在第一個可用項目');
 
+  // 【規格翻轉,D16(2026-09-07 更新)】選單順序納入「管理裝置」:立即同步 →
+  // 管理裝置 → 登出 → 刪除雲端資料。裝置管理屬帳號層級、非破壞性，排在
+  // 登出之前;破壞性的刪除雲端資料仍固定壓軸。方向鍵導覽是選單順序的鏡
+  // 像，四項都要在循環內。
   ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
-  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSignOutBtn, 'ArrowDown 移到下一項');
+  assert.equal(
+    ctx.doc.activeElement,
+    ctx.doc.ids.acctManageDevicesBtn,
+    'ArrowDown 移到下一項(管理裝置，D16)'
+  );
+
+  ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctSignOutBtn, 'ArrowDown 移到下一項(登出)');
 
   ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
   assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctDeleteBtn);
@@ -3663,6 +3674,55 @@ test('帳號選單:開啟時焦點進第一個可用項目，方向鍵在項目�
 
   ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowUp', preventDefault() {} });
   assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctDeleteBtn, 'ArrowUp 從第一項循環到最後一項');
+});
+
+// D16 的另一半:「管理裝置」隱藏時(未登入沒有帳號可管、登入過期沒有可用
+// 工作階段拉不到清單)方向鍵順序必須退回原本三項，不能停在隱藏項上——把
+// 新項目無條件 push 進導覽序列，就會出現「按了方向鍵焦點消失」這種只有
+// 鍵盤使用者踩得到的坑。未登入時整個選單連觸發鈕都不顯示，能開著選單又
+// 隱藏該項的狀態只有 expired，以它為代表。
+test('帳號選單:管理裝置隱藏時(登入過期)方向鍵仍為原三項，不停在隱藏項(D16)', async () => {
+  const ctx = makeMenuCtxWithState({
+    status: 'signed_out',
+    email: 'hong@example.com',
+    displayName: 'Hong',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 0,
+    lastError: 'session_expired',
+    apiBase: '',
+  });
+  await ctx.controller.init();
+  await settle();
+
+  assert.equal(
+    ctx.doc.ids.acctManageDevicesBtn.hidden,
+    true,
+    '前置:登入過期時管理裝置應隱藏'
+  );
+
+  ctx.doc.ids.acctTrigger.fire('click');
+  const order = [
+    ctx.doc.ids.acctReSignInBtn,
+    ctx.doc.ids.acctSignOutBtn,
+    ctx.doc.ids.acctDeleteBtn,
+  ];
+  assert.equal(ctx.doc.activeElement, order[0], '開啟時聚焦第一個可用項目');
+
+  // 走完一整圈再多一步,確認循環長度就是三，中途一次都不落在隱藏的管理裝置。
+  for (let i = 1; i <= order.length; i++) {
+    ctx.doc.ids.acctMenu.fire('keydown', { key: 'ArrowDown', preventDefault() {} });
+    assert.equal(
+      ctx.doc.activeElement,
+      order[i % order.length],
+      'ArrowDown 第 ' + i + ' 步應落在原三項的循環上'
+    );
+    assert.notEqual(
+      ctx.doc.activeElement,
+      ctx.doc.ids.acctManageDevicesBtn,
+      '隱藏的管理裝置不得進入方向鍵導覽序列'
+    );
+  }
 });
 
 function makeMenuCtxWithState(state) {
