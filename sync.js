@@ -83,6 +83,9 @@
   // 它的紀錄全刪。**刻意獨立於 syncState**:登出與 session 過期會把 syncState
   // 整包重設，守衛跟著沒了，「刪雲端→登出→再登入」就會全滅。
   var CLEAR_GUARD_KEY = 'syncClearGuard';
+  // 別台裝置的純顯示快取。登出與刪雲端要清掉(留著就會在下一位使用者眼前秀
+  // 出上一個帳號的裝置);本機身分 syncDevice 兩者皆不清。
+  var DEVICES_CACHE_KEY = 'syncDevices';
 
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
@@ -317,6 +320,9 @@
     }
     function localSet(items) {
       return Promise.resolve(storage.local.set(items));
+    }
+    function localRemove(keys) {
+      return Promise.resolve(storage.local.remove(keys));
     }
     function sessionGet(defaults) {
       return Promise.resolve(storage.session.get(defaults));
@@ -1089,6 +1095,9 @@
             return saveFailures(0);
           })
           .then(function () {
+            return localRemove(DEVICES_CACHE_KEY);
+          })
+          .then(function () {
             return Promise.all([
               Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
               Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
@@ -1255,6 +1264,9 @@
             ctx.state.displayName = null;
             ctx.state.avatarUrl = null;
             return saveState(ctx.state);
+          })
+          .then(function () {
+            return localRemove(DEVICES_CACHE_KEY);
           })
           .then(function () {
             return broadcastState('signed_in');
