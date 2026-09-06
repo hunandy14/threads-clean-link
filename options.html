@@ -294,11 +294,21 @@
      (account-header-demo.html)，見 options.js 的 renderAccount。
      ========================================================= */
   .account-area { position: relative; }
+  /* 高度對齊頁首其餘三顆鈕(.ghost-btn 的固定 34px):.btn 本身靠 padding
+     撐出的高度只有約 32.6px，這裡明寫 height 蓋過，讓四顆鈕同高、同一
+     基線;.btn 既有的 inline-flex + align-items:center 會在新高度裡把
+     G 圖示與文字重新置中，不需要動 padding。 */
+  .signin-btn { height: 34px; }
   .signin-btn .g-icon { width: 16px; height: 16px; }
 
   .account-trigger {
     appearance: none; border: 1px solid var(--border); background: var(--surface);
-    border-radius: 999px; padding: 3px; padding-right: 10px; display: inline-flex; align-items: center;
+    border-radius: 999px;
+    /* 上下 padding 原本是 3px，加上 32px 頭像與 1px 邊框會撐到 40px，比
+       其他三顆頁首鈕的 34px 高一截。改成上下 0，讓
+       0(padding)+32(avatar-wrap)+0(padding)+2(border)=34px，跟
+       .ghost-btn/.signin-btn 同高、同基線，不必縮小頭像本身尺寸。 */
+    padding: 0 10px 0 3px; display: inline-flex; align-items: center;
     gap: 8px; cursor: pointer; font: inherit;
   }
   /* hover 只用 filter 微調底色亮度，不放大(不加 transform:scale)。 */
