@@ -683,8 +683,9 @@ test('裝置三端點與 links 共用 per-user 限流桶，超量回 429 rate_li
 //     sync 內嵌保留原 name（改名一律走 PUT），PUT 則套自己的語意（帶 name 就改名）。
 //     復活不受 lastSeenAt 的 30 分鐘節流限制——節流只管 lastSeenAt 寫不寫，
 //     removedAt 照清。
-//   - 每帳號上限只算活躍；溢位時先淘汰已移除者（lastSeenAt 最舊者優先），名額
-//     仍不夠再淘汰活躍最舊者。被淘汰的已移除者就真的不見了（§13「已移除永久
+//   - 每帳號上限計總列數（活躍＋已移除）：溢位時先淘汰已移除者（lastSeenAt 最舊
+//     者優先），名額仍不夠再淘汰活躍最舊者，直到總數回到上限內。「上限台活躍
+//     ＋若干已移除」不是穩態。被淘汰的已移除者就真的不見了（§13「已移除永久
 //     保留（除非被上限淘汰）」）。
 //   - `seen[].deviceId` 不動（既有斷言不變）。
 
@@ -809,7 +810,7 @@ test('軟刪除復活：PUT 遇已移除 id → removedAt 清 null，name 依 PU
   assert.equal(device.lastSeenAt, at, 'PUT 每次都更新 lastSeenAt');
 });
 
-test('軟刪除上限：已移除者不佔活躍名額', async () => {
+test('軟刪除上限：溢位時先淘汰已移除者，活躍最舊的那台不被牽連', async () => {
   const h = harness();
   await seedDevices(h, MAX_DEVICES);
   const gone = uuidOf(0); // lastSeenAt 最舊的那一台
@@ -821,17 +822,17 @@ test('軟刪除上限：已移除者不佔活躍名額', async () => {
 
   const { devices } = await devicesOf(h);
   const activeIds = devices.filter((d) => d.removedAt === null).map((d) => d.deviceId);
-  assert.equal(activeIds.length, MAX_DEVICES, '活躍數剛好回到上限，沒有溢位');
+  assert.equal(activeIds.length, MAX_DEVICES, '活躍數回到上限');
   assert.equal(activeIds.includes(fresh), true, '新裝置留下');
   assert.equal(
     activeIds.includes(uuidOf(1)),
     true,
-    '已移除者不算進上限，活躍最舊的那台不該被牽連淘汰'
+    '淘汰先挑已移除者，活躍最舊的那台不該被牽連'
   );
   assert.deepEqual(
     devices.filter((d) => d.removedAt !== null).map((d) => d.deviceId),
-    [gone],
-    '已移除者仍留著'
+    [],
+    '上限計總列數：已移除的那一列就是這次溢位被淘汰掉的名額'
   );
 });
 
@@ -840,7 +841,7 @@ test('軟刪除上限：溢位先淘汰已移除者（lastSeenAt 最舊），名
   await seedDevices(h, MAX_DEVICES);
   const gone = uuidOf(0);
   await h.deleteDevice(gone);
-  // 補一台把活躍數塞回上限：此時 MAX_DEVICES 台活躍 ＋ 1 台已移除。
+  // 補一台：總數溢位一列，已移除的那台先被淘汰，補進來的成為活躍最新一台。
   await h.putDevice(uuidOf(MAX_DEVICES), { name: `d${MAX_DEVICES}`, platform: 'chrome_extension' });
   h.advance(61_000);
 
