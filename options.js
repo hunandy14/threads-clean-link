@@ -1967,7 +1967,7 @@
       removeBtn.title = trashTitle;
       removeBtn.setAttribute('aria-label', trashTitle);
       removeBtn.disabled = current;
-      removeBtn.appendChild(svgUse('#i-trash', 'icon'));
+      removeBtn.appendChild(svgUse('#i-circle-minus', 'icon'));
       removeBtn.addEventListener('click', function () {
         requestDeviceRemove(device.deviceId);
       });
@@ -2136,7 +2136,7 @@
         title: tf('opDeviceRemoveTitle', { name: deviceDisplayName(device) }),
         okKey: 'opDeviceRemove',
         tone: 'danger',
-        icon: '#i-trash',
+        icon: '#i-circle-minus',
         desc: tt('opDeviceRemoveDesc'),
         action: function () {
           submitDeviceRemove(device);

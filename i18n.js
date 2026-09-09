@@ -207,7 +207,7 @@
       opDeviceRemoveDisabled: '無法移除正在使用的裝置',
       opDeviceRemoveTitle: '移除「{name}」？',
       // 講清楚移除只是從清單拿掉，不等於把那台裝置登出。
-      opDeviceRemoveDesc: '這只會把它從裝置清單移除，不會將它登出。如果那台裝置仍然登入，下次同步時會再次出現。',
+      opDeviceRemoveDesc: '這只會把它從裝置清單移除，不會將它登出。如果那台裝置仍然登入，下次同步時會再次出現。紀錄上的裝置名稱會保留。',
       opDeviceEmpty: '找不到裝置，同步一次即可註冊這台裝置',
       opDeviceRegisteredToast: '已將這台裝置加入清單',
       // 取清單失敗時的錯誤列:既有的列保留不清掉，只在上方加這一句。
@@ -382,7 +382,7 @@
       opDeviceRemove: 'Remove',
       opDeviceRemoveDisabled: 'You cannot remove the device you are using',
       opDeviceRemoveTitle: 'Remove "{name}"?',
-      opDeviceRemoveDesc: 'This only removes it from the device list; it will not be signed out. If that device is still signed in, it will show up again on its next sync.',
+      opDeviceRemoveDesc: 'This only removes it from the device list; it will not be signed out. If that device is still signed in, it will show up again on its next sync. Device names on your records are kept.',
       opDeviceEmpty: 'No devices found. Sync once to register this device.',
       opDeviceRegisteredToast: 'This device has been added to the list',
       opDevicesLoadError: 'Could not load your devices. Please try again later.',

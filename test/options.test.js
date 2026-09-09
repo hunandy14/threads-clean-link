@@ -4822,8 +4822,8 @@ test('裝置管理:本機這台的移除鈕 disabled，別台移除先跳確認�
   );
   assert.equal(
     ctx.doc.ids.confirmDesc.textContent,
-    '這只會把它從裝置清單移除，不會將它登出。如果那台裝置仍然登入，下次同步時會再次出現。',
-    '確認框內文照 demo(opDeviceRemoveDesc)'
+    '這只會把它從裝置清單移除，不會將它登出。如果那台裝置仍然登入，下次同步時會再次出現。紀錄上的裝置名稱會保留。',
+    '確認框內文(opDeviceRemoveDesc):§13 起補一句「紀錄上的裝置名稱會保留」'
   );
   assert.equal(ctx.doc.ids.confirmOk.textContent, '移除', '確認鈕文案為「移除」(opDeviceRemove)');
   assert.equal(
@@ -4872,6 +4872,46 @@ test('裝置管理:移除失敗({ok:false})時該列保留，並以 toast 回報
     '失敗時該列必須留著，不能樂觀刪掉'
   );
   assert.notEqual(ctx.doc.ids.toast.textContent, '', '失敗應有 toast，不留下「按了沒反應」');
+});
+
+// 【規格翻轉，§13】移除的語意是「把它從這份清單拿掉」，紀錄與紀錄上的裝置
+// 名稱都留著;垃圾桶讀起來像是要把資料刪掉。裝置列的移除鈕改用 circle-minus，
+// 與紀錄那側真的刪資料的垃圾桶區隔開。本機那顆維持 disabled，圖示一併換。
+test('裝置管理:裝置列移除鈕用 circle-minus，紀錄側刪除仍用垃圾桶(§13)', async () => {
+  const ctx = makeDeviceCtx({ history: deviceHistory() });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  const thisRow = rowById(ctx.doc, DEV_THIS);
+  assert.ok(pixelRow && thisRow, '前置:應畫出 Pixel 8 與本機這台兩列');
+
+  assert.deepEqual(
+    useHrefs(actBtn(pixelRow, 'remove')),
+    ['#i-circle-minus'],
+    '移除鈕圖示應為 #i-circle-minus，不再是垃圾桶'
+  );
+  assert.deepEqual(
+    useHrefs(actBtn(thisRow, 'remove')),
+    ['#i-circle-minus'],
+    '本機那顆(disabled)也用同一顆圖示'
+  );
+
+  // <use> 指到的 symbol 得真的在 sprite 裡，否則畫面上是一塊空白。
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(html, /<symbol id="i-circle-minus"/, 'options.html 的 sprite 應新增 i-circle-minus');
+
+  // 紀錄側不受影響:刪除紀錄是真的刪資料，維持垃圾桶。
+  ctx.doc.ids.devicesClose.fire('click');
+  await settle();
+  ctx.doc.ids.rows.children[0].fire('click');
+  ctx.doc.ids.detailDeleteBtn.fire('click');
+  assert.equal(
+    ctx.doc.ids.confirmIconUse.getAttribute('href'),
+    '#i-trash',
+    '紀錄的刪除確認框應維持垃圾桶圖示'
+  );
 });
 
 // ---- 行內改名 ----
