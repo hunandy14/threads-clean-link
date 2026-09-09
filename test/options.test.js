@@ -857,10 +857,10 @@ test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊
 // ---- 頁首帳號鈕高度對齊(.ghost-btn 的固定 34px) ----
 //
 // 真機量測發現:未登入態的 #acctSignInBtn(.signin-btn，套用 .btn 的
-// padding 撐出高度)只有約 32.6px，已登入態的 #acctTrigger(.account-trigger，
-// 32px 頭像 + 上下各 3px padding + 1px 邊框)則有 40px，跟語言/主題兩顆
-// .ghost-btn(固定 34px)都對不齊——尤其後者肉眼可見明顯偏高。這裡鎖住
-// 修好後的兩條規則字面值，回歸時能在這裡攔下。最小 DOM stub 不解析真實
+// padding 撐出高度)只有約 32.6px，跟語言/主題兩顆 .ghost-btn(固定
+// 34px)對不齊;已登入態的 #acctTrigger(.account-trigger)則是頭像跟容器
+// 一樣大，頭像貼著邊框、.status-dot 與同步圈都凸出框外。這裡鎖住修好
+// 後的規則字面值，回歸時能在這裡擋下。最小 DOM stub 不解析真實
 // CSS、算不出 offsetHeight，只能靜態原文檢查;正則以 ^ 行首錨定
 // + m 旗標，避免本檔/HTML 註解散文提到同樣的 class 名稱時誤命中。
 test('頁首帳號鈕高度對齊:.signin-btn 應有 height:34px，與 .ghost-btn 同高', () => {
@@ -873,13 +873,31 @@ test('頁首帳號鈕高度對齊:.signin-btn 應有 height:34px，與 .ghost-bt
   );
 });
 
-test('頁首帳號鈕高度對齊:.account-trigger 的上下 padding 應為 0，讓 32px 頭像 + 邊框湊出 34px', () => {
+test('頁首帳號鈕高度對齊:.account-trigger 上下 padding 3px + 26px 頭像 + 邊框湊出 34px', () => {
   const fs = require('node:fs');
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   assert.match(
     html,
-    /^\s*\.account-trigger\s*\{[^}]*padding\s*:\s*0\s+10px\s+0\s+3px[^}]*\}/m,
-    '.account-trigger 的上下 padding 需為 0，否則 32px 頭像 + 3px 上下 padding + 1px 邊框會撐到 40px，比其餘三顆頁首鈕高'
+    /^\s*\.account-trigger\s*\{[^}]*padding\s*:\s*3px\s+10px\s+3px\s+3px[^}]*\}/m,
+    '.account-trigger 需維持上下 3px padding，搭 26px 頭像與 1px 邊框湊出 34px，同時留出均勻的四周留白'
+  );
+  assert.match(
+    html,
+    /^\s*\.avatar-wrap\s*\{[^}]*width\s*:\s*26px[^}]*height\s*:\s*26px[^}]*\}/m,
+    '.avatar-wrap 需為 26px;回到 32px 會填滿整顆鈕，頭像貼著邊框，.status-dot 與同步圈也會凸出框外'
+  );
+});
+
+// .account-area 包著觸發鈕，它本身也得是 flex——當 block 時裡面的
+// inline-flex 按鈕坐在行內基線上，行盒底部多出一段 descender 空隔，
+// 頁首 flex 置中的是「按鈕＋空隔」，帳號鈕實測比 .ghost-btn 高出約 1px。
+test('頁首帳號鈕高度對齊:.account-area 需為 flex，消掉行內基線的 descender 空隔', () => {
+  const fs = require('node:fs');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.match(
+    html,
+    /^\s*\.account-area\s*\{[^}]*display\s*:\s*flex[^}]*\}/m,
+    '.account-area 需 display:flex，否則行盒的 descender 空隔會把帳號鈕頂高約 1px'
   );
 });
 
