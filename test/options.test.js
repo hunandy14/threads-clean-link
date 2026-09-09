@@ -4458,7 +4458,9 @@ test('L5 帳號入口:status=syncing 但沒有 email／displayName 時同樣退�
 const DEV_THIS = '11111111-1111-4111-8111-111111111111';
 const DEV_PIXEL = '22222222-2222-4222-8222-222222222222';
 const DEV_MAC = '33333333-3333-4333-8333-333333333333';
-// 只出現在紀錄的 seen[] 裡、不在裝置清單內的 id(已移除的裝置)。
+// 只出現在紀錄的 seen[] 裡、清單裡活躍與已移除都查不到的 id。軟刪除定稿後
+// (§13)「已移除」仍留在清單內，真的查不到只剩「被上限淘汰」或「清單根本
+// 沒它」這兩種——那才是「未知裝置」。
 const DEV_GONE = '44444444-4444-4444-8444-444444444444';
 
 const DEV_MIN = 60000;
@@ -4469,6 +4471,8 @@ const DEV_NOW = 1767225600000;
 // 本機這台刻意給「最舊」的 lastSeenAt:排序規則是「本機置頂、其餘
 // lastSeenAt DESC」，若本機也最新就分不出是置頂還是純 DESC。
 // 期望順序:this(置頂) → mac(30 分鐘前) → pixel(3 小時前)。
+// 每台都帶第六欄 removedAt(§13):活躍為 null，已移除為毫秒時戳——快取存的
+// 是伺服器那份活躍與已移除混排的整陣列，filter 是這一頁自己的事。
 function makeDevices(patch) {
   const list = [
     {
@@ -4477,6 +4481,7 @@ function makeDevices(patch) {
       platform: 'android',
       createdAt: DEV_NOW - 30 * DEV_DAY,
       lastSeenAt: DEV_NOW - 3 * DEV_HOUR,
+      removedAt: null,
     },
     {
       deviceId: DEV_THIS,
@@ -4484,6 +4489,7 @@ function makeDevices(patch) {
       platform: 'chrome_extension',
       createdAt: DEV_NOW - 60 * DEV_DAY,
       lastSeenAt: DEV_NOW - 2 * DEV_DAY,
+      removedAt: null,
     },
     {
       deviceId: DEV_MAC,
@@ -4491,6 +4497,7 @@ function makeDevices(patch) {
       platform: 'chrome_extension',
       createdAt: DEV_NOW - 90 * DEV_DAY,
       lastSeenAt: DEV_NOW - 30 * DEV_MIN,
+      removedAt: null,
     },
   ];
   if (!patch) return list;
@@ -5427,4 +5434,200 @@ test('裝置管理:名稱長度以 code point 計——80 個 emoji 原樣送出
   assert.equal(overflow.deviceId, DEV_MAC, '第二次改的是 mac 那一列');
   assert.equal(Array.from(overflow.name).length, 80, '超過上限時以 code point 截到 80');
   assert.equal(overflow.name, exact, '截斷不得切在代理對中間(切出半顆 emoji)');
+});
+
+// ============================================================
+// 裝置軟刪除的顯示（契約 §13 定稿，2026-09-09）
+// ============================================================
+// 後端 DELETE 改成軟刪除：只標 removedAt，GET 回的是活躍與已移除混排的整個
+// 陣列，客戶端自行 filter。插件側因此分成兩條路：
+//   - 管理對話框只列 removedAt === null 者；帳號選單的台數也只算活躍。
+//   - 紀錄側（詳細視窗的「裝置」kv 列、時間軸逐事件）join 名稱時活躍與已移除
+//     都查；已移除者顯示**原名 ＋ 一枚淡字標記**。兩邊都查不到才是「未知裝置」。
+//     使用者移除一台裝置不該讓舊紀錄上的來源名字全變成「未知裝置」——那是
+//     「這筆紀錄從哪來的」這個資訊被移除動作抹掉，而移除的本意只是整理清單。
+//   - 移除成功後那一列從對話框消失，但快取仍保有該台（帶 removedAt）。
+//   - 本機這台若在清單裡帶著 removedAt（被別台移除），管理清單仍要顯示本機列
+//     ——本機以本機為準（D26），下一次同步就會復活。
+//
+// 【DOM 契約增補】已移除標記為一個 className 含 'device-removed-tag' 的節點，
+// 文案取 i18n key `opDeviceRemovedTag`（zh「已移除」／en「Removed」）：
+//   - 詳細視窗：掛在 #detailDeviceRow 內（裝置名旁）。
+//   - 時間軸：掛在該列的 .timeline-device span **之內**，不另加兄弟節點——
+//     既有斷言「帶 deviceId 的列在 kind 之後多一個 span」因此維持不變。
+
+/** 把清單裡某幾台標成已移除（毫秒時戳）。 */
+function devicesWithRemoved(ids, removedAt) {
+  const patch = {};
+  ids.forEach((id) => {
+    patch[id] = { removedAt: removedAt === undefined ? DEV_NOW - DEV_HOUR : removedAt };
+  });
+  return makeDevices(patch);
+}
+
+test('裝置軟刪除:管理對話框只列 removedAt 為 null 者，帳號選單台數也只算活躍', async () => {
+  const ctx = makeDeviceCtx({ devices: devicesWithRemoved([DEV_PIXEL]) });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  assert.deepEqual(
+    deviceRows(ctx.doc).map((r) => r.dataset.id),
+    [DEV_THIS, DEV_MAC],
+    'removedAt 非 null 的那一台不得出現在管理清單'
+  );
+  assert.equal(
+    joinedText(ctx.doc.ids.deviceList).includes('Pixel 8'),
+    false,
+    '已移除的裝置在管理清單裡連名字都不該出現'
+  );
+  assert.equal(
+    ctx.doc.ids.acctDeviceCount.textContent,
+    i18n.fmt('zh', 'opDeviceCount', { n: 2 }),
+    '台數只算活躍'
+  );
+});
+
+test('裝置軟刪除:本機這台被標 removed 時管理清單仍顯示本機列（D26）', async () => {
+  const ctx = makeDeviceCtx({ devices: devicesWithRemoved([DEV_THIS], DEV_NOW - DEV_MIN) });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const thisRow = rowById(ctx.doc, DEV_THIS);
+  assert.ok(
+    thisRow,
+    '本機以本機為準（D26）：被別台移除也照樣顯示，下一次同步就會復活'
+  );
+  assert.ok(joinedText(thisRow).includes('這台裝置'), '仍帶「這台裝置」pill');
+  assert.equal(
+    findByClass(thisRow, 'device-removed-tag').length,
+    0,
+    '本機列不標「已移除」——那台裝置就在使用者眼前'
+  );
+  assert.deepEqual(
+    deviceRows(ctx.doc).map((r) => r.dataset.id),
+    [DEV_THIS, DEV_MAC, DEV_PIXEL],
+    '其餘活躍的照舊'
+  );
+  assert.equal(
+    ctx.doc.ids.acctDeviceCount.textContent,
+    i18n.fmt('zh', 'opDeviceCount', { n: 3 }),
+    '台數與畫面上的列數一致，本機列算進去'
+  );
+});
+
+test('裝置軟刪除:詳細視窗 join 到已移除裝置時顯示原名 ＋「已移除」淡字', async () => {
+  const ctx = makeDeviceCtx({
+    history: deviceHistory(DEV_PIXEL),
+    devices: devicesWithRemoved([DEV_PIXEL]),
+  });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(ctx.doc.ids.detailDeviceRow.hidden, false, '已移除照樣畫「裝置」列');
+  assert.equal(
+    ctx.doc.ids.detailDeviceName.textContent,
+    'Pixel 8',
+    '已移除的也 join 得到原名（§13：join 時活躍與已移除都查）'
+  );
+  const tags = findByClass(ctx.doc.ids.detailDeviceRow, 'device-removed-tag');
+  assert.equal(tags.length, 1, '裝置名旁應掛一枚 .device-removed-tag');
+  assert.equal(tags[0].textContent, '已移除', '文案取 opDeviceRemovedTag');
+  assert.equal(
+    joinedText(ctx.doc.ids.detailDeviceRow).includes('未知裝置'),
+    false,
+    'join 得到就不是未知裝置'
+  );
+});
+
+test('裝置軟刪除:時間軸 join 到已移除裝置時同樣顯示原名 ＋「已移除」', async () => {
+  const ctx = makeDeviceCtx({
+    history: deviceHistory(DEV_PIXEL),
+    devices: devicesWithRemoved([DEV_PIXEL]),
+  });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  ctx.doc.ids.rows.children[0].fire('click');
+  ctx.doc.ids.detailTimelineBtn.fire('click');
+
+  const newest = ctx.doc.ids.detailTimeline.children[0].children[1];
+  const deviceSpan = findByClass(newest, 'timeline-device')[0];
+  assert.ok(deviceSpan, '帶 deviceId 的那一列應有 .timeline-device');
+  assert.equal(deviceSpan.textContent, 'Pixel 8', '原名照舊掛在 .timeline-device 上');
+  const tags = findByClass(deviceSpan, 'device-removed-tag');
+  assert.equal(
+    tags.length,
+    1,
+    '「已移除」掛在 .timeline-device 之內（不另加兄弟節點，既有結構斷言才不被翻掉）'
+  );
+  assert.equal(tags[0].textContent, '已移除');
+});
+
+test('裝置軟刪除:活躍與已移除都查不到時仍是「未知裝置」，且不掛「已移除」標記', async () => {
+  const ctx = makeDeviceCtx({
+    history: deviceHistory(DEV_GONE),
+    devices: devicesWithRemoved([DEV_PIXEL]),
+  });
+  await ctx.controller.init();
+  await settle();
+  await warmDeviceCache(ctx);
+
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(ctx.doc.ids.detailDeviceRow.hidden, false, 'join 不到仍要畫列');
+  assert.equal(
+    ctx.doc.ids.detailDeviceName.textContent,
+    '未知裝置',
+    '兩邊都查不到才是未知裝置（不得被已移除那條路徑吞掉）'
+  );
+  assert.equal(
+    findByClass(ctx.doc.ids.detailDeviceRow, 'device-removed-tag').length,
+    0,
+    '未知裝置不掛「已移除」——那是兩件事'
+  );
+});
+
+test('裝置軟刪除:移除成功後該列從對話框消失，但快取仍保有該台（紀錄上的名字不變成未知裝置）', async () => {
+  const ctx = makeDeviceCtx({ history: deviceHistory(DEV_PIXEL) });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  const pixelRow = rowById(ctx.doc, DEV_PIXEL);
+  assert.ok(pixelRow, '前置:應畫出 Pixel 8 那一列');
+  actBtn(pixelRow, 'remove').fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    deviceRows(ctx.doc).map((r) => r.dataset.id),
+    [DEV_THIS, DEV_MAC],
+    '成功後該列從管理清單消失'
+  );
+  assert.equal(
+    ctx.doc.ids.acctDeviceCount.textContent,
+    i18n.fmt('zh', 'opDeviceCount', { n: 2 }),
+    '台數同步更新'
+  );
+
+  ctx.doc.ids.devicesClose.fire('click');
+  await settle();
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(
+    ctx.doc.ids.detailDeviceName.textContent,
+    'Pixel 8',
+    '快取仍保有該台（帶 removedAt）：移除裝置不該讓舊紀錄的來源名變成「未知裝置」'
+  );
+  assert.equal(
+    findByClass(ctx.doc.ids.detailDeviceRow, 'device-removed-tag').length,
+    1,
+    '並標上「已移除」'
+  );
 });
