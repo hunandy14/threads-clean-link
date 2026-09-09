@@ -1400,6 +1400,9 @@
      * 快取(D25)，當場不打 GET:每一輪同步都順手多一次往返，共用的限流桶吃不
      * 消。旗標與快取同一個物件，SW 被回收也還在(§12 增補五);listDevices 見到
      * 就視同 force。
+     *
+     * 「認得」包含已移除的裝置(§13):快取存的是清單回應的整個陣列，查得到就
+     * 不是未知裝置，不必為了一台已移除的裝置多打一輪 GET。
      */
     function noteUnknownDevices(body) {
       var changes = body && body.changes;
@@ -1439,6 +1442,10 @@
      *
      * 節流(§4):未 force、快取未滿 DEVICES_TTL_MS 且沒被標記 stale 就直接回
      * 快取。失敗一律不動既有快取，畫面不該一斷網就變空。
+     *
+     * 回應的整個陣列原樣落地(§13):已移除的裝置與活躍的混在一起(removedAt
+     * 活躍為 null、已移除為毫秒時戳)，引擎不代客戶端 filter——管理清單只顯示
+     * 活躍是 UI 的事，紀錄側 join 名稱反而兩者都要查得到。
      */
     function listDevices(options) {
       var force = !!(options && options.force);
@@ -1499,7 +1506,10 @@
             return readDevicesCache().then(function (cache) {
               if (!cache) return { ok: true, device: device };
               var next = cache.devices.map(function (row) {
-                return row && row.deviceId === device.deviceId ? Object.assign({}, row, device) : row;
+                if (!row || row.deviceId !== device.deviceId) return row;
+                // PUT 遇已移除的 id 在後端就是復活(§13):快取不得停在已移除
+                // 態，否則改完名那一列還是回不到管理清單。
+                return Object.assign({}, row, device, { removedAt: null });
               });
               return writeDevicesCache(Object.assign({}, cache, { devices: next })).then(function () {
                 return { ok: true, device: device };
@@ -1511,7 +1521,13 @@
       });
     }
 
-    /** 移除別台。404 視同成功(冪等):別台早就被移除過＝目的已達成，不該報錯。 */
+    /**
+     * 移除別台。404 視同成功(冪等):別台早就被移除過＝目的已達成，不該報錯。
+     *
+     * 移除是軟刪除(§13):快取那一列標上 removedAt 而不是刪掉，紀錄側 join 名稱
+     * 時還查得到原名——移除的本意只是整理清單，不該讓舊紀錄的來源全變未知裝置。
+     * 時戳優先取回應帶的值，沒有就用本機時鐘;已經標過的保留最初值。
+     */
     function removeDevice(deviceId) {
       return loadContext().then(function (ctx) {
         if (!ctx.token) return { ok: false, code: 'signed_out' };
@@ -1520,11 +1536,15 @@
             if (err && err.status === 404) return null;
             throw err;
           })
-          .then(function () {
+          .then(function (payload) {
+            var removedAt =
+              payload && finiteNumber(payload.removedAt) ? payload.removedAt : now();
             return readDevicesCache().then(function (cache) {
               if (!cache) return { ok: true };
-              var next = cache.devices.filter(function (row) {
-                return !(row && row.deviceId === deviceId);
+              var next = cache.devices.map(function (row) {
+                if (!row || row.deviceId !== deviceId) return row;
+                if (finiteNumber(row.removedAt)) return row;
+                return Object.assign({}, row, { removedAt: removedAt });
               });
               return writeDevicesCache(Object.assign({}, cache, { devices: next })).then(function () {
                 return { ok: true };

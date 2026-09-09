@@ -36,15 +36,18 @@
 // ============================================================================
 // 裝置歸屬（0.7）——依據 tmp/cloud-sync-plan-full.md 第 9 節（api-spec §4.7）
 // ============================================================================
-// - `GET /api/v1/devices`：`{ devices: [...] }`，嚴格五欄、lastSeenAt DESC、不分頁。
+// - `GET /api/v1/devices`：`{ devices: [...] }`，嚴格六欄（含 `removedAt`）、lastSeenAt
+//   DESC、不分頁；活躍與已移除混排，客戶端自行 filter。
 // - `PUT /api/v1/devices/:deviceId`：建立時 platform 必填、改名可省；每次都更新
-//   lastSeenAt（30 分鐘節流只套 sync 內嵌路徑）。
-// - `DELETE /api/v1/devices/:deviceId`：驗證先於冪等，已上傳事件的 `seen[].deviceId` 不動。
+//   lastSeenAt（30 分鐘節流只套 sync 內嵌路徑）；遇已移除的 id 即復活（清 removedAt）。
+// - `DELETE /api/v1/devices/:deviceId`：軟刪除，只標 `removedAt`；驗證先於冪等，重複
+//   刪除保留最初時戳、不存在的 id 不建列，已上傳事件的 `seen[].deviceId` 不動。
 // - sync 頂層 `device` 區塊與 `seen[].deviceId`：upsert 不覆寫 name、無效靜默丟棄、
-//   回應不帶 `devices`。
+//   回應不帶 `devices`；遇已移除的 id 清 `removedAt` 復活（不受 lastSeenAt 節流限制）。
 // - deviceId UUID 形狀（大小寫不敏感、不驗版本位、存小寫）；name 剝控制字元＋trim
 //   ＋截 80 code point，空即 422 `bad_device_name`。
-// - 每帳號裝置數有上限，超過時 PUT 與 sync 內嵌皆觸發淘汰 lastSeenAt 最舊者，不回錯。
+// - 每帳號裝置數有上限（活躍＋已移除計總列數），超過時 PUT 與 sync 內嵌皆觸發淘汰：
+//   先淘汰已移除者、再淘汰活躍者，同群內 lastSeenAt 最舊者先走，不回錯。
 // - 裝置三端點與 `/api/v1/links` 共用同一個 per-user 限流桶。
 //
 // ============================================================================
@@ -329,7 +332,7 @@ function createMockSyncServer(options = {}) {
     links: new Map(),
     /** postKey → { id, postKey, deletedAt } */
     tombstones: new Map(),
-    /** deviceId（小寫）→ { deviceId, name, platform, createdAt, lastSeenAt } */
+    /** deviceId（小寫）→ { deviceId, name, platform, createdAt, lastSeenAt, removedAt } */
     devices: new Map(),
     clearedAt: null,
     accountDeleted: false,
@@ -401,7 +404,7 @@ function createMockSyncServer(options = {}) {
 
   // ---- 裝置歸屬（plan-full §9／api-spec 4.7） ----
 
-  // 對外視圖：嚴格五欄，不外流任何內部欄位。
+  // 對外視圖：嚴格六欄，不外流任何內部欄位；活躍者 removedAt 為 null（非缺席）。
   function deviceView(row) {
     return {
       deviceId: row.deviceId,
@@ -409,21 +412,34 @@ function createMockSyncServer(options = {}) {
       platform: row.platform,
       createdAt: row.createdAt,
       lastSeenAt: row.lastSeenAt,
+      removedAt: row.removedAt,
     };
   }
 
-  // 超過每帳號裝置上限時淘汰 lastSeenAt 最舊者，不回錯、不通知客戶端。
+  /**
+   * 超過每帳號裝置上限時淘汰，不回錯、不通知客戶端。上限計總列數（活躍＋已
+   * 移除），淘汰先挑已移除者、名額仍不夠再挑活躍者，同群內 lastSeenAt 最舊者
+   * 先走。被淘汰的已移除者就真的不見了。
+   */
   function evictDevices() {
     while (state.devices.size > MAX_DEVICES) {
-      let oldest = null;
+      let victim = null;
       state.devices.forEach((row) => {
-        if (oldest === null || compareDeviceAge(row, oldest) < 0) oldest = row;
+        if (victim === null || compareEvictOrder(row, victim) < 0) victim = row;
       });
-      state.devices.delete(oldest.deviceId);
+      state.devices.delete(victim.deviceId);
     }
   }
 
-  // 淘汰順序：lastSeenAt → createdAt → deviceId，皆升冪（越前面越舊）。
+  // 淘汰順序：已移除者先於活躍者，同群內比 compareDeviceAge（越前面越先走）。
+  function compareEvictOrder(a, b) {
+    const aRemoved = a.removedAt !== null;
+    const bRemoved = b.removedAt !== null;
+    if (aRemoved !== bRemoved) return aRemoved ? -1 : 1;
+    return compareDeviceAge(a, b);
+  }
+
+  // 年紀順序：lastSeenAt → createdAt → deviceId，皆升冪（越前面越舊）。
   function compareDeviceAge(a, b) {
     if (a.lastSeenAt !== b.lastSeenAt) return a.lastSeenAt - b.lastSeenAt;
     if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
@@ -434,7 +450,8 @@ function createMockSyncServer(options = {}) {
    * sync 頂層 `device` 區塊的 upsert。無效區塊（非物件／deviceId 非 UUID／
    * platform 缺或不在枚舉／name 正規化後為空）靜默丟棄，不影響連結同步。
    * 已存在的裝置不覆寫 name（改名一律走 PUT）；lastSeenAt 只在距上次嚴格
-   * 超過 30 分鐘、或 platform 改變時寫入。
+   * 超過 30 分鐘、或 platform 改變時寫入。已移除的裝置在此復活：removedAt 清成
+   * null 並保留原 name，且不受 lastSeenAt 節流限制。
    *
    * 與 PUT 的不對稱：PUT 改名可省 platform，sync 內嵌一律必填。
    */
@@ -454,10 +471,12 @@ function createMockSyncServer(options = {}) {
         platform: raw.platform,
         createdAt: at,
         lastSeenAt: at,
+        removedAt: null,
       });
       evictDevices();
       return;
     }
+    existing.removedAt = null;
     if (existing.platform !== raw.platform) {
       existing.platform = raw.platform;
       existing.lastSeenAt = at;
@@ -490,6 +509,7 @@ function createMockSyncServer(options = {}) {
     const deviceId = normalizeDeviceId(rawDeviceId);
     if (deviceId === undefined) return jsonResponse(422, { error: 'bad_device_id' });
 
+    // 已移除的那一列仍在：PUT 找得到它，因此可省 platform，且這一趟就是復活。
     const existing = state.devices.get(deviceId);
     // platform 建立時必填、改名可省（省略時沿用既有值）。
     const platform = body.platform === undefined && existing ? existing.platform : body.platform;
@@ -503,22 +523,26 @@ function createMockSyncServer(options = {}) {
       existing.name = name;
       existing.platform = platform;
       existing.lastSeenAt = at; // PUT 每次都更新，30 分鐘節流只套 sync 內嵌路徑
+      existing.removedAt = null; // 復活：createdAt 不動，PUT 語意照套
       return jsonResponse(200, { device: deviceView(existing) });
     }
-    const row = { deviceId, name, platform, createdAt: at, lastSeenAt: at };
+    const row = { deviceId, name, platform, createdAt: at, lastSeenAt: at, removedAt: null };
     state.devices.set(deviceId, row);
     evictDevices();
     return jsonResponse(200, { device: deviceView(row) });
   }
 
-  // ---- 端點：DELETE /api/v1/devices/:deviceId（冪等；已上傳事件的 seen[].deviceId 不動） ----
+  // ---- 端點：DELETE /api/v1/devices/:deviceId（軟刪除；冪等；seen[].deviceId 不動） ----
   function handleDeleteDevice(rawDeviceId, headers, at) {
     if (!authed(headers)) return unauthorized();
     if (rateLimited(at)) return rateLimitedResponse();
     // 驗證先於冪等：爛 id 回 422，不當成「不存在」吞掉。
     const deviceId = normalizeDeviceId(rawDeviceId);
     if (deviceId === undefined) return jsonResponse(422, { error: 'bad_device_id' });
-    state.devices.delete(deviceId);
+    const existing = state.devices.get(deviceId);
+    // 不存在的 id 不憑空建列；已移除者保留最初時戳（重複刪除不把時戳往後推）。
+    // lastSeenAt 不動：那是「最後同步」，移除不是一次同步。
+    if (existing && existing.removedAt === null) existing.removedAt = at;
     return jsonResponse(200, { ok: true });
   }
 

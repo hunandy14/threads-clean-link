@@ -214,7 +214,9 @@
       opDevicesLoadError: '無法取得裝置清單，請稍後再試',
       opDeviceRenameFailed: '重新命名失敗，請稍後再試',
       opDeviceRemoveFailed: '移除失敗，請稍後再試',
-      // 紀錄的 seen 事件帶了 deviceId、但那台裝置已不在清單裡(已移除)。
+      // 紀錄側 join 到已移除的裝置時，接在原名後面的淡字標記。
+      opDeviceRemovedTag: '已移除',
+      // 紀錄的 seen 事件帶了 deviceId，但清單裡活躍與已移除都查不到那台裝置。
       opDeviceUnknown: '未知裝置',
 
       // ---- popup:雲端同步狀態列(唯讀，點擊導向 options 頁的雲端同步卡片) ----
@@ -388,6 +390,7 @@
       opDevicesLoadError: 'Could not load your devices. Please try again later.',
       opDeviceRenameFailed: 'Rename failed. Please try again later.',
       opDeviceRemoveFailed: 'Remove failed. Please try again later.',
+      opDeviceRemovedTag: 'Removed',
       opDeviceUnknown: 'Unknown device',
 
       ppSyncInactive: 'Cloud sync: off',

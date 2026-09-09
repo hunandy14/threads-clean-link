@@ -1788,6 +1788,28 @@
     function isCurrentDevice(device) {
       return !!(deviceCache && device && device.deviceId === deviceCache.currentDeviceId);
     }
+    // 已移除的裝置(§13):清單回應把活躍與已移除混在同一個陣列，removedAt 非
+    // null 就是已移除。本機這台例外——名稱與存在與否一律以本機為準(D26)，
+    // 被別台移除也照樣顯示、照樣算進台數，下一次同步就會復活。
+    function isRemovedDevice(device) {
+      if (!device || finiteOrNull(device.removedAt) === null) return false;
+      return !isCurrentDevice(device);
+    }
+    // 管理清單與台數只認活躍的;紀錄側 join 名稱走 deviceById，兩者都查得到。
+    function activeDevices() {
+      if (!deviceCache) return [];
+      return deviceCache.devices.filter(function (device) {
+        return !isRemovedDevice(device);
+      });
+    }
+    // 已移除裝置在紀錄側的淡字標記:接在原名後面，不取代原名——移除的本意
+    // 只是整理清單，不該讓舊紀錄的來源變成「未知裝置」。
+    function removedTagNode() {
+      var tag = document.createElement('span');
+      tag.className = 'device-removed-tag';
+      tag.textContent = tt('opDeviceRemovedTag');
+      return tag;
+    }
     // 本機這台從未改過名時 syncDevice.name 缺席，預設名由 background 隨清單
     // 回應以頂層 defaultName 帶回(§12 增補)——UI 端算不出 OS，只能拿它。別台
     // 的名字只有伺服器給得出來，給不出來就真的無從得知;把使用者正在用的這台
@@ -1865,15 +1887,14 @@
     function renderDeviceCount() {
       var el = byId('acctDeviceCount');
       if (!el) return;
-      var n = deviceCache ? deviceCache.devices.length : 0;
+      var n = activeDevices().length;
       el.hidden = n === 0;
       el.textContent = n === 0 ? '' : tf('opDeviceCount', { n: n });
     }
 
-    // 本機這台置頂，其餘 lastSeenAt 由新到舊。
+    // 本機這台置頂，其餘 lastSeenAt 由新到舊;已移除的不列。
     function sortedDevices() {
-      if (!deviceCache) return [];
-      return deviceCache.devices.slice().sort(function (a, b) {
+      return activeDevices().sort(function (a, b) {
         var aCurrent = isCurrentDevice(a);
         var bCurrent = isCurrentDevice(b);
         if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
@@ -2150,9 +2171,13 @@
           toast(tt('opDeviceRemoveFailed'));
           return;
         }
+        // 軟刪除(§13):快取保留那一列、只標上 removedAt，管理清單靠 filter
+        // 讓它消失。紀錄側 join 得到的還是原名，不會整片變成「未知裝置」。
         if (deviceCache) {
-          deviceCache.devices = deviceCache.devices.filter(function (d) {
-            return d.deviceId !== device.deviceId;
+          var removedAt = now();
+          deviceCache.devices = deviceCache.devices.map(function (d) {
+            if (d.deviceId !== device.deviceId || finiteOrNull(d.removedAt) !== null) return d;
+            return Object.assign({}, d, { removedAt: removedAt });
           });
         }
         renderDeviceCount();
@@ -2166,15 +2191,18 @@
     // 整個缺席(0.6.x 寫進來的早期事件)就不畫，不假裝有歸屬。卡面一律不加
     // 任何裝置標示(D27)。
 
-    // 單一 seen 事件的來源裝置名;沒帶 deviceId、或本頁根本還沒取過裝置清單
-    // 時回 null(不畫)。後者是關鍵:清單沒到手時每一筆都 join 不到，全標成
-    // 「未知裝置」等於告訴使用者那些裝置都已經不在了。
-    function seenDeviceName(record) {
+    // 單一 seen 事件的來源裝置:回 { name, removed }，沒帶 deviceId、或本頁
+    // 根本還沒取過裝置清單時回 null(不畫)。後者是關鍵:清單沒到手時每一筆都
+    // join 不到，全標成「未知裝置」等於告訴使用者那些裝置都已經不在了。
+    // 活躍與已移除都查(§13)，兩者都查不到才是「未知裝置」——那時不掛已移除
+    // 標記，「查不到」與「已移除」是兩件事。
+    function seenDeviceInfo(record) {
       var deviceId = record ? nonEmptyString(record.deviceId) : null;
       if (deviceId === null) return null;
       if (!hasDeviceList()) return null;
       var device = deviceById(deviceId);
-      return device ? deviceDisplayName(device) : tt('opDeviceUnknown');
+      if (!device) return { name: tt('opDeviceUnknown'), removed: false };
+      return { name: deviceDisplayName(device), removed: isRemovedDevice(device) };
     }
 
     // 詳細視窗那一列取「最近一筆帶 deviceId 的 seen 事件」(§12 增補):條目
@@ -2225,6 +2253,7 @@
       valueEl.className = 'detail-value detail-device-value';
       valueEl.appendChild(svgUse(devicePlatformIcon(device ? device.platform : null), 'icon'));
       valueEl.appendChild(nameEl);
+      if (isRemovedDevice(device)) valueEl.appendChild(removedTagNode());
       row.appendChild(valueEl);
       row.hidden = false;
     }
@@ -2243,13 +2272,13 @@
       // 空狀態的「立即同步」:同步一次讓這台註冊上去，再強制重取清單。
       on('deviceEmptySyncBtn', 'click', function () {
         if (!canLoadDevices()) return;
-        var hadNone = !deviceCache || deviceCache.devices.length === 0;
+        var hadNone = activeDevices().length === 0;
         sendDeviceMessage({ type: 'sync.now' })
           .then(function () {
             return loadDevices(true);
           })
           .then(function () {
-            if (hadNone && deviceCache && deviceCache.devices.length > 0) {
+            if (hadNone && activeDevices().length > 0) {
               toast(tt('opDeviceRegisteredToast'));
             }
           });
@@ -2683,11 +2712,14 @@
       }
       // 該筆事件的來源裝置(§12 增補:時間軸逐事件各自顯示)。缺 deviceId 的
       // 早期事件不畫這個 span，不寫「未知裝置」(D27)。
-      var deviceName = seenDeviceName(record);
-      if (deviceName !== null) {
+      var deviceInfo = seenDeviceInfo(record);
+      if (deviceInfo !== null) {
         var deviceSpan = document.createElement('span');
         deviceSpan.className = 'timeline-device';
-        deviceSpan.textContent = deviceName;
+        deviceSpan.textContent = deviceInfo.name;
+        // 已移除標記掛在 .timeline-device 之內，不另加兄弟節點:整列的結構
+        // (時間 / kind / 裝置)維持不變。
+        if (deviceInfo.removed) deviceSpan.appendChild(removedTagNode());
         textEl.appendChild(deviceSpan);
       }
       row.appendChild(textEl);
