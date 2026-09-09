@@ -34,7 +34,7 @@
 // `set-auth-token` 標頭、`Authorization: Bearer`、`credentials: "omit"`。
 //
 // ============================================================================
-// 裝置歸屬（0.7）——依據 tmp/cloud-sync-plan-full.md 第 9 節（api-spec §4.7）
+// 裝置歸屬（0.7）——依後端 API 契約的裝置端點（插件側摘要見 docs/cloud-sync.md 4.4）
 // ============================================================================
 // - `GET /api/v1/devices`：`{ devices: [...] }`，嚴格六欄（含 `removedAt`）、lastSeenAt
 //   DESC、不分頁；活躍與已移除混排，客戶端自行 filter。
@@ -77,7 +77,7 @@ const RATE_LIMIT_PERIOD_MS = 60_000;
 
 const SEEN_SOURCES = ['share', 'clipboard'];
 
-// ---- 裝置歸屬常數（plan-full §9／api-spec 4.7） ----
+// ---- 裝置歸屬常數（裝置端點契約） ----
 const DEVICE_PLATFORMS = ['android', 'ios', 'chrome_extension'];
 const DEVICE_NAME_MAX = 80; // code point，emoji 算 1
 const MAX_DEVICES = 6; // mock 的每帳號裝置上限（測試專用小值；真實上限由後端決定，插件不假設）
@@ -199,7 +199,7 @@ function comparePosition(a, b) {
 }
 
 // api-spec 3.1:310-312 ＋ 5:566-580——去重、排序、上限 50，同 `at` 保留有
-// `source` 的那筆。plan-full §9：`deviceId` 非 UUID 視為未提供（只丟該欄，整筆
+// `source` 的那筆。裝置端點契約：`deviceId` 非 UUID 視為未提供（只丟該欄，整筆
 // 事件仍保留）；同一毫秒的歸屬先到者勝。缺欄位一律不輸出該鍵。
 function dedupeSeen(list) {
   const byAt = new Map();
@@ -380,7 +380,7 @@ function createMockSyncServer(options = {}) {
     return jsonResponse(401, { error: 'unauthorized' });
   }
 
-  // api-spec 7.4:758-770——每使用者 60 次／60 秒。plan-full §9：裝置三端點與
+  // 每使用者 60 次／60 秒（速率限制見檔頭的契約對照表）。裝置三端點與
   // /api/v1/links 共用同一個 per-user 桶。
   function rateLimited(at) {
     rateWindow = rateWindow.filter((t) => at - t < RATE_LIMIT_PERIOD_MS);
@@ -402,7 +402,7 @@ function createMockSyncServer(options = {}) {
     return Object.assign({}, response, { headers: merged });
   }
 
-  // ---- 裝置歸屬（plan-full §9／api-spec 4.7） ----
+  // ---- 裝置歸屬（裝置端點契約） ----
 
   // 對外視圖：嚴格六欄，不外流任何內部欄位；活躍者 removedAt 為 null（非缺席）。
   function deviceView(row) {
@@ -575,7 +575,7 @@ function createMockSyncServer(options = {}) {
     const since = decodeSince(body.since);
     if (since === undefined) return jsonResponse(400, { error: 'bad_since' });
 
-    // plan-full §9：頂層 device 區塊 upsert，回應不帶 devices。
+    // 依裝置端點契約：頂層 device 區塊 upsert，回應不帶 devices。
     upsertDeviceFromSync(body.device, at);
 
     const applied = { upserts: [], rejectedIds: [], deletedIds: [] };

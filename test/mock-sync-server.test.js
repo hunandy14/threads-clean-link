@@ -1,9 +1,8 @@
 // test/mock-sync-server.test.js — 假後端 test/helpers/mock-sync-server.js 的裝置
 // 歸屬（0.7）擴充契約，紅燈先行。
 //
-// 唯一真相源：tmp/cloud-sync-plan-full.md 第 9 節「裝置歸屬（0.7）後端契約凍結版」
-// （後端 repo docs/api-spec.md §4.7 的凍結摘要）。插件側實作計畫見
-// tmp/device-attribution-plan.md 第 7 節。
+// 唯一真相源：後端 API 契約的裝置端點；插件側摘要見 docs/cloud-sync.md
+// 第 4.4 節與 D21–D29。
 //
 // ============================================================================
 // 本檔釘定的擴充（mock 尚未實作，以下形狀由測試釘死）

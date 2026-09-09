@@ -3105,14 +3105,14 @@ test('S3 合併:seen[] 聯集仍裁到 50 筆，且新欄位照樣帶齊', async
 // ============================================================================
 // 裝置身分與事件歸屬（車道 B，0.7）
 // ----------------------------------------------------------------------------
-// 唯一真相源：tmp/device-attribution-plan.md §1／§2／§5／§12（訊息協議定稿）、
-// tmp/cloud-sync-plan-full.md §9「客戶端契約」。本區塊只驗 background.js 這一側：
+// 唯一真相源：docs/cloud-sync.md 4.2（storage key）、4.4（裝置端點）、5.1（訊息
+// 協議）與 D21–D29。本區塊只驗 background.js 這一側：
 // 裝置識別碼的產生與存放、四條紀錄路徑的事件歸屬、devices 三訊息的路由與參數
 // 自驗；引擎本體（listDevices／renameDevice／removeDevice 的網路行為）屬 sync.js，
 // 這裡一律注入替身。
 // ============================================================================
 
-// storage.local 的兩個裝置鍵（§12）。syncDevice 是本機這台的身分，永不因登出、
+// storage.local 的兩個裝置鍵（4.2）。syncDevice 是本機這台的身分，永不因登出、
 // 刪雲端、清紀錄、匯入而消失；syncDevices 是別台的純顯示快取，登出與刪雲端要清。
 const DEVICE_KEY = 'syncDevice';
 const DEVICES_CACHE_KEY = 'syncDevices';
