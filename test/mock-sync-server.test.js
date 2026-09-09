@@ -8,11 +8,13 @@
 // ============================================================================
 // 本檔釘定的擴充（mock 尚未實作，以下形狀由測試釘死）
 // ============================================================================
-// - `GET /api/v1/devices` → 200 `{ devices: [{deviceId,name,platform,createdAt,lastSeenAt}] }`，
-//   lastSeenAt DESC，不分頁。
+// - `GET /api/v1/devices` → 200
+//   `{ devices: [{deviceId,name,platform,createdAt,lastSeenAt,removedAt}] }`，lastSeenAt DESC、
+//   不分頁，活躍與已移除混排（活躍者 removedAt 為 null）。契約 §13 翻轉，原為嚴格五欄。
 // - `PUT /api/v1/devices/:deviceId` body `{ name, platform? }` → 200 `{ device }`；
 //   建立時 platform 必填、改名可省；每次呼叫都更新 lastSeenAt。
-// - `DELETE /api/v1/devices/:deviceId` → 冪等 200 `{ ok: true }`；已上傳事件的 seen[].deviceId 不動。
+// - `DELETE /api/v1/devices/:deviceId` → 軟刪除：只標 `removedAt`，冪等 200 `{ ok: true }`；
+//   已上傳事件的 seen[].deviceId 不動。契約 §13 翻轉，原為硬刪除。
 // - `POST /api/v1/links/sync` 可選頂層 `device` 區塊與 `seen[].deviceId`；
 //   upsert 不覆寫 name、lastSeenAt 只在 >30 分鐘或 platform 改變時寫入、
 //   無效輸入靜默丟棄、回應不帶 `devices`。
@@ -28,7 +30,7 @@
 // 4. sync 內嵌 device 首次註冊缺 platform ＝ 無效區塊，靜默丟棄不建立。
 // 5. DELETE 的 deviceId 驗證先於冪等：爛 id 回 422 `bad_device_id`。
 // 6. sync 內嵌註冊同樣觸發超過裝置上限的淘汰。
-// 7. GET 每項嚴格五欄。
+// 7. GET 每項嚴格六欄（契約 §13 翻轉，原為五欄；第六欄 removedAt）。
 //
 // 備註：契約寫「Bearer＋csrfGuard＋per-user 限流」，但既有 mock 並未實作 origin
 // 檢查（403 `forbidden_origin` 只能靠 `failNext` 注入），故本檔不測 403。
@@ -169,13 +171,19 @@ test('GET /api/v1/devices：每項欄位齊全，且依 lastSeenAt DESC 排序',
     [DEV_B, DEV_A],
     'lastSeenAt 較新的排前面'
   );
+  // 【契約 §13 翻轉】原斷言嚴格五欄。軟刪除定稿後每項多一欄 removedAt，活躍者
+  // 為 null——缺席與 null 是兩回事，客戶端要靠這一欄 filter 出管理清單。
   assert.deepEqual(Object.keys(devices[0]).sort(), [
     'createdAt',
     'deviceId',
     'lastSeenAt',
     'name',
     'platform',
+    'removedAt',
   ]);
+  devices.forEach((d) => {
+    assert.equal(d.removedAt, null, '沒被移除過的裝置 removedAt 一律 null');
+  });
   assert.equal(devices[0].name, '手機');
   assert.equal(devices[0].platform, 'android');
   assert.equal(devices[0].createdAt, createdB);
@@ -364,7 +372,7 @@ test('DELETE /api/v1/devices：無 bearer 回 401 unauthorized', async () => {
   assert.deepEqual(await res.json(), { error: 'unauthorized' });
 });
 
-test('DELETE /api/v1/devices：冪等回 200 { ok: true }，刪後 GET 不見', async () => {
+test('DELETE /api/v1/devices：冪等回 200 { ok: true }，刪後仍在 GET 內但帶 removedAt', async () => {
   const h = harness();
   await h.putDevice(DEV_A, { name: '桌機', platform: 'chrome_extension' });
   await h.putDevice(DEV_B, { name: '手機', platform: 'android' });
@@ -381,8 +389,16 @@ test('DELETE /api/v1/devices：冪等回 200 { ok: true }，刪後 GET 不見', 
   assert.equal(never.status, 200, '從未存在的裝置也回成功');
   assert.deepEqual(await never.json(), { ok: true });
 
+  // 【契約 §13 翻轉】原斷言「刪後 GET 不見」。軟刪除之後那一台仍在同一個陣列
+  // 裡（帶 removedAt），從未存在過的那一個 id 則不因 DELETE 而建列。
   const { devices } = await devicesOf(h);
-  assert.deepEqual(devices.map((d) => d.deviceId), [DEV_B]);
+  assert.deepEqual(
+    devices.map((d) => d.deviceId).sort(),
+    [DEV_A, DEV_B].sort(),
+    '已移除的仍在清單內，從未存在的不建列'
+  );
+  assert.equal(typeof devices.find((d) => d.deviceId === DEV_A).removedAt, 'number');
+  assert.equal(devices.find((d) => d.deviceId === DEV_B).removedAt, null);
 });
 
 test('DELETE /api/v1/devices：deviceId 非 UUID 回 422 bad_device_id', async () => {
@@ -652,4 +668,199 @@ test('裝置三端點與 links 共用 per-user 限流桶，超量回 429 rate_li
   assert.equal(put.status, 429, 'PUT 也吃同一個桶');
   const del = await h.deleteDevice(DEV_A);
   assert.equal(del.status, 429, 'DELETE 也吃同一個桶');
+});
+
+// ============================================================================
+// 裝置軟刪除（契約 §13 定稿，2026-09-09）
+// ============================================================================
+// DELETE 從硬刪改為軟刪除，本節與上面幾條既有斷言的翻轉都出自這一段契約：
+//   - `DELETE /api/v1/devices/:id` 只把 `removedAt` 標成毫秒時戳；該台仍留在
+//     `GET /api/v1/devices` 的同一個陣列裡（活躍與已移除混排，客戶端自行 filter），
+//     GET 每項因此由五欄變六欄（活躍者 `removedAt` 為 null）。
+//   - 已移除者再 DELETE 冪等 200，且**保留最初的 removedAt**（不更新時戳）；
+//     從未存在的 id 不因 DELETE 而建列。
+//   - 復活：sync 內嵌 device 區塊或 PUT 遇到已移除的 id → `removedAt` 清成 null。
+//     sync 內嵌保留原 name（改名一律走 PUT），PUT 則套自己的語意（帶 name 就改名）。
+//     復活不受 lastSeenAt 的 30 分鐘節流限制——節流只管 lastSeenAt 寫不寫，
+//     removedAt 照清。
+//   - 每帳號上限計總列數（活躍＋已移除）：溢位時先淘汰已移除者（lastSeenAt 最舊
+//     者優先），名額仍不夠再淘汰活躍最舊者，直到總數回到上限內。「上限台活躍
+//     ＋若干已移除」不是穩態。被淘汰的已移除者就真的不見了（§13「已移除永久
+//     保留（除非被上限淘汰）」）。
+//   - `seen[].deviceId` 不動（既有斷言不變）。
+
+test('軟刪除：DELETE 後該台仍在 GET 內且 removedAt 為數字，活躍者為 null', async () => {
+  const h = harness();
+  await h.putDevice(DEV_A, { name: '桌機', platform: 'chrome_extension' });
+  h.advance(MINUTE);
+  await h.putDevice(DEV_B, { name: '手機', platform: 'android' });
+
+  const deletedAt = h.advance(MINUTE);
+  const del = await h.deleteDevice(DEV_A);
+  assert.equal(del.status, 200);
+
+  const { devices } = await devicesOf(h);
+  assert.deepEqual(
+    devices.map((d) => d.deviceId).sort(),
+    [DEV_A, DEV_B].sort(),
+    '已移除的與活躍的混在同一個陣列裡'
+  );
+  const removed = devices.find((d) => d.deviceId === DEV_A);
+  const active = devices.find((d) => d.deviceId === DEV_B);
+  assert.equal(typeof removed.removedAt, 'number', 'removedAt 是毫秒時戳');
+  assert.equal(removed.removedAt, deletedAt, '時戳取 DELETE 當下');
+  assert.equal(removed.name, '桌機', '名稱保留：紀錄上還 join 得回原名');
+  assert.equal(active.removedAt, null, '活躍者一律 null，不是缺席');
+});
+
+test('軟刪除：已移除者再 DELETE 冪等 200，且保留最初的 removedAt', async () => {
+  const h = harness();
+  await h.putDevice(DEV_A, { name: '桌機', platform: 'chrome_extension' });
+  const firstAt = h.advance(MINUTE);
+  assert.equal((await h.deleteDevice(DEV_A)).status, 200);
+  const first = await requireDevice(h, DEV_A);
+  assert.equal(first.removedAt, firstAt);
+
+  h.advance(10 * MINUTE);
+  const second = await h.deleteDevice(DEV_A);
+  assert.equal(second.status, 200, '重複刪除仍成功');
+  assert.deepEqual(await second.json(), { ok: true });
+
+  const after = await requireDevice(h, DEV_A);
+  assert.equal(after.removedAt, firstAt, '重複 DELETE 不得把時戳往後推');
+});
+
+test('軟刪除：DELETE 從未存在的 id 回 200，但不得憑空建一列', async () => {
+  const h = harness();
+  await h.putDevice(DEV_A, { name: '桌機', platform: 'chrome_extension' });
+
+  const res = await h.deleteDevice(uuidOf(999));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+
+  const { devices } = await devicesOf(h);
+  assert.deepEqual(
+    devices.map((d) => d.deviceId),
+    [DEV_A],
+    '沒有的東西刪不出一列已移除裝置'
+  );
+});
+
+test('軟刪除復活：sync 內嵌 device 遇已移除 id → removedAt 清 null、name 保留', async () => {
+  const h = harness();
+  await h.putDevice(DEV_A, { name: '書房桌機', platform: 'chrome_extension' });
+  h.advance(MINUTE);
+  await h.deleteDevice(DEV_A);
+
+  // 拉開超過 30 分鐘，讓 lastSeenAt 也會被寫（節流那條路徑另有一支測試）。
+  const at = h.advance(31 * MINUTE);
+  const res = await h.sync({
+    upserts: [linkItem()],
+    deletes: [],
+    device: { deviceId: DEV_A, name: 'Chrome on Windows', platform: 'chrome_extension' },
+  });
+  assert.equal(res.status, 200);
+
+  const device = await requireDevice(h, DEV_A);
+  assert.equal(device.removedAt, null, '內嵌註冊＝這台又回來了，removedAt 要清掉');
+  assert.equal(device.name, '書房桌機', '復活保留自訂名（改名一律走 PUT，內嵌不覆寫）');
+  assert.equal(device.lastSeenAt, at, '超過節流窗，lastSeenAt 照常更新');
+});
+
+test('軟刪除復活：sync 內嵌在 30 分鐘節流窗內也照清 removedAt（只是 lastSeenAt 不動）', async () => {
+  const h = harness();
+  await h.putDevice(DEV_A, { name: '書房桌機', platform: 'chrome_extension' });
+  const seenAt = T0;
+  h.advance(MINUTE);
+  await h.deleteDevice(DEV_A);
+
+  h.advance(MINUTE); // 距上次 lastSeenAt 僅 2 分鐘，遠在節流窗內
+  const res = await h.sync({
+    upserts: [linkItem()],
+    deletes: [],
+    device: { deviceId: DEV_A, name: 'Chrome on Windows', platform: 'chrome_extension' },
+  });
+  assert.equal(res.status, 200);
+
+  const device = await requireDevice(h, DEV_A);
+  assert.equal(device.removedAt, null, '節流管的是 lastSeenAt，不是復活');
+  assert.equal(device.lastSeenAt, seenAt, 'lastSeenAt 照原節流，不因復活而寫');
+  assert.equal(device.name, '書房桌機');
+});
+
+test('軟刪除復活：PUT 遇已移除 id → removedAt 清 null，name 依 PUT，createdAt 不動', async () => {
+  const h = harness();
+  await h.putDevice(DEV_A, { name: '舊筆電', platform: 'chrome_extension' });
+  h.advance(MINUTE);
+  await h.deleteDevice(DEV_A);
+
+  const at = h.advance(MINUTE);
+  // platform 省略：能沿用既有值就代表 PUT 真的找得到那一列已移除的裝置。
+  const res = await h.putDevice(DEV_A, { name: '書房桌機' });
+  assert.equal(res.status, 200, '已移除的那一列仍在，PUT 找得到它就不必再帶 platform');
+  const body = await res.json();
+  assert.equal(body.device.removedAt, null, '回應直接帶復活後的 removedAt');
+  assert.equal(body.device.name, '書房桌機');
+
+  const device = await requireDevice(h, DEV_A);
+  assert.equal(device.removedAt, null);
+  assert.equal(device.name, '書房桌機', 'PUT 帶 name 就是改名');
+  assert.equal(device.platform, 'chrome_extension', '省略 platform 沿用既有值');
+  assert.equal(device.createdAt, T0, '復活不是新建，createdAt 不動');
+  assert.equal(device.lastSeenAt, at, 'PUT 每次都更新 lastSeenAt');
+});
+
+test('軟刪除上限：溢位時先淘汰已移除者，活躍最舊的那台不被牽連', async () => {
+  const h = harness();
+  await seedDevices(h, MAX_DEVICES);
+  const gone = uuidOf(0); // lastSeenAt 最舊的那一台
+  assert.equal((await h.deleteDevice(gone)).status, 200);
+
+  const fresh = uuidOf(MAX_DEVICES);
+  const res = await h.putDevice(fresh, { name: `d${MAX_DEVICES}`, platform: 'chrome_extension' });
+  assert.equal(res.status, 200);
+
+  const { devices } = await devicesOf(h);
+  const activeIds = devices.filter((d) => d.removedAt === null).map((d) => d.deviceId);
+  assert.equal(activeIds.length, MAX_DEVICES, '活躍數回到上限');
+  assert.equal(activeIds.includes(fresh), true, '新裝置留下');
+  assert.equal(
+    activeIds.includes(uuidOf(1)),
+    true,
+    '淘汰先挑已移除者，活躍最舊的那台不該被牽連'
+  );
+  assert.deepEqual(
+    devices.filter((d) => d.removedAt !== null).map((d) => d.deviceId),
+    [],
+    '上限計總列數：已移除的那一列就是這次溢位被淘汰掉的名額'
+  );
+});
+
+test('軟刪除上限：溢位先淘汰已移除者（lastSeenAt 最舊），名額仍不夠才淘汰活躍最舊', async () => {
+  const h = harness();
+  await seedDevices(h, MAX_DEVICES);
+  const gone = uuidOf(0);
+  await h.deleteDevice(gone);
+  // 補一台：總數溢位一列，已移除的那台先被淘汰，補進來的成為活躍最新一台。
+  await h.putDevice(uuidOf(MAX_DEVICES), { name: `d${MAX_DEVICES}`, platform: 'chrome_extension' });
+  h.advance(61_000);
+
+  const overflow = uuidOf(MAX_DEVICES + 1);
+  const res = await h.putDevice(overflow, { name: 'd-overflow', platform: 'chrome_extension' });
+  assert.equal(res.status, 200, '超過上限不回錯');
+
+  const { devices } = await devicesOf(h);
+  const ids = devices.map((d) => d.deviceId);
+  assert.equal(ids.includes(gone), false, '已移除者先被淘汰');
+  assert.equal(
+    ids.includes(uuidOf(1)),
+    false,
+    '淘汰已移除者並不會讓活躍數下降，名額不夠就接著淘汰活躍最舊者'
+  );
+  assert.equal(ids.includes(overflow), true, '新裝置留下');
+  assert.equal(
+    devices.filter((d) => d.removedAt === null).length,
+    MAX_DEVICES,
+    '活躍數維持在上限'
+  );
 });

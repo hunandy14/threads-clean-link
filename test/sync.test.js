@@ -2915,7 +2915,10 @@ function localDeviceOf(over = {}) {
   );
 }
 
-/** 快取／清單裡一列裝置的完整五欄形狀（api-spec 4.7）。 */
+/**
+ * 快取／清單裡一列裝置的完整六欄形狀（api-spec 4.7 ＋ 契約 §13）。第六欄
+ * `removedAt` 活躍為 null、已移除為毫秒時戳——已移除者也留在同一個陣列裡。
+ */
 function deviceRow(deviceId, name, over = {}) {
   return Object.assign(
     {
@@ -2924,6 +2927,7 @@ function deviceRow(deviceId, name, over = {}) {
       platform: 'chrome_extension',
       createdAt: T0 - 86_400_000,
       lastSeenAt: T0 - 60_000,
+      removedAt: null,
     },
     over
   );
@@ -3215,12 +3219,15 @@ test('T11 listDevices：無快取時打一次 GET，回應形狀完整並寫進 
     res.devices.map((d) => d.deviceId).sort(),
     [DEVICE_LOCAL_ID, DEVICE_OTHER_ID].sort()
   );
+  // 【契約 §13 翻轉】原斷言嚴格五欄。軟刪除定稿後多一欄 removedAt（活躍為
+  // null），引擎原樣落地，不夾帶其他內部欄位。
   res.devices.forEach((d) => {
     assert.deepEqual(
       Object.keys(d).sort(),
-      ['createdAt', 'deviceId', 'lastSeenAt', 'name', 'platform'],
-      '嚴格五欄，不夾帶內部欄位'
+      ['createdAt', 'deviceId', 'lastSeenAt', 'name', 'platform', 'removedAt'],
+      '嚴格六欄，不夾帶內部欄位'
     );
+    assert.equal(d.removedAt, null, '兩台都還活躍');
   });
   assert.equal(res.currentDeviceId, DEVICE_LOCAL_ID);
   assert.equal(typeof res.fetchedAt, 'number');
@@ -3589,10 +3596,24 @@ test('T11 removeDevice：DELETE 成功後從快取移除該台', async () => {
   assert.equal(deletes.length, 1);
   assert.equal(deletes[0].path, `/api/v1/devices/${DEVICE_THIRD_ID}`);
   assert.equal(res.ok, true);
+  // 【契約 §13 翻轉】原斷言「移除後快取要少一台」。軟刪除之後快取存的是伺服器
+  // 那份整陣列（含已移除者），移除只把該列標上 removedAt——紀錄側 join 名稱時
+  // 還查得到原名，管理清單自己 filter 掉活躍以外的。
   assert.deepEqual(
-    env.devicesCache().devices.map((d) => d.deviceId),
-    [DEVICE_LOCAL_ID, DEVICE_OTHER_ID],
-    '移除後快取要少一台，不必等下一次 GET'
+    env
+      .devicesCache()
+      .devices.map((d) => d.deviceId)
+      .sort(),
+    [DEVICE_LOCAL_ID, DEVICE_OTHER_ID, DEVICE_THIRD_ID].sort(),
+    '移除後快取不減列'
+  );
+  const marked = env.devicesCache().devices.find((d) => d.deviceId === DEVICE_THIRD_ID);
+  assert.equal(typeof marked.removedAt, 'number', '就地標上 removedAt，不必等下一次 GET');
+  assert.equal(marked.name, '舊筆電', '名稱保留');
+  assert.equal(
+    env.devicesCache().devices.find((d) => d.deviceId === DEVICE_OTHER_ID).removedAt,
+    null,
+    '只動被移除的那一台'
   );
 });
 
@@ -3614,9 +3635,20 @@ test('T11 removeDevice：伺服器回 404 也算成功（冪等）', async () =>
   await settle(15);
 
   assert.equal(res.ok, true, '別台已經被移除過＝目的已達成，不該對使用者報錯');
+  // 【契約 §13 翻轉】原斷言快取只剩本機這台。軟刪除之後成功的出口只有一個
+  // ——把那一列標成已移除，冪等成功也不例外。
   assert.deepEqual(
-    env.devicesCache().devices.map((d) => d.deviceId),
-    [DEVICE_LOCAL_ID]
+    env
+      .devicesCache()
+      .devices.map((d) => d.deviceId)
+      .sort(),
+    [DEVICE_LOCAL_ID, DEVICE_THIRD_ID].sort(),
+    '冪等成功一樣不刪列'
+  );
+  assert.equal(
+    typeof env.devicesCache().devices.find((d) => d.deviceId === DEVICE_THIRD_ID).removedAt,
+    'number',
+    '404 也是移除成功，該列照樣標上 removedAt'
   );
 });
 
@@ -4023,4 +4055,144 @@ test('T11 舊版相容：seen 無 deviceId 的既有資料，同步行為與既�
   assert.equal('deviceId' in pulled.seen[0], false, '雲端沒帶歸屬就不要憑空生一個');
   assert.equal(list.find((e) => e.url === POST_A).dirty, false, '照常 ack');
   assert.notEqual(env.storage.syncState().cursor, '0', 'cursor 照常前進');
+});
+
+// ---- §13 裝置軟刪除：removedAt 原樣透傳、移除只標記不刪列 ----
+//
+// 契約 §13 定稿（2026-09-09）：後端 DELETE 改成軟刪除，只把 `removedAt` 標成
+// 毫秒時戳，該台仍留在 `GET /api/v1/devices` 的同一個陣列裡（活躍與已移除混
+// 排，`removedAt` 活躍為 null）。引擎這一層的立場是**原樣落地**：
+//   - `listDevices` 不做任何 filter，快取 `syncDevices.devices` 存整個陣列
+//     （含已移除者）——管理清單只顯示活躍是 UI 的事，紀錄側 join 名稱時反而
+//     兩者都要查得到，不然使用者一移除裝置，舊紀錄上的名字就全變「未知裝置」。
+//   - `removeDevice` 成功後把快取那一列標上 `removedAt` 而不是刪掉（既有斷言
+//     因此翻轉，見上面兩支 removeDevice 測試的翻轉註解）。
+//   - `renameDevice` 打的 PUT 在後端就是復活，快取那一列的 `removedAt` 要跟著
+//     回 null。
+//   - `noteUnknownDevices` 的「認得」包含已移除者：快取裡查得到就不是未知
+//     裝置，不該立 stale 旗標多打一輪 GET。
+
+/** 不經引擎、直接對 mock 伺服器軟刪除一台（因此不進 env.engineLog）。 */
+async function serverDeleteDevice(env, deviceId) {
+  const res = await env.server.fetch(PRODUCTION_BASE + '/api/v1/devices/' + deviceId, {
+    method: 'DELETE',
+    credentials: 'omit',
+    headers: { Authorization: 'Bearer tok-seeded' },
+  });
+  if (res.status !== 200) {
+    throw new Error('serverDeleteDevice 刪不掉：' + deviceId + ' → ' + res.status);
+  }
+}
+
+test('T11/§13 listDevices：removedAt 原樣帶回（活躍 null、已移除為數字），已移除者不從清單消失', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv();
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+  ]);
+  await serverDeleteDevice(env, DEVICE_OTHER_ID);
+  const engine = TCLSync.create(env.deps);
+
+  const res = await engine.listDevices({ force: true });
+  await settle(15);
+
+  assert.equal(res.ok, true);
+  const removed = res.devices.find((d) => d.deviceId === DEVICE_OTHER_ID);
+  assert.ok(removed, '已移除的裝置仍在 GET 回應內（§13：活躍與已移除混排）');
+  assert.equal(typeof removed.removedAt, 'number', 'removedAt 原樣透出，引擎不代客戶端 filter');
+  assert.equal(removed.name, '書房桌機', '名稱保留，紀錄上還 join 得回原名');
+  const local = res.devices.find((d) => d.deviceId === DEVICE_LOCAL_ID);
+  assert.ok(local, '活躍的那台照舊');
+  assert.equal(local.removedAt, null, '活躍者為 null');
+
+  assert.deepEqual(
+    env
+      .devicesCache()
+      .devices.map((d) => d.deviceId)
+      .sort(),
+    [DEVICE_LOCAL_ID, DEVICE_OTHER_ID].sort(),
+    '快取存整個陣列（§13）：filter 是 UI 的事'
+  );
+});
+
+test('T11/§13 renameDevice：對已移除的裝置改名成功後，快取那一列的 removedAt 清成 null（復活）', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [
+          deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME),
+          deviceRow(DEVICE_OTHER_ID, '舊筆電', { removedAt: T0 - 5000 }),
+        ],
+      },
+    },
+  });
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '舊筆電' },
+  ]);
+  await serverDeleteDevice(env, DEVICE_OTHER_ID);
+  const engine = TCLSync.create(env.deps);
+
+  const res = await engine.renameDevice(DEVICE_OTHER_ID, '書房桌機');
+  await settle(15);
+
+  assert.equal(
+    res.ok,
+    true,
+    'PUT 遇已移除 id 在後端就是復活：那一列還在，platform 沿用既有值，不該回 422'
+  );
+  const row = env.devicesCache().devices.find((d) => d.deviceId === DEVICE_OTHER_ID);
+  assert.ok(row, '快取那一列還在');
+  assert.equal(row.name, '書房桌機');
+  assert.equal(
+    row.removedAt,
+    null,
+    'PUT 遇已移除 id 在後端就是復活，快取不得停在已移除態（否則改完名那一列還是不會回到管理清單）'
+  );
+});
+
+test('T11/§13 noteUnknownDevices：已移除裝置的 deviceId 不算未知，不立 stale 旗標', async () => {
+  const TCLSync = loadSync();
+  const env = makeDeviceEnv({
+    history: [],
+    local: {
+      syncDevices: {
+        fetchedAt: T0 - 5000,
+        devices: [
+          deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME),
+          deviceRow(DEVICE_OTHER_ID, '舊筆電', { removedAt: T0 - 5000 }),
+        ],
+      },
+    },
+  });
+  env.server.seed([
+    {
+      id: 'srv-b',
+      original: POST_B,
+      cleaned: POST_B,
+      receivedAt: T0 - 20_000,
+      seen: [{ at: T0 - 20_000, source: 'share', deviceId: DEVICE_OTHER_ID }],
+    },
+  ]);
+  const engine = TCLSync.create(env.deps);
+
+  await engine.syncNow();
+  await settle(20);
+
+  assert.notEqual(
+    env.devicesCache().stale,
+    true,
+    '快取裡明明有這台（只是已移除），不該當成「清單漏了一台」'
+  );
+
+  await engine.listDevices();
+  await settle(15);
+  assert.equal(
+    env.engineRequests('GET', '/api/v1/devices').length,
+    0,
+    '快取新鮮又沒被標 stale：不該為了一個已移除的 deviceId 多打一輪 GET'
+  );
 });

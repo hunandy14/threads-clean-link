@@ -140,6 +140,9 @@ test('locales:裝置管理的 i18n key(計畫 §6)在 zh 與 en 皆存在且非�
     'opDevicesLoadError',
     'opDeviceRenameFailed',
     'opDeviceRemoveFailed',
+    // 契約 §13(裝置軟刪除):紀錄側 join 到已移除的裝置時，原名後面那枚淡字
+    // 標記(zh「已移除」/ en「Removed」)。
+    'opDeviceRemovedTag',
   ];
 
   for (const locale of ['zh', 'en']) {
