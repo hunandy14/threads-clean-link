@@ -695,6 +695,8 @@ test('軟刪除：DELETE 後該台仍在 GET 內且 removedAt 為數字，活躍
   h.advance(MINUTE);
   await h.putDevice(DEV_B, { name: '手機', platform: 'android' });
 
+  const beforeDelete = await requireDevice(h, DEV_A);
+
   const deletedAt = h.advance(MINUTE);
   const del = await h.deleteDevice(DEV_A);
   assert.equal(del.status, 200);
@@ -710,6 +712,9 @@ test('軟刪除：DELETE 後該台仍在 GET 內且 removedAt 為數字，活躍
   assert.equal(typeof removed.removedAt, 'number', 'removedAt 是毫秒時戳');
   assert.equal(removed.removedAt, deletedAt, '時戳取 DELETE 當下');
   assert.equal(removed.name, '桌機', '名稱保留：紀錄上還 join 得回原名');
+  // DELETE 只碰 removedAt。lastSeenAt 是「這台最後一次現身」的語意，移除動作
+  // 不算現身；若被順手更新，清單的 lastSeenAt DESC 排序會讓剛移除的那台竄到頂端。
+  assert.equal(removed.lastSeenAt, beforeDelete.lastSeenAt, 'DELETE 不得更新 lastSeenAt');
   assert.equal(active.removedAt, null, '活躍者一律 null，不是缺席');
 });
 

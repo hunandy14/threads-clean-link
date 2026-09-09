@@ -926,7 +926,9 @@
   .timeline-device { color: var(--ink-3); font-size: 12px; margin-left: 8px; }
   /* 已移除裝置的淡字標記:接在原名之後(時間軸掛在 .timeline-device 之內、
      詳細視窗掛在裝置名旁)，取最淡的 ink-3，讓原名仍是主體。 */
-  .device-removed-tag { color: var(--ink-3); font-size: 12px; margin-left: 6px; }
+  /* 時間軸上這枚標記掛在 .timeline-device 之內、與它同色，再淡一階才分得出
+     哪一段是原名、哪一段是標記。 */
+  .device-removed-tag { color: var(--ink-3); font-size: 12px; margin-left: 6px; opacity: .75; }
   /* 底部動作列:對齊 dialog-shell.tsx 的 DialogActions/DialogButton——
      等寬(flex:1)、outline 邊框、圓角 PanelRadius(12)，destructive 只變
      文字色不是實心底色。 */

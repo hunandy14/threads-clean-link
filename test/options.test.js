@@ -5505,6 +5505,18 @@ function devicesWithRemoved(ids, removedAt) {
   return makeDevices(patch);
 }
 
+/**
+ * 升級前寫下的清單快取：每一列連 removedAt 這個鍵都沒有。缺鍵與 null 在這一頁
+ * 必須同義（都是活躍），否則舊快取一被讀到就整片裝置憑空「已移除」。
+ */
+function devicesWithoutRemovedKey() {
+  return makeDevices().map((d) => {
+    const copy = Object.assign({}, d);
+    delete copy.removedAt;
+    return copy;
+  });
+}
+
 test('裝置軟刪除:管理對話框只列 removedAt 為 null 者，帳號選單台數也只算活躍', async () => {
   const ctx = makeDeviceCtx({ devices: devicesWithRemoved([DEV_PIXEL]) });
   await ctx.controller.init();
@@ -5669,5 +5681,41 @@ test('裝置軟刪除:移除成功後該列從對話框消失，但快取仍保�
     findByClass(ctx.doc.ids.detailDeviceRow, 'device-removed-tag').length,
     1,
     '並標上「已移除」'
+  );
+});
+
+test('裝置軟刪除:升級前的舊快取列沒有 removedAt 鍵時一律當活躍（列出、算台數、join 不掛標記）', async () => {
+  const ctx = makeDeviceCtx({
+    history: deviceHistory(DEV_PIXEL),
+    devices: devicesWithoutRemovedKey(),
+  });
+  await ctx.controller.init();
+  await settle();
+  await openDevicesDialog(ctx);
+
+  assert.deepEqual(
+    deviceRows(ctx.doc).map((r) => r.dataset.id),
+    [DEV_THIS, DEV_MAC, DEV_PIXEL],
+    '缺鍵不等於已移除:三台都要留在管理清單裡'
+  );
+  assert.equal(
+    ctx.doc.ids.acctDeviceCount.textContent,
+    i18n.fmt('zh', 'opDeviceCount', { n: 3 }),
+    '台數把缺鍵的都算進去'
+  );
+
+  ctx.doc.ids.devicesClose.fire('click');
+  await settle();
+  ctx.doc.ids.rows.children[0].fire('click');
+
+  assert.equal(
+    ctx.doc.ids.detailDeviceName.textContent,
+    'Pixel 8',
+    '紀錄側照舊 join 到原名'
+  );
+  assert.equal(
+    findByClass(ctx.doc.ids.detailDeviceRow, 'device-removed-tag').length,
+    0,
+    '缺鍵不得被當成已移除而掛上標記'
   );
 });

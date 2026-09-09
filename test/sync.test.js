@@ -4196,3 +4196,72 @@ test('T11/§13 noteUnknownDevices：已移除裝置的 deviceId 不算未知，�
     '快取新鮮又沒被標 stale：不該為了一個已移除的 deviceId 多打一輪 GET'
   );
 });
+
+test('T11/§13 listDevices：回應含已移除的列時，history 與 syncDevice 一樣零寫入（D25 在軟刪除下的形式）', async () => {
+  const TCLSync = loadSync();
+  const at = T0 - 90_000;
+  const env = makeDeviceEnv({
+    history: [
+      entry({
+        id: 'a',
+        url: POST_A,
+        at,
+        receivedAt: at,
+        dirty: false,
+        serverUpdatedAt: T0 - 80_000,
+        seen: [{ at, kind: 'strip', deviceId: DEVICE_OTHER_ID }],
+      }),
+      entry({
+        id: 'b',
+        url: POST_B,
+        at,
+        receivedAt: at,
+        dirty: false,
+        serverUpdatedAt: T0 - 80_000,
+        seen: [{ at, kind: 'strip', deviceId: DEVICE_LOCAL_ID }],
+      }),
+    ],
+    local: {
+      syncDevice: {
+        deviceId: DEVICE_LOCAL_ID,
+        name: DEVICE_LOCAL_NAME,
+        platform: 'chrome_extension',
+        createdAt: T0 - 86_400_000,
+      },
+      syncDevices: {
+        fetchedAt: T0 - 1000,
+        devices: [
+          deviceRow(DEVICE_LOCAL_ID, DEVICE_LOCAL_NAME),
+          deviceRow(DEVICE_OTHER_ID, '書房桌機'),
+        ],
+      },
+    },
+  });
+  // 軟刪除下「清單變短」換了個形式：兩台都還在陣列裡，只是帶著 removedAt。
+  // 本機這台也一起被別處移除，連本機身分都不得被清單牽動（D25＋D26）。
+  await seedServerDevices(env, [
+    { deviceId: DEVICE_LOCAL_ID, name: DEVICE_LOCAL_NAME },
+    { deviceId: DEVICE_OTHER_ID, name: '書房桌機' },
+  ]);
+  await serverDeleteDevice(env, DEVICE_OTHER_ID);
+  await serverDeleteDevice(env, DEVICE_LOCAL_ID);
+  const before = JSON.parse(JSON.stringify(env.storage.history()));
+  const engine = TCLSync.create(env.deps);
+
+  const res = await engine.listDevices({ force: true });
+  await settle(15);
+
+  assert.equal(res.ok, true);
+  assert.deepEqual(
+    res.devices.filter((d) => d.removedAt !== null).map((d) => d.deviceId).sort(),
+    [DEVICE_LOCAL_ID, DEVICE_OTHER_ID].sort(),
+    '前置:兩台在回應裡都帶著 removedAt'
+  );
+  assert.deepEqual(
+    env.storage.historyWrites(),
+    [],
+    '已移除的列同樣只用於 join，不是刪除依據（D25）'
+  );
+  assert.deepEqual(env.localDeviceWrites(), [], '本機被別處移除也不得動到 syncDevice（D26）');
+  assert.deepEqual(env.storage.history(), before, 'history 逐欄不變，歸屬照留');
+});
