@@ -2881,9 +2881,7 @@ test('L4 signIn 失敗:合法形狀的 body.error 照舊原樣帶出', async () 
 // ============================================================================
 // T11 — 裝置歸屬（0.7）：sync 請求的 device 區塊、裝置清單快取、改名與移除
 // ============================================================================
-// 契約來源：tmp/device-attribution-plan.md §3（sync 請求擴充）、§4（清單快取
-// 與取得）、§5（改名／移除）、§12 與四段增補（引擎介面與死鎖守則）；
-// tmp/cloud-sync-plan-full.md §9；docs/cloud-sync.md 4.4／5.1／D23–D26。
+// 契約來源：docs/cloud-sync.md 4.4（裝置端點）、5.1（訊息協議）與 D21–D29。
 // 後端形狀由 test/helpers/mock-sync-server.js 的三支 devices 端點代言。
 //
 // 引擎新介面（本節釘定）：
@@ -2916,7 +2914,7 @@ function localDeviceOf(over = {}) {
 }
 
 /**
- * 快取／清單裡一列裝置的完整六欄形狀（api-spec 4.7 ＋ 契約 §13）。第六欄
+ * 快取／清單裡一列裝置的完整六欄形狀（docs/cloud-sync.md 4.4）。第六欄
  * `removedAt` 活躍為 null、已移除為毫秒時戳——已移除者也留在同一個陣列裡。
  */
 function deviceRow(deviceId, name, over = {}) {

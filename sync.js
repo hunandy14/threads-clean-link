@@ -1345,7 +1345,7 @@
     }
 
     /**
-     * sync 請求的頂層 device 區塊(plan-full §9)。三欄缺一就整個鍵不輸出——
+     * sync 請求的頂層 device 區塊(依後端 API 契約的裝置端點)。三欄缺一就整個鍵不輸出——
      * 後端對無效區塊是靜默丟棄，送半套只是白費一次寫入。
      */
     function deviceBlockOf(device) {
