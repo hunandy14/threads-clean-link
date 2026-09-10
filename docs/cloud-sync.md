@@ -23,11 +23,20 @@
 | D12 | 同步觸發：`chrome.alarms` 週期不低於 1 分鐘＋新紀錄 2 秒去抖＋options／popup 開啟時一次＋手動；退避曲線照手機 scheduler（30s→600s） | MV3 沒有「前景常駐計時器」概念，SW 隨時被殺，所有排程狀態必須可從 `chrome.storage` 復原 | 2026-09-02 |
 | D14 | 帳號入口移到設定頁頁首右上角，移除既有的雲端同步卡片（版型依核准的 demo） | 帳號狀態是使用者最常想確認的資訊，放頁首比埋在頁面中段的卡片更符合預期動線 | 2026-09-04 |
 | D15 | 已登入時顯示使用者的名字與 Google 大頭照；缺席時備援 email 前段，再缺則備援首字母；大頭照網址僅接受 `googleusercontent.com`（或其子網域） | 帳號入口要讓使用者一眼確認「這是我的帳號」，備援序列確保任何欄位缺席都有合理顯示；大頭照白名單避免任意網址被當成 `<img src>` 載入 | 2026-09-04 |
-| D16 | 帳號選單順序固定為：立即同步 → 登出 → 刪除雲端資料（帶二次確認） | 破壞性動作放最後、且需二次確認，降低誤觸機率 | 2026-09-04 |
+| D16 | 帳號選單順序固定為：立即同步 → 管理裝置 → 登出 → 刪除雲端資料（帶二次確認） | 破壞性動作放最後、且需二次確認，降低誤觸機率；裝置管理屬帳號層級、非破壞性，因此置於登出之前 | 2026-09-04（2026-09-07 更新：加入「管理裝置」） |
 | D17 | 帳號入口顯示五種狀態：未登入、已登入、同步中、錯誤、登入過期 | 涵蓋使用者會遇到的所有帳號狀態，避免中間狀態（例如 token 失效）顯示成看似正常的「已登入」 | 2026-09-04 |
 | D18 | 新增警告色 token `--warn`（淺色 `#d9a441`／深色 `#e6b955`） | 「登入過期」「即將刪除雲端資料」等狀態需要有別於一般錯誤色（紅）與一般資訊色的視覺提示 | 2026-09-04 |
 | D19 | 「刪除雲端資料」之後本機紀錄留在這台裝置、且**不會**再被上傳（entry 一律 `dirty:false`）；發動清空的裝置把伺服器寫下的 `cleared_at` 記進獨立的 `chrome.storage.local.syncClearGuard`，之後拉回**自己**那一次的 `changes.clearedAt` 時不清本機，比守衛更新的水位線（別台裝置清的）照舊硬刪。兩個邊界一律往「不刪」倒（硬刪不可逆）：回應沒帶 `clearedAt` 時記成**待定**守衛（`{ pending: true }`，不拿本機時間當水位線），由下一次拉回來的 `changes.clearedAt` 認領；守衛讀不懂（降級／被寫壞）時本輪**跳過**硬刪、記 `lastError = 'clear_guard_invalid'` 廣播讓使用者知情，並把守衛重置成待定等下一輪認領 | 伺服器對清空只有一條廣播管道（`changes.clearedAt`），發動的裝置也會拉回自己寫下的水位線；不記下來就分不出「別台清的」與「我自己剛清的」，於是「刪雲端 → 登出 → 再登入」會把本機紀錄全滅（真機實證）。守衛刻意不放 `syncState`——登出與 session 過期會把 `syncState` 整包重設，放進去等於撐不過那一輪。又因伺服器對早於 `cleared_at` 的 `receivedAt` 一律拒收（api-spec 4.3 規則 2），留在本機的紀錄本來就上不去，「刪雲端但留本機」的語意與手機端 `deleteAccount`（本機一列不動）一致 | 2026-09-04 |
 | D20 | 沒有 token 時 `status` 只可能是 `"signed_out"`，任何 `lastError` 都不例外。登入期的失敗分三類：**取消**（關掉授權視窗、同意頁按拒絕、瀏覽器權限對話框按拒絕）靜默不出聲——唯一例外是權限被拒，需一句話說明為什麼什麼都沒發生；**暫時性**（需要重新互動、授權頁載不起來、無痕視窗、斷網、id_token 過期、後端暫時不可用、限流、未歸類的未知失敗）提示「請稍後再試」，不顯示錯誤碼；**設定錯誤**（其餘一律歸此，重試無用）帶出錯誤碼請使用者回報。三類一律**不落地**——不寫 `syncState`（連把 `lastError` 清成 null 都不寫），改在該次廣播掛一次性的 `state.transientError = { code, kind }`，`getState()` 不帶，重整頁面即乾淨。已登入之後的同步錯誤與 `session_expired` 維持原行為（前者 `error` ＋ `lastError`，後者 `signed_out` ＋ `lastError` 的登入過期卡片）。分類的唯一來源是 `auth.js` 每條失敗路徑帶的 `err.code`，對照表為 `sync.js` 的 `SIGN_IN_CANCELLED`／`SIGN_IN_TRANSIENT`（兩份清單互斥，列不到的一律歸設定錯誤） | `lastError` 描述的是「已登入的同步出了事」；登入根本沒成功時寫進去，就成了一個沒有帳號的錯誤狀態——設定頁會畫出空白名字＋紅點＋「同步失敗:」的幽靈帳號卡片，上頭每一顆按鈕都是死的（重試送 `sync.now` 在沒有 token 時直接 return、刪雲端彈假的成功提示），popup 還會對根本沒登入的人顯示「已同步」。失敗又必須說得出所以然：使用者自己按的取消不該跳錯誤，設定錯誤不該叫他一直重試 | 2026-09-06 |
+| D21 | deviceId 在第一次需要時才惰性產生，存 `chrome.storage.local.syncDevice`；登出、清除紀錄、刪除雲端資料、登入過期、換帳號與匯入一律不動這個 key（別台裝置的快取 `syncDevices` 反之，登出、刪除雲端資料、登入過期與換帳號登入時即清） | 裝置識別碼是「這台瀏覽器」的身分，不是帳號資料；跟著登出或清除紀錄被重設，同一台裝置就會在雲端清單上不斷分裂成新的一台。惰性產生（而非安裝時產生）才涵蓋得到從舊版升級上來的使用者 | 2026-09-07 |
+| D22 | `seen[].deviceId` 為選填欄位，只有新產生的事件會帶，既有事件不回填；本機正規化只認 UUID 形狀（大小寫不敏感）並一律存成小寫，形狀不對只丟掉這個欄位、整筆事件照常保留 | 舊紀錄無從得知當初來自哪台裝置，猜測式回填等於捏造歸屬；統一小寫讓本機值與雲端讀回的值可以直接比對，不必兩邊都做大小寫折疊 | 2026-09-07 |
+| D23 | 每一輪同步只在該輪第一個 `POST /api/v1/links/sync` 帶頂層 `device` 區塊，續頁請求不帶 | 這個區塊的用途是讓裝置在同步時順道報到，一輪送一次就足夠；續頁重複附帶只是多餘的請求負載 | 2026-09-07 |
+| D24 | `PUT /api/v1/devices/:deviceId` 只在使用者改名時呼叫，絕不當心跳；首次註冊交給同步請求內嵌的 `device` 區塊完成 | 把 PUT 當心跳會憑空多出一條週期性請求，而「這台裝置最近有在同步」這件事本來就能從同步請求本身得知 | 2026-09-07 |
+| D25 | 裝置清單只在三個時機取得：使用者開啟帳號選單、開啟裝置對話框，或同步回應帶回本機不認識的 deviceId（最後這項只設一個待刷新旗標，下次開框才強制重取，不當場發請求）。帳號選單開啟時只要有快取就直接用快取（不論新舊），完全沒有快取才取一次；對話框開啟時才依快取新鮮度決定要不要刷新。清單永遠不作為刪除任何本機資料的依據 | 清單是顯示層資料，不是真相來源。一旦讓它決定本機留什麼，一次讀取失敗或清單少了一台，就會連帶抹掉使用者的本機紀錄——而硬刪不可逆。帳號選單只需要顯示台數，拿既有快取就夠，不值得為它多打一次請求 | 2026-09-07 |
+| D26 | 本機這台裝置的名稱一律以 `syncDevice.name` 為準，不從裝置清單反查 | 清單可能過期、也可能根本拿不到（離線、未登入）；本機名稱若跟著清單漂移，使用者會看到自己這台裝置忽然改名 | 2026-09-07 |
+| D27 | 紀錄卡面不加裝置圖示或標籤；裝置資訊只出現在詳細視窗的「裝置」列與時間軸每一列；「裝置」列取該筆紀錄中最近一筆帶 `deviceId` 的事件，全部缺席就整列不畫，時間軸則逐事件各自顯示，`deviceId` 缺席的事件不畫裝置（也不寫「未知裝置」）；依裝置篩選紀錄延後到日後再評估 | 同類產品的活動紀錄一律把裝置放進展開後的細節，卡面加標籤會讓只有一台裝置的使用者（多數）看到一個零資訊量的重複標籤；歸屬缺席時留白比補一個假的來源誠實 | 2026-09-07 |
+| D28 | 預設裝置名為 `Chrome on <OS>`，OS 由 `chrome.runtime.getPlatformInfo()` 映射（win→Windows、mac→macOS、linux→Linux、cros→ChromeOS、android→Android），拿不到或不在對照表時整個退成 `Chrome`（不寫 Unknown）。同名不加序號，也不在註冊前先讀清單消歧義；改以裝置列第二行的「新增於 <日期> · 最後同步 <相對時間>」讓使用者自行分辨。不做首次註冊的一次性改名提示，改名常駐於裝置對話框的行內編輯 | 調查十餘家同類產品：拿不到主機名的瀏覽器端，主流是「<瀏覽器>＋<OS>」的組合式敘述（敘述式或括號式），而且沒有任何一家消費級裝置清單為同名裝置加序號（唯一加序號的 Tailscale 是因為主機名要滿足 DNS 唯一性，與本案情境不同）。序號本身零資訊量，卻要多一次註冊前的清單讀取與隨之而來的競態；使用者實際用來分辨的線索是兩個時間，不是編號 | 2026-09-07 |
+| D29 | 裝置「移除」改為軟刪除：移除只在雲端把那一台標記成已移除（帶 `removedAt`），清單仍會把已移除的裝置一起回傳。管理對話框只列出活躍裝置，已移除的不再出現；但紀錄詳細視窗 join 裝置名稱時活躍與已移除都查，已移除者顯示**原本的名稱**並加上淡字「已移除」標記，兩邊都查不到才退成「未知裝置」。被移除的裝置若仍在登入狀態，下一次同步會讓它復活、重新出現在管理清單上，且保留使用者取過的自訂名稱。移除鈕保留，圖示由垃圾桶改為 circle-minus，與紀錄刪除的垃圾桶區隔；確認框補一句「紀錄上的裝置名稱會保留」。已移除的裝置不做自動過期；Gmail 式的「復原」toast 留待軟刪除上線後再評估 | 歷史紀錄的來源不該因為清單整理而變成「未知裝置」——使用者移除的是清單上的一列，不是那台裝置做過的事；真抹除等於讓既有紀錄的歸屬憑空消失，而且不可逆。社群慣例一致指向同一種做法：Slack、Jira 停用成員時保留實體與歷史上的顯示名稱，Apple 的「從帳號移除」也明講不會把該裝置登出、仍在登入的裝置下次連網會再出現。圖示區隔則是避免「移除裝置」被誤讀成與「刪除紀錄」同等的破壞性動作 | 2026-09-09 |
 
 ## 3. 插件端契約
 
@@ -62,8 +71,9 @@
 | `dirty` | boolean | 待上傳標記，ack 後清除 |
 | `serverUpdatedAt` | number \| null | 伺服器回傳的最後更新時間，用於合併判準 |
 | `deletedAt` | number \| null | 軟刪墓碑；本機標記刪除但尚未被伺服器 ack 前保留，ack 後才真正從 storage 移除 |
+| `seen[].deviceId` | string（UUID v4），選填 | 這筆事件發生在哪一台裝置（D22）。缺席時整個欄位不寫入（不寫 `null`），既有事件不回填；值一律存成小寫，形狀不對只丟這個欄位 |
 
-既有欄位不動：`url`、`kind`、`at`、`seen`、`author`、`handle`、`excerpt`、`removedParams`。`kind` 依 D4 只留本機、不上雲。
+既有欄位不動：`url`、`kind`、`at`、`seen`（僅在事件上新增上表的選填 `deviceId` 子欄位）、`author`、`handle`、`excerpt`、`removedParams`。`kind` 依 D4 只留本機、不上雲。
 
 ### 4.2 新 storage key
 
@@ -90,8 +100,30 @@ chrome.storage.local.syncClearGuard = {   // D19：本機自己發動的雲端�
   sentAt?: number,                       // 待定時的 DELETE 發出時間，僅供診斷，不參與比較
 }
 
+chrome.storage.local.syncDevice = {   // D21：這台裝置的身分，惰性產生
+  deviceId: string,                  // UUID v4，小寫
+  name?: string,                     // 缺席代表沿用預設名（D28）
+  platform: "chrome_extension",
+  createdAt: number,
+}
+
+chrome.storage.local.syncDevices = {  // D25：別台裝置的清單快取，純顯示層
+  fetchedAt: number,
+  devices: [{
+    deviceId, name, platform, createdAt, lastSeenAt,
+    removedAt: number | null,        // D29：非 null（毫秒）代表這一台已被移除
+  }],
+  stale?: boolean,                    // 同步回應帶回快取裡沒有的 deviceId 時立起（D25）；
+                                      // 旗標與快取同一個物件，SW 被回收也還在，
+                                      // 下一次讀取視同 force 並清掉旗標
+}
+
 chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production base，只接受 staging／local 兩個值（D9）
 ```
+
+快取存的是端點回傳的整個陣列，**已移除的項目照樣留著**、不在寫入時濾掉：紀錄詳細視窗要靠它把已移除裝置的原名 join 回來（D29）。要「只看活躍裝置」是顯示層的事，由管理對話框自己濾掉 `removedAt` 非 null 的項目。
+
+清除規則：`syncDevices` 在登出、刪除雲端資料、**登入過期（401）與換帳號登入**時清空——它描述的是「這個帳號底下有哪些裝置」，而過期後重新登入的可能是另一個帳號，留著就會在下一位使用者眼前先閃出上一位的裝置名（同一個帳號重新登入不清：那不是換人）；`syncDevice` 在登出、清除紀錄、刪除雲端資料、登入過期、換帳號與匯入時一律保留不動（D21）。
 
 帳號切換時（`syncState.userId` 變更）需清空本機同步鏡像欄位（`postKey`／`dirty`／`serverUpdatedAt`／`deletedAt`），比照手機端 `sync/active-owner.ts` 的處理方式。
 
@@ -104,10 +136,28 @@ chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production b
 | `original`（必填） | 選填 `original` | 缺席時以 `url` 填入，否則整筆被伺服器靜默丟棄 |
 | `receivedAt`（必填） | `at`（最後更新時間） | 語意不同：改用 `seen[0].at`（最早事件）當 `receivedAt`，`at` 保留為本機顯示用 |
 | `seen[].at` / `.source` | `seen[].kind` | `share`→`share`；`strip`／`menu`／`icon`→`clipboard`。原 `kind` 另存本機欄位，不上雲 |
+| `seen[].deviceId`（選填） | `seen[].deviceId`（選填） | 直接映射，只送 UUID 形狀的值，缺席時整個欄位不送。讀回時同樣只採 UUID 形狀；`unionSeen` 維持第一參數優先，而雲端事件排在第一參數，因此同一時間點的事件以伺服器記錄的歸屬為準 |
 | `author`／`handle`／`excerpt` | 同名 | 直接映射 |
 | `removedParams` | `{key,value}[]` | 已一致，零改動 |
 | `failReason` | 無 | 不送 |
 | — | `kind`（卡片徽章） | 雲端無對應欄位，跨裝置必然遺失（D4 已接受） |
+
+### 4.4 裝置端點
+
+以下只寫插件觀察得到的請求與回應形狀，後端如何存放與維護裝置不在此列。
+
+- **取清單**：`GET /api/v1/devices` → `{ "devices": [{ "deviceId", "name", "platform", "createdAt", "lastSeenAt", "removedAt" }] }`，不分頁。`removedAt` 是毫秒時間戳或 `null`，`null` 即活躍；活躍與已移除的裝置**混在同一個陣列**裡回傳（依 `lastSeenAt` 由新到舊），要分流由客戶端自己做（D29）。呼叫時機受 D25 限制。
+- **改名**：`PUT /api/v1/devices/:deviceId`，需 `Content-Type: application/json`，body `{ "name": string, "platform"?: string }`（`platform` 在建立時必填、單純改名時可省略）→ `{ "device": { ...同上各欄 } }`。依 D24 只在使用者改名時呼叫。指到的若是一台已被移除的裝置，這次呼叫會讓它復活（`removedAt` 清回 `null`）並照常套用 PUT 的語意，帶了 `name` 就同時改名（D29）。
+- **移除**：`DELETE /api/v1/devices/:deviceId` → `{ "ok": true }`。語意是**標記移除**而不是抹除：那一台被標上 `removedAt`，之後仍會出現在 GET 清單裡（D29）。冪等：裝置不存在也算成功（不會因此憑空建出一台），已經移除過的再刪一次同樣成功、且保留最初那個 `removedAt` 不被覆寫；插件把 2xx 與 404 一律當成功。移除不會動到已上傳事件上的 `seen[].deviceId`，也不會把那台裝置登出。
+- **同步時順道報到**：`POST /api/v1/links/sync` 的 body 頂層可帶 `device` 區塊 `{ "deviceId", "name", "platform" }`（依 D23 只掛每輪第一個請求）。若 `deviceId` 指到一台已被移除的裝置，這個區塊會讓它復活（`removedAt` 清回 `null`）並**保留原本的自訂名稱**（D29）。整個區塊若無效會被伺服器**靜默忽略**，連結同步照常完成、不會回錯；同步回應**不帶** `devices`，要清單一律另打 GET。
+- **`platform` 枚舉**：`android`／`ios`／`chrome_extension`，插件固定送 `chrome_extension`。
+- **`name` 規則**：去掉控制字元、去頭尾空白後長度 1–80 code point（emoji 算 1），超出截斷；正規化後為空即視為無效。
+- **裝置端點專屬錯誤碼**（HTTP 422，回應形狀 `{ "error": "<code>" }`）：
+  - `bad_device_id`：路徑上的 deviceId 不是 UUID 形狀。驗證先於冪等，所以爛 id 的 DELETE 也回 422，不會被當成「不存在」吞掉。
+  - `bad_device_platform`：`platform` 缺席（建立時）或不在枚舉內。
+  - `bad_device_name`：`name` 正規化後為空。
+  - 第 3 節的共用錯誤碼（401／403／415／429／503）同樣適用於這三個端點。
+- `seen[].deviceId` 上雲時同樣必須是 UUID 形狀，否則該事件被當成沒有裝置歸屬收下（整筆事件不會因此被拒）。
 
 ## 5. 模組介面
 
@@ -122,6 +172,16 @@ chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production b
 | `{type:"sync.signOut"}` | 登出（呼叫 sign-out 並清本地 token） |
 | `{type:"sync.now"}` | 手動觸發一次同步 |
 | `{type:"sync.deleteCloud"}` | 刪除雲端資料（`DELETE /api/v1/account` 或對應端點） |
+| `{type:"sync.devices.list", force?:boolean}` | 取裝置清單（含快取與節流） |
+| `{type:"sync.devices.rename", deviceId, name}` | 改某一台裝置的名稱 |
+| `{type:"sync.devices.remove", deviceId}` | 把某一台裝置從清單移除 |
+
+裝置三則訊息與其他 `sync.*` 一樣走 `isExtensionPageSender` 檢查，回應一律是 `{ ok: true, ... }` 或 `{ ok: false, code }`：
+
+- `sync.devices.list` → `{ ok:true, devices:[{deviceId,name,platform,createdAt,lastSeenAt,removedAt}], currentDeviceId, defaultName, fetchedAt }`。`devices` 原封轉出端點的回應，**含已移除的項目**（`removedAt` 非 null），要列出哪些由 UI 自己決定（D29）。`defaultName` 是本機這台的預設名（D28），UI 在使用者把名稱清空時用它回退；別台裝置清空則回退成原本的名字。未帶 `force` 且快取仍新鮮時直接回快取；帳號選單只為了顯示台數而呼叫時，有快取就用快取、完全沒有快取才取一次；同步回應帶回本機不認識的 deviceId 時，下一次開框視同 `force`（D25）。失敗回 `signed_out`（未登入時零請求直接回），其餘一律沿用第 3 節的共用錯誤碼（`network_error`／`rate_limited`／`session_expired`／`misconfigured` 等），不另造裝置專屬碼；任何失敗都**不清掉既有快取**（`session_expired` 例外：那不是這一支端點失敗而是整枚 token 死了，轉進統一的過期處理，快取依 4.2 的清除規則一併清掉）。
+- `sync.devices.rename` → `{ ok:true, device }`。handler 自驗參數：`deviceId` 需為 UUID 形狀、`name` 去頭尾空白後 1–80 code point，空值回 `bad_device_name`（UI 會先把空值回退成預設名再送）。改的若是本機這台，成功後同時寫回 `syncDevice.name`（D26）。
+- `sync.devices.remove` → `{ ok:true }`。`deviceId` 等於本機這台時直接回 `{ ok:false, code:"current_device" }`，不發請求；伺服器回 2xx 或 404 皆視為成功。成功之後，快取裡的那一台是被**標上 `removedAt`**，而不是從 `syncDevices.devices` 拿掉——紀錄詳細視窗還要靠它顯示原本的名稱（D29）。
+- 未登入或離線時：`list` 回 `{ ok:false, code }` 但保留既有快取；`rename`／`remove` 不做事並提示使用者，沒有離線佇列。
 
 ### 5.2 state 形狀
 
@@ -142,6 +202,8 @@ chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production b
 
 另有 `transientError: { code, kind }`（`kind` 為 `"cancelled"`｜`"transient"`｜`"config"`）——**僅廣播欄位**：只掛在登入失敗那一次的 `sync.stateChanged` 上，不落 `chrome.storage`，`sync.getState` 的回應也不帶（D20）。
 
+state 不新增裝置相關欄位：裝置台數與清單一律由 `sync.devices.list` 供給，UI 自行決定何時取用。
+
 ### 5.3 廣播
 
 background 在 state 變化時廣播 `{type:"sync.stateChanged", state}`，options／popup 監聽此訊息即時更新 UI，不需輪詢 `sync.getState`。
@@ -151,3 +213,5 @@ background 在 state 變化時廣播 `{type:"sync.stateChanged", state}`，optio
 - 跨裝置讀回的紀錄，`seen[].source` 一律反映射為 `share`，無法還原上傳前的原始 `kind`（`strip`／`menu`／`icon`）。
 - 匯出檔案格式含既有欄位加上 `id`／`receivedAt`／`serverUpdatedAt`（4.1）；`postKey` 與 `dirty` 不輸出（匯入端由 `postKeyOf(url)` 重算、一律標髒），`deletedAt` 不輸出（匯出來源已濾掉墓碑）。
 - 「清除全部」到下一輪同步真正送出之間有短暫空窗，這段時間內新記下的貼文可能不會被這次清除動作正確處理；已登入時會在清除當下立即觸發一次同步以縮小空窗，但不保證完全消除。
+- 把一台裝置從清單移除，只是把它標記成已移除，**不會**把那台裝置登出，也不會抹掉它的名稱：既有紀錄仍會顯示它原本的名稱（在紀錄詳細視窗裡標成「已移除」）。只要它仍是登入狀態，下一次同步就會讓它復活、重新出現在管理清單上，連使用者取過的自訂名稱也一併保留（D29）。
+- `seen` 事件以毫秒時間戳合併，落在同一毫秒的兩筆事件會被併成一筆，裝置歸屬由先進入合併結果的那一筆決定。

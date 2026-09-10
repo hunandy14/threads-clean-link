@@ -34,6 +34,23 @@
 // `set-auth-token` 標頭、`Authorization: Bearer`、`credentials: "omit"`。
 //
 // ============================================================================
+// 裝置歸屬（0.7）——依後端 API 契約的裝置端點（插件側摘要見 docs/cloud-sync.md 4.4）
+// ============================================================================
+// - `GET /api/v1/devices`：`{ devices: [...] }`，嚴格六欄（含 `removedAt`）、lastSeenAt
+//   DESC、不分頁；活躍與已移除混排，客戶端自行 filter。
+// - `PUT /api/v1/devices/:deviceId`：建立時 platform 必填、改名可省；每次都更新
+//   lastSeenAt（30 分鐘節流只套 sync 內嵌路徑）；遇已移除的 id 即復活（清 removedAt）。
+// - `DELETE /api/v1/devices/:deviceId`：軟刪除，只標 `removedAt`；驗證先於冪等，重複
+//   刪除保留最初時戳、不存在的 id 不建列，已上傳事件的 `seen[].deviceId` 不動。
+// - sync 頂層 `device` 區塊與 `seen[].deviceId`：upsert 不覆寫 name、無效靜默丟棄、
+//   回應不帶 `devices`；遇已移除的 id 清 `removedAt` 復活（不受 lastSeenAt 節流限制）。
+// - deviceId UUID 形狀（大小寫不敏感、不驗版本位、存小寫）；name 剝控制字元＋trim
+//   ＋截 80 code point，空即 422 `bad_device_name`。
+// - 每帳號裝置數有上限（活躍＋已移除計總列數），超過時 PUT 與 sync 內嵌皆觸發淘汰：
+//   先淘汰已移除者、再淘汰活躍者，同群內 lastSeenAt 最舊者先走，不回錯。
+// - 裝置三端點與 `/api/v1/links` 共用同一個 per-user 限流桶。
+//
+// ============================================================================
 // 契約備註（PM 已裁決）
 // ============================================================================
 // - api-spec 4.3 的 `SyncRequest` **沒有** `clearedAt` 欄位。「清空全部」的
@@ -60,7 +77,46 @@ const RATE_LIMIT_PERIOD_MS = 60_000;
 
 const SEEN_SOURCES = ['share', 'clipboard'];
 
+// ---- 裝置歸屬常數（裝置端點契約） ----
+const DEVICE_PLATFORMS = ['android', 'ios', 'chrome_extension'];
+const DEVICE_NAME_MAX = 80; // code point，emoji 算 1
+const MAX_DEVICES = 6; // mock 的每帳號裝置上限（測試專用小值；真實上限由後端決定，插件不假設）
+const DEVICE_LAST_SEEN_THROTTLE_MS = 30 * 60_000; // 只套用在 sync 內嵌路徑
+// UUID 形狀：大小寫不敏感、不驗版本／變體位，全零亦合法。
+const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ---- 小工具 ----
+
+// deviceId 正規化：合法 UUID 形狀回小寫，否則 undefined（＝視為未提供）。
+function normalizeDeviceId(value) {
+  if (typeof value !== 'string' || !DEVICE_ID_RE.test(value)) return undefined;
+  return value.toLowerCase();
+}
+
+// 判斷控制字元：C0（0x00-0x1F）、DEL（0x7F）、C1（0x80-0x9F）。
+function isControlCodePoint(code) {
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+}
+
+// 裝置名稱正規化：剝控制字元 → trim → 以 code point 截斷至 80（emoji 算 1）。
+// 零寬字元不剝，剝了會拆散 emoji 的 ZWJ 序列。回空字串代表 422 bad_device_name。
+function normalizeDeviceName(value) {
+  if (typeof value !== 'string') return '';
+  const stripped = Array.from(value)
+    .filter((ch) => !isControlCodePoint(ch.codePointAt(0)))
+    .join('')
+    .trim();
+  return Array.from(stripped).slice(0, DEVICE_NAME_MAX).join('');
+}
+
+// URL 路徑片段解碼：壞編碼不炸，原樣回傳交給 UUID 驗證擋下。
+function decodePathSegment(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (e) {
+    return value;
+  }
+}
 
 function headersView(map) {
   const lower = {};
@@ -143,16 +199,24 @@ function comparePosition(a, b) {
 }
 
 // api-spec 3.1:310-312 ＋ 5:566-580——去重、排序、上限 50，同 `at` 保留有
-// `source` 的那筆。
+// `source` 的那筆。裝置端點契約：`deviceId` 非 UUID 視為未提供（只丟該欄，整筆
+// 事件仍保留）；同一毫秒的歸屬先到者勝。缺欄位一律不輸出該鍵。
 function dedupeSeen(list) {
   const byAt = new Map();
   list.forEach((rec) => {
     if (!rec || typeof rec.at !== 'number' || !Number.isFinite(rec.at)) return;
     const source = SEEN_SOURCES.indexOf(rec.source) === -1 ? undefined : rec.source;
+    const deviceId = normalizeDeviceId(rec.deviceId);
     const prev = byAt.get(rec.at);
-    if (!prev || (prev.source === undefined && source !== undefined)) {
-      byAt.set(rec.at, source === undefined ? { at: rec.at } : { at: rec.at, source });
+    if (!prev) {
+      const next = { at: rec.at };
+      if (source !== undefined) next.source = source;
+      if (deviceId !== undefined) next.deviceId = deviceId;
+      byAt.set(rec.at, next);
+      return;
     }
+    if (prev.source === undefined && source !== undefined) prev.source = source;
+    if (prev.deviceId === undefined && deviceId !== undefined) prev.deviceId = deviceId;
   });
   return [...byAt.values()].sort((a, b) => a.at - b.at).slice(-SEEN_MAX);
 }
@@ -268,6 +332,8 @@ function createMockSyncServer(options = {}) {
     links: new Map(),
     /** postKey → { id, postKey, deletedAt } */
     tombstones: new Map(),
+    /** deviceId（小寫）→ { deviceId, name, platform, createdAt, lastSeenAt, removedAt } */
+    devices: new Map(),
     clearedAt: null,
     accountDeleted: false,
   };
@@ -314,12 +380,17 @@ function createMockSyncServer(options = {}) {
     return jsonResponse(401, { error: 'unauthorized' });
   }
 
-  // api-spec 7.4:758-770——每使用者 60 次／60 秒，只掛在 /api/v1/links 三個路由。
+  // 每使用者 60 次／60 秒（速率限制見檔頭的契約對照表）。裝置三端點與
+  // /api/v1/links 共用同一個 per-user 桶。
   function rateLimited(at) {
     rateWindow = rateWindow.filter((t) => at - t < RATE_LIMIT_PERIOD_MS);
     if (rateWindow.length >= RATE_LIMIT_MAX) return true;
     rateWindow.push(at);
     return false;
+  }
+
+  function rateLimitedResponse() {
+    return jsonResponse(429, { error: 'rate_limited', retryAfter: 60 }, { 'retry-after': '60' });
   }
 
   function withRotation(response) {
@@ -329,6 +400,150 @@ function createMockSyncServer(options = {}) {
     state.token = token;
     const merged = headersView(Object.assign(response.headers.all(), { 'set-auth-token': token }));
     return Object.assign({}, response, { headers: merged });
+  }
+
+  // ---- 裝置歸屬（裝置端點契約） ----
+
+  // 對外視圖：嚴格六欄，不外流任何內部欄位；活躍者 removedAt 為 null（非缺席）。
+  function deviceView(row) {
+    return {
+      deviceId: row.deviceId,
+      name: row.name,
+      platform: row.platform,
+      createdAt: row.createdAt,
+      lastSeenAt: row.lastSeenAt,
+      removedAt: row.removedAt,
+    };
+  }
+
+  /**
+   * 超過每帳號裝置上限時淘汰，不回錯、不通知客戶端。上限計總列數（活躍＋已
+   * 移除），淘汰先挑已移除者、名額仍不夠再挑活躍者，同群內 lastSeenAt 最舊者
+   * 先走。被淘汰的已移除者就真的不見了。
+   */
+  function evictDevices() {
+    while (state.devices.size > MAX_DEVICES) {
+      let victim = null;
+      state.devices.forEach((row) => {
+        if (victim === null || compareEvictOrder(row, victim) < 0) victim = row;
+      });
+      state.devices.delete(victim.deviceId);
+    }
+  }
+
+  // 淘汰順序：已移除者先於活躍者，同群內比 compareDeviceAge（越前面越先走）。
+  function compareEvictOrder(a, b) {
+    const aRemoved = a.removedAt !== null;
+    const bRemoved = b.removedAt !== null;
+    if (aRemoved !== bRemoved) return aRemoved ? -1 : 1;
+    return compareDeviceAge(a, b);
+  }
+
+  // 年紀順序：lastSeenAt → createdAt → deviceId，皆升冪（越前面越舊）。
+  function compareDeviceAge(a, b) {
+    if (a.lastSeenAt !== b.lastSeenAt) return a.lastSeenAt - b.lastSeenAt;
+    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+    return a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0;
+  }
+
+  /**
+   * sync 頂層 `device` 區塊的 upsert。無效區塊（非物件／deviceId 非 UUID／
+   * platform 缺或不在枚舉／name 正規化後為空）靜默丟棄，不影響連結同步。
+   * 已存在的裝置不覆寫 name（改名一律走 PUT）；lastSeenAt 只在距上次嚴格
+   * 超過 30 分鐘、或 platform 改變時寫入。已移除的裝置在此復活：removedAt 清成
+   * null 並保留原 name，且不受 lastSeenAt 節流限制。
+   *
+   * 與 PUT 的不對稱：PUT 改名可省 platform，sync 內嵌一律必填。
+   */
+  function upsertDeviceFromSync(raw, at) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+    const deviceId = normalizeDeviceId(raw.deviceId);
+    if (deviceId === undefined) return;
+    if (DEVICE_PLATFORMS.indexOf(raw.platform) === -1) return;
+    const name = normalizeDeviceName(raw.name);
+    if (name === '') return;
+
+    const existing = state.devices.get(deviceId);
+    if (!existing) {
+      state.devices.set(deviceId, {
+        deviceId,
+        name,
+        platform: raw.platform,
+        createdAt: at,
+        lastSeenAt: at,
+        removedAt: null,
+      });
+      evictDevices();
+      return;
+    }
+    existing.removedAt = null;
+    if (existing.platform !== raw.platform) {
+      existing.platform = raw.platform;
+      existing.lastSeenAt = at;
+      return;
+    }
+    if (at - existing.lastSeenAt > DEVICE_LAST_SEEN_THROTTLE_MS) existing.lastSeenAt = at;
+  }
+
+  // ---- 端點：GET /api/v1/devices（lastSeenAt DESC，不分頁） ----
+  function handleListDevices(headers, at) {
+    if (!authed(headers)) return unauthorized();
+    if (rateLimited(at)) return rateLimitedResponse();
+    const devices = [...state.devices.values()]
+      .sort((a, b) => -compareDeviceAge(a, b))
+      .map(deviceView);
+    return jsonResponse(200, { devices });
+  }
+
+  // ---- 端點：PUT /api/v1/devices/:deviceId ----
+  function handlePutDevice(rawDeviceId, headers, body, at) {
+    if (!isJsonContentType(headers['content-type'])) {
+      return jsonResponse(415, { error: 'unsupported_media_type' });
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return jsonResponse(400, { error: 'bad_request' });
+    }
+    if (!authed(headers)) return unauthorized();
+    if (rateLimited(at)) return rateLimitedResponse();
+
+    const deviceId = normalizeDeviceId(rawDeviceId);
+    if (deviceId === undefined) return jsonResponse(422, { error: 'bad_device_id' });
+
+    // 已移除的那一列仍在：PUT 找得到它，因此可省 platform，且這一趟就是復活。
+    const existing = state.devices.get(deviceId);
+    // platform 建立時必填、改名可省（省略時沿用既有值）。
+    const platform = body.platform === undefined && existing ? existing.platform : body.platform;
+    if (DEVICE_PLATFORMS.indexOf(platform) === -1) {
+      return jsonResponse(422, { error: 'bad_device_platform' });
+    }
+    const name = normalizeDeviceName(body.name);
+    if (name === '') return jsonResponse(422, { error: 'bad_device_name' });
+
+    if (existing) {
+      existing.name = name;
+      existing.platform = platform;
+      existing.lastSeenAt = at; // PUT 每次都更新，30 分鐘節流只套 sync 內嵌路徑
+      existing.removedAt = null; // 復活：createdAt 不動，PUT 語意照套
+      return jsonResponse(200, { device: deviceView(existing) });
+    }
+    const row = { deviceId, name, platform, createdAt: at, lastSeenAt: at, removedAt: null };
+    state.devices.set(deviceId, row);
+    evictDevices();
+    return jsonResponse(200, { device: deviceView(row) });
+  }
+
+  // ---- 端點：DELETE /api/v1/devices/:deviceId（軟刪除；冪等；seen[].deviceId 不動） ----
+  function handleDeleteDevice(rawDeviceId, headers, at) {
+    if (!authed(headers)) return unauthorized();
+    if (rateLimited(at)) return rateLimitedResponse();
+    // 驗證先於冪等：爛 id 回 422，不當成「不存在」吞掉。
+    const deviceId = normalizeDeviceId(rawDeviceId);
+    if (deviceId === undefined) return jsonResponse(422, { error: 'bad_device_id' });
+    const existing = state.devices.get(deviceId);
+    // 不存在的 id 不憑空建列；已移除者保留最初時戳（重複刪除不把時戳往後推）。
+    // lastSeenAt 不動：那是「最後同步」，移除不是一次同步。
+    if (existing && existing.removedAt === null) existing.removedAt = at;
+    return jsonResponse(200, { ok: true });
   }
 
   // ---- 端點：POST /api/v1/links/sync（api-spec 4.3:369-458） ----
@@ -341,9 +556,7 @@ function createMockSyncServer(options = {}) {
       return jsonResponse(400, { error: 'bad_request' });
     }
     if (!authed(headers)) return unauthorized();
-    if (rateLimited(at)) {
-      return jsonResponse(429, { error: 'rate_limited', retryAfter: 60 }, { 'retry-after': '60' });
-    }
+    if (rateLimited(at)) return rateLimitedResponse();
 
     const upserts = Array.isArray(body.upserts) ? body.upserts : [];
     const deletes = [...new Set(Array.isArray(body.deletes) ? body.deletes : [])].filter(
@@ -361,6 +574,9 @@ function createMockSyncServer(options = {}) {
     }
     const since = decodeSince(body.since);
     if (since === undefined) return jsonResponse(400, { error: 'bad_since' });
+
+    // 依裝置端點契約：頂層 device 區塊 upsert，回應不帶 devices。
+    upsertDeviceFromSync(body.device, at);
 
     const applied = { upserts: [], rejectedIds: [], deletedIds: [] };
     let created = 0;
@@ -498,9 +714,7 @@ function createMockSyncServer(options = {}) {
   // ---- 端點：GET /api/v1/links（api-spec 4.2:346-368） ----
   function handleList(url, headers, at) {
     if (!authed(headers)) return unauthorized();
-    if (rateLimited(at)) {
-      return jsonResponse(429, { error: 'rate_limited', retryAfter: 60 }, { 'retry-after': '60' });
-    }
+    if (rateLimited(at)) return rateLimitedResponse();
     const params = url.searchParams;
     let limit = Number(params.get('limit'));
     if (!Number.isInteger(limit) || limit <= 0) limit = PAGE_SIZE_DEFAULT;
@@ -530,9 +744,7 @@ function createMockSyncServer(options = {}) {
   // ---- 端點：DELETE /api/v1/links（api-spec 4.4:459-467） ----
   function handleDeleteLinks(headers, at) {
     if (!authed(headers)) return unauthorized();
-    if (rateLimited(at)) {
-      return jsonResponse(429, { error: 'rate_limited', retryAfter: 60 }, { 'retry-after': '60' });
-    }
+    if (rateLimited(at)) return rateLimitedResponse();
     state.links.clear();
     state.tombstones.clear();
     state.clearedAt = tick();
@@ -544,6 +756,7 @@ function createMockSyncServer(options = {}) {
     if (!authed(headers)) return unauthorized();
     state.links.clear();
     state.tombstones.clear();
+    state.devices.clear();
     state.clearedAt = null;
     state.token = null;
     state.accountDeleted = true;
@@ -606,6 +819,13 @@ function createMockSyncServer(options = {}) {
     if (method === 'GET' && path === '/api/v1/links') return handleList(url, headers, at);
     if (method === 'DELETE' && path === '/api/v1/links') return handleDeleteLinks(headers, at);
     if (method === 'DELETE' && path === '/api/v1/account') return handleDeleteAccount(headers);
+    if (method === 'GET' && path === '/api/v1/devices') return handleListDevices(headers, at);
+    const deviceIdMatch = path.match(/^\/api\/v1\/devices\/([^/]+)$/);
+    if (deviceIdMatch) {
+      const rawDeviceId = decodePathSegment(deviceIdMatch[1]);
+      if (method === 'PUT') return handlePutDevice(rawDeviceId, headers, body, at);
+      if (method === 'DELETE') return handleDeleteDevice(rawDeviceId, headers, at);
+    }
     if (method === 'GET' && path === '/health') return jsonResponse(200, { ok: true, service: 'api' });
     return jsonResponse(404, { error: 'not_found' });
   }
@@ -810,7 +1030,13 @@ module.exports = {
   FREE_QUOTA,
   RATE_LIMIT_MAX,
   RATE_LIMIT_PERIOD_MS,
+  DEVICE_PLATFORMS,
+  DEVICE_NAME_MAX,
+  MAX_DEVICES,
+  DEVICE_LAST_SEEN_THROTTLE_MS,
   isJsonContentType,
+  normalizeDeviceId,
+  normalizeDeviceName,
   normalizeItem,
   mergeItem,
   encodeCursor,

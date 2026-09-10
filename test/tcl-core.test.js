@@ -383,3 +383,280 @@ test('capHistory:超限時墓碑優先淘汰(筆數與位元組兩路徑)', () =
     '位元組超標同樣先丟墓碑'
   );
 });
+
+// ---- 裝置歸屬(0.7):seen[].deviceId 透傳與預設裝置名 ----
+//
+// 契約:docs/cloud-sync.md 4.1、4.4 與 D22／D28。
+//   - seen[] schema 擴成 { at, kind?, deviceId? }，deviceId 缺席就缺席，
+//     **不得補 null**(輸出 null 會被伺服器當成「明確清空」)。
+//   - deviceId 需 UUID 形狀:大小寫不敏感、不驗版本位、全零合法。髒值只丟
+//     該欄位，事件本身照樣保留(歸屬不明的事件仍是使用者看得到的紀錄)。
+//   - 形狀通過後**一律正規化為小寫**(伺服器存小寫)。自產與伺服器回傳
+//     本來就是小寫，只有匯入檔可能帶大寫;本機不對齊的話，顯示時拿 deviceId
+//     去 join 裝置清單會落空，同一台裝置變成「未知裝置」。
+//   - 衝突規則不新增:unionSeen 維持 a 優先，fromSyncItem 把雲端那份排 a，
+//     等於伺服器歸屬勝出。SEEN_MAX 裁切行為不變。
+//   - defaultDeviceName 是純函式對照表，拿不到 OS 退成 'Chrome'，
+//     **不得出現 Unknown**。
+
+// UUID 形狀樣本:標準 v4、大寫、非 v4 版本位、全零。
+const DEV_A = '11111111-2222-4333-8444-555555555555';
+const DEV_B = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const DEV_UPPER = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE';
+const DEV_UPPER_LOWER = DEV_UPPER.toLowerCase(); // 正規化後的期望值
+const DEV_V1 = '11111111-2222-1333-c444-555555555555'; // 版本位與 variant 皆非 v4
+const DEV_ZERO = '00000000-0000-0000-0000-000000000000';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+test.describe('裝置歸屬:seen[].deviceId 透傳', () => {
+  test('sanitizeSeenList:合法 UUID 形狀保留並正規化為小寫(不驗版本位、全零合法)', () => {
+    const out = C.sanitizeSeenList([
+      { at: 1, kind: 'share', deviceId: DEV_A },
+      { at: 2, deviceId: DEV_UPPER }, // 缺 kind 的種子紀錄也帶得動 deviceId
+      { at: 3, kind: 'menu', deviceId: DEV_V1 }, // 不驗版本位
+      { at: 4, kind: 'icon', deviceId: DEV_ZERO }, // 全零亦視為合法格式
+    ]);
+    assert.deepEqual(out, [
+      { at: 1, kind: 'share', deviceId: DEV_A },
+      // 大寫進、小寫出:形狀驗證大小寫不敏感，存下來的一律小寫。
+      { at: 2, deviceId: DEV_UPPER_LOWER },
+      { at: 3, kind: 'menu', deviceId: DEV_V1 },
+      { at: 4, kind: 'icon', deviceId: DEV_ZERO },
+    ]);
+    for (const record of out) assert.match(record.deviceId, UUID_RE);
+  });
+
+  test('sanitizeSeenList:deviceId 髒值只丟該欄位，事件本身保留', () => {
+    const out = C.sanitizeSeenList([
+      { at: 1, kind: 'share', deviceId: 12345 }, // 非字串
+      { at: 2, kind: 'share', deviceId: null },
+      { at: 3, kind: 'share', deviceId: { id: DEV_A } },
+      { at: 4, kind: 'share', deviceId: '' },
+      { at: 5, kind: 'share', deviceId: 'not-a-uuid' },
+      { at: 6, kind: 'share', deviceId: '111111112222433384445555555555555' }, // 缺連字號
+      { at: 7, kind: 'share', deviceId: DEV_A + '-extra' }, // 尾隨內容
+      { at: 8, kind: 'share', deviceId: ' ' + DEV_A + ' ' }, // 前後空白不 trim，形狀不合
+      { at: 9, kind: 'share', deviceId: DEV_A.replace('1', 'g') }, // 非 hex
+    ]);
+    assert.equal(out.length, 9, '事件本身一筆都不丟');
+    for (const record of out) {
+      assert.deepEqual(record, { at: record.at, kind: 'share' });
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(record, 'deviceId'),
+        false,
+        'at=' + record.at + ' 的髒 deviceId 應整個鍵不輸出'
+      );
+    }
+  });
+
+  test('sanitizeSeenList:deviceId 缺席就缺席，不得補 null', () => {
+    const out = C.sanitizeSeenList([{ at: 1, kind: 'share' }, { at: 2 }]);
+    assert.deepEqual(out, [{ at: 1, kind: 'share' }, { at: 2 }]);
+    assert.equal(Object.prototype.hasOwnProperty.call(out[0], 'deviceId'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(out[1], 'deviceId'), false);
+  });
+
+  // 衝突規則不新增:同 at 一律取前一份(a)那筆的完整內容，包含它有沒有 deviceId。
+  test('unionSeen:同 at 衝突維持 a 優先(deviceId 跟著 a 那筆整筆走)', () => {
+    assert.deepEqual(
+      C.unionSeen(
+        [{ at: 100, kind: 'share', deviceId: DEV_A }],
+        [{ at: 100, kind: 'menu', deviceId: DEV_B }]
+      ),
+      [{ at: 100, kind: 'share', deviceId: DEV_A }],
+      '兩邊都有 deviceId → 取 a'
+    );
+    assert.deepEqual(
+      C.unionSeen([{ at: 100, kind: 'share', deviceId: DEV_A }], [{ at: 100, kind: 'menu' }]),
+      [{ at: 100, kind: 'share', deviceId: DEV_A }],
+      'a 有、b 無 → 取 a'
+    );
+    const bOnly = C.unionSeen(
+      [{ at: 100, kind: 'share' }],
+      [{ at: 100, kind: 'menu', deviceId: DEV_B }]
+    );
+    assert.deepEqual(bOnly, [{ at: 100, kind: 'share' }], 'a 無、b 有 → 仍取 a，不從 b 補欄位');
+    assert.equal(Object.prototype.hasOwnProperty.call(bOnly[0], 'deviceId'), false);
+  });
+
+  test('unionSeen:SEEN_MAX 裁切行為不因 deviceId 改變', () => {
+    // 兩份各 per 筆，per 取 0.8×SEEN_MAX——同時滿足 per < SEEN_MAX(裁切後開頭
+    // 仍落在 a)與 2×per > SEEN_MAX(確實裁掉東西)，deviceId 才驗得到沒在裁切
+    // 邊界上錯位。
+    const max = C.LIMITS.SEEN_MAX;
+    const per = Math.ceil(max * 0.8);
+    const dropped = 2 * per - max;
+    const a = Array.from({ length: per }, (_, i) => ({ at: i, kind: 'share', deviceId: DEV_A }));
+    const b = Array.from({ length: per }, (_, i) => ({
+      at: per + i,
+      kind: 'icon',
+      deviceId: DEV_B,
+    }));
+    const out = C.unionSeen(a, b);
+    assert.equal(out.length, max);
+    assert.equal(out[0].at, dropped, '最舊的 ' + dropped + ' 筆仍被裁掉');
+    assert.equal(out[out.length - 1].at, 2 * per - 1);
+    assert.equal(out[0].deviceId, DEV_A);
+    assert.equal(out[out.length - 1].deviceId, DEV_B);
+  });
+});
+
+test.describe('裝置歸屬:toSyncItem／fromSyncItem 的 deviceId 往返', () => {
+  const baseEntry = () => ({
+    id: 'entry-1',
+    url: CLEAN_URL,
+    original: SHARE_URL,
+    receivedAt: 1000,
+  });
+
+  test('toSyncItem:seen[].deviceId 透傳，kind→source 映射不變', () => {
+    const item = C.toSyncItem(
+      Object.assign(baseEntry(), {
+        seen: [
+          { at: 1000, kind: 'share', deviceId: DEV_A },
+          { at: 2000, kind: 'menu', deviceId: DEV_B },
+          { at: 3000, deviceId: DEV_ZERO }, // 缺 kind → 不輸出 source，但 deviceId 照出
+        ],
+      })
+    );
+    assert.deepEqual(item.seen, [
+      { at: 1000, source: 'share', deviceId: DEV_A },
+      { at: 2000, source: 'clipboard', deviceId: DEV_B },
+      { at: 3000, deviceId: DEV_ZERO },
+    ]);
+  });
+
+  test('toSyncItem:seen[] 無 deviceId 時不輸出該鍵(不輸出 null)', () => {
+    const item = C.toSyncItem(
+      Object.assign(baseEntry(), { seen: [{ at: 1000, kind: 'share' }, { at: 2000 }] })
+    );
+    assert.deepEqual(item.seen, [{ at: 1000, source: 'share' }, { at: 2000 }]);
+    assert.equal(Object.prototype.hasOwnProperty.call(item.seen[0], 'deviceId'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(item.seen[1], 'deviceId'), false);
+  });
+
+  // 伺服器存的本來就是小寫;這裡餵一筆大寫是防匯入檔／舊資料經雲端往返後
+  // 漏掉正規化——本機一律以小寫落地才 join 得到裝置清單。
+  test('fromSyncItem:雲端 seen[].deviceId 映射回本機並正規化為小寫', () => {
+    const entry = C.fromSyncItem(
+      {
+        id: 'entry-1',
+        cleaned: CLEAN_URL,
+        original: SHARE_URL,
+        receivedAt: 1000,
+        seen: [
+          { at: 1000, source: 'share', deviceId: DEV_A },
+          { at: 2000, source: 'clipboard', deviceId: DEV_UPPER },
+        ],
+      },
+      null
+    );
+    assert.deepEqual(entry.seen, [
+      { at: 1000, kind: 'share', deviceId: DEV_A },
+      { at: 2000, kind: 'share', deviceId: DEV_UPPER_LOWER },
+    ]);
+  });
+
+  test('fromSyncItem:雲端 deviceId 為 null 或缺席 → 本機缺席', () => {
+    const entry = C.fromSyncItem(
+      {
+        id: 'entry-1',
+        cleaned: CLEAN_URL,
+        original: SHARE_URL,
+        receivedAt: 1000,
+        seen: [
+          { at: 1000, source: 'share', deviceId: null }, // 舊事件伺服器回 null
+          { at: 2000, source: 'share' }, // 整個鍵缺席
+        ],
+      },
+      null
+    );
+    assert.deepEqual(entry.seen, [{ at: 1000, kind: 'share' }, { at: 2000, kind: 'share' }]);
+    assert.equal(Object.prototype.hasOwnProperty.call(entry.seen[0], 'deviceId'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(entry.seen[1], 'deviceId'), false);
+  });
+
+  // fromSyncItem 把雲端那份排 unionSeen 的 a:同一毫秒以伺服器的歸屬為準。
+  test('fromSyncItem:同 at 時雲端歸屬勝出(雲端排 a)', () => {
+    const entry = C.fromSyncItem(
+      {
+        id: 'entry-1',
+        cleaned: CLEAN_URL,
+        original: SHARE_URL,
+        receivedAt: 1000,
+        seen: [{ at: 1000, source: 'share', deviceId: DEV_A }],
+      },
+      {
+        url: CLEAN_URL,
+        kind: 'menu',
+        at: 1000,
+        seen: [{ at: 1000, kind: 'menu', deviceId: DEV_B }],
+      }
+    );
+    assert.deepEqual(entry.seen, [{ at: 1000, kind: 'share', deviceId: DEV_A }]);
+  });
+
+  test('fromSyncItem:雲端缺 deviceId 時不從本機同 at 事件補回', () => {
+    const entry = C.fromSyncItem(
+      {
+        id: 'entry-1',
+        cleaned: CLEAN_URL,
+        original: SHARE_URL,
+        receivedAt: 1000,
+        seen: [{ at: 1000, source: 'share' }],
+      },
+      {
+        url: CLEAN_URL,
+        kind: 'menu',
+        at: 1000,
+        seen: [{ at: 1000, kind: 'menu', deviceId: DEV_B }],
+      }
+    );
+    assert.deepEqual(entry.seen, [{ at: 1000, kind: 'share' }]);
+    assert.equal(Object.prototype.hasOwnProperty.call(entry.seen[0], 'deviceId'), false);
+  });
+
+  // 匯出→匯入往返:kind→source→kind 的失真是 D4 已接受的既有行為，此處只釘
+  // deviceId 一路不變。
+  test('toSyncItem → fromSyncItem 往返:deviceId 不變', () => {
+    const item = C.toSyncItem(
+      Object.assign(baseEntry(), { seen: [{ at: 1500, kind: 'menu', deviceId: DEV_A }] })
+    );
+    const entry = C.fromSyncItem(item, null);
+    assert.equal(entry.seen.length, 1);
+    assert.equal(entry.seen[0].at, 1500);
+    assert.equal(entry.seen[0].deviceId, DEV_A);
+  });
+});
+
+test.describe('裝置歸屬:defaultDeviceName 與 randomUuid', () => {
+  // getPlatformInfo().os 五個已知值 → 'Chrome on <OS>';其餘一律退成
+  // 'Chrome'(命名規則 §10 拍板:不寫 Unknown、不加序號)。
+  test('defaultDeviceName:五個已知 os 值的對照表', () => {
+    assert.equal(typeof C.defaultDeviceName, 'function', 'defaultDeviceName 應掛在 TCLCore 匯出');
+    assert.equal(C.defaultDeviceName('win'), 'Chrome on Windows');
+    assert.equal(C.defaultDeviceName('mac'), 'Chrome on macOS');
+    assert.equal(C.defaultDeviceName('linux'), 'Chrome on Linux');
+    assert.equal(C.defaultDeviceName('cros'), 'Chrome on ChromeOS');
+    assert.equal(C.defaultDeviceName('android'), 'Chrome on Android');
+  });
+
+  test('defaultDeviceName:未知／缺席／非字串一律 Chrome，不得出現 Unknown', () => {
+    assert.equal(typeof C.defaultDeviceName, 'function', 'defaultDeviceName 應掛在 TCLCore 匯出');
+    const fallbacks = ['openbsd', 'fuchsia', '', 'WIN', 'windows', undefined, null, 123, {}, []];
+    for (const os of fallbacks) {
+      const name = C.defaultDeviceName(os);
+      assert.equal(name, 'Chrome', JSON.stringify(String(os)) + ' 應退成 Chrome');
+      assert.equal(/unknown/i.test(name), false, '不得出現 Unknown');
+    }
+    assert.equal(C.defaultDeviceName(), 'Chrome', '無引數也退成 Chrome');
+  });
+
+  // deviceId 的來源:形狀必須是小寫 UUID——伺服器存小寫，PUT／DELETE 以它當路徑參數。
+  test('randomUuid:回傳小寫 UUID 形狀且不重複', () => {
+    const id = C.randomUuid();
+    assert.match(id, UUID_RE);
+    assert.equal(id, id.toLowerCase());
+    assert.notEqual(C.randomUuid(), id);
+  });
+});

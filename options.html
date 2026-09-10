@@ -293,7 +293,11 @@
      同步中/錯誤/登入過期，DOM 結構與動效沿用核准 demo
      (account-header-demo.html)，見 options.js 的 renderAccount。
      ========================================================= */
-  .account-area { position: relative; }
+  /* 當 flex 容器而不是 block：裡面的觸發鈕是 inline-flex，放在 block
+     裡會坐在行內基線上，行盒底部多出一段 descender 空隔，把頁首
+     flex 置中的基準從按鈕換成「按鈕＋空隔」，帳號鈕因此比
+     .ghost-btn 高出約 1px。改成 flex 後沒有行盒，三顆鈕 top 對齊。 */
+  .account-area { position: relative; display: flex; align-items: center; }
   /* 高度對齊頁首其餘三顆鈕(.ghost-btn 的固定 34px):.btn 本身靠 padding
      撐出的高度只有約 32.6px，這裡明寫 height 蓋過，讓四顆鈕同高、同一
      基線;.btn 既有的 inline-flex + align-items:center 會在新高度裡把
@@ -304,20 +308,19 @@
   .account-trigger {
     appearance: none; border: 1px solid var(--border); background: var(--surface);
     border-radius: 999px;
-    /* 上下 padding 原本是 3px，加上 32px 頭像與 1px 邊框會撐到 40px，比
-       其他三顆頁首鈕的 34px 高一截。改成上下 0，讓
-       0(padding)+32(avatar-wrap)+0(padding)+2(border)=34px，跟
-       .ghost-btn/.signin-btn 同高、同基線，不必縮小頭像本身尺寸。 */
-    padding: 0 10px 0 3px; display: inline-flex; align-items: center;
+    /* 3(padding)+26(avatar-wrap)+3(padding)+2(border)=34px，跟
+       .ghost-btn/.signin-btn 同高、同基線。頭像比容器小 8px，四周
+       留白均勻，綠點與同步圈都落在邊框內。 */
+    padding: 3px 10px 3px 3px; display: inline-flex; align-items: center;
     gap: 8px; cursor: pointer; font: inherit;
   }
   /* hover 只用 filter 微調底色亮度，不放大(不加 transform:scale)。 */
   .account-trigger:hover { border-color: var(--baseline); filter: brightness(1.08); }
   .account-trigger[aria-expanded="true"] { border-color: var(--accent); }
-  .avatar-wrap { position: relative; width: 32px; height: 32px; flex-shrink: 0; }
+  .avatar-wrap { position: relative; width: 26px; height: 26px; flex-shrink: 0; }
   .avatar-circle {
-    width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: var(--accent-contrast);
-    display: grid; place-items: center; font-size: 13px; font-weight: 700; user-select: none;
+    width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-contrast);
+    display: grid; place-items: center; font-size: 12px; font-weight: 700; user-select: none;
     overflow: hidden;
   }
   /* 有大頭照時底色透明:img 本來就 100%/100% + overflow:hidden 蓋滿整個
@@ -325,9 +328,10 @@
      onerror 才退回字母(見 options.js 的 renderAvatars)，這段時間縫隙裡
      露出的應該是透明，不是誤導使用者「這裡本來有色塊」的實色。 */
   .avatar-circle.has-photo { background: transparent; }
-  /* 下拉選單頂部帳號列用的 40px 大頭像變體，只覆寫尺寸，其餘沿用
-     .avatar-circle。 */
-  .avatar-circle.acct-menu-avatar { width: 40px; height: 40px; flex-shrink: 0; }
+  /* 下拉選單頂部帳號列用的 40px 大頭像變體，只覆寫尺寸與字級，其餘沿用
+     .avatar-circle。字級另寫 13px：頁首頭像縮到 26px 後基底的
+     .avatar-circle 是 12px，這裡補回 40px 圓框原本的字母大小。 */
+  .avatar-circle.acct-menu-avatar { width: 40px; height: 40px; flex-shrink: 0; font-size: 13px; }
   /* 同步中:外圈疊在頭像外緣的 2px 弧線。預設(含 prefers-reduced-motion:
      reduce)只畫靜態淡色圓環;轉動效果收進下面的 no-preference 媒體查詢，
      一併帶出頂色對比，reduce 時保留「正在同步」的視覺提示但不轉動。 */
@@ -343,7 +347,7 @@
   }
   @keyframes acct-spin { to { transform: rotate(360deg); } }
   .status-dot {
-    position: absolute; right: -1px; bottom: -1px; width: 9px; height: 9px; border-radius: 50%;
+    position: absolute; right: 0; bottom: 0; width: 8px; height: 8px; border-radius: 50%;
     border: 2px solid var(--surface); background: var(--good);
   }
   .status-dot.is-danger { background: var(--danger); }
@@ -502,6 +506,9 @@
   }
   .menu-item .icon { width: 15px; height: 15px; color: var(--ink-3); }
   .menu-item:hover { background: var(--plane); }
+  /* 選單項右側的次要數字(目前只有「管理裝置」用):靠 margin-left:auto 推到
+     最右，ink-3 小字;0 台時整個 span 收掉不留空位。 */
+  .menu-item .menu-item-count { margin-left: auto; padding-left: 10px; font-size: 12px; font-weight: 500; color: var(--ink-3); }
   .menu-item.danger, .menu-item.danger .icon { color: var(--danger); }
   .menu-item.danger:hover { background: var(--danger-soft); }
   /* 停用態(如同步中的 acctSyncNowBtn):維持不可點的視覺訊號，hover 不
@@ -861,6 +868,9 @@
   #detailUrlValue { color: var(--accent); }
   .detail-linkrow { display: flex; align-items: center; gap: 8px; }
   .detail-linkrow .detail-value { flex: 1; }
+  /* 「裝置」列的值是平台圖示 + 裝置名並排，不是純文字。 */
+  .detail-device-value { display: flex; align-items: center; gap: 6px; }
+  .detail-device-value .icon { width: 14px; height: 14px; color: var(--ink-3); }
   .ellipsis {
     white-space: nowrap;
     overflow: hidden;
@@ -911,6 +921,14 @@
   }
   .timeline-text.secondary { color: var(--ink-3); }
   .timeline-kind { color: var(--ink-3); }
+  /* 時間軸列尾的裝置名:接在事件種類之後的 ink-3 小字，該筆事件沒有
+     deviceId 時整個 span 不畫(見 buildTimelineRow)。 */
+  .timeline-device { color: var(--ink-3); font-size: 12px; margin-left: 8px; }
+  /* 已移除裝置的淡字標記:接在原名之後(時間軸掛在 .timeline-device 之內、
+     詳細視窗掛在裝置名旁)，取最淡的 ink-3，讓原名仍是主體。 */
+  /* 時間軸上這枚標記掛在 .timeline-device 之內、與它同色，再淡一階才分得出
+     哪一段是原名、哪一段是標記。 */
+  .device-removed-tag { color: var(--ink-3); font-size: 12px; margin-left: 6px; opacity: .75; }
   /* 底部動作列:對齊 dialog-shell.tsx 的 DialogActions/DialogButton——
      等寬(flex:1)、outline 邊框、圓角 PanelRadius(12)，destructive 只變
      文字色不是實心底色。 */
@@ -975,6 +993,66 @@
      #detailOverlay 前面，同為 z-index:10 時後者贏，確認框整個被遮住——
      畫面看似沒反應、焦點靜默落在看不見的取消鈕、點遮罩還關錯視窗。 */
   #confirmOverlay { z-index: 12; }
+
+  /* ---- 裝置對話框(#devicesOverlay):面板沿用 .modal-detail 的外觀，只把
+     寬度放寬到 480px。每列約 52px:左 24px 平台圖示、中間名稱/時間兩行、
+     右側改名與移除兩顆 ghost 圖示鈕——右側按鈕的浮現規則完全比照紀錄卡的
+     .entry-quick(平時 display:none，不吃 hit-test 也不會被 Tab 掃到，
+     hover 或 focus-within 才 display:flex)。 ---- */
+  .modal-devices { max-width: 480px; }
+  /* 標題列:左「裝置」、右「N 台裝置正在同步」;右側預留 ✕ 鈕的位置。 */
+  .devices-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-right: 30px; }
+  .devices-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+  .devices-head .hint { font-size: 12px; color: var(--ink-3); }
+  /* 取清單失敗的錯誤列:既有的列保留不清掉，只在清單上方多這一句。 */
+  .devices-error { font-size: 12px; color: var(--danger); padding: 4px 0; }
+  .device-list { padding: 2px 0 0; }
+  .device-row {
+    position: relative; display: flex; align-items: center; gap: 12px; min-height: 52px;
+    padding: 6px 0; border-bottom: 1px solid var(--grid);
+  }
+  .device-row:last-child { border-bottom: none; }
+  .device-platform-icon { width: 24px; display: grid; place-items: center; color: var(--ink-3); flex-shrink: 0; }
+  .device-platform-icon .icon { width: 18px; height: 18px; }
+  .device-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .device-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  /* 名稱本身就是按鈕(點名稱＝改名)，但外觀維持純文字，不畫按鈕框。 */
+  .device-name {
+    appearance: none; border: none; background: none; padding: 0; margin: 0; font: inherit;
+    font-size: 13.5px; font-weight: 650; color: var(--ink-1); cursor: text; text-align: left;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; border-radius: 4px;
+  }
+  .device-name:hover { text-decoration: underline; text-decoration-color: var(--baseline); }
+  .device-name-input {
+    font: inherit; font-size: 13.5px; font-weight: 650; color: var(--ink-1);
+    background: var(--plane); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 2px 8px; width: 100%; max-width: 260px; outline: none;
+  }
+  .device-pill {
+    display: inline-flex; align-items: center; flex-shrink: 0; padding: 1px 7px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent); font-size: 11px; line-height: 16px; font-weight: 600;
+  }
+  .device-sub { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .device-actions { display: none; gap: 4px; flex-shrink: 0; }
+  .device-row:hover .device-actions,
+  .device-row:focus-within .device-actions { display: flex; }
+  .device-quick-btn {
+    appearance: none; border: none; background: transparent; color: var(--ink-3); width: 28px; height: 28px;
+    border-radius: 8px; display: grid; place-items: center; cursor: pointer;
+  }
+  .device-quick-btn:hover { background: var(--accent-soft); color: var(--accent); }
+  .device-quick-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .device-quick-btn:disabled { opacity: 0.4; cursor: default; }
+  .device-quick-btn:disabled:hover { background: transparent; color: var(--ink-3); }
+  /* 停用的按鈕在多數瀏覽器不觸發原生 title 提示，外面再包一層 span 掛同一
+     句說明，滑鼠停在停用的垃圾桶上仍看得到 tooltip。 */
+  .device-action-slot { display: inline-flex; }
+  /* 空狀態:置中、灰字，語彙比照上方的 .empty。 */
+  .device-empty {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 26px 16px 24px; color: var(--ink-3); font-size: 13px; text-align: center;
+  }
+  .device-empty .icon { width: 26px; height: 26px; }
   .modal {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1064,6 +1142,7 @@
     <symbol id="i-scissors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></symbol>
     <symbol id="i-mouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4.1 12 6"/><path d="m5.1 8-2.9-.8"/><path d="m6 12-1.9 2"/><path d="M7.2 2.2 8 5.1"/><path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-circle-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
     <symbol id="i-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></symbol>
@@ -1095,6 +1174,14 @@
     <!-- 帳號選單的「立即同步」/「登出」圖示(Lucide refresh-cw / log-out)。 -->
     <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></symbol>
+    <!-- 裝置管理(Lucide chrome / smartphone / monitor-smartphone / pencil)。
+         平台圖示對照:chrome_extension→i-chrome、android/ios→i-smartphone，
+         其餘(含未知平台)退回 i-monitor-smartphone;i-pencil 是裝置列 hover
+         浮現的改名鈕。 -->
+    <symbol id="i-chrome" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" x2="12" y1="8" y2="8"/><line x1="3.95" x2="8.54" y1="6.06" y2="14"/><line x1="10.88" x2="15.46" y1="21.94" y2="14"/></symbol>
+    <symbol id="i-smartphone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></symbol>
+    <symbol id="i-monitor-smartphone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/><path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/><rect width="6" height="10" x="16" y="12" rx="2"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
     <!-- 登入確認框(車道 C bug B)用，色版與 #acctSignInBtn 裡的 Google G
          內嵌 SVG 逐字相同，四色路徑不吃 currentColor，不受 .icon 外層色彩
          影響。 -->
@@ -1177,6 +1264,14 @@
           <button class="menu-item" id="acctSyncNowBtn" role="menuitem">
             <svg class="icon"><use href="#i-refresh"/></svg>
             <span id="acctSyncLabel" data-i18n="opAccountSyncNow">立即同步</span>
+          </button>
+          <!-- 管理裝置:右側 #acctDeviceCount 顯示台數(0 台時整個 span 收掉)。
+               選單開啟時由 options.js 送一次 sync.devices.list 取台數，未登入
+               時整項隱藏也不送(計畫 §6／§12 增補)。 -->
+          <button class="menu-item" id="acctManageDevicesBtn" role="menuitem" hidden>
+            <svg class="icon"><use href="#i-monitor-smartphone"/></svg>
+            <span data-i18n="opAccountManageDevices">管理裝置</span>
+            <span class="menu-item-count" id="acctDeviceCount" hidden></span>
           </button>
           <button class="menu-item" id="acctSignOutBtn" role="menuitem">
             <svg class="icon"><use href="#i-logout"/></svg><span data-i18n="opAccountSignOut">登出</span>
@@ -1371,6 +1466,30 @@
   </div>
 </div>
 
+<!-- 裝置對話框:由帳號選單的「管理裝置」開啟。面板沿用詳細視窗的
+     .modal-detail 外觀(圓角 12、padding 16、右上 ✕)，只放寬到 480px;
+     移除確認框(#confirmOverlay，z-index 12)疊在這一層之上。
+     清單列、空狀態的圖示與文案都由 options.js 以 createElement 產生(裝置
+     名稱是使用者可自訂的字串，等於別台裝置寫進本頁的內容，一律走
+     textContent，禁 innerHTML)，這裡只留容器。 -->
+<div class="overlay" id="devicesOverlay" hidden>
+  <div class="modal modal-detail modal-devices" role="dialog" aria-modal="true" aria-labelledby="devicesTitle">
+    <button class="detail-close" id="devicesClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+    <div class="devices-head">
+      <h3 id="devicesTitle" data-i18n="opDevicesTitle">裝置</h3>
+      <span class="hint" id="devicesHint"></span>
+    </div>
+    <div class="devices-error" id="devicesError" hidden></div>
+    <div class="device-list" id="deviceList"></div>
+    <div class="device-empty" id="deviceEmpty" hidden>
+      <button class="btn" id="deviceEmptySyncBtn">
+        <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+        <span data-i18n="opAccountSyncNow">立即同步</span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- 卡片詳細視窗:結構/行為/間距/字級/圓角/按鈕樣式一律照手機版
      history-detail-dialog.tsx + dialog-shell.tsx 的字面 token 值(唯一
      數值權威，見上方 :root 註解)。點卡片本身開啟，✕ 鈕或點遮罩或 Esc
@@ -1417,6 +1536,17 @@
 
     <!-- 原始連結/追蹤參數列(有資料才畫，見 buildDetailExtraRows)。 -->
     <div id="detailExtraRows"></div>
+
+    <!-- 裝置 kv 列:取最近一筆帶 deviceId 的 seen 事件(計畫 §12 增補)，
+         全無歸屬的早期紀錄整列不畫(D27)。平台圖示隨裝置變動，整列內容由
+         renderDetailDeviceRow 重建，#detailDeviceName 是重建時掛回去的
+         靜態節點。 -->
+    <div class="detail-kv" id="detailDeviceRow" hidden>
+      <span class="detail-key" data-i18n="opDevicesTitle">裝置</span>
+      <div class="detail-value detail-device-value">
+        <span id="detailDeviceName"></span>
+      </div>
+    </div>
 
     <!-- 記錄時間 kv:seen.length > 1 時才出現「時間軸」鈕，防禦寫法見
          openEntryDetail/buildSeenTimeline;點下去開時間軸子層視窗

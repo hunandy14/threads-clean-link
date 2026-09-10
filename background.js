@@ -298,6 +298,143 @@ function storageAreaAdapter(name) {
   };
 }
 
+// ------------------------------------------------------------
+// 裝置身分(裝置歸屬，契約 §9)
+// ------------------------------------------------------------
+
+// 本機這台的身分:{ deviceId, name?, platform, createdAt }。登出、刪雲端、清
+// 紀錄、匯入一律不碰它——重灌擴充才算換一台新裝置。name 缺席代表「用預設
+// 名」，預設名只在讀取時算(見 getLocalDevice)，不固化進 storage。
+// 直接讀這個 key 的人必須自行 TCLCore.normalizeDeviceId(裡頭躺的可能是大寫
+// 寫法或損毀值);經 ensureDevice／getLocalDevice 取得的一律已歸一。
+const DEVICE_KEY = 'syncDevice';
+
+// 惰性初始化的 memo。不掛 onInstalled:那支只在安裝/更新的當下觸發一次，錯過
+// 就永遠不會有身分。實際的讀改寫掛在 enqueueHistoryWrite 的序列鏈上，與
+// recordHistory、兩支遷移串行，併發呼叫不會各生一組 deviceId 互相覆蓋。
+let localDevicePromise = null;
+
+// 已產生但尚未落地的新身分。刻意不在 ensureDevice 內就 storage.set:紀錄路徑
+// 會把它併進自己那一次寫入(見 recordHistory)，同一批寫完，不多佔一次寫入配額
+// ——storage.local.set 的配額與失敗都是以「一次呼叫」為單位算的。沒有紀錄要寫
+// 時(例如引擎先來要 getLocalDevice)由 persistDevice 補上。
+let unsavedDevice = null;
+
+// 讀到既有值一律採用(重生 deviceId 等於在雲端變成另一台裝置);沒有才生成。
+// 既有值先過 TCLCore.normalizeDeviceId:大寫寫法歸一成小寫(伺服器存小寫，不
+// 對齊就 join 不到自己這台);形狀根本不合(storage 損毀、手改過)才重生——當不
+// 成識別碼的值留著，這台裝置就永遠註冊不上雲端。
+// 呼叫端注意:ensureDevice 自己佔一段 historyWriteChain，不得在鏈上的工作內
+// 第一次呼叫它，否則等於在鏈上等自己(死鎖)。recordHistory 因此在掛上本次寫
+// 入之前就先呼叫。
+function ensureDevice() {
+  if (localDevicePromise !== null) return localDevicePromise;
+  const pending = enqueueHistoryWrite(async () => {
+    if (!hasStorageLocal()) return null;
+    const stored = await chrome.storage.local.get(DEVICE_KEY);
+    const existing = stored && stored[DEVICE_KEY];
+    const existingId =
+      existing && typeof existing === 'object'
+        ? TCLCore.normalizeDeviceId(existing.deviceId)
+        : undefined;
+    if (existingId !== undefined) {
+      // 形狀合法就不是重寫的理由:只在記憶體裡把它歸一成小寫交出去。
+      return existingId === existing.deviceId
+        ? existing
+        : Object.assign({}, existing, { deviceId: existingId });
+    }
+    const device = {
+      deviceId: TCLCore.randomUuid(),
+      platform: 'chrome_extension',
+      createdAt: Date.now(),
+    };
+    unsavedDevice = device;
+    return device;
+  }).catch((err) => {
+    console.warn('[threads-clean-link] 裝置身分初始化失敗', err);
+    // 失敗不長期卡住:清掉 memo 讓下一次呼叫重試，別讓一次 storage 抽風害得
+    // 這個 SW 實例往後所有事件都沒有歸屬。
+    if (localDevicePromise === pending) localDevicePromise = null;
+    return null;
+  });
+  localDevicePromise = pending;
+  return pending;
+}
+
+// 把尚未落地的身分寫進 storage。紀錄路徑會順手帶走(那時這支就是 no-op)，
+// 兩邊都掛在同一條序列鏈上，先跑到的那個寫、後跑到的看到已落地就跳過，因此
+// 一組新身分永遠只寫一次。
+function persistDevice() {
+  return enqueueHistoryWrite(async () => {
+    const pending = unsavedDevice;
+    if (pending === null || !hasStorageLocal()) return;
+    await chrome.storage.local.set({ [DEVICE_KEY]: pending });
+    if (unsavedDevice === pending) unsavedDevice = null;
+  }).catch((err) => {
+    console.warn('[threads-clean-link] 裝置身分寫入失敗', err);
+  });
+}
+
+// 預設名的 OS 來源。getPlatformInfo 在舊環境可能整支不存在、也可能 reject，
+// 兩種都退成 undefined 讓 TCLCore.defaultDeviceName 回 'Chrome'。探測結果 memo，
+// 一個 SW 實例內只問一次。
+let platformOsPromise = null;
+
+function detectPlatformOs() {
+  if (platformOsPromise !== null) return platformOsPromise;
+  platformOsPromise = Promise.resolve()
+    .then(() => {
+      if (!chrome.runtime || typeof chrome.runtime.getPlatformInfo !== 'function') return undefined;
+      return chrome.runtime.getPlatformInfo();
+    })
+    .then((info) => (info && typeof info.os === 'string' ? info.os : undefined))
+    .catch(() => undefined);
+  return platformOsPromise;
+}
+
+// 引擎介面(計劃 §12):sync.js 靠這支取得請求的 device 區塊與 currentDeviceId。
+// 名稱一律以本機的 syncDevice.name 為準(D26)，缺席才算預設名。
+async function getLocalDevice() {
+  const device = await ensureDevice();
+  if (!device) return null;
+  // 引擎拿到的 deviceId 之後會出現在雲端資料裡，本機這邊不能只留在記憶體。
+  await persistDevice();
+  // 交出去的 deviceId 一律正規化:引擎拿它組請求的 device 區塊與
+  // currentDeviceId，handleDevicesRemove 拿它擋「移除自己這台」，兩邊大小寫
+  // 不一致就比不中。ensureDevice 已經歸一過，這裡是縱深。
+  const deviceId = TCLCore.normalizeDeviceId(device.deviceId);
+  if (deviceId === undefined) return null;
+  const name =
+    typeof device.name === 'string' && device.name !== ''
+      ? device.name
+      : TCLCore.defaultDeviceName(await detectPlatformOs());
+  return {
+    deviceId,
+    name,
+    platform: typeof device.platform === 'string' ? device.platform : 'chrome_extension',
+  };
+}
+
+// 本機這台改名成功後把新名字寫回 syncDevice(§5);改別台不得寫進來——本機
+// 名稱以本機為準(D26)。同樣走序列鏈，與紀錄寫入不互相覆蓋。
+async function rememberLocalDeviceName(deviceId, name) {
+  const device = await ensureDevice();
+  if (!device || TCLCore.normalizeDeviceId(device.deviceId) !== deviceId) return;
+  await persistDevice();
+  await enqueueHistoryWrite(async () => {
+    if (!hasStorageLocal()) return;
+    const stored = await chrome.storage.local.get(DEVICE_KEY);
+    const current = stored && stored[DEVICE_KEY];
+    if (!current || typeof current !== 'object') return;
+    const next = Object.assign({}, current, { name });
+    await chrome.storage.local.set({ [DEVICE_KEY]: next });
+    // memo 是這個 SW 實例內 getLocalDevice 的唯一來源:落地了卻不換掉它，改完
+    // 名之後的每一輪同步都還在送舊名，要等 SW 回收重載才會對齊。deviceId 補
+    // 上正規化後的值，維持「memo 交出去的一律已歸一」。
+    localDevicePromise = Promise.resolve(Object.assign({}, next, { deviceId }));
+  });
+}
+
 // 認證模組:SW 內由 importScripts 保證存在，測試沙箱可能只載了 background
 // 本身，因此以 typeof 取值不讓接線在載入當下就丟 ReferenceError。
 const syncAuthApi = typeof TCLAuth !== 'undefined' ? TCLAuth : null;
@@ -329,6 +466,9 @@ const syncEngine =
         auth: syncAuthApi,
         permissions: { contains: (descriptor) => syncAuthApi.containsPermissions(descriptor) },
         randomUUID: () => TCLCore.randomUuid(),
+        // 本機裝置身分(§12):引擎組請求的 device 區塊與 currentDeviceId 都取
+        // 自這裡，身分的產生與存放一律留在 background。
+        getLocalDevice: () => getLocalDevice(),
         writeChain: (fn) => enqueueHistoryWrite(fn),
         // 拉取是唯一會把 history 變長的寫入路徑，套的是與 recordHistory 同一
         // 份容量上限(位元組軟預算＋筆數硬保險，優先淘汰墓碑)。
@@ -347,7 +487,61 @@ const SYNC_MESSAGE_HANDLERS = {
   'sync.signOut': (engine) => engine.signOut(),
   'sync.now': (engine) => engine.syncNow(),
   'sync.deleteCloud': (engine) => engine.deleteCloud(),
+  'sync.devices.list': (engine, message) => handleDevicesList(engine, message),
+  'sync.devices.rename': (engine, message) => handleDevicesRename(engine, message),
+  'sync.devices.remove': (engine, message) => handleDevicesRemove(engine, message),
 };
+
+// 裝置名的合法範圍:trim 後 1–80 個 code point。上限算 code point 而非
+// String.prototype.length——40 個 emoji 的 length 是 80 卻只有 40 個字，用
+// length 把關會誤殺合法名字。不合格回 undefined。
+function normalizeDeviceName(value) {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  const size = Array.from(trimmed).length;
+  if (size < 1 || size > 80) return undefined;
+  return trimmed;
+}
+
+// 三個 devices handler 一律先自驗參數(不合格就不碰引擎)，通過後把引擎回應
+// 原樣透出——失敗碼是 UI 分流的依據，handler 不得改寫形狀。
+//
+// list 額外在成功回應補一個頂層 defaultName(§12 增補):UI 把本機的改名欄清
+// 空時要能回退到預設名，而預設名只有 background 算得出來。引擎已經給了就
+// 不覆蓋。
+async function handleDevicesList(engine, message) {
+  const response = await engine.listDevices({ force: message ? message.force : undefined });
+  if (!response || response.ok !== true || response.defaultName !== undefined) return response;
+  return Object.assign({}, response, { defaultName: TCLCore.defaultDeviceName(await detectPlatformOs()) });
+}
+
+async function handleDevicesRename(engine, message) {
+  const deviceId = TCLCore.normalizeDeviceId(message && message.deviceId);
+  if (deviceId === undefined) return { ok: false, code: 'bad_device_id' };
+  const name = normalizeDeviceName(message && message.name);
+  if (name === undefined) return { ok: false, code: 'bad_device_name' };
+  const response = await engine.renameDevice(deviceId, name);
+  // 伺服器已經改好了，本機那份鏡像寫不進去只是下次讀到舊名，不能反過來把
+  // 成功的回應吞成 undefined 讓 UI 以為改名失敗。
+  if (response && response.ok === true) {
+    await rememberLocalDeviceName(deviceId, name).catch((err) => {
+      console.warn('[threads-clean-link] 本機裝置名寫入失敗', err);
+    });
+  }
+  return response;
+}
+
+async function handleDevicesRemove(engine, message) {
+  const deviceId = TCLCore.normalizeDeviceId(message && message.deviceId);
+  if (deviceId === undefined) return { ok: false, code: 'bad_device_id' };
+  // 這台裝置自己不得被移除:UI 那顆按鈕是 disabled，handler 再擋一次。
+  // 兩邊都跑過 normalizeDeviceId 才比:參數已經歸一，本機那份若因舊資料而是
+  // 大寫寫法，直接比就比不中——使用者正在用的這台會被送進 DELETE。
+  const local = await getLocalDevice();
+  const localId = local ? TCLCore.normalizeDeviceId(local.deviceId) : undefined;
+  if (localId !== undefined && localId === deviceId) return { ok: false, code: 'current_device' };
+  return engine.removeDevice(deviceId);
+}
 
 // 訊息是否來自本擴充自己的頁面(options／popup)。
 // 不能用 `!sender.tab` 當條件:manifest 的 options_ui.open_in_tab 為 true，設定頁
@@ -371,7 +565,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!isExtensionPageSender(sender) || !syncEngine) return false;
 
   Promise.resolve()
-    .then(() => handler(syncEngine))
+    .then(() => handler(syncEngine, message))
     .then(sendResponse)
     .catch((err) => {
       console.error(`[threads-clean-link] ${message.type} 處理失敗`, err);
@@ -1067,6 +1261,14 @@ function adoptFailureEntry(entry, failed) {
 // 讀取/匯入端共用同一份。唯一差異是 slice 位置——TCLCore 版在函式內就裁，對
 // merge 端無行為差(concat 本次一筆後照樣再裁，見下方)。
 
+// 本次事件的 seen 條目。deviceId 拿不到時整個鍵不輸出——schema 是選填欄位，
+// 硬塞 null 會被消毒剝掉，還讓「沒有歸屬」與「歸屬給 null」混在一起。
+function seenEvent(now, kind, deviceId) {
+  const event = { at: now, kind };
+  if (typeof deviceId === 'string' && deviceId !== '') event.deviceId = deviceId;
+  return event;
+}
+
 // 純函式:把本次的 kind/extra 併入既有條目 existing，回傳全新的條目物件
 // (不改動 existing，也不假設 existing 形狀完全乾淨——只挑用得到的欄
 // 位，其餘未知欄位自然被丟棄，等同順手做了一次縱深防禦)。
@@ -1079,9 +1281,10 @@ function adoptFailureEntry(entry, failed) {
 //     網址，卡片顯示的應是最近一次看到的樣子。
 //   - seen[]:既有事件序列走 TCLCore.entrySeenEvents(seen[] 存在就逐筆 sanitize，
 //     缺席則以 existing.at 補種一筆起始紀錄)，再 append 本次
-//     {at: now, kind}，裁到最新 SEEN_MAX 筆。本次事件必為最新，直接接在
-//     尾端即可，不需要像 unionSeenEvents 那樣重排。
-function mergeHistoryEntry(existing, url, kind, now, extra) {
+//     {at: now, kind, deviceId?}，裁到最新 SEEN_MAX 筆。本次事件必為最新，直接
+//     接在尾端即可，不需要像 unionSeenEvents 那樣重排。deviceId 只掛在本次這
+//     一筆:舊事件可能根本不是這台裝置產生的，回填等於竄改歸屬。
+function mergeHistoryEntry(existing, url, kind, now, extra, deviceId) {
   const author = extra && extra.author !== undefined ? extra.author : existing.author;
   const handle = extra && extra.handle !== undefined ? extra.handle : existing.handle;
   const excerpt = extra && extra.excerpt !== undefined ? extra.excerpt : existing.excerpt;
@@ -1089,7 +1292,7 @@ function mergeHistoryEntry(existing, url, kind, now, extra) {
   const removedParams =
     extra && extra.removedParams !== undefined ? extra.removedParams : existing.removedParams;
   const seen = TCLCore.entrySeenEvents(existing)
-    .concat([{ at: now, kind }])
+    .concat([seenEvent(now, kind, deviceId)])
     .slice(-TCLCore.LIMITS.SEEN_MAX);
 
   const merged = { url, kind, at: now, seen };
@@ -1178,11 +1381,17 @@ function notifySyncRecorded() {
 // 訊息後同樣走它)，Object.assign 進條目時不會覆蓋 url/kind/at/seen。
 function recordHistory(url, kind, extra) {
   let recorded = false;
+  // 【順序】ensureDevice 自己也佔一段 historyWriteChain，必須在掛上本次寫入
+  // 之前呼叫:掛上之後才第一次呼叫，就變成在鏈上等一段排在自己後面的工作。
+  // 呼叫在此、await 在鏈內，身分初始化因此永遠排在本次寫入前面。
+  const devicePending = ensureDevice();
   historyWriteChain = historyWriteChain
     .then(async () => {
       if (!hasStorageLocal()) return;
       const settings = await getSettings();
       if (!settings.saveHistory) return;
+      const device = await devicePending;
+      const deviceId = device && typeof device.deviceId === 'string' ? device.deviceId : undefined;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       const now = Date.now();
@@ -1193,7 +1402,7 @@ function recordHistory(url, kind, extra) {
       const dedupIndex = findDedupIndex(list, url);
       let entry;
       if (dedupIndex !== -1) {
-        entry = mergeHistoryEntry(list[dedupIndex], url, kind, now, extra);
+        entry = mergeHistoryEntry(list[dedupIndex], url, kind, now, extra, deviceId);
       } else {
         // 不就地改動讀出的陣列(對呼叫端/測試 mock 都更不易踩雷)，組新
         // 陣列。extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎
@@ -1202,7 +1411,7 @@ function recordHistory(url, kind, extra) {
         // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 TCLCore.capHistory
         // 處理。
         entry = applyHistorySchema(
-          Object.assign({}, extra, { url, kind, at: now, seen: [{ at: now, kind }] }),
+          Object.assign({}, extra, { url, kind, at: now, seen: [seenEvent(now, kind, deviceId)] }),
           null,
           now
         );
@@ -1224,8 +1433,13 @@ function recordHistory(url, kind, extra) {
       // 儲存上限:寫入前把陣列裁到位元組軟預算 + 筆數硬保險內(從尾端/
       // 最舊裁，本次剛寫入的最新一筆永遠保留)。
       next = TCLCore.capHistory(next);
+      // 首次記錄時把新身分一起寫掉(見 unsavedDevice):一次 storage.set 兩個
+      // 鍵，不額外多佔一次寫入。
+      const pendingDevice = unsavedDevice;
+      const items = { [HISTORY_KEY]: next };
+      if (pendingDevice !== null) items[DEVICE_KEY] = pendingDevice;
       try {
-        await chrome.storage.local.set({ [HISTORY_KEY]: next });
+        await chrome.storage.local.set(items);
       } catch (err) {
         // 配額失敗優雅降級:紀錄不設上限之後，長期使用可能真的把
         // chrome.storage.local 的容量配額(未申請 unlimitedStorage 權限
@@ -1240,6 +1454,7 @@ function recordHistory(url, kind, extra) {
         }
         throw err;
       }
+      if (pendingDevice !== null && unsavedDevice === pendingDevice) unsavedDevice = null;
       recorded = true;
     })
     .catch((err) => {
@@ -1456,6 +1671,15 @@ function migrateHistoryMerge() {
 // 【競態】與 migrateHistoryMerge／recordHistory 共用 historyWriteChain 串行;
 // 掛在 merge 之後執行，整平產生的新卡才補得到欄位。
 
+// 消毒結果與原事件是否完全一致(鍵集合與值都相同)。fillHistorySchema 的冪等
+// 短路判準。
+function sameSeenEvent(sanitized, original) {
+  if (!original || typeof original !== 'object') return false;
+  const keys = Object.keys(sanitized);
+  if (keys.length !== Object.keys(original).length) return false;
+  return keys.every((key) => sanitized[key] === original[key]);
+}
+
 // 純函式:補齊單筆條目缺席的 schema 欄位並收斂 seen[]。無事可做時回傳原物件
 // 參照。
 function fillHistorySchema(entry) {
@@ -1467,13 +1691,16 @@ function fillHistorySchema(entry) {
       break;
     }
   }
-  // 消毒後筆數變少就代表有東西被裁掉/丟掉(超過 SEEN_MAX、at 非有限數字、
-  // kind 不在白名單)，這時才需要換上新的 seen;筆數相同代表原本就每一筆都
-  // 合法，維持原陣列參照讓冪等短路成立。
+  // 消毒前後**逐筆**比較:只比陣列長度會漏掉「筆數不變但某一筆被剝掉一個
+  // 欄位」的情形(髒 deviceId 正是如此)，髒值於是躲過遷移繼續留在 storage、
+  // 之後照樣上雲。完全相同才維持原陣列參照，讓冪等短路成立。
   let seen = null;
   if (Array.isArray(entry.seen)) {
     const sanitized = TCLCore.sanitizeSeenList(entry.seen);
-    if (sanitized.length !== entry.seen.length) seen = sanitized;
+    const unchanged =
+      sanitized.length === entry.seen.length &&
+      sanitized.every((event, i) => sameSeenEvent(event, entry.seen[i]));
+    if (!unchanged) seen = sanitized;
   }
   if (!missing && seen === null) return entry;
 

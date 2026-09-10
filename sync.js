@@ -83,6 +83,12 @@
   // 它的紀錄全刪。**刻意獨立於 syncState**:登出與 session 過期會把 syncState
   // 整包重設，守衛跟著沒了，「刪雲端→登出→再登入」就會全滅。
   var CLEAR_GUARD_KEY = 'syncClearGuard';
+  // 別台裝置的純顯示快取。登出與刪雲端要清掉(留著就會在下一位使用者眼前秀
+  // 出上一個帳號的裝置);本機身分 syncDevice 兩者皆不清。
+  var DEVICES_CACHE_KEY = 'syncDevices';
+  // 裝置清單快取的新鮮度門檻(§4)。低於此值一律回快取:後端限流桶與手機端
+  // 共用，開一次帳號選單再開一次裝置對話框不該是兩次往返。
+  var DEVICES_TTL_MS = 30000;
 
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
@@ -303,6 +309,9 @@
     };
     var setTimer = deps.setTimeout;
     var clearTimer = deps.clearTimeout;
+    // 本機裝置身分(§12 增補二)。舊版接線沒有這支，整組裝置歸屬功能就靜默
+    // 缺席——同步照跑，只是請求不帶 device 區塊。
+    var getLocalDevice = typeof deps.getLocalDevice === 'function' ? deps.getLocalDevice : null;
 
     // 同一個 SW 實例內的單飛:三次 syncNow 同時進來時共用同一個 promise。
     // 跨實例的單飛靠 session 旗標(claimInflight)。
@@ -317,6 +326,9 @@
     }
     function localSet(items) {
       return Promise.resolve(storage.local.set(items));
+    }
+    function localRemove(keys) {
+      return Promise.resolve(storage.local.remove(keys));
     }
     function sessionGet(defaults) {
       return Promise.resolve(storage.session.get(defaults));
@@ -570,6 +582,9 @@
           ? payload.error
           : defaultCodeFor(res.status);
       var err = syncError(code);
+      // HTTP 狀態碼與錯誤碼分開帶:removeDevice 的冪等判定看的是 404 這個
+      // 狀態，不是後端剛好回了哪一個 body.error。
+      err.status = res.status;
       var header = res.headers && typeof res.headers.get === 'function' ? res.headers.get('retry-after') : null;
       var seconds = header !== null && header !== undefined && isFinite(Number(header)) ? Number(header) : null;
       if (seconds === null && payload && typeof payload.retryAfter === 'number' && isFinite(payload.retryAfter)) {
@@ -780,6 +795,10 @@
               // 守衛的更新排在 history 之後:history 沒寫成功就整輪失敗重來，
               // 守衛也不該先前進。
               return settleClearGuard(ctx, verdict, changes && changes.clearedAt);
+            })
+            .then(function () {
+              // D25:拉到沒見過的裝置只留旗標，不在同步途中順手打一次 devices。
+              return noteUnknownDevices(body);
             });
         });
       });
@@ -789,6 +808,9 @@
 
     function runRound(ctx) {
       var chain = Promise.resolve();
+      // D23:一輪只在**第一個** POST 掛 device 區塊。後端拿它做 upsert，續頁
+      // 再帶一次只是重複同一筆寫入。
+      var deviceSent = false;
 
       // 「清除全部」的雲端語意就是 DELETE /api/v1/links(api-spec 4.4):伺服器
       // 自己寫 cleared_at。必須早於推送，否則剛推上去的資料立刻被自己清掉。
@@ -830,6 +852,11 @@
                 // 不回增量，首次登入會永遠拉不到雲端既有資料。
                 since: ctx.state.cursor === null ? '0' : ctx.state.cursor,
               };
+              var block = deviceSent ? null : deviceBlockOf(ctx.device);
+              if (block) {
+                body.device = block;
+                deviceSent = true;
+              }
               return call(ctx, 'POST', '/api/v1/links/sync', body).then(function (payload) {
                 // 【順序】游標必須等 applyResponse 真的落地才前進。反過來的話，
                 // 寫入失敗（配額、storage 壞掉）時失敗路徑的 saveState 會把已
@@ -941,6 +968,12 @@
           ]);
         })
         .then(function () {
+          // 別台裝置的快取描述的是「這個帳號底下有哪些裝置」。過期後重新登
+          // 入的可能是另一個 Google 帳號，留著就會在新使用者眼前先閃出上一
+          // 位的裝置名。本機身分 syncDevice 不動(D21)。
+          return localRemove(DEVICES_CACHE_KEY);
+        })
+        .then(function () {
           return broadcastState('signed_out');
         });
     }
@@ -1035,7 +1068,12 @@
           // 任何清空，留著只會擋掉新帳號真正的清空水位線(D19)。
           if (!switched) return undefined;
           ctx.clearGuard = null;
-          return forgetSelfClear();
+          return forgetSelfClear().then(function () {
+            // 別台裝置的清單同樣屬於前一個帳號(D25):鏡像欄位都重置了，這份
+            // 顯示層快取沒有獨活下來的道理，留著就是把上一位使用者的裝置名
+            // 秀給新使用者看。同帳號重新登入不清——那不是換人。
+            return localRemove(DEVICES_CACHE_KEY);
+          });
         })
         .then(function () {
           return saveToken(exchange.authToken);
@@ -1087,6 +1125,9 @@
           })
           .then(function () {
             return saveFailures(0);
+          })
+          .then(function () {
+            return localRemove(DEVICES_CACHE_KEY);
           })
           .then(function () {
             return Promise.all([
@@ -1164,7 +1205,12 @@
           ctx = loaded;
           // 未登入是常態，不是錯誤:零請求、不廣播 error(D6)。
           if (!ctx.token) return false;
-          return claimInflight();
+          // 【死鎖守則】本機身分在整輪的任何 writeChain 之前先取好(§12 增補
+          // 四):getLocalDevice 自己也要排進同一條序列鏈。
+          return readLocalDevice().then(function (device) {
+            ctx.device = device;
+            return claimInflight();
+          });
         })
         .then(function (claimed) {
           if (!claimed) return undefined;
@@ -1257,6 +1303,9 @@
             return saveState(ctx.state);
           })
           .then(function () {
+            return localRemove(DEVICES_CACHE_KEY);
+          })
+          .then(function () {
             return broadcastState('signed_in');
           })
           .catch(function (err) {
@@ -1268,6 +1317,241 @@
               });
             });
           });
+      });
+    }
+
+    // ---- 裝置歸屬(§3／§4／§5) ----
+
+    /**
+     * 本機這台的身分。dep 缺席、回 null 或整支拋例外一律回 null——拿不到歸屬
+     * 只是這一輪的請求不帶 device 區塊，不該讓整輪同步掛掉。
+     *
+     * 【死鎖守則】§12 增補四:background 的 getLocalDevice 自己也要佔一段
+     * historyWriteChain，因此本函式**只能在進 writeChain 之前**呼叫;在
+     * dropUnsendable／applyResponse 的回呼內才取就是在鏈上等自己。
+     */
+    function readLocalDevice() {
+      if (!getLocalDevice) return Promise.resolve(null);
+      return Promise.resolve()
+        .then(function () {
+          return getLocalDevice();
+        })
+        .then(function (device) {
+          return device && typeof device === 'object' ? device : null;
+        })
+        .catch(function () {
+          return null;
+        });
+    }
+
+    /**
+     * sync 請求的頂層 device 區塊(依後端 API 契約的裝置端點)。三欄缺一就整個鍵不輸出——
+     * 後端對無效區塊是靜默丟棄，送半套只是白費一次寫入。
+     */
+    function deviceBlockOf(device) {
+      if (!device) return null;
+      if (typeof device.deviceId !== 'string' || !device.deviceId) return null;
+      if (typeof device.name !== 'string' || !device.name) return null;
+      if (typeof device.platform !== 'string' || !device.platform) return null;
+      return { deviceId: device.deviceId, name: device.name, platform: device.platform };
+    }
+
+    /** 讀出別台裝置的顯示快取;形狀不合(含缺 devices 陣列)一律當沒有。 */
+    function readDevicesCache() {
+      var defaults = {};
+      defaults[DEVICES_CACHE_KEY] = null;
+      return localGet(defaults).then(function (got) {
+        var raw = got[DEVICES_CACHE_KEY];
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+        if (!Array.isArray(raw.devices)) return null;
+        return raw;
+      });
+    }
+
+    function writeDevicesCache(cache) {
+      var items = {};
+      items[DEVICES_CACHE_KEY] = cache;
+      return localSet(items);
+    }
+
+    /**
+     * devices 三支共用的失敗出口。401 不是「這一支端點失敗」而是整枚 token 死
+     * 了，因此比照 runSync／verifySession／deleteCloud 轉進 handleSessionExpired
+     * ——清 token、記 lastError、停掉兩支 alarm、廣播 signed_out。只把碼往上丟
+     * 的話，使用者會停在「已登入」的畫面，同步在背景一輪一輪地失敗，直到下一
+     * 次剛好有別條路徑也撞上 401 才被發現。
+     *
+     * 除 session_expired 外一律不動 devices 快取:畫面不該一斷網就變空。
+     * session_expired 轉進 handleSessionExpired，快取依 4.2 的清除規則在那裡
+     * 一併清掉。
+     */
+    function failDevices(err) {
+      var code = err && err.code ? err.code : 'internal_error';
+      if (code === 'session_expired') {
+        return handleSessionExpired().then(function () {
+          return { ok: false, code: code };
+        });
+      }
+      return Promise.resolve({ ok: false, code: code });
+    }
+
+    /**
+     * 拉回來的 changes 出現快取裡沒有的 deviceId 時，**只**把 stale 旗標寫進
+     * 快取(D25)，當場不打 GET:每一輪同步都順手多一次往返，共用的限流桶吃不
+     * 消。旗標與快取同一個物件，SW 被回收也還在(§12 增補五);listDevices 見到
+     * 就視同 force。
+     *
+     * 「認得」包含已移除的裝置(§13):快取存的是清單回應的整個陣列，查得到就
+     * 不是未知裝置，不必為了一台已移除的裝置多打一輪 GET。
+     */
+    function noteUnknownDevices(body) {
+      var changes = body && body.changes;
+      var links = changes && Array.isArray(changes.links) ? changes.links : [];
+      var seenIds = [];
+      links.forEach(function (item) {
+        var events = item && Array.isArray(item.seen) ? item.seen : [];
+        events.forEach(function (event) {
+          var id = event && typeof event.deviceId === 'string' ? event.deviceId : null;
+          if (id && seenIds.indexOf(id) === -1) seenIds.push(id);
+        });
+      });
+      if (!seenIds.length) return Promise.resolve();
+      return readDevicesCache().then(function (cache) {
+        if (cache && cache.stale === true) return undefined;
+        var known = {};
+        if (cache) {
+          cache.devices.forEach(function (row) {
+            if (row && typeof row.deviceId === 'string') known[row.deviceId] = true;
+          });
+        }
+        var unknown = seenIds.some(function (id) {
+          return known[id] !== true;
+        });
+        if (!unknown) return undefined;
+        // 還沒有快取時也要留下旗標:fetchedAt 給 0 讓它必然過期，下一次
+        // listDevices 照樣會取一次完整清單。
+        var base = cache || { fetchedAt: 0, devices: [] };
+        return writeDevicesCache(Object.assign({}, base, { stale: true }));
+      });
+    }
+
+    /**
+     * 別台裝置的清單。純顯示層:回應只用來畫清單，**不得**觸發 history、seen
+     * 或 syncDevice 的任何寫入(D25)——清單變短代表別台在雲端被移除，不代表本
+     * 機那些歸屬不明的事件該跟著消失。
+     *
+     * 節流(§4):未 force、快取未滿 DEVICES_TTL_MS 且沒被標記 stale 就直接回
+     * 快取。失敗一律不動既有快取，畫面不該一斷網就變空。
+     *
+     * 回應的整個陣列原樣落地(§13):已移除的裝置與活躍的混在一起(removedAt
+     * 活躍為 null、已移除為毫秒時戳)，引擎不代客戶端 filter——管理清單只顯示
+     * 活躍是 UI 的事，紀錄側 join 名稱反而兩者都要查得到。
+     */
+    function listDevices(options) {
+      var force = !!(options && options.force);
+      return loadContext().then(function (ctx) {
+        // 未登入是常態不是錯誤:零請求，直接回碼讓 UI 收起清單入口。
+        if (!ctx.token) return { ok: false, code: 'signed_out' };
+        // 【死鎖守則】身分在任何 storage 讀寫之前先取好(§12 增補四)。
+        return readLocalDevice().then(function (device) {
+          // currentDeviceId 只認本機身分，不從清單反查(D26):本機這台不在清單
+          // 裡時反查會得到 null，於是它在 UI 上變成一台可移除的別台裝置。
+          var currentDeviceId = device ? device.deviceId : null;
+          return readDevicesCache().then(function (cache) {
+            var fresh =
+              cache !== null &&
+              cache.stale !== true &&
+              finiteNumber(cache.fetchedAt) &&
+              now() - cache.fetchedAt < DEVICES_TTL_MS;
+            if (!force && fresh) {
+              return {
+                ok: true,
+                devices: cache.devices,
+                currentDeviceId: currentDeviceId,
+                fetchedAt: cache.fetchedAt,
+              };
+            }
+            return call(ctx, 'GET', '/api/v1/devices')
+              .then(function (payload) {
+                var devices = payload && Array.isArray(payload.devices) ? payload.devices : [];
+                var fetchedAt = now();
+                // 新快取不帶 stale:旗標留著的話往後每一次開框都強制往返。
+                return writeDevicesCache({ fetchedAt: fetchedAt, devices: devices }).then(function () {
+                  return {
+                    ok: true,
+                    devices: devices,
+                    currentDeviceId: currentDeviceId,
+                    fetchedAt: fetchedAt,
+                  };
+                });
+              })
+              .catch(failDevices);
+          });
+        });
+      });
+    }
+
+    /**
+     * 改名。**PUT 只有這一條路徑**(D24):首次註冊交給 sync 內嵌的 device 區塊，
+     * 絕不拿 PUT 當心跳——那會讓每一輪同步都多一次寫入。
+     */
+    function renameDevice(deviceId, name) {
+      return loadContext().then(function (ctx) {
+        if (!ctx.token) return { ok: false, code: 'signed_out' };
+        return call(ctx, 'PUT', '/api/v1/devices/' + encodeURIComponent(deviceId), { name: name })
+          .then(function (payload) {
+            var device = payload && payload.device && typeof payload.device === 'object' ? payload.device : null;
+            if (!device) return { ok: true, device: device };
+            // 快取就地更新:改完名不必為了看到新名字再打一次 GET。
+            return readDevicesCache().then(function (cache) {
+              if (!cache) return { ok: true, device: device };
+              var next = cache.devices.map(function (row) {
+                if (!row || row.deviceId !== device.deviceId) return row;
+                // PUT 遇已移除的 id 在後端就是復活(§13):快取不得停在已移除
+                // 態，否則改完名那一列還是回不到管理清單。
+                return Object.assign({}, row, device, { removedAt: null });
+              });
+              return writeDevicesCache(Object.assign({}, cache, { devices: next })).then(function () {
+                return { ok: true, device: device };
+              });
+            });
+          })
+          // 失敗不動快取:樂觀更新的還原由 UI 端負責，引擎這邊維持原樣。
+          .catch(failDevices);
+      });
+    }
+
+    /**
+     * 移除別台。404 視同成功(冪等):別台早就被移除過＝目的已達成，不該報錯。
+     *
+     * 移除是軟刪除(§13):快取那一列標上 removedAt 而不是刪掉，紀錄側 join 名稱
+     * 時還查得到原名——移除的本意只是整理清單，不該讓舊紀錄的來源全變未知裝置。
+     * 時戳優先取回應帶的值，沒有就用本機時鐘;已經標過的保留最初值。
+     */
+    function removeDevice(deviceId) {
+      return loadContext().then(function (ctx) {
+        if (!ctx.token) return { ok: false, code: 'signed_out' };
+        return call(ctx, 'DELETE', '/api/v1/devices/' + encodeURIComponent(deviceId))
+          .catch(function (err) {
+            if (err && err.status === 404) return null;
+            throw err;
+          })
+          .then(function (payload) {
+            var removedAt =
+              payload && finiteNumber(payload.removedAt) ? payload.removedAt : now();
+            return readDevicesCache().then(function (cache) {
+              if (!cache) return { ok: true };
+              var next = cache.devices.map(function (row) {
+                if (!row || row.deviceId !== deviceId) return row;
+                if (finiteNumber(row.removedAt)) return row;
+                return Object.assign({}, row, { removedAt: removedAt });
+              });
+              return writeDevicesCache(Object.assign({}, cache, { devices: next })).then(function () {
+                return { ok: true };
+              });
+            });
+          })
+          .catch(failDevices);
       });
     }
 
@@ -1337,6 +1621,9 @@
       signOut: signOut,
       syncNow: syncNow,
       deleteCloud: deleteCloud,
+      listDevices: listDevices,
+      renameDevice: renameDevice,
+      removeDevice: removeDevice,
       verifySession: verifySession,
       notifyRecorded: notifyRecorded,
       onAlarm: onAlarm,
