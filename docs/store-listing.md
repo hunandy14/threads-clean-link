@@ -260,13 +260,17 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Health information | 不勾 | 無關 |
 | Financial and payment information | 不勾 | 無關 |
 | Authentication information | **勾選** | 僅在使用者主動點擊「使用 Google 帳號登入」後才會取得(Google OAuth 身分權杖)，唯一用途是向開發者自營後端建立/維持雲端同步的登入工作階段(App functionality)。不用於廣告或分析，不轉讓、不出售給第三方，不取得或儲存使用者的 Google 密碼。<br>Obtained only after the user actively clicks "Sign in with Google" (a Google OAuth identity token); its sole purpose is establishing/maintaining the cloud-sync login session with the developer's own backend (App functionality). Not used for ads or analytics, not shared or sold to third parties; the user's Google password is never obtained or stored. |
-| Personal communications | 不勾 | 不讀取頁面內容、不讀取剪貼簿既有內容 |
+| Personal communications | 不勾 | 不讀取剪貼簿既有內容;投資詐騙警示讀取的是使用者自己開啟的**公開貼文內文**，不是收件匣、私訊或任何私人通訊，且只在本機判定、不傳輸 |
 | Location | 不勾 | 不存取地理位置 |
-| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
+| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;送出的請求對象一律是使用者自己觸發的那一條 Threads 連結本身(還原/複製為手動觸發;投資詐騙警示的作者識別碼備援請求由使用者開啟貼文頁自動觸發，對象仍只限使用者當下正在看的那一篇貼文)，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
 | User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。登入後另同步一組隨機裝置識別碼與可自訂的裝置名稱，用於標示紀錄來源裝置。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方。<br>Occurs only after sign-in: syncs the cleaning-history records the user's own actions generate (post URL, removed tracking parameters, post author and summary, cleaning timestamp), solely to keep that user's own cleaning history consistent across devices, including the companion mobile app (App functionality). Signing in also syncs a randomly generated device identifier and a user-editable device name, used to label which device a record came from. Not used to analyze aggregate user behavior, not used for ads, not shared or sold to third parties. |
-| Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
+| Website content | 不勾 | 連結淨化的 content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫。投資詐騙警示會讀取使用者當下開啟的貼文內文做判定，但讀取與留存都只發生在這台裝置上(命中時只留一段 120 字的證據片段與貼文網址，寫入 `chrome.storage.local`)，不傳輸給開發者或任何第三方——依 CWS 定義，未傳輸即不構成蒐集 |
 
-**投資詐騙警示(0.8.0)對本表的影響**:無須新增任何勾選項，也無須改動既有勾選。該功能的偵測全在使用者自己的瀏覽器完成，產出的黑名單、證據片段與已解除名單只寫入 `chrome.storage.local`，不傳輸給開發者或任何第三方，依 CWS 定義不構成蒐集(與「淨化紀錄」同一道理，見上表 Web history 一列);它讀的是使用者當下主動開啟的那一頁貼文內文，用途僅為在本機當場判斷並警示，不擷取、不留存頁面資料，因此 Website content 與 Personal communications 維持不勾。功能本身也屬既有單一用途的延伸——同樣是針對使用者正在看的這一則 Threads 貼文提供保護，沒有引入無關目的。
+**投資詐騙警示(0.8.0)對本表的影響**:無須新增任何勾選項，也無須改動既有勾選。該功能的偵測全在使用者自己的瀏覽器完成:它會讀取使用者當下主動開啟的那一頁貼文內文，命中時留下作者資料與一段證據片段——**讀取與留存都只在本機(`chrome.storage.local`；備援請求的節流表寫 `chrome.storage.session`，瀏覽器關閉即清)，不傳輸給開發者或第三方，依 CWS 定義不構成蒐集**(與「淨化紀錄」同一道理，見上表 Web history 一列)，因此 Website content 與 Personal communications 維持不勾。
+
+少數情況下(貼文頁本身沒帶作者識別碼)，會對**使用者當下正在看的同一篇貼文**發一次匿名請求取得該識別碼:不帶 cookie 與登入憑證、同一篇 24 小時內只發一次、資料不經過也不回傳給開發者，總開關關閉即完全不發。這與上表 Web history 一列既有的敘述是同一型態——請求對象就是使用者自己觸發的那一條 Threads 連結本身，因此該列維持不勾。
+
+功能本身也屬既有單一用途的延伸——同樣是針對使用者正在看的這一則 Threads 貼文提供保護，沒有引入無關目的。
 
 **「單一用途」聲明相容性說明**:雲端同步是既有「保存清理紀錄」子功能的延伸——把原本只存在本機的同一份紀錄，改為選用地額外存一份到使用者自己的雲端帳號，讓同一位使用者可以跨裝置(含手機版 App)看到同一份紀錄;沒有新增與「Threads 連結淨化」無關的目的，因此第 5 節的單一用途聲明文字不需要修改。
 
