@@ -1,14 +1,18 @@
-// tcl-core.js — 共用核心 lib:淨化紀錄的網址樣式、欄位消毒、常數。三種載入
+// tcl-core.js — 共用核心 lib:淨化紀錄的網址樣式、欄位消毒、常數。四種載入
 // 環境(比照 i18n.js):
 //   - service worker:background.js 以 importScripts('tcl-core.js') 載入(全域 self)
 //   - 擴充功能頁面:popup.html / options.html 以 <script src> 載入(全域 window)
+//   - content script:manifest 的 content_scripts 於 document_idle 載入，排在
+//     i18n.js 之後、post-icon.js / scam-guard.js 之前(ISOLATED world 的全域 window)
 //   - Node 測試:CommonJS require，或 vm sandbox 直接執行原始碼(全域 this)
 //
 // 抽取動機:sanitize 與網址樣式原本在 background.js(寫入側)與 options.js
 // (讀取/匯入側)各養一份鏡像，五版設定漂移一處即分裂。此檔是全 repo 對
-// 「合法網址長什麼樣」「欄位怎麼消毒」的單一權威。**只給 SW + 擴充頁共用，
-// 不動 content scripts,MAIN world 永不共用**(bridge.js 是 content script,
-// 範圍外，自帶 SETTINGS_DEFAULTS)。
+// 「合法網址長什麼樣」「欄位怎麼消毒」「詐騙話術怎麼判」的單一權威。全檔
+// 為純函式、無副作用(不碰 chrome.*,不碰 DOM),因此 SW、擴充頁與 content
+// script 三方共用。**另外兩組 content_scripts 不載入本檔**
+// (clipboard-guard.js 在 MAIN world;bridge.js 自成一個 document_start 條
+// 目，自帶 SETTINGS_DEFAULTS)。
 (function (root) {
   'use strict';
 
@@ -816,13 +820,19 @@
   // 黑名單的儲存形狀與偵測上限。entries 以 userId 為鍵(帳號改名後仍認得同一
   // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
   // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
+  //
+  // SOFT_BUDGET 2MB 是本機配額 10MB(Chrome 114 起;更早版本為 5MB)的約
+  // 20%;滿證據時實際可容約 1500-2500 位，由位元組預算先觸發淘汰，
+  // MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。manifest 的
+  // minimum_chrome_version 是 103，落在 5MB 配額的那幾版佔比約 40%,仍在安
+  // 全水位。
   var SCAM_LIMITS = {
-    MAX_ENTRIES: 200,
-    MAX_ALLOWLIST: 200,
+    MAX_ENTRIES: 5000,
+    MAX_ALLOWLIST: 5000,
     MAX_EVIDENCE: 3,
     SNIPPET_MAX: 120,
     SNIPPET_CONTEXT: 40,
-    SOFT_BUDGET: 64 * 1024,
+    SOFT_BUDGET: 2 * 1024 * 1024,
   };
 
   // 投資話術詞表，分強弱兩級。否定語境(「不收費」「不代操」)照樣算命中——詐
@@ -852,7 +862,7 @@
   // 【負向邊界】「賴」前面接 信/依/無/仰/倚 時整個詞是信賴/依賴/無賴/仰賴/
   // 倚賴，後面的冒號是正常標點(「我信賴：Apple 的品質」)，不是 LINE 帳號引
   // 導。這類句子常同時帶投資詞，光靠 PITCH 二次確認擋不住，錨點本身必須排
-  // 除。排除清單只列這五個字——真實詐騙句「我的賴：vg475」前面也是中文，擴
+  // 除。排除清單只列這五個字——詐騙招攬句「我的賴：ex01abc」前面也是中文，擴
   // 成「前面是中文就不算」會整組漏抓。
   var SCAM_ACCOUNT_ANCHOR_RES = [
     /(?<![信依無仰倚])[賴籟]\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,
