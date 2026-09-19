@@ -357,6 +357,16 @@
       // 本次 session 是否已經跳過「首次入黑名單」的 toast。
       var toasted = false;
 
+      // 本機黑名單的記憶體快取，正規化後的 { entries, handleIndex, allowlist }
+      // 形狀；沒有任何可查的作者時一律留 null，查表可以立刻收工、不走訪 DOM。
+      // 只有 background 寫 chrome.storage.local.scamBlocklist，本段唯讀。
+      var blocklist = null;
+
+      // 已經查過表的貼文容器。河道的 MutationObserver 每秒可觸發數十次，同一
+      // 張卡只需查一次；黑名單換過一版就整組丟掉重建，讓新增與解除都在下一次
+      // 觸發反映。
+      var listedContainers = newContainerSet();
+
       var scanScheduled = false;
 
       // i18n.js 依 manifest content_scripts 陣列順序必定先載入，這份字面值
@@ -365,6 +375,7 @@
         scamTagLabel: 'Possible investment scam',
         scamTagTooltip:
           'This thread pushes a LINE contact alongside investment pitches — a common scam funnel. Do not add them or share personal details.',
+        scamBlockedByList: 'This account is on your blocklist',
         scamFirstHitToast: 'Added this account to your local blocklist. Manage it in Settings.',
       };
 
@@ -545,10 +556,14 @@
         return index === null ? null : rows[index];
       }
 
-      // ---- 在主文卡的互動列「上方」插一顆警示 tag。文案一律以 textContent
+      // ---- 在貼文卡的互動列「上方」插一顆警示 tag。文案一律以 textContent
       // 寫入（頁面上的文字不經 innerHTML）。找不到互動列時退為掛在容器末
-      // 端，至少讓使用者看得到警示。冪等：容器內已有 tag 就不再插。----
-      function insertTag(container) {
+      // 端，至少讓使用者看得到警示。冪等：容器內已有 tag 就不再插。
+      //
+      // titleKey 決定滑鼠提示要說哪一句：詳情頁掃描用預設的 scamTagTooltip
+      // （這串貼文疑似詐騙），河道查表傳 scamBlockedByList（這個帳號在你的黑
+      // 名單中）。----
+      function insertTag(container, titleKey) {
         if (!container) return;
         try {
           if (container.querySelector && container.querySelector('.' + TAG_CLASS)) return;
@@ -556,7 +571,7 @@
           var tag = document.createElement('div');
           tag.className = TAG_CLASS;
           tag.setAttribute('role', 'note');
-          tag.setAttribute('title', t('scamTagTooltip'));
+          tag.setAttribute('title', t(titleKey || 'scamTagTooltip'));
           tag.textContent = t('scamTagLabel');
 
           var row = findActionRow(container);
@@ -734,11 +749,86 @@
         });
       }
 
+      // ============================================================
+      // 本機黑名單查表：河道（首頁 feed）與任何非詳情頁的貼文卡片，只要作者
+      // 已在本機黑名單裡就掛同一顆 tag，讓使用者在點進去之前就看得到警示。
+      // 純本機動作——不送訊息、不發請求、不跑串文判定。
+      // ============================================================
+
+      // 記錄已查表容器的集合。WeakSet 不留參照，React 換掉的卡片可以直接被回
+      // 收；環境沒有 WeakSet 時退成「不記憶」，每次觸發重查一遍（insertTag 自
+      // 帶冪等守衛，結果相同，只是多走訪幾次 DOM）。
+      function newContainerSet() {
+        return typeof WeakSet === 'function' ? new WeakSet() : null;
+      }
+
+      // 把 storage 讀到的原始值正規化成查表形狀，並清空已查表記錄讓整頁重掃。
+      // TCLCore 缺席或正規化失敗時退成空名單：寧可不掛，也不拿未正規化的結構
+      // 查表。
+      function setBlocklist(raw) {
+        var next = null;
+        try {
+          var core = root.TCLCore;
+          if (core && typeof core.normalizeScamBlocklist === 'function') {
+            var list = core.normalizeScamBlocklist(raw);
+            if (list && list.handleIndex && Object.keys(list.handleIndex).length > 0) {
+              next = list;
+            }
+          }
+        } catch (e) {
+          next = null;
+        }
+        blocklist = next;
+        listedContainers = newContainerSet();
+      }
+
+      // 一次 O(1) 查表：handle 小寫化後查 handleIndex 得 userId，userId 不在
+      // allowlist（使用者已解除封鎖）才算命中。
+      function isBlockedHandle(handle) {
+        if (!blocklist) return false;
+        var key = normalizeHandle(handle);
+        if (!key || !Object.prototype.hasOwnProperty.call(blocklist.handleIndex, key)) return false;
+        var userId = blocklist.handleIndex[key];
+        return !Object.prototype.hasOwnProperty.call(blocklist.allowlist, userId);
+      }
+
+      // ---- 逐張卡片查表。詳情頁上「網址列作者自己那一串」交給 scan() 負責
+      // （只掛主文卡一顆），這裡跳過，免得同一串的每一篇各掛一顆；他人回覆的
+      // 卡片照樣查表。----
+      function scanBlocklist() {
+        if (!settingsReady || !scamGuardEnabled || !blocklist) return;
+
+        var pathInfo = readPathInfo();
+        var ownerHandle = pathInfo ? normalizeHandle(pathInfo.handle) : '';
+
+        var containers = document.querySelectorAll(CONTAINER_SELECTOR);
+        for (var i = 0; i < containers.length; i++) {
+          var container = containers[i];
+          if (listedContainers && listedContainers.has(container)) continue;
+          // 巢狀容器（引用貼文）不算獨立的一張卡，判準與 collectOwnContainers
+          // 一致。
+          var parent = container.parentElement || container.parentNode;
+          if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
+          var permalink = readContainerPermalink(container);
+          if (!permalink) continue;
+          if (listedContainers) listedContainers.add(container);
+          var handle = normalizeHandle(permalink.handle);
+          if (ownerHandle && handle === ownerHandle) continue;
+          if (!isBlockedHandle(handle)) continue;
+          insertTag(container, 'scamBlockedByList');
+        }
+      }
+
       function safeScan() {
         try {
           scan();
         } catch (e) {
           console.warn('[threads-clean-link] 詐騙串文掃描失敗', e);
+        }
+        try {
+          scanBlocklist();
+        } catch (e) {
+          console.warn('[threads-clean-link] 黑名單查表失敗', e);
         }
       }
 
@@ -768,14 +858,16 @@
         }
       }
 
-      // ---- 總開關：chrome.storage.local 的 scamGuardEnabled，只有明確存成
-      // false 才視為關閉；缺席、讀取失敗、storage 缺席一律視為開啟。----
-      function readEnabled(callback) {
+      // ---- chrome.storage.local 的兩顆鍵一次讀回：總開關 scamGuardEnabled
+      // （只有明確存成 false 才視為關閉；缺席、讀取失敗、storage 缺席一律視為
+      // 開啟）與黑名單 scamBlocklist（缺席即空名單）。----
+      function readSettings(callback) {
         var done = false;
-        function finish(value) {
+        function finish(items) {
           if (done) return;
           done = true;
-          callback(value === false ? false : true);
+          var safe = items && typeof items === 'object' ? items : {};
+          callback(safe.scamGuardEnabled === false ? false : true, safe.scamBlocklist);
         }
         try {
           if (
@@ -784,27 +876,30 @@
             !chrome.storage.local ||
             typeof chrome.storage.local.get !== 'function'
           ) {
-            finish(true);
+            finish(null);
             return;
           }
-          var maybePromise = chrome.storage.local.get({ scamGuardEnabled: true }, function (items) {
-            finish(items && typeof items === 'object' ? items.scamGuardEnabled : true);
-          });
+          var maybePromise = chrome.storage.local.get(
+            { scamGuardEnabled: true, scamBlocklist: null },
+            function (items) {
+              finish(items);
+            }
+          );
           if (maybePromise && typeof maybePromise.then === 'function') {
             maybePromise
               .then(function (items) {
-                finish(items && typeof items === 'object' ? items.scamGuardEnabled : true);
+                finish(items);
               })
               .catch(function () {
-                finish(true);
+                finish(null);
               });
           }
         } catch (e) {
-          finish(true);
+          finish(null);
         }
       }
 
-      function watchEnabledChanges() {
+      function watchSettingsChanges() {
         try {
           if (
             typeof chrome === 'undefined' ||
@@ -815,14 +910,24 @@
             return;
           }
           chrome.storage.onChanged.addListener(function (changes, areaName) {
-            if (areaName !== 'local' || !changes || !changes.scamGuardEnabled) return;
-            scamGuardEnabled = changes.scamGuardEnabled.newValue === false ? false : true;
-            // 關閉只影響之後的掃描：已經掛上的 tag 代表已經寫進黑名單的事
-            // 實，不隨開關撤掉（撤銷在選項頁的黑名單卡片操作）。
-            if (scamGuardEnabled) scheduleScan();
+            if (areaName !== 'local' || !changes) return;
+            var dirty = false;
+            if (changes.scamGuardEnabled) {
+              scamGuardEnabled = changes.scamGuardEnabled.newValue === false ? false : true;
+              // 關閉只影響之後的掃描：已經掛上的 tag 代表已經寫進黑名單的事
+              // 實，不隨開關撤掉（撤銷在選項頁的黑名單卡片操作）。
+              if (scamGuardEnabled) dirty = true;
+            }
+            if (changes.scamBlocklist) {
+              // 名單換版：重建快取並清空已查表記錄，新增的作者下一次觸發補
+              // 掛，解除的作者不再新增（既有的 tag 不回收）。
+              setBlocklist(changes.scamBlocklist.newValue);
+              dirty = true;
+            }
+            if (dirty) scheduleScan();
           });
         } catch (e) {
-          // 監聽註冊失敗只是開關不會即時生效，不影響已完成的掃描。
+          // 監聽註冊失敗只是設定不會即時生效，不影響已完成的掃描。
         }
       }
 
@@ -869,12 +974,13 @@
         });
 
         startObserver();
-        watchEnabledChanges();
+        watchSettingsChanges();
 
         // 與 post-icon 的「先用預設值立刻動作」相反：掃描會送訊息、會改頁
-        // 面，必須等總開關讀回來才做第一輪。
-        readEnabled(function (enabled) {
+        // 面，必須等總開關與黑名單讀回來才做第一輪。
+        readSettings(function (enabled, rawBlocklist) {
           scamGuardEnabled = enabled;
+          setBlocklist(rawBlocklist);
           settingsReady = true;
           if (enabled) safeScan();
         });
