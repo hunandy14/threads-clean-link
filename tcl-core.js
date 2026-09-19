@@ -816,13 +816,16 @@
   // 黑名單的儲存形狀與偵測上限。entries 以 userId 為鍵(帳號改名後仍認得同一
   // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
   // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
+  //
+  // SOFT_BUDGET 2MB 是本機配額 10MB 的約 20%;滿證據時實際可容約 1500-2500
+  // 位，由位元組預算先觸發淘汰，MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。
   var SCAM_LIMITS = {
-    MAX_ENTRIES: 200,
-    MAX_ALLOWLIST: 200,
+    MAX_ENTRIES: 5000,
+    MAX_ALLOWLIST: 5000,
     MAX_EVIDENCE: 3,
     SNIPPET_MAX: 120,
     SNIPPET_CONTEXT: 40,
-    SOFT_BUDGET: 64 * 1024,
+    SOFT_BUDGET: 2 * 1024 * 1024,
   };
 
   // 投資話術詞表，分強弱兩級。否定語境(「不收費」「不代操」)照樣算命中——詐
