@@ -17,19 +17,28 @@
   // STRICT_POST_URL_PATTERN（handle 英數/底線/句點、code 英數/連字號/底
   // 線，各 1-80 字元）；本檔自帶一份而不 require tcl-core，是因為 content
   // script 以獨立腳本載入，測試沙箱也不保證有 tcl-core 在場。
-  // group 1 = handle（不含 '@'），group 2 = post code。
+  // group 1 = handle（不含 '@'），group 2 = post code。尾段容忍尾隨斜線與
+  // 整段 query／hash，對齊 tcl-core 的 NORMALIZE_POST_URL_PATTERN——實機
+  // href 常帶 `?xmt=` 之類的追蹤參數。
   var POST_PATH_PATTERN =
-    /^(?:https:\/\/(?:www\.)?threads\.(?:com|net))?\/@([A-Za-z0-9._]{1,80})\/post\/([A-Za-z0-9_-]{1,80})\/?$/i;
+    /^(?:https:\/\/(?:www\.)?threads\.(?:com|net))?\/@([A-Za-z0-9._]{1,80})\/post\/([A-Za-z0-9_-]{1,80})\/?(?:[?#].*)?$/i;
 
-  // 串文徽章的實測形狀是把「N / M」拆成三個文字節點，textContent 串起來後
-  // 成為 `\n1\n/\n6`，尾端還可能跟著版面留下的空白。
+  // 串文徽章「N / M」由三個相鄰節點組成：取 textContent 時它們直接黏成
+  // `1/6`，取 innerText 時版面換行會被算進去而成為 `\n1\n/\n6`。正則兩種形
+  // 狀都吃，尾端也容忍版面留下的空白。
   var POSITION_BADGE_PATTERN = /\s*\n?(\d+)\n?\/\n?(\d+)\s*$/;
+
+  // 徽章位置的合理範圍。純靠正則會把「活動到 2026/9/19」這種句尾日期當成
+  // 徽章，加上範圍檢查才擋得住；上限取 50 是因為自回覆串長度不會到這個量
+  // 級，超過的十之八九是誤判。
+  var MAX_THREAD_LENGTH = 50;
 
   var CONTAINER_SELECTOR = 'div[data-pressable-container]';
 
   // 遞迴 walk 的深度與節點數上限。SSR payload 是頁面餵進來的任意 JSON，沒
-  // 有上限的話畸形（或刻意加深）的結構會把主執行緒卡住。
-  var WALK_MAX_DEPTH = 40;
+  // 有上限的話畸形（或刻意加深）的結構會把主執行緒卡住；深度上限取 100 是
+  // 為了留給 Relay 包裝層加深的餘裕。
+  var WALK_MAX_DEPTH = 100;
   var WALK_MAX_NODES = 200000;
 
   function isObjectLike(value) {
@@ -64,14 +73,21 @@
   // 逐筆 JSON.parse（失敗者略過、不丟例外），對解析成功的結構遞迴找出任何
   // 帶非空 `thread_items` 陣列、且首項有 post 物件的節點——刻意不綁固定路
   // 徑，因為 Threads 的 RelayPrefetchedStreamCache 外層包裝每版都在變。
+  // 給 expectedCode（通常取自網址列的貼文 code）時，只收 post.code 相符的節
+  // 點，不符就繼續往下找——詳情頁的 SSR payload 會同時帶進推薦貼文等其他
+  // 串，光取第一個命中的節點可能拿到隔壁貼文。
   // 回傳 { code, userId, username, displayName, captionText, selfThreadLength,
   // position }；找不到、輸入非陣列或為空，一律回傳 null。
-  function extractSsrRoot(scriptTexts) {
+  function extractSsrRoot(scriptTexts, expectedCode) {
     if (!Array.isArray(scriptTexts) || scriptTexts.length === 0) return null;
+    var wantedCode = typeof expectedCode === 'string' && expectedCode ? expectedCode : null;
 
     for (var i = 0; i < scriptTexts.length; i++) {
       var raw = scriptTexts[i];
       if (typeof raw !== 'string' || !raw) continue;
+      // 詳情頁有數十份 SSR script，絕大多數與串文無關。先用字串比對預篩，
+      // 省掉對大塊 JSON 做無謂的 parse 與遞迴走訪。
+      if (raw.indexOf('thread_items') === -1) continue;
 
       var parsed;
       try {
@@ -82,12 +98,15 @@
 
       var node = walkJson(parsed, function (candidate) {
         var items = candidate.thread_items;
-        return (
-          Array.isArray(items) &&
-          items.length > 0 &&
-          isObjectLike(items[0]) &&
-          isObjectLike(items[0].post)
-        );
+        if (
+          !Array.isArray(items) ||
+          items.length === 0 ||
+          !isObjectLike(items[0]) ||
+          !isObjectLike(items[0].post)
+        ) {
+          return false;
+        }
+        return wantedCode === null || items[0].post.code === wantedCode;
       });
       if (!node) continue;
 
@@ -159,24 +178,40 @@
 
   // 取容器內最長的 [dir="auto"] 文字當本文；同樣只收屬於本容器本身的節
   // 點，作者名那種短節點自然會被長度比下去，引用卡片的內文則靠 closest 過
-  // 濾擋掉（長度比不贏時不該當成過濾機制）。
+  // 濾擋掉（長度比不贏時不該當成過濾機制）。[dir="auto"] 會互相巢狀——外層
+  // 包裝節點的 textContent 必定含作者名、時間戳記等雜訊且恆為最長，因此只
+  // 取最內層（本身不再包含其他 [dir="auto"] 的節點）。
   function readContainerBody(container) {
     var nodes = container.querySelectorAll('[dir="auto"]');
     var best = '';
     for (var i = 0; i < nodes.length; i++) {
       var node = nodes[i];
       if (node.closest && node.closest(CONTAINER_SELECTOR) !== container) continue;
+      if (node.querySelector && node.querySelector('[dir="auto"]')) continue;
       var text = node.textContent || '';
       if (text.length > best.length) best = text;
     }
     return best;
   }
 
+  // 徽章解析結果的健全性檢查：位置要落在 1..total、total 不得超過合理串長
+  // 上限；給 expectedTotal 時再要求 total 與串長相符。不通過就視為沒有徽
+  // 章，由呼叫端以收集順序補位。
+  function isSaneBadge(stripped, expectedTotal) {
+    if (stripped.position === null || stripped.total === null) return false;
+    if (stripped.position < 1 || stripped.position > stripped.total) return false;
+    if (stripped.total > MAX_THREAD_LENGTH) return false;
+    if (typeof expectedTotal === 'number' && stripped.total !== expectedTotal) return false;
+    return true;
+  }
+
   // 從詳情頁 DOM 取出作者自己的自回覆串，回傳 [{ code, text, position }]，
   // 依 position 升冪。只收 handle 等於 authorHandle（不分大小寫、'@' 前綴
-  // 可有可無）且非巢狀的容器；末篇實測無徽章，以收集順序補 position。
+  // 可有可無）且非巢狀的容器；末篇實測無徽章，以收集順序補 position。給
+  // expectedTotal（通常取自 SSR 的 selfThreadLength）時，只認 total 相符的
+  // 徽章，擋掉句尾日期之類的誤判。
   // root 缺失、authorHandle 缺失或沒有任何貼文容器時回傳空陣列，不丟例外。
-  function extractThreadFromDom(root, authorHandle) {
+  function extractThreadFromDom(root, authorHandle, expectedTotal) {
     var wanted = normalizeHandle(authorHandle);
     if (!root || typeof root.querySelectorAll !== 'function' || !wanted) return [];
 
@@ -193,11 +228,14 @@
         var permalink = readContainerPermalink(container);
         if (!permalink || normalizeHandle(permalink.handle) !== wanted) continue;
 
-        var stripped = stripPositionBadge(readContainerBody(container));
+        var body = readContainerBody(container);
+        var stripped = stripPositionBadge(body);
+        var sane = isSaneBadge(stripped, expectedTotal);
         items.push({
           code: permalink.code,
-          text: stripped.text,
-          position: stripped.position === null ? items.length + 1 : stripped.position,
+          // 徽章不可信時連帶不剝——被誤認的那段是本文的一部分。
+          text: sane ? stripped.text : body,
+          position: sane ? stripped.position : items.length + 1,
         });
       }
     } catch (e) {
@@ -238,8 +276,10 @@
   //
   // 【接點】判定（話術正則）與警示注入尚未實作，接上時的取值順序為：
   //   1. document.querySelectorAll('script[type="application/json"]') 的
-  //      textContent 收成陣列 → extractSsrRoot() 取作者數字 id、串長、首篇。
-  //   2. extractThreadFromDom(document, ssrRoot.username) 取自回覆串各篇。
+  //      textContent 收成陣列 → extractSsrRoot(texts, 網址列的 post code)
+  //      取作者數字 id、串長、首篇。
+  //   2. extractThreadFromDom(document, ssrRoot.username,
+  //      ssrRoot.selfThreadLength) 取自回覆串各篇。
   //   3. buildThreadText() 串成全文 → 交給判定與黑名單寫入。
   // ============================================================
   if (typeof document !== 'undefined') {

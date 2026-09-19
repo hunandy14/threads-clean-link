@@ -675,3 +675,123 @@ test('scam-guard.js：無 document 的環境載入時不丟例外，純函式仍
     }
   );
 });
+
+// ============================================================
+// 【審查建議補強】預篩、code 交叉驗證、href 容忍 query、徽章健全性、
+// 巢狀 [dir="auto"] 取最內層。上方既有測試維持原樣，本段只新增。
+// ============================================================
+
+test('extractSsrRoot：不含 thread_items 字樣的 script 先被預篩掉，不影響後面那筆的取值', () => {
+  const extractSsrRoot = loadFn('extractSsrRoot');
+  const first = POSTS[0];
+  // 詳情頁實際有數十份 SSR script，絕大多數與串文無關；預篩只是省掉
+  // parse，不得改變取值結果。
+  const decoys = [
+    '{"__bbox":{"require":[["CometPlatformRootClient","init",[],[]]]}}',
+    JSON.stringify({ config: { padding: 'x'.repeat(2000) } }),
+    '{"preloader":{"resources":[{"href":"/static/a.js"}]}}',
+  ];
+
+  const root = extractSsrRoot(decoys.concat([buildSsrJson(first)]));
+
+  assert.ok(root, '預篩不得把合法的那筆一起濾掉');
+  assert.equal(root.code, first.code);
+  assert.equal(root.userId, first.userId);
+  assert.equal(root.selfThreadLength, 6);
+});
+
+test('extractSsrRoot：給 expectedCode 時只收 post.code 相符的節點，不符回傳 null', () => {
+  const extractSsrRoot = loadFn('extractSsrRoot');
+
+  assert.equal(
+    extractSsrRoot([buildSsrJson(POSTS[0])], POSTS[1].code),
+    null,
+    'code 不符的串（例如 SSR 一併帶進來的推薦貼文）不得被當成本頁主串'
+  );
+  assert.equal(
+    extractSsrRoot([buildSsrJson(POSTS[0])], POSTS[0].code).code,
+    POSTS[0].code,
+    'code 相符時照常取值'
+  );
+  assert.equal(
+    extractSsrRoot([buildSsrJson(POSTS[0]), buildSsrJson(POSTS[2])], POSTS[2].code).code,
+    POSTS[2].code,
+    '第一筆不符時要繼續往後找'
+  );
+});
+
+test('extractThreadFromDom：permalink 帶 ?xmt= 追蹤參數時照樣收，code 不含 query', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  const body = '第一篇：我在台積電蹲了十四年的設備，上個月終於滾了。';
+  const root = el('div', {}, [
+    createPostContainer({
+      handle: AUTHOR,
+      code: 'DsQuErY001?xmt=AQGzabcdef',
+      body: withBadge(body, 1, 2),
+    }),
+    createPostContainer({
+      handle: AUTHOR,
+      code: 'DsQuErY002#focus',
+      body: withBadge('第二篇：這十四年怎麼過的？簡單講就是拿肝換錢。', 2, 2),
+    }),
+  ]);
+
+  const items = extractThreadFromDom(root, AUTHOR);
+
+  assert.deepEqual(
+    items.map((item) => item.code),
+    ['DsQuErY001', 'DsQuErY002'],
+    'query／hash 不得被算進 post code'
+  );
+  assert.equal(items[0].text, body);
+});
+
+test('extractThreadFromDom：句尾日期與離譜總數不得被當成徽章，本文原樣保留', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  const dated = '第六篇：想跟我一起學的可以來社群，活動到 2026/9/19';
+  const ratio = '第一篇：那一年我的勝率大概是 30/100';
+  const root = el('div', {}, [
+    createPostContainer({ handle: AUTHOR, code: 'DsSaNiTy001', body: ratio }),
+    createPostContainer({ handle: AUTHOR, code: 'DsSaNiTy002', body: dated }),
+  ]);
+
+  // total=100 超出合理串長上限，不必靠 expectedTotal 就該被擋下。
+  const loose = extractThreadFromDom(root, AUTHOR);
+  assert.equal(loose[0].text, ratio, '總數離譜的「N/M」不是徽章，本文不得被剝');
+
+  // 句尾日期 9/19 落在合理範圍內，要靠 expectedTotal 才擋得住。
+  const strict = extractThreadFromDom(root, AUTHOR, 2);
+  assert.deepEqual(
+    strict.map((item) => item.text),
+    [ratio, dated],
+    '總數與 SSR 串長不符時視為無徽章，本文原樣保留'
+  );
+  assert.deepEqual(
+    strict.map((item) => item.position),
+    [1, 2],
+    '徽章不可信時以收集順序補位'
+  );
+});
+
+test('extractThreadFromDom：[dir="auto"] 互相巢狀時取最內層，外層包裝節點不得被選', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  const body = '第一篇：我在台積電蹲了十四年的設備，上個月終於滾了，這串講完整個過程。';
+  // 外層 [dir="auto"] 的 textContent 是「作者名 + 本文」，恆為最長，只靠
+  // 長度會選到它。
+  const root = el('div', {}, [
+    el('div', { 'data-pressable-container': 'true' }, [
+      el('a', { href: `/@${AUTHOR}/post/DsNeStEd001` }, [
+        el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
+      ]),
+      el('div', { dir: 'auto' }, [
+        el('span', { dir: 'auto' }, [text(AUTHOR)]),
+        el('span', { dir: 'auto' }, [text(body)]),
+      ]),
+    ]),
+  ]);
+
+  const items = extractThreadFromDom(root, AUTHOR);
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].text, body, '本文應取最內層的 span，不含作者名');
+});
