@@ -1483,7 +1483,11 @@ test('scam.hit：payload 形狀照 §14，postUrl 為 origin + pathname 正規�
     'snippet 不得超過 120 字'
   );
   assert.equal(payload.anchorMatch, EXPECTED_DETECTION.anchorMatch);
-  assert.deepEqual(payload.pitchMatches, EXPECTED_DETECTION.pitchMatches);
+  // 陣列先 Array.from 搬回本 realm 再比對：payload 的陣列建在 vm sandbox
+  // 內，與本檔字面量的 Array.prototype 不同源，deepEqual 的 prototype 檢查
+  // 會判「結構相同但非同一 realm」而誤判失敗（同 background.test.js 的既有
+  // 註記）。值與順序照樣逐一比對。
+  assert.deepEqual(Array.from(payload.pitchMatches), EXPECTED_DETECTION.pitchMatches);
   assert.equal(typeof payload.at, 'number', 'at 應為毫秒時間戳');
   assert.ok(
     payload.at >= startedAt - 1000 && payload.at <= Date.now() + 1000,
