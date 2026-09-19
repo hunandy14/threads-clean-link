@@ -2291,3 +2291,258 @@ test('河道 8b：詳情頁上他人回覆的卡片照樣查表掛 tag', async (
   assert.equal(tagsIn(reply).length, 1, '他人回覆的作者在黑名單中，要掛 tag');
   assert.equal(env.tags().length, 1, '主文作者不在黑名單，不該有第二顆');
 });
+
+// ============================================================
+// 【第五波：L5 審查採納的五條】tag 補回、黑名單作者的詳情頁主文標記、引用
+// 不誤標、無 permalink 容器的走訪上限、初始競態。上方既有測試維持原樣，本
+// 段只新增。
+//
+// 【與實作的契約（本段新增的部分）】
+//   tag 補回：容器沒換、只是 tag 節點被 React 重繪沖掉時，同一張卡的下一次
+//     觸發要補回一顆——「已查過表」的記憶不能連「頁面上到底還有沒有警示」
+//     一起省掉（詳情頁掃描那條路的 S4 已經有同樣的保證）。
+//   詳情頁主文連貫：網址列作者本人在黑名單、但這一串沒踩到 detectScamPitch
+//     時，主文卡（code === pathInfo.code）仍要掛一顆 title 為
+//     `scamBlockedByList` 的 tag——使用者在河道看得到警示，點進去卻沒有，是
+//     比兩邊都沒有更糟的體驗。同一串的其餘容器仍不掛。掃描有命中時以掃描
+//     為準：主文卡只有一顆，title 為 `scamTagTooltip`。
+//   引用不誤標：外層是中立作者、內層引用了黑名單作者的貼文時，整頁不掛
+//     tag。被引用的巢狀容器不是獨立的一張卡，外層卡的作者也不是黑名單上的
+//     人——兩邊都不該掛。
+//   無 permalink 容器的走訪上限：容器取不到 permalink 就永遠取不到（廣告
+//     卡、推薦帳號卡這類版面本來就沒有貼文連結）。每次 MutationObserver 觸
+//     發都對它重跑一次 `querySelectorAll('a[href]')` 是白付的成本，連續三
+//     次之後要把它記下來別再走訪。
+//   初始競態：`readSettings` 的回呼結算前，`onChanged` 可能已經把新名單送
+//     到（background 在分頁載入當下寫入）。回呼落地時不得拿「讀取當下」的
+//     舊快照把新名單蓋回去。
+// ============================================================
+
+// 把 chrome.storage.local.get 的第一次呼叫（init 的 readSettings）攔下來，
+// 由測試決定何時、帶什麼值結算——初始競態要的正是「onChanged 先到、get 後
+// 到」這個順序，交給假 storage 自己排程是排不出來的。攔截只吃第一次，其餘
+// 呼叫照走原本的假實作。
+function loadRaceEnv(options) {
+  const settings = Object.assign({ pathname: FEED_PATH }, options || {});
+  const env = createScamGuardEnv(settings);
+  const area = env.sandbox.chrome.storage.local;
+  const realGet = area.get.bind(area);
+  const pendingGets = [];
+  let intercept = true;
+
+  area.get = function (keys, callback) {
+    if (!intercept || typeof callback !== 'function') return realGet(keys, callback);
+    intercept = false;
+    pendingGets.push({ keys, callback });
+    // 刻意不回 Promise：讓實作只剩 callback 這一條路，結算時機完全由測試掌控。
+    return undefined;
+  };
+
+  env.pendingGets = pendingGets;
+  env.releaseSettings = function (items) {
+    const job = pendingGets.shift();
+    assert.ok(job, '前提：init 讀設定的 chrome.storage.local.get 還懸著');
+    job.callback(items);
+  };
+
+  assert.doesNotThrow(() => env.load(), 'scam-guard.js 在河道假 DOM 載入不得丟例外');
+  return env;
+}
+
+test('河道 9：河道卡的 tag 被外力移除後，同一張卡的下一次觸發會補回一顆', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+  await env.flush();
+
+  const tag = env.tags()[0];
+  assert.ok(tag, '前提：命中的卡片已掛上 tag');
+  const card = tag.closest(CONTAINER_SELECTOR);
+  assert.ok(card, '前提：tag 掛在某張卡內');
+  tag.parentNode.removeChild(tag);
+  assert.equal(env.tags().length, 0, '前提：tag 已被外力移除，容器本身沒換');
+
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    tagsIn(card).length,
+    1,
+    'React 重繪沖掉 tag 後，同一張卡的下一次觸發要補回來'
+  );
+
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(tagsIn(card).length, 1, '補回之後不得越補越多');
+  assert.equal(env.tags().length, 1, '整頁仍只有那一顆');
+  assert.deepEqual(env.sent, [], '補 tag 是頁面層的事，不得送任何訊息');
+});
+
+test('河道 10：黑名單作者的詳情頁即使串文未命中，主文卡仍掛一顆查表 tag', async () => {
+  // 原始 fixture 全文沒有 LINE 錨點，detectScamPitch 回 hit:false——掃描這
+  // 條路不會掛任何 tag，主文卡上該有的那一顆只能來自查表。
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: createPage({ posts: POSTS }),
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.deepEqual(env.hits(), [], '前提：這一串未命中串文判定，不送 scam.hit');
+
+  const cards = cardsOf(env);
+  assert.equal(
+    tagsIn(cards[0]).length,
+    1,
+    '作者已在黑名單中，主文卡要掛一顆——河道看得到、點進去卻沒有是更糟的體驗'
+  );
+  assert.equal(
+    tagsIn(cards[0])[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '這一顆說的是「這個帳號在你的黑名單中」，不是串文判定'
+  );
+  assert.equal(
+    env.tags().length,
+    1,
+    '同一串的其餘容器（自回覆與他人回覆）不得跟著掛'
+  );
+});
+
+test('河道 11：串文命中時主文卡只有掃描那一顆，title 為 scamTagTooltip（掃描優先）', async () => {
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: createPage(),
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.hits().length, 1, '前提：這一串命中串文判定');
+
+  const cards = cardsOf(env);
+  assert.equal(tagsIn(cards[0]).length, 1, '掃描與查表都想掛時，主文卡只能有一顆');
+  assert.equal(
+    tagsIn(cards[0])[0].getAttribute('title'),
+    TAG_TOOLTIP,
+    '掃描的判定資訊量較大，命中時以 scamTagTooltip 為準'
+  );
+  assert.equal(env.tags().length, 1);
+});
+
+test('河道 12：外層中立作者的卡片內嵌黑名單作者的引用貼文時，整頁不得掛 tag', async () => {
+  const quoted = createPostContainer({
+    handle: BLOCKED_HANDLE,
+    code: 'DqUoTeD0001',
+    body: '被引用的那則貼文，作者在黑名單裡。',
+  });
+  const outer = createPostContainer({
+    handle: NEUTRAL_HANDLE,
+    code: 'DfEeDqUoTe1',
+    body: '轉貼一則看看。',
+    actionRow: true,
+    dirAutoTimestamp: true,
+    extraChildren: [quoted],
+  });
+  const env = loadFeedEnv({
+    page: [el('div', { id: 'feed-root' }, [outer])],
+    local: { scamBlocklist: buildBlocklist() },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    outer.querySelectorAll(CONTAINER_SELECTOR).length,
+    1,
+    '前提：外層卡內確實包著一個巢狀容器'
+  );
+  assert.equal(
+    env.tags().length,
+    0,
+    '被引用的巢狀容器不是獨立的一張卡，外層卡的作者也不在黑名單——兩邊都不該掛'
+  );
+});
+
+test('河道 13：永遠取不到 permalink 的容器，連續三次觸發後不再被走訪', async () => {
+  // 廣告卡、推薦帳號卡這類版面本來就沒有貼文連結，取不到一次就等於永遠取
+  // 不到；每次 MutationObserver 觸發都重跑一次子樹查詢是白付的成本。
+  const barren = el('div', { 'data-pressable-container': 'true' }, [
+    el('div', {}, [el('span', { dir: 'auto' }, [text('推薦追蹤的帳號')])]),
+    createActionRow({}),
+  ]);
+  const walks = { count: 0 };
+  const realQuerySelectorAll = barren.querySelectorAll;
+  barren.querySelectorAll = function (selector) {
+    walks.count += 1;
+    return realQuerySelectorAll(selector);
+  };
+
+  const root = el('div', { id: 'feed-root' }, [
+    createFeedCard(BLOCKED_HANDLE),
+    barren,
+    createFeedCard(NEUTRAL_HANDLE),
+  ]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+
+  // 第 1 次＝init 的那一輪，加上兩次 observer 觸發共三輪。
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.ok(walks.count > 0, '前提：這個容器前幾輪確實被走訪過');
+  assert.ok(
+    walks.count <= 3,
+    `取不到 permalink 的容器最多走訪三次，實際 ${walks.count} 次`
+  );
+  assert.equal(env.tags().length, 1, '前提：同一頁的黑名單卡片照樣掛得上');
+
+  walks.count = 0;
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    walks.count,
+    0,
+    '第四次起不得再走訪——取不到一次就等於永遠取不到，記下來別再問'
+  );
+});
+
+test('河道 14：readSettings 回呼前 onChanged 先送新名單，回呼落地後不得用舊值蓋回', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE]);
+  const env = loadRaceEnv({ page: [root], local: {} });
+  await env.flush();
+  assert.equal(env.pendingGets.length, 1, '前提：init 讀設定的 get 仍懸著未結算');
+  assert.equal(env.tags().length, 0, '前提：設定還沒回來，什麼都不該掛');
+
+  // background 在分頁啟動讀取結算前就寫好了名單，onChanged 先到。
+  env.storage.emitChange(
+    { scamBlocklist: { oldValue: null, newValue: buildBlocklist() } },
+    'local'
+  );
+  await env.flush();
+
+  // 懸著的 get 這時才結算，帶回的是「發出讀取當下」的舊快照——沒有名單。
+  env.releaseSettings({ scamGuardEnabled: true, scamBlocklist: null });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    env.tags().length,
+    1,
+    '啟動讀取帶回的舊快照不得蓋掉 onChanged 已經送到的新名單'
+  );
+});
