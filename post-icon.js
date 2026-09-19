@@ -639,6 +639,11 @@
         }
       }
 
+      // 頁內 toast 的唯一實作，供同頁其他 content script 複用
+      // (root.TCLPostIcon.showToast):scam-guard.js 首次把作者加入黑名單時
+      // 用它提示使用者，樣式與時序與本檔自身的 toast 完全一致，不另繪一份。
+      api.showToast = showToast;
+
       // ---- 給 bridge.js 呼叫(root.TCLPostIcon.showResolveFailureToast):
       // share/strip 的短碼解析在 Threads 頁面內失敗時，顯示對應失敗文案
       // 的 toast。reason 依 resolveFailureToastKey(純函式區)對應到 i18n
