@@ -1,4 +1,4 @@
-// tcl-core.js — 共用核心 lib:淨化紀錄的網址樣式、欄位消毒、常數。三種載入
+// tcl-core.js — 共用核心 lib:淨化紀錄的網址樣式、欄位消毒、常數。四種載入
 // 環境(比照 i18n.js):
 //   - service worker:background.js 以 importScripts('tcl-core.js') 載入(全域 self)
 //   - 擴充功能頁面:popup.html / options.html 以 <script src> 載入(全域 window)
