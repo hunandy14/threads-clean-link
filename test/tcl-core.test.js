@@ -727,6 +727,8 @@ test.describe('詐騙偵測:detectScamPitch', () => {
       '群組 https://line.me/R/ti/g/AbCdEf01',
       '點這 https://lin.ee/abc123',
       '全部連結在 https://linktr.ee/someone',
+      // PM 裁決:ti/p 是一對一加好友深連結，與 ti/g 同屬引導私訊的白名單路徑。
+      '看這篇 https://line.me/R/ti/p/@abc',
     ];
     for (const text of links) {
       const res = C.detectScamPitch(text);
@@ -777,11 +779,10 @@ test.describe('詐騙偵測:detectScamPitch', () => {
     assert.equal(C.detectScamPitch('賴：abc 有黑馬股').hit, true, '滿 3 位就算');
   });
 
-  // 連結白名單只收加好友/群組路徑:line.me 的其他路徑(官方帳號文章、分享頁)
-  // 不是 1:1 引導，單獨不成立。
+  // 連結白名單只收加好友(ti/p)/群組(ti/g)路徑:line.me 的其他路徑(官網首
+  // 頁、分享頁)不是引導私訊的入口，單獨不成立。
   test('detectScamPitch:非白名單 LINE 路徑不算連結型錨點', () => {
     assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
-    assert.equal(C.detectScamPitch('看這篇 https://line.me/R/ti/p/@abc').hit, false);
     assert.equal(C.detectScamPitch('官網 https://line.me/').hit, false);
     assert.equal(C.detectScamPitch('圖在 https://linktree.example/someone').hit, false);
   });
