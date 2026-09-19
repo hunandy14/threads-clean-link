@@ -152,3 +152,25 @@ test('manifest:host 權限不得含開發用的 localhost／127.0.0.1／http://'
     assert.doesNotMatch(host, /^http:\/\//i, `host 權限混入明文 http://:${host}`);
   });
 });
+
+// SW 的匿名備援直接呼叫 AbortSignal.timeout()（Chrome 103 才有），沒有
+// typeof 守衛；舊版 Chrome 載入後會在第一次備援請求就丟 ReferenceError。
+// manifest 宣告 minimum_chrome_version，讓商店端在安裝前就擋掉，而不是讓
+// 使用者裝完才發現功能壞掉。
+test('manifest:宣告 minimum_chrome_version，且不低於 103（AbortSignal.timeout）', () => {
+  const manifest = JSON.parse(read('manifest.json'));
+
+  assert.equal(
+    typeof manifest.minimum_chrome_version,
+    'string',
+    'manifest 應宣告 minimum_chrome_version（字串形式的版本號）'
+  );
+  const major = Number(String(manifest.minimum_chrome_version).split('.')[0]);
+  assert.ok(Number.isFinite(major), 'minimum_chrome_version 的主版號應為數字');
+  assert.ok(
+    major >= 103,
+    'AbortSignal.timeout() 自 Chrome 103 起才有，minimum_chrome_version 不得低於 103（目前為 ' +
+      manifest.minimum_chrome_version +
+      '）'
+  );
+});

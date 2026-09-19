@@ -5087,9 +5087,32 @@ test('L4 審查:節流表筆數上限 500——第 501 筆淘汰最舊的一筆'
 
 // ---- 備援請求的掃描上限與逾時 ----
 
-test('L4 審查:備援只掃回應本文前 OG_SCAN_LIMIT（65536）字，之後的 id 擷取不到', async () => {
+// 【R3 翻轉，PM 授權】掃描上限原本沿用 og 擷取的 OG_SCAN_LIMIT（65536）。
+// 兩者要的東西不同：og meta 必在 <head>，SSR 的 RelayPrefetchedStreamCache
+// 卻常被推到文件中後段，64KB 會把真實貼文頁的 post_author_id 切在範圍外，
+// 備援等於長期失效。改用 SCAM_SCAN_LIMIT（524288，0.5MB），仍保留上限以免
+// 對超大回應做無界正則掃描。
+test('L4 覆審:備援掃描上限改 SCAM_SCAN_LIMIT——id 在 100000 字處仍取得到', async () => {
+  const within =
+    '<html><body>' + 'x'.repeat(100000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: within });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'SSR JSON 常落在文件中後段，64KB 會把它切在掃描範圍外');
+  assert.ok(scamEntry(bg));
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+});
+
+test('L4 覆審:備援掃描上限仍有天花板——id 在 600000 字處擷取不到', async () => {
   const beyond =
-    '<html><body>' + 'x'.repeat(70000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
+    '<html><body>' + 'x'.repeat(600000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
   const fetchStub = makeScamFetch({ [SCAM_POST_URL]: beyond });
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
@@ -5102,26 +5125,10 @@ test('L4 審查:備援只掃回應本文前 OG_SCAN_LIMIT（65536）字，之後
   assert.deepEqual(
     deep(res.response),
     { ok: false, code: 'no_user_id' },
-    '掃描長度要與 og 擷取同一把尺（OG_SCAN_LIMIT），不得整份掃到底'
+    '超過 SCAM_SCAN_LIMIT（524288）的部分不掃，不得整份掃到底'
   );
   assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
   assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
-});
-
-test('L4 審查:掃描上限對照組——id 在 65536 字以內時照常擷取', async () => {
-  const within = '<html><body>' + 'x'.repeat(1000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
-  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: within });
-  const bg = loadBackgroundForDevices({
-    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
-    fetch: fetchStub.impl,
-  });
-
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
-  await settle(600);
-
-  const response = deep(res.response);
-  assert.equal(response && response.ok, true, '範圍內的 id 不得因為上限被誤殺');
-  assert.ok(scamEntry(bg));
 });
 
 test('L4 審查:備援請求帶 signal（逾時可中斷，不讓 SW 掛在慢回應上）', async () => {
@@ -5184,4 +5191,149 @@ test('L4 審查:remove／restore 在 storage.local 不可用時回 internal_erro
 
   assert.deepEqual(deep(remove.response), { ok: false, code: 'internal_error' }, '環境故障不是「開關關閉」');
   assert.deepEqual(deep(restore.response), { ok: false, code: 'internal_error' });
+});
+
+// ============================================================
+// L4 覆審殘留：R1 交叉驗證視窗、R2 併發下的限流
+// ============================================================
+
+// 全域限流的請求時刻表（background 的 SCAM_FETCH_RATE_KEY），與節流表同區。
+const SCAM_RATE_KEY = 'scamAuthorFetchLog';
+
+async function scamRateLog(bg) {
+  const stored = await bg.storage.api.session.get({ [SCAM_RATE_KEY]: undefined });
+  return stored ? stored[SCAM_RATE_KEY] : undefined;
+}
+
+// ---- R2：併發下的全域限流 ----
+//
+// 河道一次捲動就會同時派出幾十則 scam.hit，它們是同一 tick 進來的。限流的
+// 讀改寫若沒有序列化，七則各自讀到「目前 0 次」再各自寫回，閘門等於不存在
+// ——先前那支逐筆 await 的限流測試剛好避開了這個路徑。
+
+test('L4 覆審:同 tick 併發 7 筆 scam.hit 時全域限流仍成立，節流表與限流表無遺失寫入', async () => {
+  const byUrl = {};
+  for (let i = 0; i < 7; i++) byUrl[scamRatePostUrl(i)] = authorIdHtml('9100000' + i);
+  const fetchStub = makeScamFetch(byUrl);
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+    delayMs: 20,
+  });
+
+  const sends = [];
+  for (let i = 0; i < 7; i++) {
+    sends.push(bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER));
+  }
+  await Promise.all(sends);
+  await settle(1500);
+
+  assert.ok(
+    fetchStub.calls.length <= 6,
+    '同 tick 併發時每分鐘 6 次的閘門照樣要成立，實際發出 ' + fetchStub.calls.length + ' 次'
+  );
+
+  const table = await scamThrottleTable(bg);
+  const log = await scamRateLog(bg);
+  assert.ok(table && typeof table === 'object', '節流表應落地在 storage.session');
+  assert.ok(Array.isArray(log), '限流表應落地在 storage.session');
+
+  const fetched = fetchStub.calls.map((c) => c.url);
+  fetched.forEach((url) => {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(table, url),
+      '打出去的每一篇都要留在節流表裡，否則下一輪會重打：' + url
+    );
+  });
+  assert.equal(
+    Object.keys(table).length,
+    fetched.length,
+    '節流表筆數要等於實際請求數（併發讀改寫互相覆蓋會少於實際數）'
+  );
+  assert.equal(log.length, fetched.length, '限流表筆數要等於實際請求數，否則閘門會被回填成未用滿');
+});
+
+// ---- R1：交叉驗證的比對視窗 ----
+//
+// 整份掃描文字比對 username 太寬：詳情頁的 SSR 內常同時有引用貼文、推薦貼
+// 文與側欄的其他作者，只要頁面任何角落出現過本人的 username，就會替一個不
+// 相干的 post_author_id 背書。比對限縮在該 id 前後 ±2000 字內，而且要逐個
+// post_author_id 試，不是只看第一個。
+
+test('L4 覆審:交叉驗證逐個 id 試並只看 ±2000 字——他人 id 在前時取後面那個有 username 的', async () => {
+  const html =
+    '<html><body>' +
+    '{"post_author_id":"111"}' +
+    'x'.repeat(4000) +
+    '{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    '</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '本篇的 id 與 username 相鄰，應判為同一人');
+  const list = scamList(bg);
+  assert.ok(list.entries[SCAM_USER_ID], '要取與 username 相鄰的那個 id');
+  assert.equal(list.entries['111'], undefined, '前面那個 4000 字外的他人 id 不得被背書');
+});
+
+test('L4 覆審:username 距 id 5000 字之外不算同一人——回 no_user_id 不寫', async () => {
+  const html =
+    '<html><body>' +
+    '{"post_author_id":"111"}' +
+    'x'.repeat(5000) +
+    '{"username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    '</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '頁面別處出現過本人帳號，不足以替 5000 字外的另一個 id 背書'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '對不上的 id 不得寫進黑名單');
+});
+
+test('L4 覆審:交叉驗證視窗對照組——username 在 id 之前 1000 字處同樣算同一人', async () => {
+  const html =
+    '<html><body>' +
+    '{"username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    'x'.repeat(1000) +
+    '{"post_author_id":"' +
+    SCAM_USER_ID +
+    '"}' +
+    '</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '視窗是前後各 2000 字，username 在前也算');
+  assert.ok(scamEntry(bg));
 });
