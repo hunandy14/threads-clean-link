@@ -677,7 +677,7 @@ test.describe('裝置歸屬:defaultDeviceName 與 randomUuid', () => {
 // 【紀律】每個 test 先斷言函式掛上 TCLCore 匯出——未實作時吐可讀的斷言失敗，
 // 而不是 TypeError crash 把整支測試檔打斷。
 
-const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
+const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
 
 // 招攬篇的句型範例(含前文的三個話術詞)——合成字串，句型比照內部可行性評估。
 const SCAM_POST_TEXT = [
@@ -825,10 +825,10 @@ test.describe('詐騙偵測:detectScamPitch', () => {
 test.describe('詐騙偵測:isPostDetailPath', () => {
   test('isPostDetailPath:/@handle/post/CODE 為真', () => {
     assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
-    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001'), true);
     assert.equal(C.isPostDetailPath('/@user_c/post/GhI789'), true);
     assert.equal(
-      C.isPostDetailPath('/@da.fu.coding/post/A-b_C1'),
+      C.isPostDetailPath('/@dx.syn.thetic/post/A-b_C1'),
       true,
       'handle 含句點、ID 含連字號都在既有白名單字元類內'
     );
@@ -845,11 +845,11 @@ test.describe('詐騙偵測:isPostDetailPath', () => {
       '/search',
       '/search/?q=abc',
       '/activity',
-      '/post/DdbYCAfgV4M',
+      '/post/DxSyNtH0001',
       '/@example_author/post/',
-      '/@example_author/posts/DdbYCAfgV4M',
-      '/@example_author/post/DdbYCAfgV4M/extra',
-      '/@bad handle/post/DdbYCAfgV4M',
+      '/@example_author/posts/DxSyNtH0001',
+      '/@example_author/post/DxSyNtH0001/extra',
+      '/@bad handle/post/DxSyNtH0001',
     ];
     for (const p of negatives) {
       assert.equal(C.isPostDetailPath(p), false, JSON.stringify(p) + ' 不是詳情頁');
@@ -863,9 +863,9 @@ test.describe('詐騙偵測:isPostDetailPath', () => {
   // 頁」)，沿用同一套寬鬆慣例，而非寫入側 isCleanPostUrl 的嚴格錨定。
   test('isPostDetailPath:尾斜線與查詢字串的變體依讀取側慣例容忍', () => {
     assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
-    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M/'), true);
-    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M?xmt=abc'), true);
-    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M/?igsh=x#frag'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001/'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001?xmt=abc'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001/?igsh=x#frag'), true);
   });
 
   test('isPostDetailPath:非字串一律 false，不拋錯', () => {
@@ -992,12 +992,13 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
 });
 
 test.describe('詐騙偵測:capScamBlocklist', () => {
-  // 造一份 n 筆的名單，addedAt 由舊到新(1..n)，userId 為 'u<i>'。
+  // 造一份 n 筆的名單，addedAt 由舊到新(1..n)，userId 為 '<i>'——entries 的鍵
+  // 須是 userId 形狀（純數字字串、1-20 位），normalizeScamBlocklist 會剝掉其餘鍵。
   function makeList(n, evidencePerEntry, snippetLen) {
     const entries = {};
     const handleIndex = {};
     for (let i = 1; i <= n; i++) {
-      const id = 'u' + i;
+      const id = String(i);
       const evidence = [];
       for (let e = 0; e < (evidencePerEntry || 1); e++) {
         evidence.push({
@@ -1017,27 +1018,27 @@ test.describe('詐騙偵測:capScamBlocklist', () => {
     const out = C.capScamBlocklist(makeList(5050, 1, 10));
     const ids = Object.keys(out.entries);
     assert.equal(ids.length, 5000, 'entries 裁到 5000 筆');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u1'), false, '最舊的 addedAt 先淘汰');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u50'), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u51'), true, '保留最新 5000 筆');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u5050'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '1'), false, '最舊的 addedAt 先淘汰');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '50'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '51'), true, '保留最新 5000 筆');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '5050'), true);
     // handleIndex 必須跟著裁，不能留下指向已淘汰條目的孤兒鍵。
     assert.equal(Object.keys(out.handleIndex).length, 5000);
     assert.equal(Object.prototype.hasOwnProperty.call(out.handleIndex, 'h1'), false);
-    assert.equal(out.handleIndex.h5050, 'u5050');
+    assert.equal(out.handleIndex.h5050, '5050');
   });
 
   test('capScamBlocklist:每筆 evidence 上限 3，保留最新(at 最大)', () => {
     assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
     const list = makeList(1, 1, 10);
-    list.entries.u1.evidence = [
+    list.entries['1'].evidence = [
       { postUrl: SCAM_POST_URL + '1', snippet: 'a', at: 100 },
       { postUrl: SCAM_POST_URL + '2', snippet: 'b', at: 500 },
       { postUrl: SCAM_POST_URL + '3', snippet: 'c', at: 300 },
       { postUrl: SCAM_POST_URL + '4', snippet: 'd', at: 900 },
       { postUrl: SCAM_POST_URL + '5', snippet: 'e', at: 200 },
     ];
-    const kept = C.capScamBlocklist(list).entries.u1.evidence;
+    const kept = C.capScamBlocklist(list).entries['1'].evidence;
     assert.equal(kept.length, 3, 'evidence 裁到 3 筆');
     assert.deepEqual(
       kept.map((e) => e.at),
@@ -1049,7 +1050,7 @@ test.describe('詐騙偵測:capScamBlocklist', () => {
   test('capScamBlocklist:snippet 裁到 120 字', () => {
     assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
     const list = makeList(1, 1, 400);
-    const kept = C.capScamBlocklist(list).entries.u1.evidence[0];
+    const kept = C.capScamBlocklist(list).entries['1'].evidence[0];
     assert.equal(kept.snippet.length, 120, 'snippet 硬裁 120 字');
     assert.equal(kept.postUrl.startsWith('https://www.threads.com/'), true, '其餘欄位原樣保留');
   });
@@ -1062,16 +1063,16 @@ test.describe('詐騙偵測:capScamBlocklist', () => {
     assert.equal(ids.length < 4000, true, '軟預算應再淘汰，實得 ' + ids.length + ' 筆');
     assert.equal(ids.length > 0, true, '不得把整份名單清空');
     assert.equal(JSON.stringify(out).length <= 2 * 1024 * 1024, true, '整包 JSON 不得超過 2MB');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u4000'), true, '最新的一筆永遠留著');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u1'), false, '最舊的先走');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '4000'), true, '最新的一筆永遠留著');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '1'), false, '最舊的先走');
   });
 
   test('capScamBlocklist:未超量時原樣回傳；非物件不炸', () => {
     assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
     const small = makeList(3, 2, 20);
     const out = C.capScamBlocklist(small);
-    assert.deepEqual(Object.keys(out.entries).sort(), ['u1', 'u2', 'u3']);
-    assert.equal(out.entries.u2.evidence.length, 2);
+    assert.deepEqual(Object.keys(out.entries).sort(), ['1', '2', '3']);
+    assert.equal(out.entries['2'].evidence.length, 2);
     for (const bad of [undefined, null, 'nope', 42, []]) {
       assert.deepEqual(
         C.capScamBlocklist(bad),
@@ -1270,7 +1271,7 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     const entries = {};
     const handleIndex = {};
     for (let i = 1; i <= 2000; i++) {
-      const id = 'u' + i;
+      const id = String(i);
       const evidence = [];
       for (let e = 0; e < 3; e++) {
         evidence.push({
@@ -1286,7 +1287,7 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     const bytes = new TextEncoder().encode(JSON.stringify(out)).length;
     assert.equal(bytes <= 2 * 1024 * 1024, true, '真位元組不得超過 2MB，實得 ' + bytes);
     assert.equal(Object.keys(out.entries).length > 0, true, '不得把整份名單清空');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u2000'), true, '最新的一筆永遠留著');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '2000'), true, '最新的一筆永遠留著');
   });
 
   // storage 讀回的 JSON 可能含 `__proto__` 鍵(手工編輯的匯入檔、或他處寫入
