@@ -2,7 +2,8 @@
 // 「複製連結」icon，點擊後把貼文的乾淨網址(去 query/hash)寫入剪貼簿。
 // ISOLATED world content script，比照 bridge.js 的 ES5 IIFE 風格。
 //
-// 純函式 pickPermalink / buildPostUrl / hasExistingIcon / pickActionRowIndex
+// 純函式 pickPermalink / buildPostUrl / hasExistingIcon / readActionLabel /
+// pickActionRowIndex
 // 供 Node 測試以 require() 直接載入使用；模組頂層任何碰 document /
 // MutationObserver 的 DOM 注入邏輯一律用 `typeof document !== 'undefined'`
 // 守衛包住，讓 Node 環境(無 document 全域)require() 時不丟例外、不產生
@@ -15,18 +16,19 @@
   // ============================================================
 
   // 互動列消歧用的白名單：貼文容器內符合「直屬子元素 >=4 個、每個都有
-  // [role="button"] svg[aria-label]」這個結構條件的候選列，不一定只有
+  // [role="button"] 包著 svg」這個結構條件的候選列，不一定只有
   // 一個——例如影片貼文會多一條「追蹤/更多/已靜音/排序/附加影音內容」的
   // 播放器工具列，結構上也符合，但那不是讚/回覆/轉發/分享的互動列。有
-  // 多個候選時，優先用這份白名單比對候選列內各按鈕的 aria-label，交集
+  // 多個候選時，優先用這份白名單比對候選列內各按鈕的標籤(讀法見
+  // readActionLabel:先 aria-label，缺席時讀 svg > title)，交集
   // >= 3 視為命中真正的互動列(本擴充功能 UI 只支援 zh/en，頁面語言主力
   // 也是這兩種，先覆蓋主場，語言無關性因此「降級為後備」而非放棄)；白
   // 名單以外的語言全不中時，見 pickActionRowIndex 內的後備規則。
   var ACTION_ROW_LABEL_WHITELIST = ['讚', '回覆', '轉發', '分享', 'Like', 'Reply', 'Repost', 'Share'];
 
-  // 從多個互動列候選(每個候選是一份「依子元素順序排列的 aria-label 陣列」
-  // 組成的清單)中挑出真正的互動列，回傳選中的 index；候選清單為空或非陣
-  // 列一律回傳 null，不丟例外。
+  // 從多個互動列候選(每個候選是一份「依子元素順序排列的按鈕標籤陣列」組
+  // 成的清單，標籤由 readActionLabel 讀出)中挑出真正的互動列，回傳選中的
+  // index；候選清單為空或非陣列一律回傳 null，不丟例外。
   //   - 只有 1 個候選：直接選它，不需要消歧。
   //   - 多個候選：依文件序找第一個與 ACTION_ROW_LABEL_WHITELIST 交集
   //     >= 3 的候選(讚/回覆/轉發/分享或 Like/Reply/Repost/Share 命中
@@ -263,6 +265,31 @@
     }
   }
 
+  // 讀取互動列按鈕 svg 的無障礙標籤。先取 aria-label 屬性，值為 falsy(缺
+  // 屬性、空字串)時退到 svg 內 <title> 子元素的 textContent 並去除前後空
+  // 白；兩邊都取不到非空字串時回傳 null。svg 缺失或不帶 getAttribute／
+  // querySelector 時回傳 null，不丟例外。
+  //
+  // 兩種來源都要吃:Threads 2026-09 改版把互動列按鈕 svg 的 aria-label 拿
+  // 掉，標籤只剩 svg > title；舊結構則兩者並存。找互動列、候選消歧、取色
+  // 三處共用這顆函式，標籤來源判斷只有一份。
+  function readActionLabel(svg) {
+    if (!svg || typeof svg.getAttribute !== 'function' || typeof svg.querySelector !== 'function') {
+      return null;
+    }
+    try {
+      var ariaLabel = svg.getAttribute('aria-label');
+      if (typeof ariaLabel === 'string' && ariaLabel !== '') return ariaLabel;
+
+      var titleEl = svg.querySelector('title');
+      if (!titleEl) return null;
+      var text = typeof titleEl.textContent === 'string' ? titleEl.textContent.trim() : '';
+      return text === '' ? null : text;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // ============================================================
   // 模組匯出(宣告在 DOM 守衛「外」，因為裡面全是純函式，Node 測試環境也
   // 用得到)。DOM 守衛內若定義了需要碰 document 的 API(findContainerByCleanUrl
@@ -276,6 +303,7 @@
     pickPermalink: pickPermalink,
     buildPostUrl: buildPostUrl,
     hasExistingIcon: hasExistingIcon,
+    readActionLabel: readActionLabel,
     pickActionRowIndex: pickActionRowIndex,
     filterOwnContainerHrefs: filterOwnContainerHrefs,
     classifyExcerptCandidate: classifyExcerptCandidate,
@@ -345,8 +373,8 @@
 
       // 鏈結(link)圖示與勾勾(check)圖示：20px、stroke=currentColor、
       // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。內建一個空的
-      // <title> 子元素:原生互動列每顆 svg[aria-label] 內都有 <title> 子
-      // 元素，仿照同一結構保留無障礙語意(見 createIconElement 的
+      // <title> 子元素:原生互動列每顆 svg 內都有 <title> 子元素(改版後那
+      // 也是唯一的標籤來源)，仿照同一結構保留無障礙語意(見 createIconElement 的
       // applyIconTitle)；但實際觸發 hover 原生 tooltip 的是外層 div 的
       // title 屬性，不是這顆 svg <title>——svg 設了 pointer-events:none
       // (見 injectStyle 的 SVG_WRAP_CLASS 規則)，游標永遠不會落在 svg
@@ -878,8 +906,10 @@
       }
 
       // ---- 找互動列候選:容器內每個 div，直屬子元素 >=4 個，每個子元素內
-      // 都有 [role="button"] 包著 svg[aria-label]（按鈕 wrapper）。純結構
-      // 判斷，不再額外查 getComputedStyle(display:flex)——這個掃描是熱路
+      // 都有 [role="button"] 包著 svg（按鈕 wrapper）。svg 不再要求帶
+      // aria-label——Threads 2026-09 改版後標籤只剩 svg > title，多綁這個
+      // 屬性會讓所有候選落空。純結構判斷，不再額外查
+      // getComputedStyle(display:flex)——這個掃描是熱路
       // 徑(MutationObserver 每次 debounce 後對全頁貼文重跑一輪)，
       // getComputedStyle 會強制觸發同步版面計算，犯不著多付這筆效能。
       //
@@ -898,7 +928,7 @@
           var allMatch = true;
           for (var j = 0; j < children.length; j++) {
             var hit = children[j].querySelector
-              ? children[j].querySelector('[role="button"] svg[aria-label]')
+              ? children[j].querySelector('[role="button"] svg')
               : null;
             if (!hit) {
               allMatch = false;
@@ -917,9 +947,10 @@
         return rows;
       }
 
-      // ---- 從候選列中挑出真正的互動列:只有 1 個候選直接用；多個候選交
-      // 給 pickActionRowIndex(見純函式區)用 aria-label 白名單消歧，白名
-      // 單全不中則退回文件序最後一個候選。----
+      // ---- 從候選列中挑出真正的互動列:只有 1 個候選直接用；多個候選先
+      // 用 readActionLabel 讀出每顆按鈕 svg 的標籤(先 aria-label，缺席讀
+      // svg title)，再交給 pickActionRowIndex(見純函式區)用白名單消歧，
+      // 白名單全不中則退回文件序最後一個候選。----
       function findActionRow(container) {
         var rows = collectActionRowCandidates(container);
         if (rows.length === 0) return null;
@@ -927,8 +958,8 @@
         var labelsList = rows.map(function (row) {
           var labels = [];
           for (var j = 0; j < row.children.length; j++) {
-            var svg = row.children[j].querySelector('[role="button"] svg[aria-label]');
-            labels.push(svg ? svg.getAttribute('aria-label') : null);
+            var svg = row.children[j].querySelector('[role="button"] svg');
+            labels.push(readActionLabel(svg));
           }
           return labels;
         });
@@ -947,7 +978,7 @@
           // 取「最後一顆」原生 icon(分享小飛機)當色樣，不取第一顆——
           // 第一顆是愛心，按過讚會變紅，取樣到紅色整顆 icon 會跟著紅。
           // 本函式在插入我們的 icon 之前呼叫，此時列尾必為原生按鈕。
-          var svgs = row.querySelectorAll('svg[aria-label]');
+          var svgs = row.querySelectorAll('svg');
           if (!svgs.length) return;
           var nativeSvg = svgs[svgs.length - 1];
           var color = root.getComputedStyle(nativeSvg).color;
