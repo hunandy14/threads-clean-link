@@ -161,6 +161,26 @@
     return trimmed.toLowerCase();
   }
 
+  // post-icon.js 的純函式在本檔直接複用：內文候選分類
+  // （classifyExcerptCandidate）與互動列的標籤讀法／候選消歧
+  // （readActionLabel、pickActionRowIndex）。瀏覽器裡兩支 content script 載
+  // 入同一個 world 且 post-icon 先載入，取 root.TCLPostIcon 即可；Node 測試
+  // 環境沒有全域 window，改以 require 取同一份匯出——判準只留一份，不在本
+  // 檔另外維護第二套。取不到時各呼叫端自帶退路。
+  var postIconModule = null;
+  function postIcon() {
+    if (root && root.TCLPostIcon) return root.TCLPostIcon;
+    if (postIconModule) return postIconModule;
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+      try {
+        postIconModule = require('./post-icon.js');
+      } catch (e) {
+        postIconModule = null;
+      }
+    }
+    return postIconModule;
+  }
+
   // 取容器內「屬於本容器本身」的第一個 permalink 連結，回傳
   // { handle, code }；找不到回傳 null。引用貼文會把另一個
   // data-pressable-container 包在外層容器內，其連結不算本容器的，判斷方式
@@ -176,22 +196,50 @@
     return null;
   }
 
-  // 取容器內最長的 [dir="auto"] 文字當本文；同樣只收屬於本容器本身的節
-  // 點，作者名那種短節點自然會被長度比下去，引用卡片的內文則靠 closest 過
-  // 濾擋掉（長度比不贏時不該當成過濾機制）。[dir="auto"] 會互相巢狀——外層
-  // 包裝節點的 textContent 必定含作者名、時間戳記等雜訊且恆為最長，因此只
-  // 取最內層（本身不再包含其他 [dir="auto"] 的節點）。
-  function readContainerBody(container) {
+  // 取容器內的本文：收集所有葉 [dir="auto"] 節點（本身不再包含其他
+  // [dir="auto"] 者），逐段以 post-icon 的 classifyExcerptCandidate 決定收
+  // 下（push）、跳過（skip）或就此打住（stop），再以 \n 串接。
+  //
+  // 一篇貼文常被拆成多個各自獨立的葉 span，招攬那一行往往是最短的一段，只
+  // 取最長的一段會把 LINE 錨點整個丟掉，串文判定必漏——因此全段都要收。
+  //
+  // 同一個容器內有三類 [dir="auto"] 不是本文：
+  //   - 作者名與時間戳記：包在 <a> 裡（作者頁連結、permalink）。
+  //   - 與作者 handle 逐字相同的節點：版面把作者名獨立成段、且不帶連結時。
+  //   - 互動列計數（「92」「3,440」）：classifyExcerptCandidate 判為 stop，
+  //     本文區段到此結束。
+  // 引用卡片的內文則靠 closest 比對擋掉，不算本容器的段落。
+  function readContainerBody(container, authorHandle) {
     var nodes = container.querySelectorAll('[dir="auto"]');
-    var best = '';
+    var icon = postIcon();
+    var classify =
+      icon && typeof icon.classifyExcerptCandidate === 'function'
+        ? icon.classifyExcerptCandidate
+        : null;
+    var wanted = normalizeHandle(authorHandle);
+    var parts = [];
+
     for (var i = 0; i < nodes.length; i++) {
       var node = nodes[i];
       if (node.closest && node.closest(CONTAINER_SELECTOR) !== container) continue;
       if (node.querySelector && node.querySelector('[dir="auto"]')) continue;
+      // 連結內的文字（作者名、時間戳記）不是本文。只認屬於本容器的 <a>，
+      // 容器本身被包在連結裡時不該整篇被吃掉。
+      var anchor = node.closest ? node.closest('a') : null;
+      if (anchor && (!anchor.closest || anchor.closest(CONTAINER_SELECTOR) === container)) {
+        continue;
+      }
+
       var text = node.textContent || '';
-      if (text.length > best.length) best = text;
+      if (wanted && normalizeHandle(text) === wanted) continue;
+
+      var verdict = classify ? classify(text, parts.length > 0) : 'push';
+      if (verdict === 'stop') break;
+      if (verdict === 'skip') continue;
+      parts.push(text);
     }
-    return best;
+
+    return parts.join('\n');
   }
 
   // 徽章解析結果的健全性檢查：位置要落在 1..total、total 不得超過合理串長
@@ -228,7 +276,7 @@
         var permalink = readContainerPermalink(container);
         if (!permalink || normalizeHandle(permalink.handle) !== wanted) continue;
 
-        var body = readContainerBody(container);
+        var body = readContainerBody(container, wanted);
         var stripped = stripPositionBadge(body);
         var sane = isSaneBadge(stripped, expectedTotal);
         items.push({
@@ -299,10 +347,12 @@
       var scamGuardEnabled = true;
       var settingsReady = false;
 
-      // 冪等鍵：乾淨 pathname ＋本頁作者串各篇的 code 集合。MutationObserver
-      // 在 Threads 上每秒可觸發數十次，同一頁同一組容器只掃一次、只送一則
-      // scam.hit、只掛一顆 tag；SPA 換頁（pathname 或容器組成變動）才重掃。
-      var lastScanKey = null;
+      // 上一輪掃描的結果：{ key, tagged, mainCode }。key 為乾淨 pathname ＋
+      // 本頁作者串各篇的 code 集合——MutationObserver 在 Threads 上每秒可觸
+      // 發數十次，同一頁同一組容器只掃一次、只送一則 scam.hit；SPA 換頁
+      // （pathname 或容器組成變動）才重掃。tagged／mainCode 記住「這一鍵該
+      // 有警示、掛在哪一篇」，同鍵的觸發才補得回被 React 沖掉的 tag。
+      var lastScan = null;
 
       // 本次 session 是否已經跳過「首次入黑名單」的 toast。
       var toasted = false;
@@ -404,16 +454,30 @@
         return out;
       }
 
-      // ---- 依 post code 找出該篇的貼文容器。巢狀容器（引用貼文）排除方式
-      // 與 extractThreadFromDom 一致，確保兩邊看到的是同一組容器。----
-      function findContainerByCode(code) {
+      // ---- 列出本頁屬於該作者、且非巢狀的貼文容器，回傳
+      // [{ container, code }]（文件序）。只讀 a[href]，不碰 script 與本文節
+      // 點，便宜到可以每次 MutationObserver 觸發都跑一遍——冪等鍵就是由它算
+      // 出來的。巢狀容器（引用貼文）的排除方式與 extractThreadFromDom 一
+      // 致，確保兩邊看到的是同一組容器。----
+      function collectOwnContainers(authorHandle) {
+        var wanted = normalizeHandle(authorHandle);
+        var out = [];
+        if (!wanted) return out;
         var containers = document.querySelectorAll(CONTAINER_SELECTOR);
         for (var i = 0; i < containers.length; i++) {
           var container = containers[i];
           var parent = container.parentElement || container.parentNode;
           if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
           var permalink = readContainerPermalink(container);
-          if (permalink && permalink.code === code) return container;
+          if (!permalink || normalizeHandle(permalink.handle) !== wanted) continue;
+          out.push({ container: container, code: permalink.code });
+        }
+        return out;
+      }
+
+      function containerOf(own, code) {
+        for (var i = 0; i < own.length; i++) {
+          if (own[i].code === code) return own[i].container;
         }
         return null;
       }
@@ -422,9 +486,13 @@
       // 個、每個子元素內都有 [role="button"] 包著 svg 的 div。判準與
       // post-icon 的 collectActionRowCandidates 相同，但 post-icon 的版本宣
       // 告在它自己的 DOM 守衛內、不在匯出的 api 上，這裡自帶一份最小實作。
-      // 結構條件不保證唯一（影片貼文多一條播放器工具列），多個候選時取文件
-      // 序最後一個——實測工具列在互動列之前。----
-      function findActionRow(container) {
+      //
+      // 結構條件不保證唯一：影片貼文會多一條「追蹤／更多／已靜音／排序／附
+      // 加影音內容」的播放器工具列，它與互動列的文件序前後皆有可能，光看順
+      // 序會挑錯。消歧一律交給 post-icon 匯出的 readActionLabel（先
+      // aria-label、缺席讀 svg > title）＋ pickActionRowIndex（標籤白名單交
+      // 集 >= 3）；取不到那兩支純函式時才退回文件序最後一個候選。----
+      function collectActionRowCandidates(container) {
         var divs = container.querySelectorAll('div');
         var rows = [];
         for (var i = 0; i < divs.length; i++) {
@@ -447,7 +515,34 @@
           if (row.closest && row.closest(CONTAINER_SELECTOR) !== container) continue;
           rows.push(row);
         }
-        return rows.length > 0 ? rows[rows.length - 1] : null;
+        return rows;
+      }
+
+      function findActionRow(container) {
+        var rows = collectActionRowCandidates(container);
+        if (rows.length === 0) return null;
+
+        var icon = postIcon();
+        if (
+          !icon ||
+          typeof icon.readActionLabel !== 'function' ||
+          typeof icon.pickActionRowIndex !== 'function'
+        ) {
+          return rows[rows.length - 1];
+        }
+
+        var labelsList = [];
+        for (var i = 0; i < rows.length; i++) {
+          var children = rows[i].children;
+          var labels = [];
+          for (var j = 0; j < children.length; j++) {
+            labels.push(icon.readActionLabel(children[j].querySelector('[role="button"] svg')));
+          }
+          labelsList.push(labels);
+        }
+
+        var index = icon.pickActionRowIndex(labelsList);
+        return index === null ? null : rows[index];
       }
 
       // ---- 在主文卡的互動列「上方」插一顆警示 tag。文案一律以 textContent
@@ -512,6 +607,42 @@
         }
       }
 
+      // ---- SSR 取值依 pathname 快取：同一頁重掃不必再把數十份 script 的
+      // textContent 收成字串陣列（等於整包 JSON 複製一次）。取不到根節點時
+      // 不寫進快取——SSR script 可能還沒解析完，下一輪（容器組成變動時）要
+      // 有機會重讀。----
+      var ssrCache = { path: null, root: null };
+
+      function readSsrRoot(pathInfo) {
+        if (ssrCache.path === pathInfo.path && ssrCache.root) return ssrCache.root;
+        var value = extractSsrRoot(collectSsrTexts(), pathInfo.code);
+        if (value) {
+          ssrCache.path = pathInfo.path;
+          ssrCache.root = value;
+        }
+        return value;
+      }
+
+      // ---- 以 SSR 補救主文卡：第一篇的 DOM 本文為空（版面還沒渲染出文
+      // 字），或整個容器都還沒掛上時，改用 SSR 的 captionText。SSR 已經帶著
+      // 這篇全文，錨點常常就在第一篇，漏掉它等於整串判定失準。----
+      function applySsrFallback(items, ssrRoot) {
+        if (!ssrRoot || typeof ssrRoot.captionText !== 'string' || !ssrRoot.captionText) {
+          return items;
+        }
+        for (var i = 0; i < items.length; i++) {
+          if (items[i].code !== ssrRoot.code) continue;
+          if (!items[i].text) items[i].text = ssrRoot.captionText;
+          return items;
+        }
+        items.unshift({
+          code: ssrRoot.code,
+          text: ssrRoot.captionText,
+          position: typeof ssrRoot.position === 'number' ? ssrRoot.position : 1,
+        });
+        return items;
+      }
+
       // ---- 一輪掃描 ----
       function scan() {
         if (!settingsReady || !scamGuardEnabled) return;
@@ -523,31 +654,47 @@
         // 河道與其他頁面整頁都是別人的貼文片段，不掃。
         if (!pathInfo) return;
 
-        var ssrRoot = extractSsrRoot(collectSsrTexts(), pathInfo.code);
+        // 冪等判斷必須早於任何昂貴的取值：MutationObserver 在 Threads 上每
+        // 秒可觸發數十次，先用便宜的容器掃描（只讀 a[href]）算出鍵，同鍵直
+        // 接收工。作者 handle 這裡一律取網址列的——SSR 還沒讀，而兩者只可能
+        // 差在大小寫，normalizeHandle 已經抹平。
+        var own = collectOwnContainers(pathInfo.handle);
+        // 容器還沒渲染出來：不記冪等鍵，留給下一次 MutationObserver 重試。
+        if (own.length === 0) return;
+
+        var key =
+          pathInfo.path +
+          '|' +
+          own
+            .map(function (entry) {
+              return entry.code;
+            })
+            .join(',');
+
+        if (lastScan && lastScan.key === key) {
+          // React 重繪會把我們插進去的節點整個沖掉。頁面層的補回用上一輪的
+          // 判定結果就夠，不重跑判定、更不重送 scam.hit。
+          if (lastScan.tagged && !document.querySelector('.' + TAG_CLASS)) {
+            insertTag(containerOf(own, lastScan.mainCode));
+          }
+          return;
+        }
+
+        var scanState = { key: key, tagged: false, mainCode: null };
+        lastScan = scanState;
+
+        var ssrRoot = readSsrRoot(pathInfo);
         // 作者 handle 以 SSR 為準（大小寫與網址列可能不同），SSR 缺席時退回
         // 網址列——DOM 取值只需要 handle，沒有 SSR 照樣掃得動。
         var handle =
           ssrRoot && typeof ssrRoot.username === 'string' && ssrRoot.username
             ? ssrRoot.username
             : pathInfo.handle;
-        var items = extractThreadFromDom(
-          document,
-          handle,
-          ssrRoot ? ssrRoot.selfThreadLength : undefined
+        var items = applySsrFallback(
+          extractThreadFromDom(document, handle, ssrRoot ? ssrRoot.selfThreadLength : undefined),
+          ssrRoot
         );
-        // 容器還沒渲染出來：不記冪等鍵，留給下一次 MutationObserver 重試。
         if (items.length === 0) return;
-
-        var key =
-          pathInfo.path +
-          '|' +
-          items
-            .map(function (item) {
-              return item.code;
-            })
-            .join(',');
-        if (key === lastScanKey) return;
-        lastScanKey = key;
 
         var detection = core.detectScamPitch(buildThreadText(items));
         if (!detection || !detection.hit) return;
@@ -572,7 +719,11 @@
           // 有它知道），但頁面上不掛警示。
           if (response && response.allowlisted) return;
 
-          insertTag(findContainerByCode(items[0].code));
+          // 記下「這一鍵該有警示」與主文卡的 code，之後同鍵的觸發才補得回被
+          // React 沖掉的 tag。
+          scanState.tagged = true;
+          scanState.mainCode = items[0].code;
+          insertTag(containerOf(own, items[0].code));
 
           // 首次把作者寫進黑名單才提示，同一 session 只提示一次；既有作者
           // 只補證據（added:false）、寫入被拒或送訊息失敗都不提示。
@@ -602,7 +753,7 @@
 
       // ---- 動態頁面：詳情頁的貼文容器是 React 逐批渲染的，SPA 路由切換也
       // 不重載腳本。比照 post-icon 監聽整個 body，debounce 後重掃；冪等靠
-      // lastScanKey。----
+      // lastScan 的冪等鍵。----
       function startObserver() {
         if (typeof MutationObserver === 'undefined') return;
         try {
