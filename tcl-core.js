@@ -818,6 +818,7 @@
   // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
   var SCAM_LIMITS = {
     MAX_ENTRIES: 200,
+    MAX_ALLOWLIST: 200,
     MAX_EVIDENCE: 3,
     SNIPPET_MAX: 120,
     SNIPPET_CONTEXT: 40,
@@ -1124,10 +1125,26 @@
     return bytes;
   }
 
+  // 解除名單的筆數裁切:依 at 降冪留最新 MAX_ALLOWLIST 筆。解除紀錄永久有效
+  // (它的作用就是不讓下一次掃描把人復活)，無上限的話同一份 SOFT_BUDGET 最終
+  // 會被它吃光，entries 反而先被擠掉。舊值升級來的 { at:0 } 排在最後，本來就
+  // 是最沒有顯示價值的那一批。
+  function capScamAllowlist(allowlist) {
+    var ids = Object.keys(allowlist);
+    if (ids.length <= SCAM_LIMITS.MAX_ALLOWLIST) return allowlist;
+    ids.sort(function (a, b) {
+      return allowlist[b].at - allowlist[a].at;
+    });
+    var out = {};
+    for (var i = 0; i < SCAM_LIMITS.MAX_ALLOWLIST; i++) out[ids[i]] = allowlist[ids[i]];
+    return out;
+  }
+
   // 把黑名單裁到儲存上限內:每筆證據留最新 MAX_EVIDENCE 筆(依 at 降冪)、
   // snippet 硬裁 SNIPPET_MAX;條目依 addedAt 降冪保留 MAX_ENTRIES 筆，再以
   // SOFT_BUDGET 續裁——最舊的先淘汰，最新的一筆永遠留著。handleIndex 跟著
-  // 裁，不留指向已淘汰條目的孤兒鍵。
+  // 裁，不留指向已淘汰條目的孤兒鍵。allowlist 先各自裁到 MAX_ALLOWLIST，再
+  // 當成 out 的基底參與位元組累加，兩張表不互相淘汰。
   //
   // 位元組裁切先用單筆估算做單次 O(n) 前向累加(同一筆不 stringify 兩次)，收
   // 尾再用整包的實際序列化位元組驗證:估算只近似分隔逗號，仍可能低估。兩處
@@ -1145,7 +1162,7 @@
     });
     ids = ids.slice(0, SCAM_LIMITS.MAX_ENTRIES);
 
-    var out = { version: 1, entries: {}, handleIndex: {}, allowlist: list.allowlist };
+    var out = { version: 1, entries: {}, handleIndex: {}, allowlist: capScamAllowlist(list.allowlist) };
     var kept = [];
     var bytes = utf8Length(JSON.stringify(out));
     for (i = 0; i < ids.length; i++) {
