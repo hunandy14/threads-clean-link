@@ -815,7 +815,7 @@
 
   // 黑名單的儲存形狀與偵測上限。entries 以 userId 為鍵(帳號改名後仍認得同一
   // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
-  // JSON 的位元組軟預算。
+  // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
   var SCAM_LIMITS = {
     MAX_ENTRIES: 200,
     MAX_EVIDENCE: 3,
@@ -824,21 +824,18 @@
     SOFT_BUDGET: 64 * 1024,
   };
 
-  // 投資話術詞表。否定語境(「不收費」「不代操」)照樣算命中——詐騙貼文的標準
-  // 開場白就是先撇清收費與代操。
-  var SCAM_PITCH_WORDS = [
-    '黑馬股',
-    '報明牌',
-    '明牌',
-    '代操',
-    '帶單',
-    '飆股',
-    '免費教學',
-    '不收費',
-    '穩賺',
-    '獲利分享',
-    '內線',
-  ];
+  // 投資話術詞表，分強弱兩級。否定語境(「不收費」「不代操」)照樣算命中——詐
+  // 騙貼文的標準開場白就是先撇清收費與代操。
+  //
+  // 強詞:投資招攬語境專屬，一個就足以與錨點構成命中。
+  var SCAM_PITCH_STRONG_WORDS = ['黑馬股', '報明牌', '代操', '帶單', '飆股', '穩賺', '獲利分享'];
+
+  // 弱詞:列入 pitchMatches 供證據卡呈現，但不計入命中門檻，兩個弱詞相加也不
+  // 足以命中。「免費教學」「不收費」在補習、餐飲、健身、公益貼文裡是中性
+  // 詞;「明牌」單獨出現時多半指樂透或廟口明牌，辨識力遠低於「報明牌」。
+  var SCAM_PITCH_WEAK_WORDS = ['明牌', '免費教學', '不收費'];
+
+  var SCAM_PITCH_WORDS = SCAM_PITCH_STRONG_WORDS.concat(SCAM_PITCH_WEAK_WORDS);
 
   // 連結型錨點:LINE 加好友(ti/p)/群組(ti/g)深連結、lin.ee 短網址、linktr.ee
   // 聚合頁。line.me 的其他路徑(官網首頁、分享頁)不是引導私訊的入口，不在白
@@ -850,8 +847,14 @@
   // 號前後空白、大小寫都吃。帳號段少於 3 位的是標點誤判，不是帳號。
   // 帳號段長度上限取 LINE ID 的官方上限 20 字:沒有上限時，帳號後面緊接的英
   // 數字串(長串識別碼、無空白的後文)會被一路吃進錨點。
+  //
+  // 【負向邊界】「賴」前面接 信/依/無/仰/倚 時整個詞是信賴/依賴/無賴/仰賴/
+  // 倚賴，後面的冒號是正常標點(「我信賴：Apple 的品質」)，不是 LINE 帳號引
+  // 導。這類句子常同時帶投資詞，光靠 PITCH 二次確認擋不住，錨點本身必須排
+  // 除。排除清單只列這五個字——真實詐騙句「我的賴：vg475」前面也是中文，擴
+  // 成「前面是中文就不算」會整組漏抓。
   var SCAM_ACCOUNT_ANCHOR_RES = [
-    /[賴籟]\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,
+    /(?<![信依無仰倚])[賴籟]\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,
     /LINE\s*ID\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/i,
   ];
 
@@ -881,31 +884,75 @@
     return text.slice(start, index + SCAM_LIMITS.SNIPPET_CONTEXT).slice(0, SCAM_LIMITS.SNIPPET_MAX);
   }
 
+  // 全形英數/標點(U+FF01-FF5E)平移 0xFEE0 即得對應的半形 ASCII。**只供比
+  // 對**:全形區每個字元都是單一 UTF-16 code unit，換成半形後字串等長且逐位
+  // 對齊，正則在這份字串上取得的 index/length 可以直接套回原文切片——
+  // anchorMatch 與 snippet 因此保留使用者實際看到的全形字元。詐騙帳號會用
+  // 全形英數規避純 ASCII 的帳號樣式，證據卡要讓人一眼看出對方用了規避字元。
+  function toHalfWidthForMatch(text) {
+    return text.replace(/[\uFF01-\uFF5E]/g, function (ch) {
+      return String.fromCharCode(ch.charCodeAt(0) - 0xfee0);
+    });
+  }
+
+  // 去掉被其他命中詞包含的短詞(「明牌」被「報明牌」包含時只留長詞)。
+  // pitchMatches 直接進證據卡，同一段文字列兩個詞等於同一件事數兩次，也會讓
+  // 命中門檻被子字串灌水。只出現短詞時短詞照列。
+  function dropContainedPitchWords(words) {
+    var out = [];
+    for (var i = 0; i < words.length; i++) {
+      var contained = false;
+      for (var j = 0; j < words.length; j++) {
+        if (j !== i && words[j].indexOf(words[i]) !== -1) {
+          contained = true;
+          break;
+        }
+      }
+      if (!contained) out.push(words[i]);
+    }
+    return out;
+  }
+
   // 偵測詐騙招攬貼文。回傳 { hit, anchorMatch, pitchMatches, snippet };非字
   // 串/空字串/未命中皆回 hit:false 且不產 snippet，永不拋錯。
   //
   // 錨點取用優先序為連結 > 帳號 > 片語:多種錨點同時存在時挑帶帳號本體的那
   // 個當 anchorMatch 與 snippet 中心，證據卡才看得到對方的 LINE 帳號。
+  //
+  // 命中門檻是「錨點 + 至少一個強詞」。弱詞列入 pitchMatches 但不計門檻，兩
+  // 個弱詞相加也不足以命中。連結型錨點仍是唯一可單獨成立的例外。
+  //
+  // pitchMatches 描述的是這段文字有哪些話術詞，與 hit 的判定分離:門檻不足而
+  // 未命中時照樣回報，呼叫端(除錯、調參、之後的人工複核)才看得出差在哪裡。
+  // anchorMatch 與 snippet 則只在命中時才有意義，未命中一律空字串。
   function detectScamPitch(text) {
     var miss = { hit: false, anchorMatch: '', pitchMatches: [], snippet: '' };
     if (typeof text !== 'string' || text.length === 0) return miss;
     var clean = stripControlChars(text);
     if (clean.length === 0) return miss;
+    var probe = toHalfWidthForMatch(clean);
 
     var pitchMatches = [];
-    for (var i = 0; i < SCAM_PITCH_WORDS.length; i++) {
-      if (clean.indexOf(SCAM_PITCH_WORDS[i]) !== -1) pitchMatches.push(SCAM_PITCH_WORDS[i]);
+    var i;
+    for (i = 0; i < SCAM_PITCH_WORDS.length; i++) {
+      if (probe.indexOf(SCAM_PITCH_WORDS[i]) !== -1) pitchMatches.push(SCAM_PITCH_WORDS[i]);
+    }
+    pitchMatches = dropContainedPitchWords(pitchMatches);
+    var strongCount = 0;
+    for (i = 0; i < pitchMatches.length; i++) {
+      if (SCAM_PITCH_STRONG_WORDS.indexOf(pitchMatches[i]) !== -1) strongCount++;
     }
 
-    var link = SCAM_LINK_ANCHOR_RE.exec(clean);
+    var noHit = { hit: false, anchorMatch: '', pitchMatches: pitchMatches, snippet: '' };
+    var link = SCAM_LINK_ANCHOR_RE.exec(probe);
     var anchor =
-      link || firstScamAnchor(clean, SCAM_ACCOUNT_ANCHOR_RES) || firstScamAnchor(clean, SCAM_PHRASE_ANCHOR_RES);
-    if (!anchor) return miss;
-    if (!link && pitchMatches.length === 0) return miss;
+      link || firstScamAnchor(probe, SCAM_ACCOUNT_ANCHOR_RES) || firstScamAnchor(probe, SCAM_PHRASE_ANCHOR_RES);
+    if (!anchor) return noHit;
+    if (!link && strongCount === 0) return noHit;
 
     return {
       hit: true,
-      anchorMatch: anchor[0],
+      anchorMatch: clean.slice(anchor.index, anchor.index + anchor[0].length),
       pitchMatches: pitchMatches,
       snippet: scamSnippet(clean, anchor.index),
     };
@@ -928,6 +975,16 @@
 
   function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  // storage 讀回的 JSON 可能含 `__proto__` 鍵(手工編輯的匯入檔、他處寫入的
+  // 髒資料)。`obj['__proto__'] = value` 不會建出自有鍵，而是把該物件的原型整
+  // 個換掉:Object.keys 看不到它，handleIndex 卻會留下指向它的孤兒鍵，之後的
+  // 查表會拿到一筆撈不出來的條目。entries/handleIndex/allowlist 三張表一律拒
+  // 收這個鍵——改用 Object.create(null) 會讓 entries 失去 Object.prototype，
+  // 呼叫端的 hasOwnProperty 之類寫法跟著壞，擋鍵是代價較小的一邊。
+  function isUnsafeMapKey(key) {
+    return key === '__proto__';
   }
 
   // 單筆證據正規化:postUrl 需通過讀取側網址白名單(擋掉外部網域混入證據
@@ -974,22 +1031,29 @@
     if (!isPlainObject(raw)) return out;
     var ids = isPlainObject(raw.entries) ? Object.keys(raw.entries) : [];
     for (var i = 0; i < ids.length; i++) {
+      if (isUnsafeMapKey(ids[i])) continue;
       var entry = normalizeBlocklistEntry(raw.entries[ids[i]]);
       if (entry) addScamEntry(out, ids[i], entry);
     }
     if (isPlainObject(raw.allowlist)) {
       var keys = Object.keys(raw.allowlist);
       for (var j = 0; j < keys.length; j++) {
+        if (isUnsafeMapKey(keys[j])) continue;
         if (raw.allowlist[keys[j]] === true) out.allowlist[keys[j]] = true;
       }
     }
     return out;
   }
 
-  // 寫入條目並同步反查表。
+  // 寫入條目並同步反查表。id 或 handle 小寫後為 `__proto__` 的整筆拒收:反查
+  // 表留下指向不存在條目的孤兒鍵，比漏收一筆髒資料更糟。
   function addScamEntry(list, id, entry) {
+    if (isUnsafeMapKey(id)) return;
     list.entries[id] = entry;
-    if (typeof entry.handle === 'string') list.handleIndex[entry.handle.toLowerCase()] = id;
+    if (typeof entry.handle !== 'string') return;
+    var key = entry.handle.toLowerCase();
+    if (isUnsafeMapKey(key)) return;
+    list.handleIndex[key] = id;
   }
 
   // 移除條目並清掉指向它的反查鍵(同名 handle 的另一筆可能已蓋過該鍵，只在仍
@@ -1003,13 +1067,44 @@
     if (list.handleIndex[key] === id) delete list.handleIndex[key];
   }
 
+  // 字串序列化後的 UTF-8 位元組數。chrome.storage 的配額算的是位元組，不是
+  // JS 的 UTF-16 code unit 數——snippet 幾乎必然是中文(詐騙話術本體)，UTF-8
+  // 每字 3 bytes，拿 String#length 當預算會讓實際寫入量膨脹到三倍而撞配額。
+  // TextEncoder 在三種載入環境(service worker、擴充頁面、Node 測試)都有，缺
+  // 席時逐碼點累加:BMP 之外的字元以代理對存放，一對算 4 bytes。
+  function utf8Length(value) {
+    if (typeof value !== 'string') return 0;
+    if (typeof TextEncoder === 'function') return new TextEncoder().encode(value).length;
+    var bytes = 0;
+    for (var i = 0; i < value.length; i++) {
+      var code = value.charCodeAt(i);
+      if (code < 0x80) {
+        bytes += 1;
+      } else if (code < 0x800) {
+        bytes += 2;
+      } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
+        var next = value.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          bytes += 4;
+          i++;
+        } else {
+          bytes += 3;
+        }
+      } else {
+        bytes += 3;
+      }
+    }
+    return bytes;
+  }
+
   // 單筆條目的序列化位元組估算:entries 的鍵值對 + handleIndex 的鍵值對，各
-  // 加 1 近似物件的分隔逗號。
+  // 加 1 近似物件的分隔逗號。以 UTF-8 位元組計，與 SOFT_BUDGET 同一把尺。
   function scamEntryBytes(id, entry) {
     var key = JSON.stringify(id);
-    var bytes = key.length + 1 + JSON.stringify(entry).length + 1;
+    var keyBytes = utf8Length(key);
+    var bytes = keyBytes + 1 + utf8Length(JSON.stringify(entry)) + 1;
     if (typeof entry.handle === 'string') {
-      bytes += JSON.stringify(entry.handle.toLowerCase()).length + 1 + key.length + 1;
+      bytes += utf8Length(JSON.stringify(entry.handle.toLowerCase())) + 1 + keyBytes + 1;
     }
     return bytes;
   }
@@ -1019,8 +1114,9 @@
   // SOFT_BUDGET 續裁——最舊的先淘汰，最新的一筆永遠留著。handleIndex 跟著
   // 裁，不留指向已淘汰條目的孤兒鍵。
   //
-  // 位元組裁切先用估算做單次 O(n) 前向累加(同一筆不 stringify 兩次)，收尾再
-  // 用實際序列化驗證:估算低估時(多位元組字元)由驗證迴圈補砍。
+  // 位元組裁切先用單筆估算做單次 O(n) 前向累加(同一筆不 stringify 兩次)，收
+  // 尾再用整包的實際序列化位元組驗證:估算只近似分隔逗號，仍可能低估。兩處
+  // 都以 UTF-8 位元組計。
   function capScamBlocklist(raw) {
     var list = normalizeScamBlocklist(raw);
     var ids = Object.keys(list.entries);
@@ -1036,7 +1132,7 @@
 
     var out = { version: 1, entries: {}, handleIndex: {}, allowlist: list.allowlist };
     var kept = [];
-    var bytes = JSON.stringify(out).length;
+    var bytes = utf8Length(JSON.stringify(out));
     for (i = 0; i < ids.length; i++) {
       var size = scamEntryBytes(ids[i], list.entries[ids[i]]);
       if (kept.length > 0 && bytes + size > SCAM_LIMITS.SOFT_BUDGET) break;
@@ -1044,7 +1140,7 @@
       addScamEntry(out, ids[i], list.entries[ids[i]]);
       kept.push(ids[i]);
     }
-    while (kept.length > 1 && JSON.stringify(out).length > SCAM_LIMITS.SOFT_BUDGET) {
+    while (kept.length > 1 && utf8Length(JSON.stringify(out)) > SCAM_LIMITS.SOFT_BUDGET) {
       removeScamEntry(out, kept.pop());
     }
     return out;
@@ -1067,11 +1163,15 @@
   // 由一次命中建出黑名單條目(含該次的單筆證據)。handle 保留原始大小寫——小
   // 寫化是 handleIndex 的事，卡片上要顯示使用者看得懂的原樣帳號。條目不存
   // userId:它已經是 entries 的鍵，欄位再重複一份只會在改名合併時分裂。
+  //
+  // handle / displayName 走 sanitizeDisplayName 而非只剝控制字元:黑名單卡片
+  // 是單行版面，從 DOM 抓來的名字帶 tab/換行(stripControlChars 刻意保留這兩
+  // 者)會把卡片撐開或截斷，連續空白一律摺成單一半形空格並去頭尾。
   function makeBlocklistEntry(input) {
     var raw = isPlainObject(input) ? input : {};
     var entry = normalizeBlocklistEntry({
-      handle: raw.handle,
-      displayName: raw.displayName,
+      handle: sanitizeDisplayName(raw.handle),
+      displayName: sanitizeDisplayName(raw.displayName),
       evidence: [{ postUrl: raw.postUrl, snippet: raw.snippet, at: raw.at }],
       addedAt: raw.at,
       source: raw.source,
