@@ -355,6 +355,11 @@
       // scam.hit；SPA 換頁、容器組成變動或本文被補齊才重掃。tagged／mainCode
       // 記住「這一鍵該有警示、掛在哪一篇」，同鍵的觸發才補得回被 React 沖掉
       // 的 tag；userId／handle 供解除封鎖時撤掉補回旗標（releaseAllowlistedScan）。
+      //
+      // 本文長度是鍵的一部分，展開長文、載入翻譯都會算出新鍵，判定整輪重跑、
+      // 可能再送一次 scam.hit——這是預期行為：background 對同一篇 permalink 的
+      // 證據去重，toast 另有本 session 的 toasted 旗標，重送不會多一張證據卡、
+      // 也不會多跳一次 toast。
       var lastScan = null;
 
       // 本次 session 是否已經跳過「首次入黑名單」的 toast。

@@ -1014,12 +1014,14 @@
 
   // 單筆黑名單條目正規化:非物件回 null(呼叫端逐項剝除),其餘欄位逐一消
   // 毒。evidence 非陣列退成空陣列而非整筆丟棄——條目本身(handle/addedAt)仍
-  // 是有效的封鎖資訊。
+  // 是有效的封鎖資訊。handle 走 sanitizeDisplayName，與 allowlist 的 handle
+  // 同一把尺(摺疊連續空白、trim、截長、代理對保護)，兩側比對才不會因空白差
+  // 異對不上。
   function normalizeBlocklistEntry(raw) {
     if (!isPlainObject(raw)) return null;
     var entry = {};
-    var handle = sanitizeText(raw.handle, DISPLAY_NAME_MAX);
-    if (handle !== undefined) entry.handle = handle;
+    var handle = sanitizeDisplayName(raw.handle);
+    if (handle) entry.handle = handle;
     var displayName = sanitizeText(raw.displayName, DISPLAY_NAME_MAX);
     if (displayName !== undefined) entry.displayName = displayName;
     entry.evidence = [];
@@ -1036,8 +1038,8 @@
 
   // entries 與 allowlist 的鍵形狀:Threads 的作者主鍵是純數字字串、1-20 位
   // (與 background 的 SCAM_USER_ID_PATTERN 同一把尺)。storage 是使用者可編
-  // 輯、也可能被他處寫髒的地方,不驗鍵形狀時任意字串(handle、路徑、標記字
-  // 串)都能混進 entries 當成一筆作者,查表永遠對不上寫入側的 userId。
+  // 輯、也可能被他處寫髒的地方，不驗鍵形狀時任意字串(handle、路徑、標記字
+  // 串)都能混進 entries 當成一筆作者，查表永遠對不上寫入側的 userId。
   var SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
 
   function isScamUserIdKey(key) {
@@ -1047,7 +1049,7 @@
   // storage 讀回的黑名單正規化成 { version, entries, handleIndex, allowlist }
   // 四欄形狀。未知欄位不留存，handleIndex 一律由 entries 重建——存下來的反查
   // 表可能指向已淘汰的條目。entries/allowlist 的鍵不是 userId 形狀的整筆剝
-  // 除;handleIndex 只由留下來的條目寫入,因此不會殘留指向被剝除鍵的孤兒項。
+  // 除;handleIndex 只由留下來的條目寫入，因此不會殘留指向被剝除鍵的孤兒項。
   function normalizeScamBlocklist(raw) {
     var out = { version: 1, entries: {}, handleIndex: {}, allowlist: {} };
     if (!isPlainObject(raw)) return out;
@@ -1069,10 +1071,10 @@
   }
 
   // allowlist 單筆值正規化。值是一筆「解除紀錄」:at 為解除時間，handle
-  // 為解除當下的帳號，選項頁「已解除」小節靠這兩欄排序與顯示。開發期曾短暫
-  // 使用布林 true 形狀，未出貨;保留相容分支純屬防禦,讀回 true 一律升成
-  // { at:0, handle:'' }。true 以外的非物件值剝除，欄位髒值各自退回預設（不
-  // 整筆丟棄——條目本身仍是有效的解除資訊）。
+  // 為解除當下的帳號，選項頁「已解除」小節靠這兩欄排序與顯示。`true` 視為
+  // 無時間、無 handle 的解除紀錄，升成 { at:0, handle:'' };`true` 以外的非
+  // 物件值一律剝除。欄位髒值各自退回預設（不整筆丟棄——條目本身仍是有效的
+  // 解除資訊）。
   function normalizeScamAllowEntry(raw) {
     if (raw === true) return { at: 0, handle: '' };
     if (!isPlainObject(raw)) return null;
