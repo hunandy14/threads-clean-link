@@ -33,6 +33,13 @@
 //     與 hash(#...)。href 非字串、origin 不是合法的絕對來源、或組不出合法
 //     URL 等任何非法輸入，一律回傳 null，不丟例外(內部須自行 try/catch，
 //     不可讓 URL 建構子的例外外洩)。
+//   readActionLabel(svg) → string|null
+//     讀取互動列按鈕 svg 的無障礙標籤。svg 為任意帶 getAttribute(name) 與
+//     querySelector(selector) 方法的物件(對應真實 DOM 的 SVGElement；測試
+//     以最小 duck-type 假物件替代)。先取 aria-label 屬性，值為 falsy(缺屬
+//     性、空字串)時退到 svg 內 <title> 子元素的 textContent 並去除前後空
+//     白。兩邊都取不到非空字串時回傳 null。svg 缺失或不帶上述方法時回傳
+//     null，不丟例外。
 //   hasExistingIcon(scope) → boolean
 //     scope 為任意帶 querySelector(selector) 方法的物件(對應真實 DOM 的
 //     Element；測試以最小 duck-type 假物件替代，不搭建完整 DOM)。回傳
@@ -355,9 +362,93 @@ test('hasExistingIcon:scope 缺失或不帶 querySelector 時回傳 false，不�
   assert.equal(hasExistingIcon({}), false);
 });
 
+// ---- readActionLabel(互動列按鈕 svg 的標籤讀取:Threads 2026-09 改版把
+// 互動列四顆按鈕 svg 的 aria-label 拿掉了，標籤只剩 svg > title 的
+// textContent。讀法統一收在這顆純函式，讓找互動列、消歧、取色三處共用同
+// 一個來源判斷，沿用最小 duck-type 假物件) ----
+
+// 先確認契約存在再測行為:函式還沒實作時，紅燈要落在「缺這個匯出」的斷言
+// 上，而不是 TypeError 崩在呼叫點。
+function loadReadActionLabel() {
+  const api = loadPostIcon();
+  assert.equal(
+    typeof api.readActionLabel,
+    'function',
+    'post-icon.js 應在 DOM 守衛外匯出純函式 readActionLabel'
+  );
+  return api.readActionLabel;
+}
+
+test('readActionLabel:svg 帶 aria-label 時優先取 aria-label', () => {
+  const readActionLabel = loadReadActionLabel();
+  const svg = {
+    getAttribute: (name) => (name === 'aria-label' ? '分享' : null),
+    // 舊結構 aria-label 與 <title> 並存時，不該改讀 <title>。
+    querySelector: (sel) => (sel === 'title' ? { textContent: '不該被讀到' } : null),
+  };
+
+  assert.equal(readActionLabel(svg), '分享');
+});
+
+test('readActionLabel:svg 沒有 aria-label 時退到 svg > title 的 textContent', () => {
+  const readActionLabel = loadReadActionLabel();
+  const svg = {
+    getAttribute: () => null,
+    querySelector: (sel) => (sel === 'title' ? { textContent: '讚' } : null),
+  };
+
+  assert.equal(readActionLabel(svg), '讚');
+});
+
+test('readActionLabel:aria-label 為空字串時同樣退到 svg > title', () => {
+  const readActionLabel = loadReadActionLabel();
+  const svg = {
+    getAttribute: (name) => (name === 'aria-label' ? '' : null),
+    querySelector: (sel) => (sel === 'title' ? { textContent: '回覆' } : null),
+  };
+
+  assert.equal(readActionLabel(svg), '回覆');
+});
+
+test('readActionLabel:<title> 的 textContent 前後空白要去掉', () => {
+  const readActionLabel = loadReadActionLabel();
+  const svg = {
+    getAttribute: () => null,
+    querySelector: (sel) => (sel === 'title' ? { textContent: '  轉發\n  ' } : null),
+  };
+
+  assert.equal(readActionLabel(svg), '轉發');
+});
+
+test('readActionLabel:<title> 只有空白字串視同沒有標籤，回傳 null', () => {
+  const readActionLabel = loadReadActionLabel();
+  const svg = {
+    getAttribute: () => null,
+    querySelector: (sel) => (sel === 'title' ? { textContent: '   ' } : null),
+  };
+
+  assert.equal(readActionLabel(svg), null);
+});
+
+test('readActionLabel:aria-label 與 <title> 都沒有時回傳 null', () => {
+  const readActionLabel = loadReadActionLabel();
+
+  assert.equal(readActionLabel({ getAttribute: () => null, querySelector: () => null }), null);
+});
+
+test('readActionLabel:svg 缺失或不帶 getAttribute／querySelector 時回傳 null，不丟例外', () => {
+  const readActionLabel = loadReadActionLabel();
+
+  assert.equal(readActionLabel(null), null);
+  assert.equal(readActionLabel(undefined), null);
+  assert.equal(readActionLabel({}), null);
+});
+
 // ---- pickActionRowIndex(結構相同的多個互動列候選消歧：影片貼文會多一條
-// 播放器工具列，結構上也符合「>=4 個子元素、每個都有 svg[aria-label]」，
-// 需要靠 aria-label 白名單挑出真正的讚/回覆/轉發/分享列) ----
+// 播放器工具列，結構上也符合「>=4 個子元素、每個子元素都有 [role="button"]
+// 包著 svg」，需要靠按鈕標籤白名單挑出真正的讚/回覆/轉發/分享列。標籤本身
+// 的讀法見 readActionLabel——Threads 的 svg 可能帶 aria-label，也可能只在
+// svg > title 留下文字，本函式只吃讀好的標籤字串，不管來源) ----
 
 test('pickActionRowIndex:單一候選直通，不需要消歧', () => {
   const { pickActionRowIndex } = loadPostIcon();
@@ -641,6 +732,198 @@ test('冪等交棒:同一 window 二次載入 post-icon，舊實例的 MutationO
     'function',
     '交棒握把應留在 window 上，供再下一個實例接手'
   );
+});
+
+// ============================================================
+// 【互動列辨識的假 DOM:只服務「按鈕標籤改由 svg > title 提供」這組測試】
+// 這裡不是通用 DOM harness，只搭出一顆貼文容器所需的最小結構——兩條結構
+// 相同的候選列(影片播放器工具列 + 真正的互動列)，每條四顆 [role="button"]
+// 包著一顆 svg。svg 的標籤可切換成「舊結構:aria-label + title 並存」或
+// 「新結構:只有 title」，用來驗證找互動列與取色兩條路徑都不再硬依賴
+// aria-label。載入 post-icon.js 時 init() 會同步跑完一輪 scanAndInject，
+// 注入結果直接從假節點上觀測。
+// ============================================================
+
+const VIDEO_TOOLBAR_LABELS = ['追蹤', '更多', '已靜音', '排序'];
+const ACTION_ROW_LABELS = ['讚', '回覆', '轉發', '分享'];
+// 逐顆給不同顏色:applyNativeColor 規定取「最後一顆」(分享小飛機)當色樣，
+// 取錯任何一顆都會被這組值抓出來(第一顆刻意用按過讚的紅色)。
+const ACTION_ROW_COLORS = [
+  'rgb(255, 48, 64)',
+  'rgb(11, 11, 11)',
+  'rgb(22, 22, 22)',
+  'rgb(153, 153, 153)',
+];
+
+// labelMode:'legacy' = svg 同時有 aria-label 與 <title>(Threads 2026-09
+// 改版前)；'title-only' = svg 只剩 <title>(改版後的現況)。
+function createFakeActionSvg(label, labelMode, color) {
+  return {
+    nodeName: 'svg',
+    __color: color,
+    getAttribute(name) {
+      if (name !== 'aria-label') return null;
+      return labelMode === 'legacy' ? label : null;
+    },
+    querySelector(sel) {
+      return sel === 'title' ? { textContent: label } : null;
+    },
+  };
+}
+
+// 按鈕 wrapper:一顆 [role="button"] 包著一顆 svg。querySelector 只模擬
+// 實作用得到的兩種後代選擇器語義——帶 [aria-label] 的版本必須在 svg 沒有
+// 該屬性時落空(這正是 2026-09 改版踩到的坑)，不帶屬性的版本一律命中。
+function createFakeButtonWrapper(svg) {
+  return {
+    nodeName: 'div',
+    __svg: svg,
+    nextSibling: undefined,
+    querySelector(sel) {
+      if (sel.indexOf('svg') === -1) return null;
+      if (sel.indexOf('svg[aria-label]') !== -1 && svg.getAttribute('aria-label') === null) {
+        return null;
+      }
+      return svg;
+    },
+  };
+}
+
+function createFakeRow(labels, labelMode, colors) {
+  const svgs = labels.map((label, i) =>
+    createFakeActionSvg(label, labelMode, colors ? colors[i] : 'rgb(0, 0, 0)')
+  );
+  const row = {
+    nodeName: 'div',
+    children: svgs.map(createFakeButtonWrapper),
+    container: null,
+    // ---- 測試專用觀測點:被注入的 icon 節點(尚未注入為 null) ----
+    injectedIcon: null,
+    querySelector(sel) {
+      return sel === '.tcl-copy-icon' ? row.injectedIcon : null;
+    },
+    querySelectorAll(sel) {
+      if (sel.indexOf('svg') === -1) return [];
+      if (sel.indexOf('svg[aria-label]') !== -1) {
+        return svgs.filter((svg) => svg.getAttribute('aria-label') !== null);
+      }
+      return svgs.slice();
+    },
+    closest(sel) {
+      return sel === CONTAINER_SELECTOR ? row.container : null;
+    },
+    insertBefore(node, ref) {
+      const idx = ref ? row.children.indexOf(ref) : -1;
+      if (idx === -1) row.children.push(node);
+      else row.children.splice(idx, 0, node);
+      row.injectedIcon = node;
+      return node;
+    },
+  };
+  return row;
+}
+
+// 回傳 { doc, videoToolbar, actionRow }:容器內依文件序放入播放器工具列與
+// 互動列兩條候選，兩者結構完全相同，只能靠按鈕標籤消歧。
+function createFakeFeedDocument(labelMode) {
+  const videoToolbar = createFakeRow(VIDEO_TOOLBAR_LABELS, labelMode, null);
+  const actionRow = createFakeRow(ACTION_ROW_LABELS, labelMode, ACTION_ROW_COLORS);
+  const rows = [videoToolbar, actionRow];
+
+  const container = {
+    nodeName: 'div',
+    querySelector(sel) {
+      if (sel !== '.tcl-copy-icon') return null;
+      return videoToolbar.injectedIcon || actionRow.injectedIcon || null;
+    },
+    querySelectorAll(sel) {
+      return sel === 'div' ? rows.slice() : [];
+    },
+  };
+  rows.forEach((row) => {
+    row.container = container;
+  });
+
+  const doc = {
+    readyState: 'complete',
+    head: createStubNode('head'),
+    body: createStubNode('body'),
+    documentElement: createStubNode('html'),
+    getElementById() {
+      return null;
+    },
+    createElement(tag) {
+      return createStubNode(tag);
+    },
+    addEventListener() {},
+    querySelectorAll(selector) {
+      return selector === CONTAINER_SELECTOR ? [container] : [];
+    },
+  };
+
+  return { doc, videoToolbar, actionRow };
+}
+
+// 載入 post-icon.js 並跑完一輪同步掃描注入;回傳兩條候選列供斷言。
+function injectIntoFakeFeed(labelMode) {
+  const { doc, videoToolbar, actionRow } = createFakeFeedDocument(labelMode);
+  const sandbox = {
+    window: {
+      location: { origin: 'https://www.threads.com' },
+      navigator: {},
+      getComputedStyle: (node) => ({ color: node && node.__color ? node.__color : '' }),
+    },
+    document: doc,
+    console: { warn() {}, error() {}, log() {} },
+    setTimeout,
+    clearTimeout,
+    URL,
+    chrome: { runtime: { id: 'tcl-test-ext' } },
+  };
+  runInSandbox(SRC, sandbox);
+  return { videoToolbar, actionRow };
+}
+
+test('找互動列:四顆按鈕 svg 只有 <title> 沒有 aria-label(Threads 2026-09 改版)時，仍要認出互動列並注入 icon', () => {
+  const { videoToolbar, actionRow } = injectIntoFakeFeed('title-only');
+
+  assert.notEqual(
+    actionRow.injectedIcon,
+    null,
+    'svg 只剩 <title> 時仍應找到互動列並注入 icon(改版後 aria-label 已不存在)'
+  );
+  assert.equal(actionRow.injectedIcon.className, 'tcl-copy-icon');
+  assert.equal(
+    videoToolbar.injectedIcon,
+    null,
+    '影片播放器工具列結構相同但不是互動列，不該被注入'
+  );
+});
+
+test('找互動列(回歸):舊結構 svg 帶 aria-label 時照舊認出互動列並注入 icon', () => {
+  const { videoToolbar, actionRow } = injectIntoFakeFeed('legacy');
+
+  assert.notEqual(actionRow.injectedIcon, null, '舊結構不得因為放寬選擇器而失效');
+  assert.equal(actionRow.injectedIcon.className, 'tcl-copy-icon');
+  assert.equal(videoToolbar.injectedIcon, null, '影片播放器工具列不該被注入');
+});
+
+test('applyNativeColor:列內 svg 都沒有 aria-label 時，仍取到最後一顆 svg(分享)的顏色', () => {
+  const { actionRow } = injectIntoFakeFeed('title-only');
+
+  assert.notEqual(actionRow.injectedIcon, null, '取色的前提是 icon 有被注入');
+  assert.equal(
+    actionRow.injectedIcon.style.color,
+    ACTION_ROW_COLORS[ACTION_ROW_COLORS.length - 1],
+    '應取最後一顆 svg 的顏色，而不是第一顆(按過讚會是紅色)或完全取不到'
+  );
+});
+
+test('applyNativeColor(回歸):舊結構 svg 帶 aria-label 時同樣取到最後一顆 svg 的顏色', () => {
+  const { actionRow } = injectIntoFakeFeed('legacy');
+
+  assert.notEqual(actionRow.injectedIcon, null);
+  assert.equal(actionRow.injectedIcon.style.color, ACTION_ROW_COLORS[ACTION_ROW_COLORS.length - 1]);
 });
 
 // ============================================================
