@@ -4173,8 +4173,8 @@ const SCAM_HANDLE = 'example_author';
 const SCAM_DISPLAY_NAME = 'Example Author';
 const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
 const SCAM_POST_URL_2 = 'https://www.threads.com/@example_author/post/DxSyNtH0007';
-const SCAM_POST_URL_3 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4P';
-const SCAM_POST_URL_4 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4Q';
+const SCAM_POST_URL_3 = 'https://www.threads.com/@example_author/post/DxSyNtH0008';
+const SCAM_POST_URL_4 = 'https://www.threads.com/@example_author/post/DxSyNtH0009';
 const SCAM_SNIPPET = '不報明牌、不收費、不代操，加我 賴：ex01abc 聊黑馬股';
 const SCAM_AT = 1700000100000;
 

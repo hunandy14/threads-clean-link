@@ -933,6 +933,36 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
     );
   });
 
+  // entries 與 allowlist 的 handle 走同一把尺（sanitizeDisplayName）：摺疊連續
+  // 空白、去頭尾空白、截長。兩側尺不同時，同一個帳號會在封鎖表與解除表存成兩
+  // 種字串，解除後的比對與 handleIndex 反查都會漏掉。
+  test('normalizeScamBlocklist:entries 與 allowlist 的 handle 清洗結果一致', () => {
+    const dirty = '  Example \t\n  Author  ';
+    const longHandle = 'a'.repeat(120);
+    const out = C.normalizeScamBlocklist({
+      entries: {
+        '111': { handle: dirty, evidence: [], addedAt: 1 },
+        '222': { handle: longHandle, evidence: [], addedAt: 2 },
+      },
+      allowlist: {
+        '111': { at: 7, handle: dirty },
+        '222': { at: 8, handle: longHandle },
+      },
+    });
+    assert.equal(out.entries['111'].handle, 'Example Author', 'entries 的 handle 摺疊連續空白並去頭尾');
+    assert.equal(
+      out.allowlist['111'].handle,
+      out.entries['111'].handle,
+      'entries 與 allowlist 的 handle 清洗結果須一致'
+    );
+    assert.equal(
+      out.allowlist['222'].handle,
+      out.entries['222'].handle,
+      '超長 handle 兩側截到同一長度'
+    );
+    assert.equal(out.handleIndex['example author'], '111', 'handleIndex 由清洗後的 handle 小寫重建');
+  });
+
   test('normalizeScamBlocklist:allowlist 髒值退成空物件', () => {
     assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
     assert.deepEqual(C.normalizeScamBlocklist({ allowlist: 'nope' }).allowlist, {});

@@ -1057,7 +1057,11 @@
   /* ---- 投資詐騙黑名單卡 ----
      列的骨架與互動語彙沿用裝置列(.device-row):列高、分隔線、右側 ghost
      圖示鈕的浮現規則一致，只有證據連結區是本卡獨有。 */
-  .scam-list { padding: 2px 0 0; }
+  /* 與下一張卡的間距比照 .duo 的 12px。 */
+  .scam-blocklist { margin-bottom: 12px; }
+  /* 左右內距與 .card-head／.empty 同為 16px，列不貼卡緣;卡底 12px 由本區
+     收尾，allowlist 非空時改由 .scam-allow 接手(見該規則)。 */
+  .scam-list { padding: 2px 16px 12px; }
   .scam-row {
     display: flex; align-items: flex-start; gap: 12px;
     padding: 10px 0; border-bottom: 1px solid var(--grid);
@@ -1090,9 +1094,10 @@
     display: flex; flex-direction: column; align-items: center; gap: 8px;
     font-size: 13px; padding: 26px 16px 24px;
   }
-  /* 「已解除」小節:與名單之間拉一條分隔線，整節在 allowlist 為空時隱藏。 */
+  /* 「已解除」小節:與名單之間拉一條分隔線，整節在 allowlist 為空時隱藏。
+     顯示時它是卡片的收尾塊，左右 16px、卡底 12px 與 .scam-list 同一組數值。 */
   .scam-allow {
-    border-top: 1px solid var(--grid); padding-top: 10px; margin-top: 4px;
+    border-top: 1px solid var(--grid); padding: 10px 16px 12px; margin-top: 4px;
     display: flex; flex-direction: column; gap: 4px;
   }
   .scam-allow-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
