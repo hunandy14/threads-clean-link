@@ -187,3 +187,37 @@ test('打包白名單:scam-guard.js 在 build-release.ps1 的 $includeFiles 內'
     'scam-guard.js 漏進白名單時，上架 zip 會缺檔，詐騙警示在商店版整個不會動'
   );
 });
+
+// ---- ISOLATED content_scripts 的完整載入順序（PM 裁決）----
+//
+// scam-guard.js 呼叫 TCLCore.detectScamPitch 做話術判定，但 tcl-core.js 原本
+// 只由 background 以 importScripts 載入，不在 content_scripts 內——真實頁面上
+// TCLCore 會是 undefined。tcl-core.js 因此要一併登記進 ISOLATED 陣列。
+//
+// 四支的相依方向是單向的：i18n 提供文案字典，tcl-core 提供判定與黑名單純函
+// 式，post-icon 建立樣式／toast 基礎設施並匯出 showToast，scam-guard 三者都
+// 用。content script 依陣列順序同步執行，排錯順序時後者讀到的是 undefined，
+// 因此順序本身就是契約，逐一釘死而不只驗「有沒有」。
+//
+// tcl-core.js 早已在 build-release.ps1 的 $includeFiles 內（background 需
+// 要），這裡不必另外加。
+const ISOLATED_JS_ORDER = ['i18n.js', 'tcl-core.js', 'post-icon.js', 'scam-guard.js'];
+
+test('manifest:ISOLATED content script 的 js 陣列恰為 i18n → tcl-core → post-icon → scam-guard', () => {
+  assert.deepEqual(
+    isolatedContentScript().js || [],
+    ISOLATED_JS_ORDER,
+    'content script 依陣列順序同步執行，排錯順序時後載入者讀到的相依模組會是 undefined'
+  );
+});
+
+test('打包白名單:ISOLATED 陣列的每一支都在 build-release.ps1 的 $includeFiles 內', () => {
+  const included = readIncludeFiles();
+  const missing = ISOLATED_JS_ORDER.filter((file) => !included.includes(file));
+
+  assert.deepEqual(
+    missing,
+    [],
+    `ISOLATED content script 漏進白名單時，上架 zip 會缺檔:${missing.join(', ')}`
+  );
+});

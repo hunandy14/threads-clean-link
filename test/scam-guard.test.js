@@ -950,17 +950,14 @@ test('extractThreadFromDom：[dir="auto"] 互相巢狀時取最內層，外層�
 //     added:false／allowlisted／disabled／失敗都不 toast，allowlisted 另外
 //     不掛 tag。
 //
-// 【toast 的兩條觀測管道】規格指名沿用 post-icon.js 的 showToast，但該函
-// 式目前並未掛上 TCLPostIcon（見 post-icon.js 守衛內的 api.xxx 掛載），實
-// 作可能改為由 post-icon 匯出後呼叫，也可能自己畫一顆。斷言因此同時看兩
-// 條管道：sandbox 注入的 window.TCLPostIcon.showToast 記錄，以及 DOM 上的
-// #tcl-toast 節點文字。兩條都空才算「沒有 toast」。
+// 【toast 的管道】PM 裁決：post-icon.js 的 api 匯出 showToast，scam-guard
+// 複用，不自繪。sandbox 因此注入一顆會記錄呼叫的 window.TCLPostIcon.showToast
+// 當主要觀測點；toastTexts() 另外也看 DOM 上的 #tcl-toast 節點文字，讓
+// 「有沒有 toast」不因實作把文字畫在哪裡而漏判。兩條都空才算沒有 toast。
 //
-// 【TCLCore 的可得性】本段在 sandbox 內先載入真的 tcl-core.js，因此
-// TCLCore 必然在場；但 manifest 目前沒有把 tcl-core.js 排進 content_scripts
-// 的 ISOLATED 陣列（它只被 background 以 importScripts 載入）。實作若真的
-// 呼叫 TCLCore.detectScamPitch，manifest 必須同步登記，否則真實頁面上
-// TCLCore 會是 undefined——見下方 test/package.test.js 的 manifest 測試。
+// 【TCLCore 的可得性】PM 裁決：tcl-core.js 一併登記進 manifest 的 ISOLATED
+// content_scripts 陣列（順序見 test/package.test.js 的順序測試），真實頁面
+// 上 TCLCore 才在場。本段在 sandbox 內先載入真的 tcl-core.js，對齊這個前提。
 // ============================================================
 
 const I18N_SRC = fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8');
