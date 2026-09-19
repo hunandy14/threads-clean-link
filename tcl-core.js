@@ -806,6 +806,314 @@
     return budgeted.length === list.length ? list : budgeted;
   }
 
+  // ---- 詐騙串文偵測 ----
+
+  // 詐騙帳號的共通劇本:正文談投資獲利，再留一個 LINE 錨點把人帶去私訊。單
+  // 看任一半都是正常內容(交友留 LINE、討論區聊飆股)，因此命中規則是「錨點
+  // + 至少一個話術詞」的二次確認。連結型錨點是唯一例外——網址本身就是加好
+  // 友/群組的深連結，已是引導私訊的入口，不必再等話術詞。
+
+  // 黑名單的儲存形狀與偵測上限。entries 以 userId 為鍵(帳號改名後仍認得同一
+  // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
+  // JSON 的位元組軟預算。
+  var SCAM_LIMITS = {
+    MAX_ENTRIES: 200,
+    MAX_EVIDENCE: 3,
+    SNIPPET_MAX: 120,
+    SNIPPET_CONTEXT: 40,
+    SOFT_BUDGET: 64 * 1024,
+  };
+
+  // 投資話術詞表。否定語境(「不收費」「不代操」)照樣算命中——詐騙貼文的標準
+  // 開場白就是先撇清收費與代操。
+  var SCAM_PITCH_WORDS = [
+    '黑馬股',
+    '報明牌',
+    '明牌',
+    '代操',
+    '帶單',
+    '飆股',
+    '免費教學',
+    '不收費',
+    '穩賺',
+    '獲利分享',
+    '內線',
+  ];
+
+  // 連結型錨點:LINE 加好友(ti/p)/群組(ti/g)深連結、lin.ee 短網址、linktr.ee
+  // 聚合頁。line.me 的其他路徑(官網首頁、分享頁)不是引導私訊的入口，不在白
+  // 名單內。
+  var SCAM_LINK_ANCHOR_RE =
+    /https?:\/\/(?:line\.me\/(?:R\/)?ti\/[gp]\/[A-Za-z0-9@._-]+|lin\.ee\/[A-Za-z0-9._-]+|linktr\.ee\/[A-Za-z0-9._-]+)/i;
+
+  // 帳號型錨點:賴/籟/LINE ID + 冒號 + 至少 3 位帳號字元。全形/半形冒號、冒
+  // 號前後空白、大小寫都吃。帳號段少於 3 位的是標點誤判，不是帳號。
+  // 帳號段長度上限取 LINE ID 的官方上限 20 字:沒有上限時，帳號後面緊接的英
+  // 數字串(長串識別碼、無空白的後文)會被一路吃進錨點。
+  var SCAM_ACCOUNT_ANCHOR_RES = [
+    /[賴籟]\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,
+    /LINE\s*ID\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/i,
+  ];
+
+  // 片語型錨點:「加入我的 LINE」這類明確的加好友祈使句。中文「賴」是姓氏
+  // (賴清德)也是常用動詞(賴床、賴皮、信賴、無賴)，誤殺成本遠高於漏抓，因
+  // 此「加」後面必須接「入」或「我」——光認「加賴」會把「加賴床」「加賴帳
+  // 號」一起收進來。
+  var SCAM_PHRASE_ANCHOR_RES = [/加(?:入我的|入我|入|我的|我)\s*(?:賴|籟|LINE)/i];
+
+  // 取一組樣式中位置最前的命中，都沒中回 null。
+  function firstScamAnchor(text, patterns) {
+    var best = null;
+    for (var i = 0; i < patterns.length; i++) {
+      var match = patterns[i].exec(text);
+      if (match && (best === null || match.index < best.index)) best = match;
+    }
+    return best;
+  }
+
+  // 以錨點起點為中心取上下文:前面 SNIPPET_CONTEXT 字，起點往後 SNIPPET_CONTEXT
+  // 字(錨點本體算在後半)，整體再硬裁 SNIPPET_MAX——與證據欄位的儲存上限同一
+  // 道天花板。窗格不跟著錨點長度延伸:帳號段後面緊接長串英數時，延伸會把整段
+  // 後文拖進 snippet。傳入的 text 已剝除控制/bidi 字元——snippet 會進 storage
+  // 也會進選項頁 DOM。
+  function scamSnippet(text, index) {
+    var start = Math.max(0, index - SCAM_LIMITS.SNIPPET_CONTEXT);
+    return text.slice(start, index + SCAM_LIMITS.SNIPPET_CONTEXT).slice(0, SCAM_LIMITS.SNIPPET_MAX);
+  }
+
+  // 偵測詐騙招攬貼文。回傳 { hit, anchorMatch, pitchMatches, snippet };非字
+  // 串/空字串/未命中皆回 hit:false 且不產 snippet，永不拋錯。
+  //
+  // 錨點取用優先序為連結 > 帳號 > 片語:多種錨點同時存在時挑帶帳號本體的那
+  // 個當 anchorMatch 與 snippet 中心，證據卡才看得到對方的 LINE 帳號。
+  function detectScamPitch(text) {
+    var miss = { hit: false, anchorMatch: '', pitchMatches: [], snippet: '' };
+    if (typeof text !== 'string' || text.length === 0) return miss;
+    var clean = stripControlChars(text);
+    if (clean.length === 0) return miss;
+
+    var pitchMatches = [];
+    for (var i = 0; i < SCAM_PITCH_WORDS.length; i++) {
+      if (clean.indexOf(SCAM_PITCH_WORDS[i]) !== -1) pitchMatches.push(SCAM_PITCH_WORDS[i]);
+    }
+
+    var link = SCAM_LINK_ANCHOR_RE.exec(clean);
+    var anchor =
+      link || firstScamAnchor(clean, SCAM_ACCOUNT_ANCHOR_RES) || firstScamAnchor(clean, SCAM_PHRASE_ANCHOR_RES);
+    if (!anchor) return miss;
+    if (!link && pitchMatches.length === 0) return miss;
+
+    return {
+      hit: true,
+      anchorMatch: anchor[0],
+      pitchMatches: pitchMatches,
+      snippet: scamSnippet(clean, anchor.index),
+    };
+  }
+
+  // 目前這頁是不是貼文詳情頁。河道不掃全文(整頁都是別人的貼文片段)，只有詳
+  // 情頁才掃——判定對象是 location.pathname。
+  //
+  // 【讀取側慣例】沿用 NORMALIZE_POST_URL_PATTERN 的寬鬆收尾(容忍尾隨斜線與
+  // query/hash),而非寫入側 isCleanPostUrl 的嚴格錨定:Threads 自己就會在網
+  // 址掛上 ?xmt= 之類的追蹤參數，嚴格錨定會讓真的詳情頁判成河道。字元白名單
+  // 與 STRICT_POST_URL_PATTERN 相同，中文釣魚字元照樣擋下。
+  var POST_DETAIL_PATH_PATTERN = /^\/@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}\/?(?:[?#].*)?$/;
+
+  function isPostDetailPath(pathname) {
+    return typeof pathname === 'string' && POST_DETAIL_PATH_PATTERN.test(pathname);
+  }
+
+  // ---- 詐騙黑名單:正規化、裁切、條目建立 ----
+
+  function isPlainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  // 單筆證據正規化:postUrl 需通過讀取側網址白名單(擋掉外部網域混入證據
+  // 卡)、at 需為有限數字，snippet 剝除控制字元。任一不符回 null。
+  function normalizeScamEvidence(raw) {
+    if (!isPlainObject(raw)) return null;
+    var postUrl = normalizePostUrl(raw.postUrl);
+    if (postUrl === null) return null;
+    if (typeof raw.at !== 'number' || !isFinite(raw.at)) return null;
+    return {
+      postUrl: postUrl,
+      snippet: typeof raw.snippet === 'string' ? stripControlChars(raw.snippet) : '',
+      at: raw.at,
+    };
+  }
+
+  // 單筆黑名單條目正規化:非物件回 null(呼叫端逐項剝除),其餘欄位逐一消
+  // 毒。evidence 非陣列退成空陣列而非整筆丟棄——條目本身(handle/addedAt)仍
+  // 是有效的封鎖資訊。
+  function normalizeBlocklistEntry(raw) {
+    if (!isPlainObject(raw)) return null;
+    var entry = {};
+    var handle = sanitizeText(raw.handle, DISPLAY_NAME_MAX);
+    if (handle !== undefined) entry.handle = handle;
+    var displayName = sanitizeText(raw.displayName, DISPLAY_NAME_MAX);
+    if (displayName !== undefined) entry.displayName = displayName;
+    entry.evidence = [];
+    if (Array.isArray(raw.evidence)) {
+      for (var i = 0; i < raw.evidence.length; i++) {
+        var evidence = normalizeScamEvidence(raw.evidence[i]);
+        if (evidence) entry.evidence.push(evidence);
+      }
+    }
+    entry.addedAt = typeof raw.addedAt === 'number' && isFinite(raw.addedAt) ? raw.addedAt : 0;
+    entry.source = raw.source === 'manual' ? 'manual' : 'auto';
+    return entry;
+  }
+
+  // storage 讀回的黑名單正規化成 { version, entries, handleIndex, allowlist }
+  // 四欄形狀。未知欄位不留存,handleIndex 一律由 entries 重建——存下來的反查
+  // 表可能指向已淘汰的條目。
+  function normalizeScamBlocklist(raw) {
+    var out = { version: 1, entries: {}, handleIndex: {}, allowlist: {} };
+    if (!isPlainObject(raw)) return out;
+    var ids = isPlainObject(raw.entries) ? Object.keys(raw.entries) : [];
+    for (var i = 0; i < ids.length; i++) {
+      var entry = normalizeBlocklistEntry(raw.entries[ids[i]]);
+      if (entry) addScamEntry(out, ids[i], entry);
+    }
+    if (isPlainObject(raw.allowlist)) {
+      var keys = Object.keys(raw.allowlist);
+      for (var j = 0; j < keys.length; j++) {
+        if (raw.allowlist[keys[j]] === true) out.allowlist[keys[j]] = true;
+      }
+    }
+    return out;
+  }
+
+  // 寫入條目並同步反查表。
+  function addScamEntry(list, id, entry) {
+    list.entries[id] = entry;
+    if (typeof entry.handle === 'string') list.handleIndex[entry.handle.toLowerCase()] = id;
+  }
+
+  // 移除條目並清掉指向它的反查鍵(同名 handle 的另一筆可能已蓋過該鍵，只在仍
+  // 指向本筆時才刪)。
+  function removeScamEntry(list, id) {
+    var entry = list.entries[id];
+    if (!entry) return;
+    delete list.entries[id];
+    if (typeof entry.handle !== 'string') return;
+    var key = entry.handle.toLowerCase();
+    if (list.handleIndex[key] === id) delete list.handleIndex[key];
+  }
+
+  // 單筆條目的序列化位元組估算:entries 的鍵值對 + handleIndex 的鍵值對，各
+  // 加 1 近似物件的分隔逗號。
+  function scamEntryBytes(id, entry) {
+    var key = JSON.stringify(id);
+    var bytes = key.length + 1 + JSON.stringify(entry).length + 1;
+    if (typeof entry.handle === 'string') {
+      bytes += JSON.stringify(entry.handle.toLowerCase()).length + 1 + key.length + 1;
+    }
+    return bytes;
+  }
+
+  // 把黑名單裁到儲存上限內:每筆證據留最新 MAX_EVIDENCE 筆(依 at 降冪)、
+  // snippet 硬裁 SNIPPET_MAX;條目依 addedAt 降冪保留 MAX_ENTRIES 筆，再以
+  // SOFT_BUDGET 續裁——最舊的先淘汰，最新的一筆永遠留著。handleIndex 跟著
+  // 裁，不留指向已淘汰條目的孤兒鍵。
+  //
+  // 位元組裁切先用估算做單次 O(n) 前向累加(同一筆不 stringify 兩次)，收尾再
+  // 用實際序列化驗證:估算低估時(多位元組字元)由驗證迴圈補砍。
+  function capScamBlocklist(raw) {
+    var list = normalizeScamBlocklist(raw);
+    var ids = Object.keys(list.entries);
+    var i;
+    for (i = 0; i < ids.length; i++) {
+      list.entries[ids[i]].evidence = capScamEvidence(list.entries[ids[i]].evidence);
+    }
+
+    ids.sort(function (a, b) {
+      return list.entries[b].addedAt - list.entries[a].addedAt;
+    });
+    ids = ids.slice(0, SCAM_LIMITS.MAX_ENTRIES);
+
+    var out = { version: 1, entries: {}, handleIndex: {}, allowlist: list.allowlist };
+    var kept = [];
+    var bytes = JSON.stringify(out).length;
+    for (i = 0; i < ids.length; i++) {
+      var size = scamEntryBytes(ids[i], list.entries[ids[i]]);
+      if (kept.length > 0 && bytes + size > SCAM_LIMITS.SOFT_BUDGET) break;
+      bytes += size;
+      addScamEntry(out, ids[i], list.entries[ids[i]]);
+      kept.push(ids[i]);
+    }
+    while (kept.length > 1 && JSON.stringify(out).length > SCAM_LIMITS.SOFT_BUDGET) {
+      removeScamEntry(out, kept.pop());
+    }
+    return out;
+  }
+
+  // 單筆條目的證據裁切:依 at 降冪留最新 MAX_EVIDENCE 筆，snippet 硬裁
+  // SNIPPET_MAX，其餘欄位原樣保留。
+  function capScamEvidence(evidence) {
+    return evidence
+      .slice()
+      .sort(function (a, b) {
+        return b.at - a.at;
+      })
+      .slice(0, SCAM_LIMITS.MAX_EVIDENCE)
+      .map(function (item) {
+        return { postUrl: item.postUrl, snippet: item.snippet.slice(0, SCAM_LIMITS.SNIPPET_MAX), at: item.at };
+      });
+  }
+
+  // 由一次命中建出黑名單條目(含該次的單筆證據)。handle 保留原始大小寫——小
+  // 寫化是 handleIndex 的事，卡片上要顯示使用者看得懂的原樣帳號。條目不存
+  // userId:它已經是 entries 的鍵，欄位再重複一份只會在改名合併時分裂。
+  function makeBlocklistEntry(input) {
+    var raw = isPlainObject(input) ? input : {};
+    var entry = normalizeBlocklistEntry({
+      handle: raw.handle,
+      displayName: raw.displayName,
+      evidence: [{ postUrl: raw.postUrl, snippet: raw.snippet, at: raw.at }],
+      addedAt: raw.at,
+      source: raw.source,
+    });
+    entry.evidence = capScamEvidence(entry.evidence);
+    return entry;
+  }
+
+  // 證據清單裡是否已有同一篇貼文(以正規化後的網址比對，容尾變體算同一篇)。
+  function hasScamEvidence(list, postUrl) {
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      if (!isPlainObject(item) || typeof item.postUrl !== 'string') continue;
+      if ((normalizePostUrl(item.postUrl) || item.postUrl) === postUrl) return true;
+    }
+    return false;
+  }
+
+  // 排序用的 at 取值:缺席/髒值當 0(排到最後)。
+  function scamEvidenceAt(item) {
+    return isPlainObject(item) && typeof item.at === 'number' && isFinite(item.at) ? item.at : 0;
+  }
+
+  // 把新證據併入既有條目，回傳新物件(純函式:不就地改寫傳入的條目)。同一篇
+  // 貼文只算一筆證據，證據依 at 降冪排列;addedAt 是首見時間，不隨新證據往後
+  // 跳。此處不裁筆數——上限由 capScamBlocklist 在寫回 storage 前統一處理。
+  function mergeBlocklistEvidence(entry, evidence) {
+    var base = isPlainObject(entry) ? entry : {};
+    var merged = {};
+    var keys = Object.keys(base);
+    for (var i = 0; i < keys.length; i++) merged[keys[i]] = base[keys[i]];
+
+    var list = Array.isArray(base.evidence) ? base.evidence.slice() : [];
+    var incoming = normalizeScamEvidence(evidence);
+    if (incoming && !hasScamEvidence(list, incoming.postUrl)) list.push(incoming);
+    list.sort(function (a, b) {
+      return scamEvidenceAt(b) - scamEvidenceAt(a);
+    });
+    merged.evidence = list;
+    return merged;
+  }
+
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
     isCleanPostUrl: isCleanPostUrl,
@@ -840,6 +1148,13 @@
     isQuotaExceededError: isQuotaExceededError,
     HISTORY_LIMITS: HISTORY_LIMITS,
     capHistory: capHistory,
+    SCAM_LIMITS: SCAM_LIMITS,
+    detectScamPitch: detectScamPitch,
+    isPostDetailPath: isPostDetailPath,
+    normalizeScamBlocklist: normalizeScamBlocklist,
+    capScamBlocklist: capScamBlocklist,
+    makeBlocklistEntry: makeBlocklistEntry,
+    mergeBlocklistEvidence: mergeBlocklistEvidence,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
