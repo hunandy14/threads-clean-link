@@ -5901,21 +5901,21 @@ const SCAM_NOW = 1758240000000;
 const SCAM_HOUR = 3600000;
 const SCAM_DAY = 86400000;
 
-// userId 形狀為純數字字串(§14)。SCAM_ID_A 取自 tmp/thread-fixture.json
-// 那位實際命中的作者。
+// userId 形狀為純數字字串(§14)。SCAM_ID_A 取自 test/fixtures/scam-thread.json
+// 的樣本作者。
 const SCAM_ID_A = '64349037924';
 const SCAM_ID_B = '10987654321';
 const SCAM_ID_C = '55566677788';
 
-const SCAM_URL_A1 = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4M';
-const SCAM_URL_A2 = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4N';
+const SCAM_URL_A1 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
+const SCAM_URL_A2 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4N';
 const SCAM_URL_B1 = 'https://www.threads.com/@user.b/post/DeF456';
 
 // 超過 40 字的證據片段:連結文字要截到 40 字加刪節號，title 留完整內容。
 const SCAM_SNIPPET_LONG =
-  '加我賴：vg475 帶你抓黑馬股，不報明牌、不收費、不代操，穩賺獲利分享給有緣人，今晚八點開盤前最後名額';
+  '加我賴：ex01abc 聊黑馬股，不報明牌、不收費、不代操，合成範例句，只為湊過四十字的截斷門檻';
 // 不足 40 字的片段:沒有被截斷，不該硬掛刪節號。
-const SCAM_SNIPPET_SHORT = '賴：vg475 黑馬股';
+const SCAM_SNIPPET_SHORT = '賴：ex01abc 黑馬股';
 
 // 「加入於」用日期(YYYY-MM-DD)，比照裝置列的 formatDateOnly。這裡照同一
 // 套算式在測試端重算，斷言不綁測試機的時區。
@@ -5932,8 +5932,8 @@ function scamBlocklistFixture(patch) {
     version: 1,
     entries: {
       [SCAM_ID_A]: {
-        handle: 'dakkaknight',
-        displayName: 'Dakka Knight',
+        handle: 'example_author',
+        displayName: 'Example Author',
         evidence: [
           { postUrl: SCAM_URL_A1, snippet: SCAM_SNIPPET_LONG, at: SCAM_NOW - SCAM_HOUR },
           { postUrl: SCAM_URL_A2, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 2 * SCAM_HOUR },
@@ -5950,7 +5950,7 @@ function scamBlocklistFixture(patch) {
         source: 'auto',
       },
     },
-    handleIndex: { dakkaknight: SCAM_ID_A, 'user.b': SCAM_ID_B },
+    handleIndex: { example_author: SCAM_ID_A, 'user.b': SCAM_ID_B },
     allowlist: {},
   };
   return Object.assign(list, patch || {});
@@ -6099,8 +6099,8 @@ test('黑名單卡:兩位作者依 addedAt 降冪各畫一列，第一行 displa
   );
 
   const textA = joinedText(rows[0]);
-  assert.ok(textA.includes('Dakka Knight'), '有顯示名時第一行應顯示 displayName');
-  assert.ok(textA.includes('@dakkaknight'), '第一行同時顯示 @handle');
+  assert.ok(textA.includes('Example Author'), '有顯示名時第一行應顯示 displayName');
+  assert.ok(textA.includes('@example_author'), '第一行同時顯示 @handle');
   assert.ok(
     textA.includes(i18n.fmt('zh', 'opScamAddedOn', { d: scamDateOnly(SCAM_NOW - SCAM_HOUR) })),
     '第二行應是「加入於 <日期>」(opScamAddedOn)'
@@ -6160,7 +6160,7 @@ test('黑名單卡:每筆證據一個 <a>，href/target/rel 正確、文字截�
 // '<b>' 會被解析成標籤(畫面上看不到角括號，且開了注入的門);走 textContent
 // 則原樣顯示。這裡以「角括號逐字出現在文字裡」當縱深證據。
 test('黑名單卡:displayName 含 <b> 時以純文字呈現(createElement/textContent，不得走 innerHTML)', async () => {
-  const RAW_NAME = 'Dakka <b>Knight</b>';
+  const RAW_NAME = 'Example <b>Author</b>';
   const list = scamBlocklistFixture();
   list.entries[SCAM_ID_A].displayName = RAW_NAME;
   const ctx = makeScamCtx({ blocklist: list });
@@ -6190,7 +6190,7 @@ test('黑名單卡:解除鈕為 #i-circle-minus 圖示鈕，點下先開確認�
   assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '解除應先開確認框，不直接送出');
   assert.equal(
     ctx.doc.ids.confirmTitleText.textContent,
-    '解除「Dakka Knight」的黑名單？',
+    '解除「Example Author」的黑名單？',
     '確認框標題帶作者名(opScamRemoveTitle)'
   );
   assert.equal(

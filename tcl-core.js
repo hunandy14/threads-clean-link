@@ -2,13 +2,17 @@
 // 環境(比照 i18n.js):
 //   - service worker:background.js 以 importScripts('tcl-core.js') 載入(全域 self)
 //   - 擴充功能頁面:popup.html / options.html 以 <script src> 載入(全域 window)
+//   - content script:manifest 的 content_scripts 於 document_idle 載入，排在
+//     i18n.js 之後、post-icon.js / scam-guard.js 之前(ISOLATED world 的全域 window)
 //   - Node 測試:CommonJS require，或 vm sandbox 直接執行原始碼(全域 this)
 //
 // 抽取動機:sanitize 與網址樣式原本在 background.js(寫入側)與 options.js
 // (讀取/匯入側)各養一份鏡像，五版設定漂移一處即分裂。此檔是全 repo 對
-// 「合法網址長什麼樣」「欄位怎麼消毒」的單一權威。**只給 SW + 擴充頁共用，
-// 不動 content scripts,MAIN world 永不共用**(bridge.js 是 content script,
-// 範圍外，自帶 SETTINGS_DEFAULTS)。
+// 「合法網址長什麼樣」「欄位怎麼消毒」「詐騙話術怎麼判」的單一權威。全檔
+// 為純函式、無副作用(不碰 chrome.*,不碰 DOM),因此 SW、擴充頁與 content
+// script 三方共用。**另外兩組 content_scripts 不載入本檔**
+// (clipboard-guard.js 在 MAIN world;bridge.js 自成一個 document_start 條
+// 目，自帶 SETTINGS_DEFAULTS)。
 (function (root) {
   'use strict';
 
@@ -855,7 +859,7 @@
   // 【負向邊界】「賴」前面接 信/依/無/仰/倚 時整個詞是信賴/依賴/無賴/仰賴/
   // 倚賴，後面的冒號是正常標點(「我信賴：Apple 的品質」)，不是 LINE 帳號引
   // 導。這類句子常同時帶投資詞，光靠 PITCH 二次確認擋不住，錨點本身必須排
-  // 除。排除清單只列這五個字——真實詐騙句「我的賴：vg475」前面也是中文，擴
+  // 除。排除清單只列這五個字——詐騙招攬句「我的賴：ex01abc」前面也是中文，擴
   // 成「前面是中文就不算」會整組漏抓。
   var SCAM_ACCOUNT_ANCHOR_RES = [
     /(?<![信依無仰倚])[賴籟]\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,

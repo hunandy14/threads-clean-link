@@ -594,7 +594,7 @@ if (syncEngine) {
 }
 
 // ------------------------------------------------------------
-// 投資詐騙黑名單（tmp/scam-thread-feasibility.md §14）
+// 投資詐騙黑名單（內部可行性評估 §14，見 docs/scam-guard.md）
 // ------------------------------------------------------------
 //
 // storage.local 的 scamBlocklist 只有 background 寫得到：content script 與
@@ -614,7 +614,7 @@ const SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
 
 // handle 形狀。字元類比照 TCLCore 的嚴格貼文網址樣式裡的 handle 段：handle
 // 既是 handleIndex 的鍵、也直接顯示在黑名單卡片上。只驗「非空字串」擋不住
-// `@dakkaknight` 這種帶 @ 的原始文字（入庫後反查表的鍵就與 post-icon 的查表
+// `@example_author` 這種帶 @ 的原始文字（入庫後反查表的鍵就與 post-icon 的查表
 // 值對不上，河道標記形同失效），更擋不住夾帶控制字元的假帳號。
 const SCAM_HANDLE_PATTERN = /^[A-Za-z0-9._]{1,80}$/;
 

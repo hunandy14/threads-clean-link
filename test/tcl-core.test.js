@@ -665,8 +665,8 @@ test.describe('裝置歸屬:defaultDeviceName 與 randomUuid', () => {
 
 // ---- 詐騙串文偵測(scam guard)的純函式契約 ----
 //
-// 對應 tmp/scam-thread-feasibility.md 的 v1 實作計畫:詐騙帳號用中文文字引導
-// 到 LINE(「賴：vg475」「加我的賴」「lin.ee/」)，domain 規則命中率 0，判定
+// 對應內部可行性評估(docs/scam-guard.md)的 v1 實作計畫:詐騙帳號用中文文字引導
+// 到 LINE(「賴：ex01abc」「加我的賴」「lin.ee/」)，domain 規則命中率 0，判定
 // 只能靠「LINE 錨點 + 投資話術」的二次確認。此區塊釘住五支純函式:
 //   - detectScamPitch:錨點/話術/片段的命中契約，**負例是本體**(賴床、賴皮、
 //     信賴、賴清德、無賴不得誤殺)
@@ -677,22 +677,22 @@ test.describe('裝置歸屬:defaultDeviceName 與 randomUuid', () => {
 // 【紀律】每個 test 先斷言函式掛上 TCLCore 匯出——未實作時吐可讀的斷言失敗，
 // 而不是 TypeError crash 把整支測試檔打斷。
 
-const SCAM_POST_URL = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4M';
+const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
 
-// 範例第六篇原句(含前文的三個話術詞)——真實資料，不得只靠合成字串。
+// 招攬篇的句型範例(含前文的三個話術詞)——合成字串，句型比照內部可行性評估。
 const SCAM_POST_TEXT = [
   '我自己做波段黑馬股很多年，這裡只分享操作心得。',
   '不報明牌、不收費、不代操，純粹交流。',
-  '有興趣加我 賴：vg475，說「yy」我就知道是你',
+  '有興趣加我 賴：ex01abc，說「yy」我就知道是你',
 ].join('\n');
 
 test.describe('詐騙偵測:detectScamPitch', () => {
-  test('detectScamPitch:範例第六篇原句——錨點 + 話術命中，回傳四欄形狀', () => {
+  test('detectScamPitch:招攬篇句型——錨點 + 話術命中，回傳四欄形狀', () => {
     assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
     const res = C.detectScamPitch(SCAM_POST_TEXT);
-    assert.equal(res.hit, true, '真實詐騙貼文必須命中');
+    assert.equal(res.hit, true, '詐騙招攬句型必須命中');
     assert.equal(typeof res.anchorMatch, 'string', 'anchorMatch 是命中的錨點原文');
-    assert.equal(res.anchorMatch.includes('vg475'), true, '錨點應涵蓋帳號本體');
+    assert.equal(res.anchorMatch.includes('ex01abc'), true, '錨點應涵蓋帳號本體');
     assert.equal(Array.isArray(res.pitchMatches), true, 'pitchMatches 是陣列');
     assert.equal(res.pitchMatches.includes('黑馬股'), true);
     assert.equal(res.pitchMatches.length >= 1, true, '命中規則要求 PITCH >= 1');
@@ -704,7 +704,7 @@ test.describe('詐騙偵測:detectScamPitch', () => {
   test('detectScamPitch:ANCHOR 四種形式 × 話術 → 命中', () => {
     assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
     const positives = [
-      '波段黑馬股分享，賴：vg475',
+      '波段黑馬股分享，賴：ex01abc',
       '想學就找我，賴: abc_123，帶單實績公開',
       '籟：xyz789 教你抓飆股',
       'LINE ID：wolf_88 免費教學抓黑馬股',
@@ -766,8 +766,8 @@ test.describe('詐騙偵測:detectScamPitch', () => {
       '黑馬股、報明牌、明牌、代操、帶單、飆股、免費教學、不收費、穩賺、獲利分享、內線，這些字眼都要小心。';
     assert.equal(C.detectScamPitch(pitchOnly).hit, false, '只有話術不成立');
     // 錨點有、投資話術零:純交友不是詐騙偵測的範圍。
-    assert.equal(C.detectScamPitch('加我賴 vg475 聊天，晚上一起打球').hit, false, '只有錨點不成立');
-    assert.equal(C.detectScamPitch('賴：vg475，明天見').hit, false, '只有錨點不成立');
+    assert.equal(C.detectScamPitch('加我賴 ex01abc 聊天，晚上一起打球').hit, false, '只有錨點不成立');
+    assert.equal(C.detectScamPitch('賴：ex01abc，明天見').hit, false, '只有錨點不成立');
     assert.equal(C.detectScamPitch('LINE ID：wolf_88，有空聊').hit, false, '只有錨點不成立');
   });
 
@@ -789,11 +789,11 @@ test.describe('詐騙偵測:detectScamPitch', () => {
 
   test('detectScamPitch:snippet 取錨點前後各 40 字、總長 <= 120', () => {
     assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
-    const text = '黑馬股' + 'A'.repeat(100) + '賴：vg475' + 'B'.repeat(100);
+    const text = '黑馬股' + 'A'.repeat(100) + '賴：ex01abc' + 'B'.repeat(100);
     const res = C.detectScamPitch(text);
     assert.equal(res.hit, true);
     assert.equal(res.snippet.length <= 120, true, 'snippet 總長上限 120，實得 ' + res.snippet.length);
-    assert.equal(res.snippet.includes('vg475'), true, 'snippet 必須含錨點本體');
+    assert.equal(res.snippet.includes('ex01abc'), true, 'snippet 必須含錨點本體');
     assert.equal(res.snippet.includes('A'.repeat(41)), false, '錨點前最多 40 字');
     assert.equal(res.snippet.includes('B'.repeat(41)), false, '錨點後最多 40 字');
     assert.equal(res.snippet.includes('黑馬股'), false, '超過 40 字的前文不進 snippet');
@@ -803,7 +803,7 @@ test.describe('詐騙偵測:detectScamPitch', () => {
   // RLO 這類偽裝字元原封帶進黑名單卡片。
   test('detectScamPitch:snippet 剝除控制字元與 bidi', () => {
     assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
-    const text = '黑馬股介紹' + NUL1 + '加我 賴' + RLO + '：vg475' + C1 + LRM + ' 謝謝';
+    const text = '黑馬股介紹' + NUL1 + '加我 賴' + RLO + '：ex01abc' + C1 + LRM + ' 謝謝';
     const res = C.detectScamPitch(text);
     assert.equal(res.hit, true, '控制字元不得讓錨點失效');
     for (const ch of [NUL1, C1, ALM, LRM, RLM, LRE, PDF, RLO, LRI, PDI]) {
@@ -825,7 +825,7 @@ test.describe('詐騙偵測:detectScamPitch', () => {
 test.describe('詐騙偵測:isPostDetailPath', () => {
   test('isPostDetailPath:/@handle/post/CODE 為真', () => {
     assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
-    assert.equal(C.isPostDetailPath('/@dakkaknight/post/DdbYCAfgV4M'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M'), true);
     assert.equal(C.isPostDetailPath('/@user_c/post/GhI789'), true);
     assert.equal(
       C.isPostDetailPath('/@da.fu.coding/post/A-b_C1'),
@@ -839,16 +839,16 @@ test.describe('詐騙偵測:isPostDetailPath', () => {
     const negatives = [
       '/',
       '',
-      '/@dakkaknight',
-      '/@dakkaknight/',
-      '/@dakkaknight/replies',
+      '/@example_author',
+      '/@example_author/',
+      '/@example_author/replies',
       '/search',
       '/search/?q=abc',
       '/activity',
       '/post/DdbYCAfgV4M',
-      '/@dakkaknight/post/',
-      '/@dakkaknight/posts/DdbYCAfgV4M',
-      '/@dakkaknight/post/DdbYCAfgV4M/extra',
+      '/@example_author/post/',
+      '/@example_author/posts/DdbYCAfgV4M',
+      '/@example_author/post/DdbYCAfgV4M/extra',
       '/@bad handle/post/DdbYCAfgV4M',
     ];
     for (const p of negatives) {
@@ -863,9 +863,9 @@ test.describe('詐騙偵測:isPostDetailPath', () => {
   // 頁」)，沿用同一套寬鬆慣例，而非寫入側 isCleanPostUrl 的嚴格錨定。
   test('isPostDetailPath:尾斜線與查詢字串的變體依讀取側慣例容忍', () => {
     assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
-    assert.equal(C.isPostDetailPath('/@dakkaknight/post/DdbYCAfgV4M/'), true);
-    assert.equal(C.isPostDetailPath('/@dakkaknight/post/DdbYCAfgV4M?xmt=abc'), true);
-    assert.equal(C.isPostDetailPath('/@dakkaknight/post/DdbYCAfgV4M/?igsh=x#frag'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M/'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M?xmt=abc'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M/?igsh=x#frag'), true);
   });
 
   test('isPostDetailPath:非字串一律 false，不拋錯', () => {
@@ -892,9 +892,9 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
       version: 99,
       entries: {
         '111': {
-          handle: 'DakkaKnight',
-          displayName: 'Dakka',
-          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：vg475', at: 5 }],
+          handle: 'Example_Author',
+          displayName: 'Example',
+          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：ex01abc', at: 5 }],
           addedAt: 5,
           source: 'auto',
         },
@@ -919,13 +919,13 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
     assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
     const out = C.normalizeScamBlocklist({
       entries: {
-        '111': { handle: 'DakkaKnight', evidence: [], addedAt: 1 },
+        '111': { handle: 'Example_Author', evidence: [], addedAt: 1 },
         '444': { handle: 'Foo', evidence: [], addedAt: 2 },
         '555': { evidence: [], addedAt: 3 },
       },
-      handleIndex: { staleghost: '999', dakkaknight: 'wrong-id' },
+      handleIndex: { staleghost: '999', example_author: 'wrong-id' },
     });
-    assert.deepEqual(out.handleIndex, { dakkaknight: '111', foo: '444' }, 'handleIndex 只能由 entries 重建');
+    assert.deepEqual(out.handleIndex, { example_author: '111', foo: '444' }, 'handleIndex 只能由 entries 重建');
     assert.equal(
       Object.prototype.hasOwnProperty.call(out.handleIndex, 'undefined'),
       false,
@@ -947,7 +947,7 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
     assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
     const out = C.normalizeScamBlocklist({
       allowlist: {
-        '111': { at: 1700000000000, handle: 'DakkaKnight' },
+        '111': { at: 1700000000000, handle: 'Example_Author' },
         '222': true,
         '333': { at: 'nope', handle: 42 },
         '444': { at: 1700000000001 },
@@ -955,13 +955,13 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
         '666': 'yes',
         '777': null,
         '888': 0,
-        '999': ['DakkaKnight'],
+        '999': ['Example_Author'],
       },
     });
 
     assert.deepEqual(
       out.allowlist['111'],
-      { at: 1700000000000, handle: 'DakkaKnight' },
+      { at: 1700000000000, handle: 'Example_Author' },
       '合格的 { at, handle } 原樣保留，handle 維持原始大小寫'
     );
     assert.deepEqual(out.allowlist['222'], { at: 0, handle: '' }, '舊值 true 升成空解除紀錄 { at:0, handle }');
@@ -1087,22 +1087,22 @@ test.describe('詐騙偵測:makeBlocklistEntry 與 mergeBlocklistEvidence', () =
     assert.equal(typeof C.makeBlocklistEntry, 'function', 'makeBlocklistEntry 應掛在 TCLCore 匯出');
     const entry = C.makeBlocklistEntry({
       userId: '1234567890',
-      handle: 'DakkaKnight',
-      displayName: 'Dakka Knight',
+      handle: 'Example_Author',
+      displayName: 'Example Author',
       postUrl: SCAM_POST_URL,
-      snippet: '加我 賴：vg475',
+      snippet: '加我 賴：ex01abc',
       at: 1700000000000,
       source: 'auto',
     });
-    assert.equal(entry.handle, 'DakkaKnight', 'handle 保留原始大小寫(小寫化是 handleIndex 的事)');
-    assert.equal(entry.displayName, 'Dakka Knight');
+    assert.equal(entry.handle, 'Example_Author', 'handle 保留原始大小寫(小寫化是 handleIndex 的事)');
+    assert.equal(entry.displayName, 'Example Author');
     assert.equal(entry.addedAt, 1700000000000);
     assert.equal(entry.source, 'auto');
     assert.equal(Array.isArray(entry.evidence), true);
     assert.equal(entry.evidence.length, 1);
     assert.deepEqual(entry.evidence[0], {
       postUrl: SCAM_POST_URL,
-      snippet: '加我 賴：vg475',
+      snippet: '加我 賴：ex01abc',
       at: 1700000000000,
     });
   });
@@ -1197,9 +1197,9 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
       assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤報');
     }
     // 對照組:排除清單只針對 信/依/無/仰，不得擴成「前面是中文就不算錨點」
-    // ——真實詐騙句「我的賴：vg475」正是這個形狀。
-    assert.equal(C.detectScamPitch('我的賴：vg475，專攻波段黑馬股').hit, true, '排除清單不得過寬');
-    assert.equal(C.detectScamPitch('找我聊 賴：vg475，有黑馬股').hit, true, '排除清單不得過寬');
+    // ——詐騙招攬句「我的賴：ex01abc」正是這個形狀。
+    assert.equal(C.detectScamPitch('我的賴：ex01abc，專攻波段黑馬股').hit, true, '排除清單不得過寬');
+    assert.equal(C.detectScamPitch('找我聊 賴：ex01abc，有黑馬股').hit, true, '排除清單不得過寬');
   });
 
   // 【PM 裁決】話術表回歸規格原文:刪除「內線」。內線在中文是體育(內線傳
@@ -1242,7 +1242,7 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     assert.equal(C.detectScamPitch('瑜珈課程不收費，加入我的LINE').hit, false, '不收費單獨不成立');
     // 弱詞 + 一個強詞 → 成立。
     assert.equal(C.detectScamPitch('黑馬股免費教學，加入我的LINE').hit, true, '弱詞配強詞應命中');
-    assert.equal(C.detectScamPitch('代操不收費，賴：vg475').hit, true, '弱詞配強詞應命中');
+    assert.equal(C.detectScamPitch('代操不收費，賴：ex01abc').hit, true, '弱詞配強詞應命中');
     // 範例第六篇原句:「不報明牌、不收費、不代操」含兩個強詞，降權後仍命中。
     assert.equal(C.detectScamPitch(SCAM_POST_TEXT).hit, true, '真實詐騙貼文不得因降權漏抓');
   });
@@ -1251,16 +1251,16 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
   // anchorMatch／snippet 必須保留原文全形——證據卡要讓使用者一眼看出對方用
   // 了規避字元，不能偷偷正規化成半形。
   test('detectScamPitch:全形英數帳號照樣是錨點，原文全形保留', () => {
-    const text = '賴：ｖｇ４７５ 有黑馬股';
+    const text = '賴：ｅｘ０１ａｂｃ 有黑馬股';
     const res = C.detectScamPitch(text);
     assert.equal(res.hit, true, '全形帳號應命中');
     assert.equal(
-      res.anchorMatch.includes('ｖｇ４７５') || res.snippet.includes('ｖｇ４７５'),
+      res.anchorMatch.includes('ｅｘ０１ａｂｃ') || res.snippet.includes('ｅｘ０１ａｂｃ'),
       true,
       'anchorMatch 或 snippet 必須保留原文全形'
     );
     // 3 位的門檻對全形一視同仁:2 位仍不算帳號。
-    assert.equal(C.detectScamPitch('賴：ｖｇ 有黑馬股').hit, false, '全形也要滿 3 位');
+    assert.equal(C.detectScamPitch('賴：ｅｘ 有黑馬股').hit, false, '全形也要滿 3 位');
   });
 
   // 2MB 軟預算是 chrome.storage 的位元組配額,不是 JS 字元數。snippet 幾乎必
@@ -1316,18 +1316,18 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
   test('makeBlocklistEntry:displayName 摺疊空白成單行', () => {
     const entry = C.makeBlocklistEntry({
       userId: '1234567890',
-      handle: 'DakkaKnight',
-      displayName: '  Dakka\n\tKnight \n 投資 ',
+      handle: 'Example_Author',
+      displayName: '  Example\n\tAuthor \n 投資 ',
       postUrl: SCAM_POST_URL,
-      snippet: '賴：vg475',
+      snippet: '賴：ex01abc',
       at: 1700000000000,
       source: 'auto',
     });
-    assert.equal(entry.displayName, 'Dakka Knight 投資', '連續空白摺成單一半形空格並去頭尾');
+    assert.equal(entry.displayName, 'Example Author 投資', '連續空白摺成單一半形空格並去頭尾');
     assert.equal(/[\r\n\t]/.test(entry.displayName), false, 'displayName 不得留下換行或 tab');
     const dirtyHandle = C.makeBlocklistEntry({
       userId: '1',
-      handle: 'Dakka\tKnight\n',
+      handle: 'Example\tAuthor\n',
       postUrl: SCAM_POST_URL,
       snippet: 's',
       at: 1,
@@ -1387,18 +1387,18 @@ test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
       version: 1,
       entries: {
         '111': {
-          handle: 'DakkaKnight',
-          displayName: 'Dakka',
-          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：vg475', at: 5 }],
+          handle: 'Example_Author',
+          displayName: 'Example',
+          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：ex01abc', at: 5 }],
           addedAt: 5,
           source: 'auto',
         },
       },
-      handleIndex: { dakkaknight: '111' },
+      handleIndex: { example_author: '111' },
       allowlist: makeAllowlist(5001),
     });
 
     assert.ok(out.entries['111'], '解除名單爆量不得連帶淘汰黑名單條目');
-    assert.equal(out.handleIndex['dakkaknight'], '111');
+    assert.equal(out.handleIndex['example_author'], '111');
   });
 });

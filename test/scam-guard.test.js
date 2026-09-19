@@ -98,7 +98,7 @@ const POSTS = FIXTURE.posts;
 const AUTHOR = POSTS[0].username;
 // fixture 只留判定必要欄位，不含顯示名（顯示名非本案比對主鍵，且屬可省
 // 略的個資），SSR 測試用的 full_name 在此合成。
-const DISPLAY_NAME = 'Dakka Knight';
+const DISPLAY_NAME = 'Example Author';
 const CONTAINER_SELECTOR = 'div[data-pressable-container]';
 
 // ============================================================
@@ -749,7 +749,7 @@ test('extractThreadFromDom：結果依 position 升冪，不跟著 DOM 順序走
 test('extractThreadFromDom：authorHandle 比對不分大小寫，帶不帶 @ 前綴都能對上', () => {
   const extractThreadFromDom = loadFn('extractThreadFromDom');
 
-  ['DakkaKnight', 'DAKKAKNIGHT', `@${AUTHOR}`, `@DakkaKnight`].forEach((handle) => {
+  ['Example_Author', 'EXAMPLE_AUTHOR', `@${AUTHOR}`, `@Example_Author`].forEach((handle) => {
     assert.equal(
       extractThreadFromDom(createThreadDom(), handle).length,
       6,
@@ -1016,8 +1016,8 @@ const FIRST_HIT_TOAST = I18N.t('zh', 'scamFirstHitToast');
 
 // fixture 的招攬篇只留了話術詞、沒留 LINE 錨點（detectScamPitch 對原始
 // fixture 全文回 hit:false）。掃描流程要走到「命中」這條路，末篇必須帶錨
-// 點——這裡補回可行性報告記載的原句形狀。
-const SCAM_TAIL = '\n有興趣的加我 賴：vg475，我再把整理好的筆記傳給你。';
+// 點——這裡補上一行合成的招攬句。
+const SCAM_TAIL = '\n有興趣的加我 賴：ex01abc，我再把整理好的筆記傳給你。';
 
 const MAIN_POSTS = POSTS.map((post, index) =>
   index === POSTS.length - 1
@@ -1654,7 +1654,7 @@ test('樣式：注入一次 <style id="tcl-scam-guard-style">，內含 .tcl-scam
 //
 // 實機的一篇貼文常被拆成多個各自獨立的葉 [dir="auto"] span（段落、短句、
 // 結尾的一行招攬），「取最長的那一個」只會拿到最長的段落，招攬那一行
-// （「有興趣的加我 賴：vg475」）反而是最短的，錨點因此整個掉了——串文判
+// （「有興趣的加我 賴：ex01abc」）反而是最短的，錨點因此整個掉了——串文判
 // 定的門檻是「錨點 + 強詞」，少了錨點必定漏判。
 //
 // 同一個容器內還有兩類 [dir="auto"] 不是本文，必須排除：
@@ -1664,7 +1664,7 @@ test('樣式：注入一次 <style id="tcl-scam-guard-style">，內含 .tcl-scam
 const F1_LINES = [
   '在台積電蹲了十四年的設備，離職之後才發現，真正難的不是技術，而是每天被排班表切碎的生活。',
   '不報明牌、不收費、不代操，就是一個從無塵室走出來的設備工程師，跟你分享怎麼找波段黑馬股。',
-  '有興趣的加我 賴：vg475',
+  '有興趣的加我 賴：ex01abc',
 ];
 const F1_TEXT = F1_LINES.join('\n');
 const F1_COUNTS = ['92', '3,440', '12', '48'];
@@ -1736,7 +1736,7 @@ test('F1：容器本文由多個獨立 [dir="auto"] span 組成時，以 \\n 串
     F1_TEXT,
     '三段本文都要收，取最長的那一段會把招攬的短行丟掉'
   );
-  assert.ok(items[0].text.includes('賴：vg475'), '錨點所在的短行必須留在本文裡');
+  assert.ok(items[0].text.includes('賴：ex01abc'), '錨點所在的短行必須留在本文裡');
 });
 
 test('F1：作者名、時間戳記與互動列計數都不得混進本文', () => {
@@ -1772,7 +1772,7 @@ test('F1 端到端：多行本文的詳情頁照樣掃到錨點，命中、送 s
     MULTILINE_THREAD_TEXT,
     '六篇（末篇三段）串起來的全文'
   );
-  assert.ok(env.detectCalls[0].includes('賴：vg475'), '錨點必須進得了判定的輸入');
+  assert.ok(env.detectCalls[0].includes('賴：ex01abc'), '錨點必須進得了判定的輸入');
   assert.equal(env.hits().length, 1, '多行本文照樣要命中並通報');
   assert.equal(env.tags().length, 1, '多行本文照樣要掛警示');
 });

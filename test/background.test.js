@@ -4156,7 +4156,7 @@ test('B6 遷移:seen 事件帶髒 deviceId（陣列長度不變）經 migrateHis
 
 // ============================================================
 // 車道 L4：詐騙黑名單的 storage 寫入、三個訊息 handler 與匿名 GET 取 id 備援
-// （tmp/scam-thread-feasibility.md §14 協議、v1 計畫 §4／§6）
+// （內部可行性評估 §14 協議、v1 計畫 §4／§6，見 docs/scam-guard.md）
 // ============================================================
 //
 // 沿用上方裝置測試的沙箱（loadBackgroundForDevices）：它的 storage 替身有
@@ -4167,15 +4167,15 @@ test('B6 遷移:seen 事件帶髒 deviceId（陣列長度不變）經 migrateHis
 const SCAM_KEY = 'scamBlocklist';
 const SCAM_ENABLED_KEY = 'scamGuardEnabled';
 
-// 範例來自可行性報告：@dakkaknight 的六篇自回覆串，末篇留 LINE 帳號。
+// 範例比照內部可行性評估：@example_author 的六篇自回覆串，末篇留 LINE 帳號。
 const SCAM_USER_ID = '64349037924';
-const SCAM_HANDLE = 'dakkaknight';
-const SCAM_DISPLAY_NAME = 'Dakka Knight';
-const SCAM_POST_URL = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4M';
-const SCAM_POST_URL_2 = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4N';
-const SCAM_POST_URL_3 = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4P';
-const SCAM_POST_URL_4 = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4Q';
-const SCAM_SNIPPET = '不報明牌、不收費、不代操，加我 賴：vg475 聊黑馬股';
+const SCAM_HANDLE = 'example_author';
+const SCAM_DISPLAY_NAME = 'Example Author';
+const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
+const SCAM_POST_URL_2 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4N';
+const SCAM_POST_URL_3 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4P';
+const SCAM_POST_URL_4 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4Q';
+const SCAM_SNIPPET = '不報明牌、不收費、不代操，加我 賴：ex01abc 聊黑馬股';
 const SCAM_AT = 1700000100000;
 
 // content script 送來的 sender：threads 分頁，sender.url 是它所在的網頁網址。
@@ -4188,8 +4188,8 @@ const SCAM_TAB_SENDER = {
 // 同樣是本擴充的 content script，但分頁不在 threads——不得受理。
 const SCAM_OTHER_TAB_SENDER = {
   id: EXTENSION_ID,
-  tab: { id: 78, url: 'https://example.com/@dakkaknight/post/DdbYCAfgV4M' },
-  url: 'https://example.com/@dakkaknight/post/DdbYCAfgV4M',
+  tab: { id: 78, url: 'https://example.com/@example_author/post/DdbYCAfgV4M' },
+  url: 'https://example.com/@example_author/post/DdbYCAfgV4M',
 };
 
 function scamHit(overrides) {
@@ -4201,7 +4201,7 @@ function scamHit(overrides) {
       displayName: SCAM_DISPLAY_NAME,
       postUrl: SCAM_POST_URL,
       snippet: SCAM_SNIPPET,
-      anchorMatch: '賴：vg475',
+      anchorMatch: '賴：ex01abc',
       pitchMatches: ['黑馬股', '報明牌'],
       at: SCAM_AT,
     },
@@ -4333,12 +4333,12 @@ test('L4 scam.hit:合法命中建立條目——handle／displayName／evidence�
 test('L4 scam.hit:handle 大小寫混寫時 handleIndex 一律以小寫為鍵', async () => {
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
 
-  await bg.send(scamHit({ handle: 'DakkaKnight' }), SCAM_TAB_SENDER);
+  await bg.send(scamHit({ handle: 'Example_Author' }), SCAM_TAB_SENDER);
   await settle(400);
 
   const list = scamList(bg);
-  assert.equal(list.handleIndex['dakkaknight'], SCAM_USER_ID, '反查表的鍵是小寫 handle');
-  assert.equal(scamEntry(bg).handle, 'DakkaKnight', '卡片上顯示的 handle 維持原樣大小寫');
+  assert.equal(list.handleIndex['example_author'], SCAM_USER_ID, '反查表的鍵是小寫 handle');
+  assert.equal(scamEntry(bg).handle, 'Example_Author', '卡片上顯示的 handle 維持原樣大小寫');
 });
 
 test('L4 scam.hit:同作者第二篇只補證據——added:false，evidence 併為兩筆且 addedAt 不往後跳', async () => {
@@ -4431,8 +4431,8 @@ test('L4 scam.hit:scamGuardEnabled 缺席視為開啟（未設定不等於關閉
 const SCAM_BAD_PAYLOADS = [
   ['handle 非字串', { handle: 12345 }],
   ['handle 缺席', { handle: undefined }],
-  ['postUrl 非 threads 貼文網址', { postUrl: 'https://example.com/@dakkaknight/post/DdbYCAfgV4M' }],
-  ['postUrl 只是個人頁不是貼文', { postUrl: 'https://www.threads.com/@dakkaknight' }],
+  ['postUrl 非 threads 貼文網址', { postUrl: 'https://example.com/@example_author/post/DdbYCAfgV4M' }],
+  ['postUrl 只是個人頁不是貼文', { postUrl: 'https://www.threads.com/@example_author' }],
   ['snippet 超過 120 字', { snippet: '賴'.repeat(121) }],
   ['userId 非數字字串', { userId: 'abcdef' }],
   ['userId 為空字串', { userId: '' }],
@@ -4849,7 +4849,7 @@ const SCAM_DAY_MS = 24 * 60 * 60 * 1000;
 
 // 限流測試用的一批不同貼文。post code 的字元類同 STRICT_POST_URL_PATTERN。
 function scamRatePostUrl(index) {
-  return 'https://www.threads.com/@dakkaknight/post/RateLimit' + index;
+  return 'https://www.threads.com/@example_author/post/RateLimit' + index;
 }
 
 // 讀節流表。還沒落地時回 undefined，由呼叫端自行斷言。
@@ -4883,11 +4883,11 @@ function makeScamClock(start) {
 // 的假帳號。形狀比照 tcl-core 的 STRICT_POST_URL_PATTERN handle 段。
 
 const SCAM_BAD_HANDLES = [
-  ['@ 前綴', '@dakkaknight'],
-  ['含空白', 'dakka knight'],
-  ['含連字號', 'dakka-knight'],
-  ['含斜線', 'dakka/knight'],
-  ['含控制字元', 'dakka' + String.fromCodePoint(0x0001) + 'knight'],
+  ['@ 前綴', '@example_author'],
+  ['含空白', 'example author'],
+  ['含連字號', 'example-author'],
+  ['含斜線', 'example/author'],
+  ['含控制字元', 'example' + String.fromCodePoint(0x0001) + 'author'],
   ['非 ASCII', '賴哥投資'],
   ['超過 80 字', 'a'.repeat(81)],
 ];
@@ -4905,7 +4905,7 @@ test('L4 審查:handle 形狀只准 [A-Za-z0-9._]{1,80}——@ 前綴與控制�
 });
 
 test('L4 審查:handle 形狀對照組——底線與句點合法，恰 80 字放行', async () => {
-  for (const good of ['dakka_knight.1', 'a'.repeat(80), 'A1']) {
+  for (const good of ['example_author.1', 'a'.repeat(80), 'A1']) {
     const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
     const res = await bg.send(scamHit({ handle: good }), SCAM_TAB_SENDER);
     await settle(400);
@@ -4955,18 +4955,18 @@ test('L4 審查:備援回應完全沒有 username 欄位時回 no_user_id', asyn
 });
 
 test('L4 審查:username 大小寫與 handle 不同仍算同一人（比對不分大小寫）', async () => {
-  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml('999', 'DakkaKnight') });
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml('999', 'Example_Author') });
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null, handle: 'dakkaknight' }), SCAM_TAB_SENDER);
+  const res = await bg.send(scamHit({ userId: null, handle: 'example_author' }), SCAM_TAB_SENDER);
   await settle(600);
 
   const response = deep(res.response);
   assert.equal(response && response.ok, true, 'Threads 的 handle 不分大小寫，大小寫差異不得判成兩個人');
-  assert.equal(scamEntry(bg, '999').handle, 'dakkaknight', '以回應的 post_author_id 當 entries 的鍵');
+  assert.equal(scamEntry(bg, '999').handle, 'example_author', '以回應的 post_author_id 當 entries 的鍵');
 });
 
 // ---- 匿名備援的全域速率上限 ----
@@ -5155,9 +5155,9 @@ test('L4 審查:備援請求帶 signal（逾時可中斷，不讓 SW 掛在慢�
 // （https://www.threads.com@evil.example/）——後者的實際主機是 evil.example。
 
 const SCAM_LOOKALIKE_URLS = [
-  ['子網域偽裝', 'https://www.threads.com.evil.example/@dakkaknight/post/DdbYCAfgV4M'],
+  ['子網域偽裝', 'https://www.threads.com.evil.example/@example_author/post/DdbYCAfgV4M'],
   ['userinfo 偽裝', 'https://www.threads.com@evil.example/x'],
-  ['路徑偽裝', 'https://evil.example/https://www.threads.com/@dakkaknight/post/DdbYCAfgV4M'],
+  ['路徑偽裝', 'https://evil.example/https://www.threads.com/@example_author/post/DdbYCAfgV4M'],
 ];
 
 test('L4 審查:仿冒 threads 的 sender 網址一律忽略（不得只比字串前綴）', async () => {
