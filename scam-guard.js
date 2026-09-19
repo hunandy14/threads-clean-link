@@ -795,7 +795,7 @@
             if (main) {
               // 容器可能已被 React 換成新節點，認領跟著拉回活節點：認領留
               // 在已離開文件的舊節點上，讓位就退化成比 code——同 code 的其
-              // 他可見卡（返回河道時河道層那張）會被一起誤殺。
+              // 他可見卡會被一起誤殺。
               claimedMainContainer = main;
               if (!main.querySelector('.' + TAG_CLASS)) insertTag(main);
             }
@@ -844,6 +844,12 @@
         };
 
         sendHit(payload, function (response) {
+          // 這一輪已經作廢就整個收手：往返期間本文被改寫、SPA 換到別篇都會
+          // 換一把冪等鍵、重跑判定，這則回應講的是上一輪的事。照掛的話會依
+          // 一個已被推翻的判定補上警示，還會把認領釘回這張卡，讓查表該掛的
+          // 那一顆也掛不上。
+          if (lastScan !== scanState) return;
+
           // 使用者已在選項頁解除封鎖這個作者：照樣問過 background（白名單只
           // 有它知道），但頁面上不掛警示。
           if (response && response.allowlisted) return;

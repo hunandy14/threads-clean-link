@@ -3381,9 +3381,9 @@ function loadBackgroundForDevices(opts = {}) {
     },
     // 擴充頁 → SW：送一則訊息並等回應，沒人接手時回 responded:false。
     // opts.timeoutMs：判定「沒人接手」的等待上限。預設 200ms 對替身引擎綽綽有
-    // 餘；接真 sync.js 的測試要放寬——真引擎的冷啟（loadContext 讀六個鍵、
-    // resetMirrorFields 走 writeChain、alarms 清理）在慢機器上會超過 200ms，
-    // 那時 sendResponse 還沒回來就被判成無人接手，變成偶發假紅燈。
+    // 餘；接真 sync.js 的測試、以及要走 og fetch 備援＋writeChain 的
+    // scam.hit 都要放寬——那些鏈路在慢機器或全套併跑時會超過 200ms，
+    // sendResponse 還沒回來就被判成無人接手，變成偶發假紅燈。
     send(message, sender, opts = {}) {
       return new Promise((resolve) => {
         let done = false;
@@ -3395,7 +3395,7 @@ function loadBackgroundForDevices(opts = {}) {
         onMessageListeners.slice().forEach((fn) => {
           fn(message, sender || EXT_PAGE_SENDER, (response) => finish({ responded: true, response }));
         });
-        setTimeout(() => finish({ responded: false, response: undefined }), 200);
+        setTimeout(() => finish({ responded: false, response: undefined }), opts.timeoutMs || 200);
       });
     },
   };
@@ -4185,6 +4185,12 @@ const SCAM_TAB_SENDER = {
   url: SCAM_POST_URL,
 };
 
+// 預期「有人接手」的 scam.hit 一律配這組等待上限。這條鏈路可能要走 og
+// fetch 備援、再經 writeChain 序列化落盤，bg.send 預設的 200ms 在慢機器或全
+// 套併跑時不夠，sendResponse 還沒回來就被判成無人接手，responses[i].response
+// 變成 undefined——是看機器心情的假紅燈，不是實作有問題。
+const SCAM_SEND_OPTS = { timeoutMs: 2000 };
+
 // 同樣是本擴充的 content script，但分頁不在 threads——不得受理。
 const SCAM_OTHER_TAB_SENDER = {
   id: EXTENSION_ID,
@@ -4485,7 +4491,12 @@ test('L4 scam.hit:併發兩筆經 writeChain 序列化，互不覆蓋（延遲 s
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, delayMs: 20 });
 
   const other = { userId: '10000000002', handle: 'otherscammer', postUrl: SCAM_POST_URL_2 };
-  const both = await Promise.all([bg.send(scamHit(), SCAM_TAB_SENDER), bg.send(scamHit(other), SCAM_TAB_SENDER)]);
+  // 這兩則要走 writeChain 序列化、storage 又被刻意延遲，回應比預設的 200ms
+  // 晚是常態（全套併跑時實測會被判成無人接手），等待上限跟著放寬。
+  const both = await Promise.all([
+    bg.send(scamHit(), SCAM_TAB_SENDER, SCAM_SEND_OPTS),
+    bg.send(scamHit(other), SCAM_TAB_SENDER, SCAM_SEND_OPTS),
+  ]);
   await settle(800);
 
   assert.equal(both[0].responded && both[1].responded, true, '前提：兩則都有人接手');
@@ -4987,7 +4998,9 @@ test('L4 審查:全域限流——同一分鐘內第 7 個不同 postUrl 不發�
 
   const responses = [];
   for (let i = 0; i < 7; i++) {
-    responses.push(await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER));
+    responses.push(
+      await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS)
+    );
     await settle(400);
   }
 
@@ -5013,13 +5026,13 @@ test('L4 審查:全域限流的視窗會滾動——跨過一分鐘後額度重�
   });
 
   for (let i = 0; i < 6; i++) {
-    await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER);
+    await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
     await settle(400);
   }
   assert.equal(fetchStub.calls.length, 6, '前提：額度已用滿');
 
   clock.advance(61000);
-  const res = await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(6) }), SCAM_TAB_SENDER);
+  const res = await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(6) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
   await settle(600);
 
   const response = deep(res.response);
@@ -5223,7 +5236,9 @@ test('L4 覆審:同 tick 併發 7 筆 scam.hit 時全域限流仍成立，節流
 
   const sends = [];
   for (let i = 0; i < 7; i++) {
-    sends.push(bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER));
+    sends.push(
+      bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS)
+    );
   }
   await Promise.all(sends);
   await settle(1500);

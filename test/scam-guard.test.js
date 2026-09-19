@@ -1187,6 +1187,9 @@ function createPage(options) {
 //   local        chrome.storage.local 的初值
 //   page         body 子節點（預設 createPage()）
 //   respond      (msg, index) => 回應物件；丟出 Error 代表 sendMessage 失敗
+//   respondDelayMs 回應結算的延遲（預設 0，即下一個 tick）。真實
+//                chrome.runtime 的往返可能比掃描的 debounce（60ms）還久，要
+//                測「回應落地前頁面已經重掃過」得先把這段窗口撐開。
 //   detect       覆寫 TCLCore.detectScamPitch 的回傳（不給則走真實實作）
 function createScamGuardEnv(options) {
   const settings = options || {};
@@ -1202,6 +1205,9 @@ function createScamGuardEnv(options) {
   const storage = createChromeStorage({ langPref: 'zh' }, settings.local || {});
 
   const sent = [];
+  // 已經結算給實作的回應。回應延遲時「舊回呼已經落地了沒有」沒有別的觀測
+  // 點——過期守衛生效時它什麼都不做，等固定毫秒只是換一種閃爍。
+  const replies = [];
   const toasts = [];
   const observers = [];
   const detectCalls = [];
@@ -1261,12 +1267,18 @@ function createScamGuardEnv(options) {
           } catch (e) {
             failure = e;
           }
+          const delay = settings.respondDelayMs || 0;
           if (typeof callback === 'function') {
-            setTimeout(() => callback(failure ? undefined : reply), 0);
+            setTimeout(() => {
+              callback(failure ? undefined : reply);
+              // 回呼跑完才記一筆：測試看到它時，實作對這則回應的處理已經結
+              // 束，斷言不會卡在半途。
+              replies.push(index);
+            }, delay);
             return undefined;
           }
           return new Promise((resolve, reject) => {
-            setTimeout(() => (failure ? reject(failure) : resolve(reply)), 0);
+            setTimeout(() => (failure ? reject(failure) : resolve(reply)), delay);
           });
         },
       },
@@ -1308,6 +1320,7 @@ function createScamGuardEnv(options) {
     location,
     storage,
     sent,
+    replies,
     toasts,
     observers,
     detectCalls,
@@ -2765,7 +2778,7 @@ function createBodyStagedPage(bodies) {
 test('S8：容器組成不變、本文由空白補成全文時要重掃並命中（冪等鍵不得只看容器 code）', async () => {
   // withoutSsr：SSR 也沒有 captionText，第一輪就只有空白本文可掃。
   const env = loadEnv({ page: createBodyStagedPage(MAIN_POSTS.map(() => '')) });
-  await env.flush();
+  await env.waitFor(() => env.detectCalls.length >= 1, { label: '第一輪判定' });
 
   assert.equal(env.detectCalls.length, 1, '前提：第一輪跑過一次判定');
   assert.equal(
@@ -2779,7 +2792,7 @@ test('S8：容器組成不變、本文由空白補成全文時要重掃並命中
   // 同樣六個容器、同樣的 code，只是本文渲染出來了。
   env.setPage(createBodyStagedPage(MAIN_POSTS.map((post) => post.captionText)));
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '重掃命中後的 tag' });
 
   assert.ok(
     env.detectCalls.length >= 2,
@@ -3329,4 +3342,67 @@ test('往返：河道標過的同一篇，進詳情頁補回的是掃描那一�
   assert.equal(tagsIn(route.feedCard).length, 0, '收起來的河道卡不得被補回查表 tag');
   assert.deepEqual(hiddenTagsOf(env), [], '隱藏層裡不得有任何 tag');
   assert.equal(env.tags().length, 1, '整頁只有主文卡那一顆');
+});
+
+test('過期回呼：回應落地前整輪已經重掃，舊回呼不得補掛警示、不得釘住認領', async () => {
+  const posts = MAIN_POSTS;
+  const detailRoot = createScanDom(posts);
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: [createSsrScript(posts[0]), detailRoot],
+    // 回應晚於掃描的 debounce（60ms）才撐得開「送出後、回應落地前」那段
+    // 窗口——真實的 chrome.runtime 往返本來就可能比一次重掃還久。
+    respondDelayMs: 400,
+  });
+
+  await env.waitFor(() => env.hits().length === 1, { label: '第一輪送出的 scam.hit' });
+  assert.equal(env.tags().length, 0, '前提：回應還在路上，tag 還沒掛上');
+
+  // 回應還沒回來，本文先被改寫（展開長文、載入翻譯都會這樣）：冪等鍵換一
+  // 把、整輪重跑，而這一次的全文沒有招攬錨點，判定不命中。
+  const last = posts[posts.length - 1];
+  const bodyNode = detailRoot.children[posts.length - 1]
+    .querySelectorAll('[dir="auto"]')
+    .find((node) => node.textContent === last.captionText);
+  assert.ok(bodyNode, '前提：找得到末篇的本文節點');
+  bodyNode.textContent = POSTS[POSTS.length - 1].captionText;
+
+  env.triggerObserver();
+  await env.waitFor(() => env.detectCalls.length === 2, { label: '改寫後的重掃' });
+  assert.equal(
+    TCLCore.detectScamPitch(env.detectCalls[1]).hit,
+    false,
+    '前提：改寫後的全文不再命中'
+  );
+
+  // 舊回呼這時才落地。
+  await env.waitFor(() => env.replies.length === 1, { label: '第一輪回應落地' });
+
+  assert.equal(env.tags().length, 0, '當下的判定不命中，過期回呼不得補掛警示');
+  assert.deepEqual(env.toastTexts(), [], '過期回呼不得跳 toast');
+  assert.equal(env.hits().length, 1, '重掃未命中，不再送 scam.hit');
+
+  // 認領也不得被過期回呼釘住：作者進名單後，主文卡要由查表掛上 LIST tag，
+  // 而不是被一顆早該作廢的認領讓掉。
+  env.storage.emitChange(
+    {
+      scamBlocklist: {
+        oldValue: undefined,
+        newValue: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+      },
+    },
+    'local'
+  );
+  await env.waitFor(() => env.tags().length === 1, { label: '查表掛上的 tag' });
+
+  assert.equal(
+    env.tags()[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '主文卡要拿得到查表那一顆，不得被過期回呼留下的認領讓掉'
+  );
+  assert.equal(
+    env.tags()[0].closest(CONTAINER_SELECTOR),
+    detailRoot.children[0],
+    'tag 要落在主文卡上'
+  );
 });
