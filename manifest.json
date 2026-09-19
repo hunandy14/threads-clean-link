@@ -54,7 +54,7 @@
         "https://*.threads.com/*",
         "https://*.threads.net/*"
       ],
-      "js": ["i18n.js", "post-icon.js"],
+      "js": ["i18n.js", "tcl-core.js", "post-icon.js", "scam-guard.js"],
       "run_at": "document_idle"
     }
   ],

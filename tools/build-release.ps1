@@ -64,6 +64,7 @@ $includeFiles = @(
     'auth.js',
     'sync.js',
     'post-icon.js',
+    'scam-guard.js',
     'popup.html',
     'popup.js',
     'popup-init.js',
