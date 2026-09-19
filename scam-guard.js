@@ -421,8 +421,10 @@
       // 者就看不到資訊量較大的 scamTagTooltip。
       //
       // 讓位對象記的是容器節點：SPA 留下的隱藏舊卡與主文卡 code 相同，只比
-      // code 會連可見主文卡一起讓掉，兩條路都不掛就沒人掛了。容器取不到時
-      // （collectOwnContainers 這一輪沒收到對應節點）退回以 code 讓位。
+      // code 會連可見主文卡一起讓掉，兩條路都不掛就沒人掛了；比容器也讓陳舊
+      // 的 code 不會跨頁誤殺——返回河道時同一篇的河道卡是另一個節點，照樣查
+      // 得到表。容器缺席時退回以 code 讓位：collectOwnContainers 這一輪沒收
+      // 到對應節點，或認領的節點已被 React 換掉、不在本輪的容器清單裡。
       var claimedMainCode = null;
       var claimedMainContainer = null;
 
@@ -752,8 +754,15 @@
         if (!core || typeof core.detectScamPitch !== 'function') return;
 
         var pathInfo = readPathInfo();
-        // 河道與其他頁面整頁都是別人的貼文片段，不掃。
-        if (!pathInfo) return;
+        // 河道與其他頁面整頁都是別人的貼文片段，不掃。離開詳情頁時一併鬆開
+        // 認領：留著的 code 會讓河道上同一篇的卡片被查表讓掉，而掃描那條路
+        // 已經不在詳情頁上，讓完就沒人掛了。lastScan 留著——返回同一篇時冪
+        // 等鍵照樣命中，不重送 scam.hit。
+        if (!pathInfo) {
+          claimedMainCode = null;
+          claimedMainContainer = null;
+          return;
+        }
 
         // 冪等判斷必須早於任何昂貴的取值（SSR script 的 JSON 走訪、串文判
         // 定）：MutationObserver 在 Threads 上每秒可觸發數十次，先用純 DOM
@@ -784,8 +793,9 @@
           if (lastScan.tagged) {
             var main = containerOf(own, lastScan.mainCode);
             if (main) {
-              // 容器可能已被 React 換成新節點，讓位對象跟著改指，否則查表會
-              // 在新容器上再掛一顆。
+              // 容器可能已被 React 換成新節點，讓位對象跟著改指：不改指的
+              // 話讓位落在已經離開文件的舊節點上，使用者看到的新卡會由查表
+              // 先掛上資訊量較少的那一顆。
               claimedMainContainer = main;
               if (!main.querySelector('.' + TAG_CLASS)) insertTag(main);
             }
@@ -956,6 +966,19 @@
         var ownerHandle = pathInfo ? normalizeHandle(pathInfo.handle) : '';
 
         var containers = document.querySelectorAll(CONTAINER_SELECTOR);
+
+        // 掃描認領的容器在本輪的容器清單裡找不到（React 已經把它換成新節
+        // 點）時視同缺席，讓位退回比 code——否則新卡既不是認領的那一張、又
+        // 拿不到掃描的 tag，兩條路都不掛。
+        var claimedContainer = null;
+        if (claimedMainContainer) {
+          for (var c = 0; c < containers.length; c++) {
+            if (containers[c] !== claimedMainContainer) continue;
+            claimedContainer = claimedMainContainer;
+            break;
+          }
+        }
+
         for (var i = 0; i < containers.length; i++) {
           var container = containers[i];
 
@@ -984,8 +1007,8 @@
 
           var handle = normalizeHandle(permalink.handle);
           if (ownerHandle && handle === ownerHandle && permalink.code !== pathInfo.code) continue;
-          if (claimedMainContainer) {
-            if (container === claimedMainContainer) continue;
+          if (claimedContainer) {
+            if (container === claimedContainer) continue;
           } else if (claimedMainCode && permalink.code === claimedMainCode) {
             continue;
           }
