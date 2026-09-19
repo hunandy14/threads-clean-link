@@ -1012,19 +1012,19 @@ test.describe('詐騙偵測:capScamBlocklist', () => {
     return { version: 1, entries: entries, handleIndex: handleIndex, allowlist: {} };
   }
 
-  test('capScamBlocklist:entries 上限 200，依 addedAt 最舊先淘汰', () => {
+  test('capScamBlocklist:entries 上限 5000，依 addedAt 最舊先淘汰', () => {
     assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
-    const out = C.capScamBlocklist(makeList(250, 1, 10));
+    const out = C.capScamBlocklist(makeList(5050, 1, 10));
     const ids = Object.keys(out.entries);
-    assert.equal(ids.length, 200, 'entries 裁到 200 筆');
+    assert.equal(ids.length, 5000, 'entries 裁到 5000 筆');
     assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u1'), false, '最舊的 addedAt 先淘汰');
     assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u50'), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u51'), true, '保留最新 200 筆');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u250'), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u51'), true, '保留最新 5000 筆');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u5050'), true);
     // handleIndex 必須跟著裁，不能留下指向已淘汰條目的孤兒鍵。
-    assert.equal(Object.keys(out.handleIndex).length, 200);
+    assert.equal(Object.keys(out.handleIndex).length, 5000);
     assert.equal(Object.prototype.hasOwnProperty.call(out.handleIndex, 'h1'), false);
-    assert.equal(out.handleIndex.h250, 'u250');
+    assert.equal(out.handleIndex.h5050, 'u5050');
   });
 
   test('capScamBlocklist:每筆 evidence 上限 3，保留最新(at 最大)', () => {
@@ -1054,15 +1054,15 @@ test.describe('詐騙偵測:capScamBlocklist', () => {
     assert.equal(kept.postUrl.startsWith('https://www.threads.com/'), true, '其餘欄位原樣保留');
   });
 
-  test('capScamBlocklist:整包 JSON 超過 64KB 軟預算時繼續淘汰最舊', () => {
+  test('capScamBlocklist:整包 JSON 超過 2MB 軟預算時繼續淘汰最舊', () => {
     assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
-    // 200 筆 × 3 證據 × 120 字 snippet 遠超 64KB，筆數上限攔不住，只能靠軟預算。
-    const out = C.capScamBlocklist(makeList(200, 3, 120));
+    // 4000 筆 × 3 證據 × 120 字 snippet 遠超 2MB，筆數上限（5000）攔不住，只能靠軟預算。
+    const out = C.capScamBlocklist(makeList(4000, 3, 120));
     const ids = Object.keys(out.entries);
-    assert.equal(ids.length < 200, true, '軟預算應再淘汰，實得 ' + ids.length + ' 筆');
+    assert.equal(ids.length < 4000, true, '軟預算應再淘汰，實得 ' + ids.length + ' 筆');
     assert.equal(ids.length > 0, true, '不得把整份名單清空');
-    assert.equal(JSON.stringify(out).length <= 64 * 1024, true, '整包 JSON 不得超過 64KB');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u200'), true, '最新的一筆永遠留著');
+    assert.equal(JSON.stringify(out).length <= 2 * 1024 * 1024, true, '整包 JSON 不得超過 2MB');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u4000'), true, '最新的一筆永遠留著');
     assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u1'), false, '最舊的先走');
   });
 
@@ -1178,7 +1178,7 @@ test.describe('詐騙偵測:makeBlocklistEntry 與 mergeBlocklistEvidence', () =
 //
 // 首版實作讓五類誤報過關:「信賴：」開頭的正常句被當錨點、體育/職場語境的
 // 「內線」被當投資話術、「免費教學／不收費」單詞就足以命中、全形帳號漏抓、
-// 64KB 預算用 JS 字元數而非真位元組(中文 snippet 實際佔 3 倍),外加
+// 位元組預算用 JS 字元數而非真位元組(中文 snippet 實際佔 3 倍),外加
 // `__proto__` 鍵與 displayName 換行兩個衛生問題。此區塊逐條釘死。
 
 test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
@@ -1263,13 +1263,13 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     assert.equal(C.detectScamPitch('賴：ｖｇ 有黑馬股').hit, false, '全形也要滿 3 位');
   });
 
-  // 64KB 是 chrome.storage 的位元組配額,不是 JS 字元數。snippet 幾乎必然是
-  // 中文(詐騙話術本體),UTF-8 每字 3 bytes——用 String#length 當預算會讓實際
-  // 寫入量膨脹到三倍而撞配額。
-  test('capScamBlocklist:64KB 軟預算算的是 UTF-8 真位元組', () => {
+  // 2MB 軟預算是 chrome.storage 的位元組配額,不是 JS 字元數。snippet 幾乎必
+  // 然是中文(詐騙話術本體),UTF-8 每字 3 bytes——用 String#length 當預算會讓
+  // 實際寫入量膨脹到三倍而撞配額。
+  test('capScamBlocklist:2MB 軟預算算的是 UTF-8 真位元組', () => {
     const entries = {};
     const handleIndex = {};
-    for (let i = 1; i <= 250; i++) {
+    for (let i = 1; i <= 2000; i++) {
       const id = 'u' + i;
       const evidence = [];
       for (let e = 0; e < 3; e++) {
@@ -1284,9 +1284,9 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     }
     const out = C.capScamBlocklist({ version: 1, entries: entries, handleIndex: handleIndex, allowlist: {} });
     const bytes = new TextEncoder().encode(JSON.stringify(out)).length;
-    assert.equal(bytes <= 64 * 1024, true, '真位元組不得超過 64KB，實得 ' + bytes);
+    assert.equal(bytes <= 2 * 1024 * 1024, true, '真位元組不得超過 2MB，實得 ' + bytes);
     assert.equal(Object.keys(out.entries).length > 0, true, '不得把整份名單清空');
-    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u250'), true, '最新的一筆永遠留著');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u2000'), true, '最新的一筆永遠留著');
   });
 
   // storage 讀回的 JSON 可能含 `__proto__` 鍵(手工編輯的匯入檔、或他處寫入
@@ -1341,8 +1341,8 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
 //
 // entries 有 MAX_ENTRIES 擋著，allowlist 卻是無上限的：使用者每按一次「解
 // 除」就多一筆，而解除紀錄會永遠留著（它的作用就是不讓下一次掃描把人復
-// 活）。同一份 64KB 軟預算下，無上限的 allowlist 最終會把 entries 擠光。
-// 上限與 entries 同為 200 筆，依 at 降冪留最新——舊值升級來的 { at:0 } 排在
+// 活）。同一份位元組軟預算下，無上限的 allowlist 最終會把 entries 擠光。
+// 上限與 entries 同為 5000 筆，依 at 降冪留最新——舊值升級來的 { at:0 } 排在
 // 最後，本來就是最沒有顯示價值的那一批。
 test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
   function makeAllowlist(count) {
@@ -1353,32 +1353,32 @@ test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
     return allowlist;
   }
 
-  test('capScamBlocklist:allowlist 超過 200 筆時依 at 降冪留最新 200', () => {
+  test('capScamBlocklist:allowlist 超過 5000 筆時依 at 降冪留最新 5000', () => {
     const out = C.capScamBlocklist({
       version: 1,
       entries: {},
       handleIndex: {},
-      allowlist: makeAllowlist(201),
+      allowlist: makeAllowlist(5001),
     });
 
-    assert.equal(Object.keys(out.allowlist).length, 200, 'allowlist 上限與 entries 同為 200 筆');
+    assert.equal(Object.keys(out.allowlist).length, 5000, 'allowlist 上限與 entries 同為 5000 筆');
     assert.equal(out.allowlist['900000000'], undefined, 'at 最小（最舊）的一筆被淘汰');
     assert.deepEqual(
-      out.allowlist['900000200'],
-      { at: 201, handle: 'h200' },
+      out.allowlist['900005000'],
+      { at: 5001, handle: 'h5000' },
       '最新的一筆必須留著，且值的形狀不變'
     );
   });
 
-  test('capScamBlocklist:allowlist 恰 200 筆時一筆都不裁', () => {
+  test('capScamBlocklist:allowlist 恰 5000 筆時一筆都不裁', () => {
     const out = C.capScamBlocklist({
       version: 1,
       entries: {},
       handleIndex: {},
-      allowlist: makeAllowlist(200),
+      allowlist: makeAllowlist(5000),
     });
 
-    assert.equal(Object.keys(out.allowlist).length, 200, '恰為上限不得誤裁');
+    assert.equal(Object.keys(out.allowlist).length, 5000, '恰為上限不得誤裁');
     assert.deepEqual(out.allowlist['900000000'], { at: 1, handle: 'h0' }, '最舊的那一筆在上限內照樣留著');
   });
 
@@ -1395,7 +1395,7 @@ test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
         },
       },
       handleIndex: { dakkaknight: '111' },
-      allowlist: makeAllowlist(201),
+      allowlist: makeAllowlist(5001),
     });
 
     assert.ok(out.entries['111'], '解除名單爆量不得連帶淘汰黑名單條目');

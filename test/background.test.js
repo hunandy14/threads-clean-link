@@ -4511,10 +4511,10 @@ test('L4 scam.hit:與 history 寫入併發時兩邊都保住（共用同一條 w
   assert.equal(bg.history().length, 1, 'history 那一筆同樣不得被黑名單寫入蓋掉');
 });
 
-test('L4 scam.hit:寫入後經 capScamBlocklist——第 201 筆入名單時最舊的一筆被裁掉', async () => {
+test('L4 scam.hit:寫入後經 capScamBlocklist——第 5001 筆入名單時最舊的一筆被裁掉', async () => {
   const entries = {};
   const handleIndex = {};
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 5000; i++) {
     const id = String(20000000000 + i);
     entries[id] = {
       handle: 'h' + i,
@@ -4537,7 +4537,7 @@ test('L4 scam.hit:寫入後經 capScamBlocklist——第 201 筆入名單時最�
   await settle(600);
 
   const list = scamList(bg);
-  assert.equal(Object.keys(list.entries).length, 200, '名單上限 200 筆（TCLCore.SCAM_LIMITS.MAX_ENTRIES）');
+  assert.equal(Object.keys(list.entries).length, 5000, '名單上限 5000 筆（TCLCore.SCAM_LIMITS.MAX_ENTRIES）');
   assert.ok(list.entries[SCAM_USER_ID], '剛命中的最新一筆必須留著');
   assert.equal(list.entries[oldestId], undefined, 'addedAt 最舊的一筆被淘汰');
   assert.equal(list.handleIndex['h0'], undefined, '被淘汰條目的反查鍵要一起清掉');
