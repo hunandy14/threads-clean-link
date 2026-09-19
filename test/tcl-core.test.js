@@ -937,7 +937,57 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
     assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
     assert.deepEqual(C.normalizeScamBlocklist({ allowlist: 'nope' }).allowlist, {});
     assert.deepEqual(C.normalizeScamBlocklist({ allowlist: null }).allowlist, {});
-    assert.deepEqual(C.normalizeScamBlocklist({ allowlist: { '777': true } }).allowlist, { '777': true });
+    assert.deepEqual(C.normalizeScamBlocklist({ allowlist: { '777': true } }).allowlist, { '777': { at: 0, handle: '' } });
+  });
+
+  // allowlist 的值是「解除紀錄」：at 為解除時間，handle 為解除當下的帳
+  // 號，選項頁「已解除」小節靠這兩欄排序與顯示。舊版只存 true，讀回來要能
+  // 自動升成新形狀，不得讓使用者已解除的作者被下一次掃描復活。
+  test('normalizeScamBlocklist:allowlist 值為 { at, handle }——舊值 true 相容、髒值剝除', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      allowlist: {
+        '111': { at: 1700000000000, handle: 'DakkaKnight' },
+        '222': true,
+        '333': { at: 'nope', handle: 42 },
+        '444': { at: 1700000000001 },
+        '555': false,
+        '666': 'yes',
+        '777': null,
+        '888': 0,
+        '999': ['DakkaKnight'],
+      },
+    });
+
+    assert.deepEqual(
+      out.allowlist['111'],
+      { at: 1700000000000, handle: 'DakkaKnight' },
+      '合格的 { at, handle } 原樣保留，handle 維持原始大小寫'
+    );
+    assert.deepEqual(out.allowlist['222'], { at: 0, handle: '' }, '舊值 true 升成空解除紀錄 { at:0, handle }');
+    assert.deepEqual(out.allowlist['333'], { at: 0, handle: '' }, '欄位髒值各自退回預設，不整筆丟棄');
+    assert.deepEqual(out.allowlist['444'], { at: 1700000000001, handle: '' }, 'handle 缺席退成空字串');
+    assert.deepEqual(
+      Object.keys(out.allowlist).sort(),
+      ['111', '222', '333', '444'],
+      'true 以外的非物件值（false／字串／null／0／陣列）一律剝除'
+    );
+    assert.equal(Object.getPrototypeOf(out.allowlist['111']), Object.prototype);
+  });
+
+  test('capScamBlocklist:allowlist 透傳正規化後的 { at, handle }', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {},
+      handleIndex: {},
+      allowlist: { '111': { at: 5, handle: 'foo' }, '222': true, '333': 'nope' },
+    });
+    assert.deepEqual(
+      out.allowlist,
+      { '111': { at: 5, handle: 'foo' }, '222': { at: 0, handle: '' } },
+      'capScamBlocklist 不碰 allowlist，只把 normalizeScamBlocklist 的結果原樣帶出來'
+    );
   });
 });
 
@@ -1284,5 +1334,71 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
       source: 'auto',
     });
     assert.equal(/[\r\n\t]/.test(dirtyHandle.handle), false, 'handle 不得留下換行或 tab');
+  });
+});
+
+// ---- 詐騙偵測:allowlist 的筆數上限（L4 審查建議）----
+//
+// entries 有 MAX_ENTRIES 擋著，allowlist 卻是無上限的：使用者每按一次「解
+// 除」就多一筆，而解除紀錄會永遠留著（它的作用就是不讓下一次掃描把人復
+// 活）。同一份 64KB 軟預算下，無上限的 allowlist 最終會把 entries 擠光。
+// 上限與 entries 同為 200 筆，依 at 降冪留最新——舊值升級來的 { at:0 } 排在
+// 最後，本來就是最沒有顯示價值的那一批。
+test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
+  function makeAllowlist(count) {
+    const allowlist = {};
+    for (let i = 0; i < count; i++) {
+      allowlist[String(900000000 + i)] = { at: i + 1, handle: 'h' + i };
+    }
+    return allowlist;
+  }
+
+  test('capScamBlocklist:allowlist 超過 200 筆時依 at 降冪留最新 200', () => {
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {},
+      handleIndex: {},
+      allowlist: makeAllowlist(201),
+    });
+
+    assert.equal(Object.keys(out.allowlist).length, 200, 'allowlist 上限與 entries 同為 200 筆');
+    assert.equal(out.allowlist['900000000'], undefined, 'at 最小（最舊）的一筆被淘汰');
+    assert.deepEqual(
+      out.allowlist['900000200'],
+      { at: 201, handle: 'h200' },
+      '最新的一筆必須留著，且值的形狀不變'
+    );
+  });
+
+  test('capScamBlocklist:allowlist 恰 200 筆時一筆都不裁', () => {
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {},
+      handleIndex: {},
+      allowlist: makeAllowlist(200),
+    });
+
+    assert.equal(Object.keys(out.allowlist).length, 200, '恰為上限不得誤裁');
+    assert.deepEqual(out.allowlist['900000000'], { at: 1, handle: 'h0' }, '最舊的那一筆在上限內照樣留著');
+  });
+
+  test('capScamBlocklist:allowlist 裁切不得動到 entries', () => {
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {
+        '111': {
+          handle: 'DakkaKnight',
+          displayName: 'Dakka',
+          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：vg475', at: 5 }],
+          addedAt: 5,
+          source: 'auto',
+        },
+      },
+      handleIndex: { dakkaknight: '111' },
+      allowlist: makeAllowlist(201),
+    });
+
+    assert.ok(out.entries['111'], '解除名單爆量不得連帶淘汰黑名單條目');
+    assert.equal(out.handleIndex['dakkaknight'], '111');
   });
 });

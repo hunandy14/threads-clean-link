@@ -593,6 +593,357 @@ if (syncEngine) {
   });
 }
 
+// ------------------------------------------------------------
+// 投資詐騙黑名單（tmp/scam-thread-feasibility.md §14）
+// ------------------------------------------------------------
+//
+// storage.local 的 scamBlocklist 只有 background 寫得到：content script 與
+// 選項頁一律直接讀 storage 並監聽 chrome.storage.onChanged。三個 handler 的
+// 讀改寫全掛在 enqueueHistoryWrite 的序列鏈上，與 history 寫入串行，互不
+// 覆蓋；每次寫前過 TCLCore.normalizeScamBlocklist、寫後過 capScamBlocklist，
+// 落地的形狀與上限只有這一處說了算。
+
+const SCAM_BLOCKLIST_KEY = 'scamBlocklist';
+
+// 總開關存 storage.local（選項頁設定卡寫入）。缺席＝開，首次安裝即生效。
+const SCAM_ENABLED_KEY = 'scamGuardEnabled';
+
+// Threads 的作者主鍵：純數字字串、1–20 位。entries 以它為鍵，帳號改名後
+// 仍認得同一人。
+const SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
+
+// handle 形狀。字元類比照 TCLCore 的嚴格貼文網址樣式裡的 handle 段：handle
+// 既是 handleIndex 的鍵、也直接顯示在黑名單卡片上。只驗「非空字串」擋不住
+// `@dakkaknight` 這種帶 @ 的原始文字（入庫後反查表的鍵就與 post-icon 的查表
+// 值對不上，河道標記形同失效），更擋不住夾帶控制字元的假帳號。
+const SCAM_HANDLE_PATTERN = /^[A-Za-z0-9._]{1,80}$/;
+
+// 匿名 GET 回應裡的作者數字 id（SSR JSON 欄位）。頁面可能出現多個（引用貼
+// 文、推薦貼文、側欄作者各有一個），因此是 global，逐個候選試。
+const SCAM_AUTHOR_ID_PATTERN = /"post_author_id":"(\d{1,20})"/g;
+
+// 備援回應的掃描上限。**刻意不與 og 擷取的 OG_SCAN_LIMIT 共用**：og:meta 必
+// 在 <head>，64KB 綽綽有餘；這裡要的 RelayPrefetchedStreamCache 是 SSR 的
+// JSON 酬載，真實貼文頁常把它推到文件中後段，用 64KB 切會把 post_author_id
+// 切在範圍外，備援等於長期失效。仍保留上限，不對超大回應做無界正則掃描。
+const SCAM_SCAN_LIMIT = 524288;
+
+// 交叉驗證的比對視窗（以命中的 post_author_id 位置為中心，前後各這麼多字）。
+// 整份文字比對太寬：頁面任何角落出現過本人的 username，就會替一個不相干的
+// id 背書。
+const SCAM_AUTHOR_ID_WINDOW = 2000;
+
+// 匿名備援的逾時：SW 不能掛在一個永遠不回的請求上。
+const SCAM_FETCH_TIMEOUT_MS = 8000;
+
+// 匿名備援的節流表：以 postUrl 為鍵存上次發請求的時間，同一篇 24 小時內只
+// 打一次。存 chrome.storage.session（SW 被回收也留著、瀏覽器關閉即清），沒
+// 有 session 區域的環境退回 local。表只寫不刪會在一次工作階段裡無上限成長
+// （鍵是整串 postUrl），寫入時剔除過期鍵並以筆數上限收尾。
+const SCAM_FETCH_THROTTLE_KEY = 'scamAuthorFetchAt';
+const SCAM_FETCH_THROTTLE_MS = 24 * 60 * 60 * 1000;
+const SCAM_FETCH_THROTTLE_MAX = 500;
+
+// 匿名備援的全域速率上限：每分鐘最多 6 次，超過一律當作撈不到 id。逐篇的
+// 24 小時節流只擋得住同一篇重複打，河道一次捲動就有幾十位不同作者，每人各
+// 一次照樣是一串齊發的匿名請求，對站方而言就是掃描行為。存最近一分鐘的時戳
+// 陣列，與節流表同放 session 區。
+const SCAM_FETCH_RATE_KEY = 'scamAuthorFetchLog';
+const SCAM_FETCH_RATE_WINDOW_MS = 60 * 1000;
+const SCAM_FETCH_RATE_MAX = 6;
+
+// scam.hit 的合法來源：threads 網頁的 content script。判準是 sender.tab 存
+// 在（擴充頁面沒有 tab）且 sender.url 落在 threads 來源——content script 的
+// sender.url 是它所在網頁的網址。擴充自己的頁面與其他擴充一律不得借這條
+// 入口寫黑名單，remove／restore 反過來只認 isExtensionPageSender。
+const SCAM_PAGE_ORIGINS = [
+  'https://www.threads.com/',
+  'https://threads.com/',
+  'https://www.threads.net/',
+  'https://threads.net/',
+];
+
+function isScamContentScriptSender(sender) {
+  if (!isOwnExtensionSender(sender) || !sender.tab) return false;
+  if (typeof sender.url !== 'string') return false;
+  for (let i = 0; i < SCAM_PAGE_ORIGINS.length; i++) {
+    if (sender.url.indexOf(SCAM_PAGE_ORIGINS[i]) === 0) return true;
+  }
+  return false;
+}
+
+// scam.hit 的 payload 驗證。不合格一律回 null（呼叫端轉成 bad_request）：
+// 黑名單是使用者資料，形狀可疑的回報寧可整筆不收。userId 允許缺席（null）
+// ——那是登入態 SSR JSON 讀不到 id 的情形，由匿名 GET 備援補。
+function validateScamHit(message) {
+  if (!message) return null;
+  if (typeof message.handle !== 'string' || !SCAM_HANDLE_PATTERN.test(message.handle)) return null;
+  const postUrl = TCLCore.normalizePostUrl(message.postUrl);
+  if (postUrl === null) return null;
+  if (typeof message.snippet !== 'string' || message.snippet.length > TCLCore.SCAM_LIMITS.SNIPPET_MAX) return null;
+  if (typeof message.at !== 'number' || !isFinite(message.at)) return null;
+
+  let userId = null;
+  if (message.userId !== null && message.userId !== undefined) {
+    if (typeof message.userId !== 'string' || !SCAM_USER_ID_PATTERN.test(message.userId)) return null;
+    userId = message.userId;
+  }
+
+  return {
+    userId,
+    handle: message.handle,
+    displayName: typeof message.displayName === 'string' ? message.displayName : undefined,
+    postUrl,
+    snippet: message.snippet,
+    at: message.at,
+  };
+}
+
+// 總開關。呼叫端已先確認 storage.local 可用（storage 整組故障是
+// internal_error，不是「使用者把開關關掉了」）。
+async function isScamGuardEnabled() {
+  try {
+    const stored = await chrome.storage.local.get({ [SCAM_ENABLED_KEY]: true });
+    return stored[SCAM_ENABLED_KEY] !== false;
+  } catch (err) {
+    console.error('[threads-clean-link] 讀取詐騙警示總開關失敗，視為開啟', err);
+    return true;
+  }
+}
+
+// 節流表存放的區域。session 在舊版瀏覽器與測試替身可能缺席，退回 local。
+function scamThrottleArea() {
+  const session = chrome.storage && chrome.storage.session;
+  if (session && typeof session.get === 'function' && typeof session.set === 'function') return session;
+  return hasStorageLocal() ? chrome.storage.local : null;
+}
+
+// 匿名 GET 取作者數字 id。比照 resolveFinalUrl 用 OG_FETCH_HEADERS：**不得
+// 帶 User-Agent**，帶了 Threads 只回 SPA 殼，撈不到任何 SSR 欄位。
+// credentials:'omit' 不帶使用者 cookie（不以使用者身分發非觸發請求）；
+// redirect:'error' 讓轉址直接算失敗，不跟著跳到登入／驗證頁；signal 讓慢回應
+// 在 SCAM_FETCH_TIMEOUT_MS 後中斷。
+//
+// 【交叉驗證】回應裡的 post_author_id 未必就是 handle 那個人：轉址到別篇貼
+// 文、頁面嵌了他人的引用貼文、或 content script 被頁面腳本餵了假 handle，都
+// 會讓不相干的帳號被寫進黑名單。逐個 post_author_id 候選試，每個只在它前後
+// SCAM_AUTHOR_ID_WINDOW 字的切片內找對應的 username（Threads 的 handle 不分
+// 大小寫，比對亦不分；handle 先正則逸出，句點不得當萬用字元），全部落空回
+// null——本篇作者的 id 與 username 必然相鄰，隔著幾千字的那一組不是同一筆。
+async function fetchScamAuthorId(postUrl, handle) {
+  const response = await fetch(postUrl, {
+    method: 'GET',
+    credentials: 'omit',
+    headers: OG_FETCH_HEADERS,
+    redirect: 'error',
+    signal: AbortSignal.timeout(SCAM_FETCH_TIMEOUT_MS),
+  });
+  const scanText = (await response.text()).slice(0, SCAM_SCAN_LIMIT);
+  const usernamePattern = new RegExp('"username":"' + escapeRegExp(handle) + '"', 'i');
+
+  // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
+  SCAM_AUTHOR_ID_PATTERN.lastIndex = 0;
+  let match = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
+  while (match !== null) {
+    const from = Math.max(0, match.index - SCAM_AUTHOR_ID_WINDOW);
+    if (usernamePattern.test(scanText.slice(from, match.index + SCAM_AUTHOR_ID_WINDOW))) return match[1];
+    match = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
+  }
+  return null;
+}
+
+// 節流表淘汰：先剔除已過期（早就不再有節流作用）的鍵，補上本次這一篇，再以
+// 筆數上限收尾——最舊的先淘汰，本次這一筆必然是最新的，永遠留著。
+function capScamThrottleTable(table, postUrl, now) {
+  const next = {};
+  Object.keys(table).forEach((key) => {
+    const at = table[key];
+    if (typeof at === 'number' && isFinite(at) && now - at < SCAM_FETCH_THROTTLE_MS) next[key] = at;
+  });
+  next[postUrl] = now;
+
+  const keys = Object.keys(next);
+  if (keys.length <= SCAM_FETCH_THROTTLE_MAX) return next;
+  keys.sort((a, b) => next[b] - next[a]);
+  const capped = {};
+  for (let i = 0; i < SCAM_FETCH_THROTTLE_MAX; i++) capped[keys[i]] = next[keys[i]];
+  return capped;
+}
+
+// 閘門的讀改寫序列鏈。河道一次捲動會同時派出幾十則 scam.hit，它們是同一
+// tick 進來的：讀改寫沒有序列化，七則各自讀到「目前 0 次」再各自寫回，閘門
+// 等於不存在，節流表也會互相覆蓋成少於實際請求數。不共用 historyWriteChain
+// ——兩者沒有共用資料，紀錄寫入不該被備援的閘門排隊拖慢。
+let scamFetchChain = Promise.resolve();
+
+function enqueueScamFetchGate(fn) {
+  const run = scamFetchChain.then(fn);
+  scamFetchChain = run.catch(() => {});
+  return run;
+}
+
+// 在兩張表上各佔一個名額：逐篇 24 小時節流、全域每分鐘 SCAM_FETCH_RATE_MAX
+// 次。兩者都在發請求前就記下，成功與失敗一視同仁——撈不到 id 的原因（SPA
+// 殼、站方限流、貼文已刪）重試也不會變，只會替使用者多發網路請求。回 false
+// 代表本次不得發請求。讀寫失敗或沒有可用區域時放行：閘門是替站方節流用的，
+// 不是功能開關，不該因為 storage 故障把備援整條關掉。
+async function reserveScamFetchSlot(postUrl) {
+  const area = scamThrottleArea();
+  if (!area) return true;
+  const now = Date.now();
+
+  try {
+    const stored = await area.get({ [SCAM_FETCH_THROTTLE_KEY]: {}, [SCAM_FETCH_RATE_KEY]: [] });
+    const rawTable = stored && stored[SCAM_FETCH_THROTTLE_KEY];
+    const table = rawTable && typeof rawTable === 'object' ? rawTable : {};
+    const last = table[postUrl];
+    if (typeof last === 'number' && isFinite(last) && now - last < SCAM_FETCH_THROTTLE_MS) return false;
+
+    const rawLog = stored && stored[SCAM_FETCH_RATE_KEY];
+    const recent = (Array.isArray(rawLog) ? rawLog : []).filter(
+      (at) => typeof at === 'number' && isFinite(at) && now - at < SCAM_FETCH_RATE_WINDOW_MS
+    );
+    if (recent.length >= SCAM_FETCH_RATE_MAX) return false;
+    recent.push(now);
+
+    await area.set({
+      [SCAM_FETCH_THROTTLE_KEY]: capScamThrottleTable(table, postUrl, now),
+      [SCAM_FETCH_RATE_KEY]: recent,
+    });
+    return true;
+  } catch (err) {
+    console.warn('[threads-clean-link] 讀寫取作者 id 的節流表失敗', err);
+    return true;
+  }
+}
+
+// 帶兩道閘門的備援。佔名額走序列鏈（同 tick 的併發必須排隊），真正的網路請
+// 求留在鏈外——鏈上 await 一個可能跑滿 8 秒的 fetch，會把後面所有人一起卡住。
+// 撈不到回 null。
+async function resolveScamAuthorId(postUrl, handle) {
+  const allowed = await enqueueScamFetchGate(() => reserveScamFetchSlot(postUrl));
+  if (!allowed) return null;
+
+  try {
+    return await fetchScamAuthorId(postUrl, handle);
+  } catch (err) {
+    console.warn('[threads-clean-link] 匿名取作者 id 失敗', err);
+    return null;
+  }
+}
+
+// content script 掃到詐騙串文：建條目或替既有作者補一筆證據。
+// 順序刻意如此：驗 payload → 總開關（關閉時連備援請求都不發）→ 缺 id 才走
+// 匿名備援（allowlist 以 userId 為鍵，沒有 id 就無從判斷解除與否）→ 讀改寫。
+async function handleScamHit(message) {
+  const hit = validateScamHit(message);
+  if (!hit) return { ok: false, code: 'bad_request' };
+  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
+  if (!(await isScamGuardEnabled())) return { ok: false, code: 'disabled' };
+
+  let userId = hit.userId;
+  if (userId === null) {
+    userId = await resolveScamAuthorId(hit.postUrl, hit.handle);
+    if (userId === null) return { ok: false, code: 'no_user_id' };
+  }
+
+  return enqueueHistoryWrite(async () => {
+    const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
+    const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
+
+    // 使用者解除過的作者不得被下一次掃描復活，且整條路徑不留任何寫入。
+    if (Object.prototype.hasOwnProperty.call(list.allowlist, userId)) {
+      return { ok: true, added: false, allowlisted: true };
+    }
+
+    const existing = list.entries[userId];
+    const added = !existing;
+    list.entries[userId] = added
+      ? TCLCore.makeBlocklistEntry({
+          handle: hit.handle,
+          displayName: hit.displayName,
+          postUrl: hit.postUrl,
+          snippet: hit.snippet,
+          at: hit.at,
+          source: 'auto',
+        })
+      : TCLCore.mergeBlocklistEvidence(existing, { postUrl: hit.postUrl, snippet: hit.snippet, at: hit.at });
+
+    // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
+    // entries 重建，孤兒鍵沒有任何機會留下。
+    const next = TCLCore.capScamBlocklist(list);
+    await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: next });
+    return { ok: true, added, entry: next.entries[userId] };
+  });
+}
+
+// 選項頁的「解除」：條目移出 entries，userId 記進 allowlist（附解除時間與
+// 當下的 handle，供「已解除」小節顯示），下次掃到同一位作者不再入名單。
+async function handleScamBlocklistRemove(message) {
+  const userId = message && message.userId;
+  if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
+  // storage 整組不可用是環境故障，不是「使用者把總開關關掉了」。
+  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
+
+  return enqueueHistoryWrite(async () => {
+    const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
+    const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
+    const entry = list.entries[userId];
+    delete list.entries[userId];
+    list.allowlist[userId] = {
+      at: Date.now(),
+      handle: entry && typeof entry.handle === 'string' ? entry.handle : '',
+    };
+    await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
+    return { ok: true };
+  });
+}
+
+// 選項頁的「復原」（使用者反悔解除）：只把 userId 移出 allowlist，不負責把
+// 條目長回來——證據已經不在名單裡，得等下一次掃描重新命中。
+async function handleScamBlocklistRestore(message) {
+  const userId = message && message.userId;
+  if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
+  // storage 整組不可用是環境故障，不是「使用者把總開關關掉了」。
+  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
+
+  return enqueueHistoryWrite(async () => {
+    const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
+    const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
+    delete list.allowlist[userId];
+    await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
+    return { ok: true };
+  });
+}
+
+// 只准擴充自己的頁面（選項頁）送的兩則訊息。
+const SCAM_PAGE_MESSAGE_HANDLERS = {
+  'scam.blocklist.remove': handleScamBlocklistRemove,
+  'scam.blocklist.restore': handleScamBlocklistRestore,
+};
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message.type !== 'string') return false;
+
+  let pending = null;
+  if (message.type === 'scam.hit') {
+    if (!isScamContentScriptSender(sender)) return false; // 不是 threads 分頁送來的，不回應、不寫。
+    pending = handleScamHit(message);
+  } else if (Object.prototype.hasOwnProperty.call(SCAM_PAGE_MESSAGE_HANDLERS, message.type)) {
+    if (!isExtensionPageSender(sender)) return false; // 網頁端不得借道動名單。
+    pending = SCAM_PAGE_MESSAGE_HANDLERS[message.type](message);
+  } else {
+    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+  }
+
+  pending.then(sendResponse).catch((err) => {
+    console.error(`[threads-clean-link] ${message.type} 處理失敗`, err);
+    sendResponse({ ok: false, code: 'internal_error' });
+  });
+
+  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
+});
+
 // 核心流程
 
 async function handleShareLinkClick(info, tab) {
@@ -815,6 +1166,10 @@ const OG_SCAN_LIMIT = 65536;
 //   1. resolveFinalUrl —— share 自動路徑與右鍵選單路徑共用的短碼解析器
 //      (右鍵路徑經 handleShareLinkClick 呼叫，不另開 fetch)。
 //   2. fetchOgFieldsForLocalKind —— icon/strip 兩條本地路徑的 og 補強。
+//   3. fetchScamAuthorId —— 詐騙黑名單的匿名取作者 id 備援。
+//
+// 【不可加 User-Agent】帶了 Threads 會回 SPA 殼，頁面裡一個 og 標籤與
+// SSR JSON 欄位都沒有。三條路徑皆依賴此隱性行為。
 const OG_FETCH_HEADERS = { 'Accept-Language': 'en' };
 
 function escapeRegExp(str) {
