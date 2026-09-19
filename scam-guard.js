@@ -367,6 +367,27 @@
       // 觸發反映。
       var listedContainers = newContainerSet();
 
+      // 查表已經替它掛過 tag 的容器。tag 節點被 React 重繪沖掉時靠這組補回
+      // ——容器沒換，只是警示不見了。
+      var taggedContainers = newContainerSet();
+
+      // 各容器連續取不到 permalink 的次數，達上限即併入 listedContainers。
+      var permalinkMisses = newContainerMap();
+      var PERMALINK_MISS_LIMIT = 3;
+
+      // 查表對頁面唯一會寫的 tag 提示文案。
+      var LIST_TAG_TITLE_KEY = 'scamBlockedByList';
+
+      // 掃描已判定命中、正等 background 回應的主文卡 code。掃描的 tag 要等回
+      // 應才掛得上，查表卻是同步的——不讓位的話冪等守衛會讓查表那顆先佔位，
+      // 使用者就看不到資訊量較大的 scamTagTooltip。
+      var claimedMainCode = null;
+
+      // onChanged 是否已經送過黑名單。init 的 storage 讀取是非同步的，
+      // background 可能在回呼結算前就把新名單寫好並廣播；回呼帶回的是「發出讀
+      // 取當下」的舊快照，這面旗標擋下它把新名單蓋回去。
+      var sawBlocklistChange = false;
+
       var scanScheduled = false;
 
       // i18n.js 依 manifest content_scripts 陣列順序必定先載入，這份字面值
@@ -697,6 +718,7 @@
 
         var scanState = { key: key, tagged: false, mainCode: null };
         lastScan = scanState;
+        claimedMainCode = null;
 
         var ssrRoot = readSsrRoot(pathInfo);
         // 作者 handle 以 SSR 為準（大小寫與網址列可能不同），SSR 缺席時退回
@@ -713,6 +735,9 @@
 
         var detection = core.detectScamPitch(buildThreadText(items));
         if (!detection || !detection.hit) return;
+
+        // 同步認領主文卡：同一輪稍後跑的查表要讓位給這一顆。
+        claimedMainCode = items[0].code;
 
         var payload = {
           type: 'scam.hit',
@@ -762,9 +787,13 @@
         return typeof WeakSet === 'function' ? new WeakSet() : null;
       }
 
-      // 把 storage 讀到的原始值正規化成查表形狀，並清空已查表記錄讓整頁重掃。
-      // TCLCore 缺席或正規化失敗時退成空名單：寧可不掛，也不拿未正規化的結構
-      // 查表。
+      function newContainerMap() {
+        return typeof WeakMap === 'function' ? new WeakMap() : null;
+      }
+
+      // 把 storage 讀到的原始值正規化成查表形狀，並清空兩份容器記憶讓整頁重
+      // 掃：名單換版後，新增的作者要補掛，解除的作者不再被補回。TCLCore 缺席
+      // 或正規化失敗時退成空名單：寧可不掛，也不拿未正規化的結構查表。
       function setBlocklist(raw) {
         var next = null;
         try {
@@ -780,6 +809,7 @@
         }
         blocklist = next;
         listedContainers = newContainerSet();
+        taggedContainers = newContainerSet();
       }
 
       // 一次 O(1) 查表：handle 小寫化後查 handleIndex 得 userId，userId 不在
@@ -792,9 +822,21 @@
         return !Object.prototype.hasOwnProperty.call(blocklist.allowlist, userId);
       }
 
-      // ---- 逐張卡片查表。詳情頁上「網址列作者自己那一串」交給 scan() 負責
-      // （只掛主文卡一顆），這裡跳過，免得同一串的每一篇各掛一顆；他人回覆的
-      // 卡片照樣查表。----
+      // ---- 逐張卡片查表。
+      //
+      // 三段短路依序擋下重複工作：
+      //   1. 已掛過 tag 的容器只檢查 tag 還在不在——React 重繪會把節點整個沖
+      //      掉，容器本身卻沒換，「已查過表」的記憶不能連警示還在不在一起省
+      //      掉（詳情頁掃描那條路的 lastScan.tagged 有同樣的保證）。
+      //   2. 已查過表且未命中的容器不再走訪。
+      //   3. 連續取不到 permalink 達上限的容器（廣告卡、推薦帳號卡這類版面本
+      //      來就沒有貼文連結）併入第 2 類，不再重跑子樹查詢。
+      //
+      // 詳情頁的分工：同一串的自回覆由 scan() 代表（只掛主文卡一顆），這裡跳
+      // 過，免得每一篇各掛一顆；但主文卡本身仍查表——作者已在黑名單、這一串卻
+      // 沒踩到判定時，河道看得到警示、點進去卻沒有是更糟的體驗。掃描命中時它
+      // 已經把主文卡的 code 記在 claimedMainCode，查表讓位，讓資訊量較大的
+      // scamTagTooltip 掛得上去。----
       function scanBlocklist() {
         if (!settingsReady || !scamGuardEnabled || !blocklist) return;
 
@@ -804,19 +846,46 @@
         var containers = document.querySelectorAll(CONTAINER_SELECTOR);
         for (var i = 0; i < containers.length; i++) {
           var container = containers[i];
+
+          if (taggedContainers && taggedContainers.has(container)) {
+            // 查表只掛 scamBlockedByList 這一種，補回時不必另外記 titleKey。
+            if (!container.querySelector || !container.querySelector('.' + TAG_CLASS)) {
+              insertTag(container, LIST_TAG_TITLE_KEY);
+            }
+            continue;
+          }
           if (listedContainers && listedContainers.has(container)) continue;
+
           // 巢狀容器（引用貼文）不算獨立的一張卡，判準與 collectOwnContainers
-          // 一致。
+          // 一致。被引用者是誰不影響外層卡的作者，兩邊都不該掛。
           var parent = container.parentElement || container.parentNode;
           if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
+
           var permalink = readContainerPermalink(container);
-          if (!permalink) continue;
+          if (!permalink) {
+            notePermalinkMiss(container);
+            continue;
+          }
           if (listedContainers) listedContainers.add(container);
+
           var handle = normalizeHandle(permalink.handle);
-          if (ownerHandle && handle === ownerHandle) continue;
+          if (ownerHandle && handle === ownerHandle && permalink.code !== pathInfo.code) continue;
+          if (permalink.code === claimedMainCode) continue;
           if (!isBlockedHandle(handle)) continue;
-          insertTag(container, 'scamBlockedByList');
+
+          insertTag(container, LIST_TAG_TITLE_KEY);
+          if (taggedContainers) taggedContainers.add(container);
         }
+      }
+
+      // 容器取不到 permalink 就幾乎永遠取不到。連續 PERMALINK_MISS_LIMIT 次之
+      // 後併入已查表集合，之後不再對它重跑 querySelectorAll('a[href]')；給三次
+      // 餘裕是因為 React 有可能先掛容器、下一批才補上連結。
+      function notePermalinkMiss(container) {
+        if (!permalinkMisses || !listedContainers) return;
+        var misses = (permalinkMisses.get(container) || 0) + 1;
+        permalinkMisses.set(container, misses);
+        if (misses >= PERMALINK_MISS_LIMIT) listedContainers.add(container);
       }
 
       function safeScan() {
@@ -919,8 +988,9 @@
               if (scamGuardEnabled) dirty = true;
             }
             if (changes.scamBlocklist) {
-              // 名單換版：重建快取並清空已查表記錄，新增的作者下一次觸發補
-              // 掛，解除的作者不再新增（既有的 tag 不回收）。
+              // 名單換版：重建快取並清空容器記憶，新增的作者下一次觸發補掛，
+              // 解除的作者不再新增（既有的 tag 不回收）。
+              sawBlocklistChange = true;
               setBlocklist(changes.scamBlocklist.newValue);
               dirty = true;
             }
@@ -980,7 +1050,9 @@
         // 面，必須等總開關與黑名單讀回來才做第一輪。
         readSettings(function (enabled, rawBlocklist) {
           scamGuardEnabled = enabled;
-          setBlocklist(rawBlocklist);
+          // onChanged 已經送過更新的名單就不覆蓋：這裡拿到的是發出讀取當下的
+          // 舊快照。
+          if (!sawBlocklistChange) setBlocklist(rawBlocklist);
           settingsReady = true;
           if (enabled) safeScan();
         });
