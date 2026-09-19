@@ -4227,14 +4227,16 @@ function allowlistedBlocklist() {
 }
 
 // 取沙箱裡落地的黑名單。還沒接線時回的是 undefined，先斷言存在，讓紅燈是
-// 一次斷言失敗而不是 TypeError 炸掉整支測試。
+// 一次斷言失敗而不是 TypeError 炸掉整支測試。回傳前先過一次 deep()：落地的
+// 黑名單是沙箱那個 realm 造的物件，直接拿去 deepEqual 比形狀會卡在 prototype
+// 不同而非內容不同（全檔慣例，見 plain()／deep() 的註解）。
 function scamList(bg) {
   const list = bg.storage.localSnapshot()[SCAM_KEY];
   assert.ok(
     list && typeof list === 'object' && list.entries && list.handleIndex,
     'background 應把 scamBlocklist 以四欄形狀寫進 storage.local'
   );
-  return list;
+  return deep(list);
 }
 
 function scamEntry(bg, userId) {

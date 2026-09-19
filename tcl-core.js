@@ -1039,10 +1039,25 @@
       var keys = Object.keys(raw.allowlist);
       for (var j = 0; j < keys.length; j++) {
         if (isUnsafeMapKey(keys[j])) continue;
-        if (raw.allowlist[keys[j]] === true) out.allowlist[keys[j]] = true;
+        var allowed = normalizeScamAllowEntry(raw.allowlist[keys[j]]);
+        if (allowed) out.allowlist[keys[j]] = allowed;
       }
     }
     return out;
+  }
+
+  // allowlist 單筆值正規化。值是一筆「解除紀錄」:at 為解除時間，handle
+  // 為解除當下的帳號，選項頁「已解除」小節靠這兩欄排序與顯示。0.8.0 之前
+  // 只存布林 true，讀回來一律升成 { at:0, handle:'' }——舊值也是使用者解除
+  // 過的作者，剝掉就等於讓下一次掃描把他復活。true 以外的非物件值剝除，
+  // 欄位髒值各自退回預設（不整筆丟棄，同樣理由）。
+  function normalizeScamAllowEntry(raw) {
+    if (raw === true) return { at: 0, handle: '' };
+    if (!isPlainObject(raw)) return null;
+    return {
+      at: typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : 0,
+      handle: sanitizeDisplayName(raw.handle) || '',
+    };
   }
 
   // 寫入條目並同步反查表。id 或 handle 小寫後為 `__proto__` 的整筆拒收:反查
