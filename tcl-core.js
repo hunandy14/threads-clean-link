@@ -821,8 +821,11 @@
   // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
   // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
   //
-  // SOFT_BUDGET 2MB 是本機配額 10MB 的約 20%;滿證據時實際可容約 1500-2500
-  // 位，由位元組預算先觸發淘汰，MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。
+  // SOFT_BUDGET 2MB 是本機配額 10MB(Chrome 114 起;更早版本為 5MB)的約
+  // 20%;滿證據時實際可容約 1500-2500 位，由位元組預算先觸發淘汰，
+  // MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。manifest 的
+  // minimum_chrome_version 是 103，落在 5MB 配額的那幾版佔比約 40%,仍在安
+  // 全水位。
   var SCAM_LIMITS = {
     MAX_ENTRIES: 5000,
     MAX_ALLOWLIST: 5000,
