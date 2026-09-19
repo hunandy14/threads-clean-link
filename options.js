@@ -2306,34 +2306,13 @@
     // displayName 與證據片段都是他人貼文帶進來的字串:整張卡逐一
     // createElement ＋ textContent，不走 innerHTML。
 
-    // storage 讀回的黑名單:entries/handleIndex 走 TCLCore.normalizeScamBlocklist
-    // (與 background 寫入側共用同一把尺)，allowlist 另外自己讀一份——「已解除」
-    // 小節要顯示 handle，而 normalize 的舊版契約只留值為 true 的鍵、把 handle
-    // 丟掉。兩種值都容忍:{ at, handle }(§14 第二波)與舊值 true(退成無 handle)。
+    // storage 讀回的黑名單:entries、handleIndex 與 allowlist 三張表都直接取
+    // TCLCore.normalizeScamBlocklist 的結果(與 background 寫入側共用同一把
+    // 尺)。allowlist 的 handle 與 entries 的 handle 同樣是他人帳號帶進來的字
+    // 串，清洗尺度只能有一把——本頁若另讀一份，摺疊空白與截長的規則就會與
+    // core 漂移，髒 handle 一路畫到「已解除」小節上。
     function readScamBlocklist(raw) {
-      var list = TCLCore.normalizeScamBlocklist(raw);
-      list.allowlist = readScamAllowlist(raw);
-      return list;
-    }
-
-    function readScamAllowlist(raw) {
-      var out = {};
-      var map = raw && typeof raw === 'object' ? raw.allowlist : null;
-      if (!map || typeof map !== 'object') return out;
-      Object.keys(map).forEach(function (userId) {
-        // 原型污染鍵拒收，比照 TCLCore 的 isUnsafeMapKey。
-        if (userId === '__proto__') return;
-        var value = map[userId];
-        if (value === true) {
-          out[userId] = { at: 0, handle: '' };
-          return;
-        }
-        if (!value || typeof value !== 'object') return;
-        var at = finiteOrNull(value.at);
-        var handle = nonEmptyString(value.handle);
-        out[userId] = { at: at === null ? 0 : at, handle: handle === null ? '' : handle };
-      });
-      return out;
+      return TCLCore.normalizeScamBlocklist(raw);
     }
 
     // 名單依 addedAt 降冪:最近被標記的在最前。
@@ -2348,7 +2327,7 @@
         });
     }
 
-    // 已解除的清單依解除時間降冪;舊值 true 補出來的 at 為 0，一律排在最後。
+    // 已解除的清單依解除時間降冪;缺解除時間的紀錄 at 退成 0，一律排在最後。
     function sortedScamAllow() {
       var map = scamBlocklist.allowlist;
       return Object.keys(map)
@@ -2360,8 +2339,8 @@
         });
     }
 
-    // handle 一律以 @ 開頭顯示;缺 handle(舊值 true 的 allowlist 條目)退成
-    // 「@?」，不把 undefined 畫進畫面。
+    // handle 一律以 @ 開頭顯示;解除紀錄缺 handle 時退成「@?」，不把
+    // undefined 畫進畫面。
     function scamHandleLabel(handle) {
       var value = nonEmptyString(handle);
       if (value === null) return '@?';
@@ -3559,7 +3538,7 @@
       if (needsRender) renderAll();
     }
 
-    // storage.onChanged(local 區)的設定側,由接線層呼叫:純本機開關
+    // storage.onChanged(local 區)的設定側，由接線層呼叫:純本機開關
     // (LOCAL_SETTING_IDS)在別處被改動時(例如另一個開著的 options 分頁)，
     // 讓常開的本頁同步反映。比照 setSyncSettings，直接設 checkbox.checked
     // 不觸發 change 事件，不會迴圈寫回 storage;newValue 被整顆移除(型別非

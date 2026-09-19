@@ -5907,8 +5907,8 @@ const SCAM_ID_A = '10000000001';
 const SCAM_ID_B = '10987654321';
 const SCAM_ID_C = '55566677788';
 
-const SCAM_URL_A1 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
-const SCAM_URL_A2 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4N';
+const SCAM_URL_A1 = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const SCAM_URL_A2 = 'https://www.threads.com/@example_author/post/DxSyNtH0007';
 const SCAM_URL_B1 = 'https://www.threads.com/@user.b/post/DeF456';
 
 // 超過 40 字的證據片段:連結文字要截到 40 字加刪節號，title 留完整內容。
@@ -6321,4 +6321,63 @@ test('黑名單卡:storage.onChanged 帶來新的 scamBlocklist 時原地重畫(
     '計數跟著更新'
   );
   assert.equal(ctx.doc.ids.scamEmpty.hidden, true, '有資料後空狀態收起');
+});
+
+// ============================================================
+// 【整合審查 F4】allowlist 的 handle 清洗要與 core 同一把尺。
+//
+// options.js 的 readScamBlocklist 先跑 TCLCore.normalizeScamBlocklist，再用
+// 自建的 readScamAllowlist 把結果整個蓋掉——兩邊對 handle 的清洗程度不同
+// （core 走 sanitizeDisplayName：摺疊連續空白、trim、截到 DISPLAY_NAME_MAX；
+// 本頁那份只檢查「非空字串」），髒 handle 一路漂到畫面上。allowlist 的
+// handle 與 entries 的 handle 都是他人帳號帶進來的字串，清洗尺度只能有一
+// 把，且必須是 core 那把。
+// ============================================================
+
+const SCAM_ID_D = '66677788899';
+// 連續空白／定位字元：core 摺成單一半形空白，未清洗則原樣渲染。
+const SCAM_ALLOW_HANDLE_SPACED = 'scammer \t  c';
+// 超過 DISPLAY_NAME_MAX（80）：core 截斷，未清洗則整串渲染。
+const SCAM_ALLOW_HANDLE_LONG = 'l'.repeat(100);
+
+test('黑名單卡:allowlist 的 handle 清洗走 TCLCore 同一把尺（連續空白摺疊、超長截斷）', async () => {
+  const TCLCore = require(path.join(__dirname, '..', 'tcl-core.js'));
+  const raw = scamBlocklistFixture({
+    allowlist: {
+      [SCAM_ID_C]: { at: SCAM_NOW - SCAM_DAY, handle: SCAM_ALLOW_HANDLE_SPACED },
+      [SCAM_ID_D]: { at: SCAM_NOW - 2 * SCAM_DAY, handle: SCAM_ALLOW_HANDLE_LONG },
+    },
+  });
+  // 期望值一律由 core 現算，不在測試裡重刻一份清洗規則。
+  const expected = TCLCore.normalizeScamBlocklist(raw).allowlist;
+  assert.notEqual(
+    expected[SCAM_ID_C].handle,
+    SCAM_ALLOW_HANDLE_SPACED,
+    '前提：core 對連續空白的 handle 確實有清洗'
+  );
+  assert.notEqual(
+    expected[SCAM_ID_D].handle,
+    SCAM_ALLOW_HANDLE_LONG,
+    '前提：core 對超長 handle 確實有截斷'
+  );
+
+  const ctx = makeScamCtx({ blocklist: raw });
+  await initScamPage(ctx);
+
+  const rows = scamAllowRows(ctx.doc);
+  assert.deepEqual(
+    rows.map((r) => r.dataset.id),
+    [SCAM_ID_C, SCAM_ID_D],
+    '前提：已解除小節依解除時間降冪畫出兩列'
+  );
+
+  rows.forEach((row) => {
+    const handleEl = findByClass(row, 'scam-handle')[0];
+    assert.ok(handleEl, '每一列都有顯示 handle 的節點');
+    assert.equal(
+      handleEl.textContent,
+      '@' + expected[row.dataset.id].handle,
+      '已解除小節的 handle 必須與 TCLCore.normalizeScamBlocklist 的結果逐字相同'
+    );
+  });
 });

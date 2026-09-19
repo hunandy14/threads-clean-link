@@ -4171,8 +4171,8 @@ const SCAM_ENABLED_KEY = 'scamGuardEnabled';
 const SCAM_USER_ID = '10000000001';
 const SCAM_HANDLE = 'example_author';
 const SCAM_DISPLAY_NAME = 'Example Author';
-const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
-const SCAM_POST_URL_2 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4N';
+const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const SCAM_POST_URL_2 = 'https://www.threads.com/@example_author/post/DxSyNtH0007';
 const SCAM_POST_URL_3 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4P';
 const SCAM_POST_URL_4 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4Q';
 const SCAM_SNIPPET = '不報明牌、不收費、不代操，加我 賴：ex01abc 聊黑馬股';
@@ -4188,8 +4188,8 @@ const SCAM_TAB_SENDER = {
 // 同樣是本擴充的 content script，但分頁不在 threads——不得受理。
 const SCAM_OTHER_TAB_SENDER = {
   id: EXTENSION_ID,
-  tab: { id: 78, url: 'https://example.com/@example_author/post/DdbYCAfgV4M' },
-  url: 'https://example.com/@example_author/post/DdbYCAfgV4M',
+  tab: { id: 78, url: 'https://example.com/@example_author/post/DxSyNtH0001' },
+  url: 'https://example.com/@example_author/post/DxSyNtH0001',
 };
 
 function scamHit(overrides) {
@@ -4431,7 +4431,7 @@ test('L4 scam.hit:scamGuardEnabled 缺席視為開啟（未設定不等於關閉
 const SCAM_BAD_PAYLOADS = [
   ['handle 非字串', { handle: 12345 }],
   ['handle 缺席', { handle: undefined }],
-  ['postUrl 非 threads 貼文網址', { postUrl: 'https://example.com/@example_author/post/DdbYCAfgV4M' }],
+  ['postUrl 非 threads 貼文網址', { postUrl: 'https://example.com/@example_author/post/DxSyNtH0001' }],
   ['postUrl 只是個人頁不是貼文', { postUrl: 'https://www.threads.com/@example_author' }],
   ['snippet 超過 120 字', { snippet: '賴'.repeat(121) }],
   ['userId 非數字字串', { userId: 'abcdef' }],
@@ -5155,9 +5155,9 @@ test('L4 審查:備援請求帶 signal（逾時可中斷，不讓 SW 掛在慢�
 // （https://www.threads.com@evil.example/）——後者的實際主機是 evil.example。
 
 const SCAM_LOOKALIKE_URLS = [
-  ['子網域偽裝', 'https://www.threads.com.evil.example/@example_author/post/DdbYCAfgV4M'],
+  ['子網域偽裝', 'https://www.threads.com.evil.example/@example_author/post/DxSyNtH0001'],
   ['userinfo 偽裝', 'https://www.threads.com@evil.example/x'],
-  ['路徑偽裝', 'https://evil.example/https://www.threads.com/@example_author/post/DdbYCAfgV4M'],
+  ['路徑偽裝', 'https://evil.example/https://www.threads.com/@example_author/post/DxSyNtH0001'],
 ];
 
 test('L4 審查:仿冒 threads 的 sender 網址一律忽略（不得只比字串前綴）', async () => {

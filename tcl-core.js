@@ -1034,22 +1034,33 @@
     return entry;
   }
 
+  // entries 與 allowlist 的鍵形狀:Threads 的作者主鍵是純數字字串、1-20 位
+  // (與 background 的 SCAM_USER_ID_PATTERN 同一把尺)。storage 是使用者可編
+  // 輯、也可能被他處寫髒的地方,不驗鍵形狀時任意字串(handle、路徑、標記字
+  // 串)都能混進 entries 當成一筆作者,查表永遠對不上寫入側的 userId。
+  var SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
+
+  function isScamUserIdKey(key) {
+    return typeof key === 'string' && SCAM_USER_ID_PATTERN.test(key);
+  }
+
   // storage 讀回的黑名單正規化成 { version, entries, handleIndex, allowlist }
-  // 四欄形狀。未知欄位不留存,handleIndex 一律由 entries 重建——存下來的反查
-  // 表可能指向已淘汰的條目。
+  // 四欄形狀。未知欄位不留存，handleIndex 一律由 entries 重建——存下來的反查
+  // 表可能指向已淘汰的條目。entries/allowlist 的鍵不是 userId 形狀的整筆剝
+  // 除;handleIndex 只由留下來的條目寫入,因此不會殘留指向被剝除鍵的孤兒項。
   function normalizeScamBlocklist(raw) {
     var out = { version: 1, entries: {}, handleIndex: {}, allowlist: {} };
     if (!isPlainObject(raw)) return out;
     var ids = isPlainObject(raw.entries) ? Object.keys(raw.entries) : [];
     for (var i = 0; i < ids.length; i++) {
-      if (isUnsafeMapKey(ids[i])) continue;
+      if (isUnsafeMapKey(ids[i]) || !isScamUserIdKey(ids[i])) continue;
       var entry = normalizeBlocklistEntry(raw.entries[ids[i]]);
       if (entry) addScamEntry(out, ids[i], entry);
     }
     if (isPlainObject(raw.allowlist)) {
       var keys = Object.keys(raw.allowlist);
       for (var j = 0; j < keys.length; j++) {
-        if (isUnsafeMapKey(keys[j])) continue;
+        if (isUnsafeMapKey(keys[j]) || !isScamUserIdKey(keys[j])) continue;
         var allowed = normalizeScamAllowEntry(raw.allowlist[keys[j]]);
         if (allowed) out.allowlist[keys[j]] = allowed;
       }
@@ -1058,10 +1069,10 @@
   }
 
   // allowlist 單筆值正規化。值是一筆「解除紀錄」:at 為解除時間，handle
-  // 為解除當下的帳號，選項頁「已解除」小節靠這兩欄排序與顯示。0.8.0 之前
-  // 只存布林 true，讀回來一律升成 { at:0, handle:'' }——舊值也是使用者解除
-  // 過的作者，剝掉就等於讓下一次掃描把他復活。true 以外的非物件值剝除，
-  // 欄位髒值各自退回預設（不整筆丟棄，同樣理由）。
+  // 為解除當下的帳號，選項頁「已解除」小節靠這兩欄排序與顯示。開發期曾短暫
+  // 使用布林 true 形狀，未出貨;保留相容分支純屬防禦,讀回 true 一律升成
+  // { at:0, handle:'' }。true 以外的非物件值剝除，欄位髒值各自退回預設（不
+  // 整筆丟棄——條目本身仍是有效的解除資訊）。
   function normalizeScamAllowEntry(raw) {
     if (raw === true) return { at: 0, handle: '' };
     if (!isPlainObject(raw)) return null;

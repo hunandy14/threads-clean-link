@@ -15,8 +15,10 @@
 
   // 貼文詳情頁 permalink 的路徑樣式。字元類與長度上限比照 tcl-core 的
   // STRICT_POST_URL_PATTERN（handle 英數/底線/句點、code 英數/連字號/底
-  // 線，各 1-80 字元）；本檔自帶一份而不 require tcl-core，是因為 content
-  // script 以獨立腳本載入，測試沙箱也不保證有 tcl-core 在場。
+  // 線，各 1-80 字元）；本檔自帶一份而不沿用 tcl-core 的，是因為這裡需要
+  // handle 與 code 兩個 capture group，而 tcl-core 的兩支樣式都不暴露——
+  // STRICT_POST_URL_PATTERN 只捕 code，NORMALIZE_POST_URL_PATTERN 捕的是整
+  // 段路徑。
   // group 1 = handle（不含 '@'），group 2 = post code。尾段容忍尾隨斜線與
   // 整段 query／hash，對齊 tcl-core 的 NORMALIZE_POST_URL_PATTERN——實機
   // href 常帶 `?xmt=` 之類的追蹤參數。
@@ -347,11 +349,12 @@
       var scamGuardEnabled = true;
       var settingsReady = false;
 
-      // 上一輪掃描的結果：{ key, tagged, mainCode }。key 為乾淨 pathname ＋
-      // 本頁作者串各篇的 code 集合——MutationObserver 在 Threads 上每秒可觸
-      // 發數十次，同一頁同一組容器只掃一次、只送一則 scam.hit；SPA 換頁
-      // （pathname 或容器組成變動）才重掃。tagged／mainCode 記住「這一鍵該
-      // 有警示、掛在哪一篇」，同鍵的觸發才補得回被 React 沖掉的 tag。
+      // 上一輪掃描的結果：{ key, tagged, mainCode, userId, handle }。key 為
+      // 乾淨 pathname ＋ 本頁作者串各篇的「code:本文長度」——MutationObserver
+      // 在 Threads 上每秒可觸發數十次，同一頁同一批內容只掃一次、只送一則
+      // scam.hit；SPA 換頁、容器組成變動或本文被補齊才重掃。tagged／mainCode
+      // 記住「這一鍵該有警示、掛在哪一篇」，同鍵的觸發才補得回被 React 沖掉
+      // 的 tag；userId／handle 供解除封鎖時撤掉補回旗標（releaseAllowlistedScan）。
       var lastScan = null;
 
       // 本次 session 是否已經跳過「首次入黑名單」的 toast。
@@ -487,10 +490,17 @@
       }
 
       // ---- 列出本頁屬於該作者、且非巢狀的貼文容器，回傳
-      // [{ container, code }]（文件序）。只讀 a[href]，不碰 script 與本文節
-      // 點，便宜到可以每次 MutationObserver 觸發都跑一遍——冪等鍵就是由它算
-      // 出來的。巢狀容器（引用貼文）的排除方式與 extractThreadFromDom 一
-      // 致，確保兩邊看到的是同一組容器。----
+      // [{ container, code, bodyLength }]（文件序）。冪等鍵就是由它算出來
+      // 的，只讀 a[href] 與本文節點，不碰 script、不跑判定。巢狀容器（引用
+      // 貼文）的排除方式與 extractThreadFromDom 一致，確保兩邊看到的是同一
+      // 組容器。
+      //
+      // bodyLength 是各容器本文的字元數，進冪等鍵當內容指紋。容器組成（路徑
+      // ＋ code 集合）單獨當鍵擋不住 React 的兩段式渲染：容器先掛上、本文後
+      // 補時兩輪的 code 集合完全相同，第一輪掃到的是空白本文，之後整串跳過
+      // ——招攬篇的錨點永遠看不到。本文長度隨補齊而變，指紋跟著變，那一輪就
+      // 會重掃。tag 節點不帶 dir="auto"，掛上或被沖掉都不動指紋；互動列計數
+      // 在 readContainerBody 判為 stop，也不計入。----
       function collectOwnContainers(authorHandle) {
         var wanted = normalizeHandle(authorHandle);
         var out = [];
@@ -502,7 +512,11 @@
           if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
           var permalink = readContainerPermalink(container);
           if (!permalink || normalizeHandle(permalink.handle) !== wanted) continue;
-          out.push({ container: container, code: permalink.code });
+          out.push({
+            container: container,
+            code: permalink.code,
+            bodyLength: readContainerBody(container, wanted).length,
+          });
         }
         return out;
       }
@@ -690,33 +704,40 @@
         // 河道與其他頁面整頁都是別人的貼文片段，不掃。
         if (!pathInfo) return;
 
-        // 冪等判斷必須早於任何昂貴的取值：MutationObserver 在 Threads 上每
-        // 秒可觸發數十次，先用便宜的容器掃描（只讀 a[href]）算出鍵，同鍵直
-        // 接收工。作者 handle 這裡一律取網址列的——SSR 還沒讀，而兩者只可能
-        // 差在大小寫，normalizeHandle 已經抹平。
+        // 冪等判斷必須早於任何昂貴的取值（SSR script 的 JSON 走訪、串文判
+        // 定）：MutationObserver 在 Threads 上每秒可觸發數十次，先用純 DOM
+        // 的容器掃描算出鍵，同鍵直接收工。作者 handle 這裡一律取網址列的
+        // ——SSR 還沒讀，而兩者只可能差在大小寫，normalizeHandle 已經抹平。
         var own = collectOwnContainers(pathInfo.handle);
         // 容器還沒渲染出來：不記冪等鍵，留給下一次 MutationObserver 重試。
         if (own.length === 0) return;
 
+        // 鍵 = 乾淨路徑 ＋ 各容器的 `code:本文長度`。本文長度是內容指紋，讓
+        // 「容器先掛上、本文後補」的兩段式渲染算成不同的一輪。
         var key =
           pathInfo.path +
           '|' +
           own
             .map(function (entry) {
-              return entry.code;
+              return entry.code + ':' + entry.bodyLength;
             })
             .join(',');
 
         if (lastScan && lastScan.key === key) {
           // React 重繪會把我們插進去的節點整個沖掉。頁面層的補回用上一輪的
           // 判定結果就夠，不重跑判定、更不重送 scam.hit。
-          if (lastScan.tagged && !document.querySelector('.' + TAG_CLASS)) {
-            insertTag(containerOf(own, lastScan.mainCode));
+          //
+          // 「警示還在」只問主文卡自己：詳情頁的他人回覆卡也可能因查表掛上
+          // 一顆 tag，拿全文件當證據的話，主文卡那顆被沖掉後仍被回覆卡那顆
+          // 遮住，主文的警示就此永久消失。
+          if (lastScan.tagged) {
+            var main = containerOf(own, lastScan.mainCode);
+            if (main && !main.querySelector('.' + TAG_CLASS)) insertTag(main);
           }
           return;
         }
 
-        var scanState = { key: key, tagged: false, mainCode: null };
+        var scanState = { key: key, tagged: false, mainCode: null, userId: null, handle: null };
         lastScan = scanState;
         claimedMainCode = null;
 
@@ -760,9 +781,12 @@
           if (response && response.allowlisted) return;
 
           // 記下「這一鍵該有警示」與主文卡的 code，之後同鍵的觸發才補得回被
-          // React 沖掉的 tag。
+          // React 沖掉的 tag。作者身分一併記下（userId 缺席時留 handle），
+          // 使用者之後在選項頁解除封鎖時，setBlocklist 靠它撤掉補回旗標。
           scanState.tagged = true;
           scanState.mainCode = items[0].code;
+          scanState.userId = payload.userId;
+          scanState.handle = handle;
           insertTag(containerOf(own, items[0].code));
 
           // 首次把作者寫進黑名單才提示，同一 session 只提示一次；既有作者
@@ -795,21 +819,51 @@
       // 掃：名單換版後，新增的作者要補掛，解除的作者不再被補回。TCLCore 缺席
       // 或正規化失敗時退成空名單：寧可不掛，也不拿未正規化的結構查表。
       function setBlocklist(raw) {
-        var next = null;
+        var list = null;
         try {
           var core = root.TCLCore;
           if (core && typeof core.normalizeScamBlocklist === 'function') {
-            var list = core.normalizeScamBlocklist(raw);
-            if (list && list.handleIndex && Object.keys(list.handleIndex).length > 0) {
-              next = list;
-            }
+            list = core.normalizeScamBlocklist(raw);
           }
         } catch (e) {
-          next = null;
+          list = null;
         }
-        blocklist = next;
+        // 沒有任何可查的作者時查表側留 null，可以立刻收工、不走訪 DOM；解除
+        // 名單的檢查另外拿完整的 list，條目被移進 allowlist 後 handleIndex
+        // 可能已經空了。
+        blocklist =
+          list && list.handleIndex && Object.keys(list.handleIndex).length > 0 ? list : null;
         listedContainers = newContainerSet();
         taggedContainers = newContainerSet();
+        releaseAllowlistedScan(list);
+      }
+
+      // 掃描命中掛上的 tag 被 React 沖掉後，會由同鍵的下一次觸發補回。補回
+      // 是還原上一輪判定，不是重新判定——使用者在選項頁解除封鎖之後那個判定
+      // 已被否決，補回旗標必須跟著撤掉。已經掛在頁面上的 tag 不回收，與查表
+      // 側一致：解除只影響之後的掛載。
+      //
+      // 比對主鍵是 userId；SSR 取不到而由 background 走匿名備援補查時本頁只
+      // 有 handle，改以解除紀錄自己存的 handle 比對（解除會把條目移出
+      // entries，handleIndex 那條路這時已經查不到）。
+      function releaseAllowlistedScan(list) {
+        if (!lastScan || !lastScan.tagged) return;
+        if (!list || !list.allowlist) return;
+        if (lastScan.userId) {
+          if (Object.prototype.hasOwnProperty.call(list.allowlist, lastScan.userId)) {
+            lastScan.tagged = false;
+          }
+          return;
+        }
+        var wanted = normalizeHandle(lastScan.handle);
+        if (!wanted) return;
+        var ids = Object.keys(list.allowlist);
+        for (var i = 0; i < ids.length; i++) {
+          if (normalizeHandle(list.allowlist[ids[i]].handle) === wanted) {
+            lastScan.tagged = false;
+            return;
+          }
+        }
       }
 
       // 一次 O(1) 查表：handle 小寫化後查 handleIndex 得 userId，userId 不在
