@@ -255,6 +255,33 @@
     return true;
   }
 
+  // 節點自己或任一祖先不渲染時為真：帶 hidden 屬性（UA 樣式即
+  // display:none），或行內 style.display === 'none'。hidden 用
+  // closest('[hidden]') 一次問完祖先鏈；行內 display 沒有對應的選擇器，沿
+  // parentElement 逐層檢查——display:none 不繼承，但整棵子樹都不產生 box。
+  //
+  // 判準只讀屬性與行內樣式，不用 checkVisibility() 或 getComputedStyle()：
+  // 前者 Chrome 105 才有（本擴充的下限是 103），後者要真正的排版引擎，Node
+  // 測試環境給不出來。closest 缺席的環境由迴圈內的 hasAttribute 兜底。
+  function isHiddenNode(node) {
+    if (!node || node.nodeType !== 1) return false;
+    var hasClosest = typeof node.closest === 'function';
+    if (hasClosest && node.closest('[hidden]')) return true;
+    var cursor = node;
+    while (cursor && cursor.nodeType === 1) {
+      if (
+        !hasClosest &&
+        typeof cursor.hasAttribute === 'function' &&
+        cursor.hasAttribute('hidden')
+      ) {
+        return true;
+      }
+      if (cursor.style && cursor.style.display === 'none') return true;
+      cursor = cursor.parentElement || cursor.parentNode;
+    }
+    return false;
+  }
+
   // 從詳情頁 DOM 取出作者自己的自回覆串，回傳 [{ code, text, position }]，
   // 依 position 升冪。只收 handle 等於 authorHandle（不分大小寫、'@' 前綴
   // 可有可無）且非巢狀的容器；末篇實測無徽章，以收集順序補 position。給
@@ -274,6 +301,8 @@
         // 器，就代表它被包在另一篇裡面。
         var parent = container.parentElement || container.parentNode;
         if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
+        // 隱藏子樹裡的容器是舊路由層的殘留，不是這一串的一篇。
+        if (isHiddenNode(container)) continue;
 
         var permalink = readContainerPermalink(container);
         if (!permalink || normalizeHandle(permalink.handle) !== wanted) continue;
@@ -318,6 +347,7 @@
     stripPositionBadge: stripPositionBadge,
     extractThreadFromDom: extractThreadFromDom,
     buildThreadText: buildThreadText,
+    isHiddenNode: isHiddenNode,
   };
 
   // ============================================================
@@ -386,10 +416,15 @@
       // 查表對頁面唯一會寫的 tag 提示文案。
       var LIST_TAG_TITLE_KEY = 'scamBlockedByList';
 
-      // 掃描已判定命中、正等 background 回應的主文卡 code。掃描的 tag 要等回
-      // 應才掛得上，查表卻是同步的——不讓位的話冪等守衛會讓查表那顆先佔位，
-      // 使用者就看不到資訊量較大的 scamTagTooltip。
+      // 掃描已判定命中、正等 background 回應的主文卡。掃描的 tag 要等回應才
+      // 掛得上，查表卻是同步的——不讓位的話冪等守衛會讓查表那顆先佔位，使用
+      // 者就看不到資訊量較大的 scamTagTooltip。
+      //
+      // 讓位對象記的是容器節點：SPA 留下的隱藏舊卡與主文卡 code 相同，只比
+      // code 會連可見主文卡一起讓掉，兩條路都不掛就沒人掛了。容器取不到時
+      // （collectOwnContainers 這一輪沒收到對應節點）退回以 code 讓位。
       var claimedMainCode = null;
+      var claimedMainContainer = null;
 
       // onChanged 是否已經送過黑名單。init 的 storage 讀取是非同步的，
       // background 可能在回呼結算前就把新名單寫好並廣播；回呼帶回的是「發出讀
@@ -500,6 +535,12 @@
       // 貼文）的排除方式與 extractThreadFromDom 一致，確保兩邊看到的是同一
       // 組容器。
       //
+      // 隱藏子樹內的容器一律不收：由河道以 SPA 進入詳情頁時，Threads 把河道
+      // 那一層留在文件裡（祖先帶 hidden 屬性與行內 display:none），同一則貼
+      // 文因而有兩張 code 相同的卡，看不見的舊卡文件序還在可見主文卡之前。不
+      // 濾掉的話冪等鍵會把舊卡的殘影算進去，警示也會掛進使用者看不到的那一
+      // 張。
+      //
       // bodyLength 是各容器本文的字元數，進冪等鍵當內容指紋。容器組成（路徑
       // ＋ code 集合）單獨當鍵擋不住 React 的兩段式渲染：容器先掛上、本文後
       // 補時兩輪的 code 集合完全相同，第一輪掃到的是空白本文，之後整串跳過
@@ -515,6 +556,7 @@
           var container = containers[i];
           var parent = container.parentElement || container.parentNode;
           if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
+          if (isHiddenNode(container)) continue;
           var permalink = readContainerPermalink(container);
           if (!permalink || normalizeHandle(permalink.handle) !== wanted) continue;
           out.push({
@@ -526,9 +568,13 @@
         return out;
       }
 
+      // own 已經濾過隱藏容器，這裡再擋一次純粹是防呆：呼叫端換成別處來的清
+      // 單時，警示照樣不會掛進看不見的卡。
       function containerOf(own, code) {
         for (var i = 0; i < own.length; i++) {
-          if (own[i].code === code) return own[i].container;
+          if (own[i].code !== code) continue;
+          if (isHiddenNode(own[i].container)) continue;
+          return own[i].container;
         }
         return null;
       }
@@ -737,7 +783,12 @@
           // 遮住，主文的警示就此永久消失。
           if (lastScan.tagged) {
             var main = containerOf(own, lastScan.mainCode);
-            if (main && !main.querySelector('.' + TAG_CLASS)) insertTag(main);
+            if (main) {
+              // 容器可能已被 React 換成新節點，讓位對象跟著改指，否則查表會
+              // 在新容器上再掛一顆。
+              claimedMainContainer = main;
+              if (!main.querySelector('.' + TAG_CLASS)) insertTag(main);
+            }
           }
           return;
         }
@@ -745,6 +796,7 @@
         var scanState = { key: key, tagged: false, mainCode: null, userId: null, handle: null };
         lastScan = scanState;
         claimedMainCode = null;
+        claimedMainContainer = null;
 
         var ssrRoot = readSsrRoot(pathInfo);
         // 作者 handle 以 SSR 為準（大小寫與網址列可能不同），SSR 缺席時退回
@@ -764,6 +816,7 @@
 
         // 同步認領主文卡：同一輪稍後跑的查表要讓位給這一顆。
         claimedMainCode = items[0].code;
+        claimedMainContainer = containerOf(own, items[0].code);
 
         var payload = {
           type: 'scam.hit',
@@ -894,7 +947,7 @@
       // 詳情頁的分工：同一串的自回覆由 scan() 代表（只掛主文卡一顆），這裡跳
       // 過，免得每一篇各掛一顆；但主文卡本身仍查表——作者已在黑名單、這一串卻
       // 沒踩到判定時，河道看得到警示、點進去卻沒有是更糟的體驗。掃描命中時它
-      // 已經把主文卡的 code 記在 claimedMainCode，查表讓位，讓資訊量較大的
+      // 已經認領了主文卡那一張容器，查表對它讓位，讓資訊量較大的
       // scamTagTooltip 掛得上去。----
       function scanBlocklist() {
         if (!settingsReady || !scamGuardEnabled || !blocklist) return;
@@ -919,6 +972,8 @@
           // 一致。被引用者是誰不影響外層卡的作者，兩邊都不該掛。
           var parent = container.parentElement || container.parentNode;
           if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
+          // 隱藏子樹（SPA 留下的舊路由層）裡的卡片使用者看不到，標了也是白標。
+          if (isHiddenNode(container)) continue;
 
           var permalink = readContainerPermalink(container);
           if (!permalink) {
@@ -929,7 +984,11 @@
 
           var handle = normalizeHandle(permalink.handle);
           if (ownerHandle && handle === ownerHandle && permalink.code !== pathInfo.code) continue;
-          if (permalink.code === claimedMainCode) continue;
+          if (claimedMainContainer) {
+            if (container === claimedMainContainer) continue;
+          } else if (claimedMainCode && permalink.code === claimedMainCode) {
+            continue;
+          }
           if (!isBlockedHandle(handle)) continue;
 
           insertTag(container, LIST_TAG_TITLE_KEY);

@@ -150,6 +150,29 @@ function text(value) {
   return { nodeType: 3, nodeName: '#text', textContent: value, childNodes: [] };
 }
 
+// 「這個節點在版面上不存在」：自己或任一祖先帶 hidden 屬性，或行內樣式
+// display:none。語意與真實 DOM 一致——[hidden] 的 UA 樣式就是
+// display:none，而 display:none 會讓整棵子樹都不產生 box，因此判斷必須沿
+// 祖先鏈往上走，不能只看節點自己。
+function isRenderedHidden(node) {
+  let cursor = node;
+  while (cursor && cursor.nodeType === 1) {
+    if (typeof cursor.hasAttribute === 'function' && cursor.hasAttribute('hidden')) return true;
+    if (cursor.style && cursor.style.display === 'none') return true;
+    cursor = cursor.parentElement;
+  }
+  return false;
+}
+
+// 有 box 時的量測值，數值本身無意義，只用來與「沒有 box」區分。
+function fakeRect() {
+  return { x: 0, y: 0, width: 240, height: 80, top: 0, left: 0, right: 240, bottom: 80 };
+}
+
+function emptyRect() {
+  return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+}
+
 function el(tag, attributes, children) {
   const node = {
     nodeType: 1,
@@ -238,6 +261,19 @@ function el(tag, attributes, children) {
     },
     addEventListener() {},
     removeEventListener() {},
+    // ---- 版面量測：display:none 的子樹在真實 DOM 裡沒有 box，
+    // getClientRects() 為空陣列、getBoundingClientRect() 全零、offsetParent
+    // 為 null、offsetWidth／offsetHeight 為 0、checkVisibility() 為 false。
+    // 假件照同一套語意給值，可見性判準用哪一種寫法都測得出差別。----
+    getClientRects() {
+      return isRenderedHidden(node) ? [] : [fakeRect()];
+    },
+    getBoundingClientRect() {
+      return isRenderedHidden(node) ? emptyRect() : fakeRect();
+    },
+    checkVisibility() {
+      return !isRenderedHidden(node);
+    },
     style: {},
     classList: {
       add(...names) {
@@ -289,6 +325,35 @@ function el(tag, attributes, children) {
       },
       set(value) {
         node.attributes[attribute] = String(value);
+      },
+    });
+  });
+  // hidden 是布林 IDL 屬性，與 id／title 那組字串屬性的反射規則不同：讀取
+  // 只問屬性在不在，寫入 true 等同 setAttribute('hidden', '')、寫入 false
+  // 等同 removeAttribute('hidden')。`[hidden]` 選擇器與
+  // getAttribute('hidden') 因此都看得到空字串值（與真實 DOM 一致）。
+  Object.defineProperty(node, 'hidden', {
+    get() {
+      return node.hasAttribute('hidden');
+    },
+    set(value) {
+      if (value) node.attributes.hidden = '';
+      else delete node.attributes.hidden;
+    },
+  });
+  // offsetParent／offsetWidth／offsetHeight：沒有 box 就沒有 offsetParent，
+  // 尺寸一律 0。有 box 時 offsetParent 取最近的元素祖先（假件不模擬
+  // position 的定位脈絡，本檔的判準只分得清 null 與非 null）。
+  Object.defineProperty(node, 'offsetParent', {
+    get() {
+      return isRenderedHidden(node) ? null : node.parentElement;
+    },
+  });
+  ['offsetWidth', 'offsetHeight'].forEach((property) => {
+    Object.defineProperty(node, property, {
+      get() {
+        if (isRenderedHidden(node)) return 0;
+        return property === 'offsetWidth' ? fakeRect().width : fakeRect().height;
       },
     });
   });
@@ -1184,6 +1249,25 @@ function createScamGuardEnv(options) {
     navigator: { language: 'zh-TW' },
     document: doc,
     MutationObserver: FakeMutationObserver,
+    // 只回節點「自己」的 display：真實的 getComputedStyle 不把祖先的
+    // display:none 繼承下來，隱藏層底下的子節點自己的 computed display 仍
+    // 是 block。帶 hidden 屬性的節點自己則是 none（UA 樣式）。
+    getComputedStyle(node) {
+      let display = 'block';
+      if (node && node.style && node.style.display) display = node.style.display;
+      else if (node && typeof node.hasAttribute === 'function' && node.hasAttribute('hidden')) {
+        display = 'none';
+      }
+      return {
+        display,
+        visibility: 'visible',
+        getPropertyValue(name) {
+          if (name === 'display') return display;
+          if (name === 'visibility') return 'visible';
+          return '';
+        },
+      };
+    },
     setTimeout,
     clearTimeout,
     setInterval,
@@ -2708,4 +2792,221 @@ test('S8：容器組成不變、本文由空白補成全文時要重掃並命中
   assert.equal(env.hits().length, 1, '重掃命中後要送出 scam.hit');
   assert.equal(env.tags().length, 1, '命中後主文卡要掛上一顆警示');
   assert.equal(tagsIn(cardsOf(env)[0]).length, 1, '那一顆掛在主文卡內');
+});
+
+// ============================================================
+// 【第六波：SPA 由河道進詳情頁留下的隱藏舊層】
+//
+// staging 真機實測：從河道點卡片以 SPA 進入詳情頁時，Threads 不拆掉河道那
+// 一層 DOM，而是把它留在文件裡（外層祖先帶 hidden 屬性＋display:none），再
+// 把詳情頁那一層渲染在後面。於是文件中同時存在兩張 code 相同的主文卡：文
+// 件序在前的是看不見的舊卡（沒有 box、高度 0），後面那張才是使用者真正看
+// 到的主文卡。
+//
+// 【與實作的契約】掃描、補回、查表三條路都只認使用者看得到的那張卡：
+//   容器收集：要濾掉隱藏子樹（自己或祖先帶 hidden 屬性、或 display:none）
+//     內的容器，不能只憑文件序取第一個 code 相符者。
+//   判定與冪等：本文擷取與冪等鍵只看可見卡——舊卡的殘影不得混進判定文字，
+//     舊卡本文變動也不算新資訊、不該觸發重掃。
+//   查表讓位：查表只對「掃描實際掛上的那一張」讓位；同 code 的隱藏舊卡不
+//     算數，不得連可見卡一起讓掉，讓完就沒人掛了。
+//
+// 【假 DOM 的可見性】el() 補了 hidden 布林屬性、getClientRects()／
+// getBoundingClientRect()／offsetParent／offsetWidth／offsetHeight／
+// checkVisibility()，sandbox 補了 getComputedStyle：語意比照真實 DOM——
+// [hidden] 的 UA 樣式是 display:none，display:none 的整棵子樹都沒有 box，
+// 而 getComputedStyle 只回節點自己的 display、不把祖先的繼承下來。實作要用
+// 哪一種可見性判準都測得出差別。
+// ============================================================
+
+// 隱藏舊卡的本文與詳情頁那張不同（河道卡只有摘要），用來驗判定文字取的是
+// 哪一張。
+const STALE_BODY = '河道卡片上的摘要：離職那年我把十年的維修筆記整理成一套選股流程…';
+
+// 河道那一層被留在文件裡的形狀：外層祖先同時帶 hidden 屬性與行內
+// display:none（實機兩者皆有），子樹本身結構完好，只是不渲染。
+function createHiddenLayer(children) {
+  const layer = el('div', { 'data-tcl-fake-stale-layer': 'true', hidden: '' }, children);
+  layer.style.display = 'none';
+  return layer;
+}
+
+// 詳情頁的 body 子節點：SSR script ＋ 隱藏的河道舊卡（與主文同 code、文件
+// 序在前）＋ 正常的詳情頁容器樹。
+function createHiddenRoutePage(options) {
+  const settings = options || {};
+  const posts = settings.posts || MAIN_POSTS;
+  const children = [];
+  if (!settings.withoutSsr) children.push(createSsrScript(posts[0]));
+  children.push(
+    createHiddenLayer([
+      createPostContainer({
+        handle: AUTHOR,
+        code: posts[0].code,
+        body: settings.staleBody === undefined ? STALE_BODY : settings.staleBody,
+        actionRow: true,
+        dirAutoTimestamp: true,
+      }),
+    ])
+  );
+  children.push(createScanDom(posts));
+  return children;
+}
+
+function staleCardOf(env) {
+  return env.document.querySelector(
+    '[data-tcl-fake-stale-layer="true"] ' + CONTAINER_SELECTOR
+  );
+}
+
+// 使用者看得到的卡片（依文件序）。測試自己用 closest('[hidden]') 判斷，不
+// 預設實作採哪一種判準。
+function visibleCardsOf(env) {
+  return cardsOf(env).filter((card) => !card.closest('[hidden]'));
+}
+
+function permalinkCodeOf(card) {
+  const anchors = card.querySelectorAll('a[href]');
+  for (const anchor of anchors) {
+    const match = /\/post\/([A-Za-z0-9_-]+)/.exec(anchor.getAttribute('href') || '');
+    if (match) return match[1];
+  }
+  return null;
+}
+
+// 兩張同 code 的卡片確實一隱一現——假 DOM 真的表達得出這件事，紅燈才落在
+// 受測行為上，而不是假件自己不成立。
+function assertHiddenRouteShape(env) {
+  const stale = staleCardOf(env);
+  const main = visibleCardsOf(env)[0];
+  assert.ok(stale, '前提：文件裡留著河道那一層的舊卡');
+  assert.ok(main, '前提：文件裡有使用者看得到的主文卡');
+  assert.equal(permalinkCodeOf(stale), permalinkCodeOf(main), '前提：兩張卡的貼文代碼相同');
+  assert.equal(cardsOf(env).indexOf(stale), 0, '前提：隱藏舊卡的文件序在可見主文卡之前');
+  assert.ok(stale.closest('[hidden]'), '前提：舊卡落在 hidden 子樹內');
+  assert.equal(stale.getClientRects().length, 0, '前提：隱藏舊卡沒有 box');
+  assert.equal(stale.offsetParent, null, '前提：隱藏舊卡沒有 offsetParent');
+  assert.equal(stale.checkVisibility(), false, '前提：隱藏舊卡不可見');
+  assert.equal(main.getClientRects().length, 1, '前提：可見主文卡有 box');
+  assert.equal(main.checkVisibility(), true, '前提：可見主文卡可見');
+  return { stale, main };
+}
+
+test('隱藏舊卡 1：掃描命中的 tag 要掛在可見主文卡，不得掛進 hidden 子樹', async () => {
+  const env = loadEnv({ page: createHiddenRoutePage() });
+  await env.flush();
+
+  const { stale, main } = assertHiddenRouteShape(env);
+  assert.equal(env.hits().length, 1, '前提：這一串命中串文判定，送出一則 scam.hit');
+
+  assert.equal(
+    tagsIn(main).length,
+    1,
+    '警示要掛在使用者看得到的那張主文卡上，掛進隱藏舊卡等於沒掛'
+  );
+  assert.equal(tagsIn(stale).length, 0, '隱藏舊卡不得掛 tag');
+  assert.equal(env.tags().length, 1, '整頁只掛一顆');
+});
+
+test('隱藏舊卡 2：tag 被沖掉後補回的也是可見主文卡', async () => {
+  const env = loadEnv({ page: createHiddenRoutePage() });
+  await env.flush();
+
+  env.tags().forEach((tag) => tag.parentNode.removeChild(tag));
+  assert.equal(env.tags().length, 0, '前提：頁面上的 tag 已被外力沖掉');
+
+  env.triggerObserver();
+  await env.flush();
+
+  const { stale, main } = assertHiddenRouteShape(env);
+  assert.equal(tagsIn(main).length, 1, '補回的那一顆同樣要落在可見主文卡上');
+  assert.equal(tagsIn(stale).length, 0, '補回不得補到隱藏舊卡');
+  assert.equal(env.tags().length, 1, '補回之後整頁仍只有一顆');
+  assert.equal(env.hits().length, 1, '補 tag 不得重送 scam.hit');
+});
+
+test('隱藏舊卡 3：查表只對掃描實際掛上的那一張讓位，可見主文卡不得兩頭落空', async () => {
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: createHiddenRoutePage(),
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  const { stale, main } = assertHiddenRouteShape(env);
+  assert.equal(env.hits().length, 1, '前提：這一串命中串文判定');
+
+  assert.equal(
+    tagsIn(main).length,
+    1,
+    '作者已在名單、串文也命中時，可見主文卡至少要有一顆（掃描或查表掛的都算）'
+  );
+  assert.equal(tagsIn(stale).length, 0, '隱藏舊卡不得掛 tag');
+  assert.equal(env.tags().length, 1, '同一串上不得出現第二顆');
+});
+
+test('隱藏舊卡 4：判定文字與冪等鍵只看可見卡，舊卡的殘影不得混進來', async () => {
+  const env = loadEnv({ page: createHiddenRoutePage() });
+  await env.flush();
+
+  assertHiddenRouteShape(env);
+  assert.equal(env.detectCalls.length, 1, '前提：只跑過一輪判定');
+
+  const scanned = env.detectCalls[env.detectCalls.length - 1];
+  assert.ok(
+    scanned.includes(SCAM_TAIL.trim()),
+    'buildThreadText 走的是可見卡，末篇的招攬行必須在判定文字裡'
+  );
+  assert.ok(!scanned.includes(STALE_BODY), '隱藏舊卡的摘要不得混進判定文字');
+  assert.equal(scanned, EXPECTED_THREAD_TEXT, '判定文字剛好是可見的六篇');
+
+  // 冪等鍵同理：舊卡的本文再怎麼變都不是新資訊，不該害整串重掃。
+  const staleBody = staleCardOf(env)
+    .querySelectorAll('[dir="auto"]')
+    .find((node) => node.textContent.indexOf(STALE_BODY) === 0);
+  assert.ok(staleBody, '前提：找得到隱藏舊卡的本文節點');
+  staleBody.textContent = STALE_BODY + '（河道版摘要又被改寫了一次）';
+
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '隱藏舊卡的本文變動不得改變冪等鍵、觸發重掃');
+  assert.equal(env.hits().length, 1, '更不得重送 scam.hit');
+  assert.equal(env.tags().length, 1, '整頁仍只有一顆 tag');
+});
+
+test('隱藏舊卡 5：河道查表跳過隱藏子樹裡的卡片，只標使用者看得到的那張', async () => {
+  const code = 'DxSyNtH0009';
+  const body = '河道上的一則貼文，作者已在本機黑名單裡。';
+  const stale = createPostContainer({
+    handle: BLOCKED_HANDLE,
+    code,
+    body,
+    actionRow: true,
+    dirAutoTimestamp: true,
+  });
+  const visible = createPostContainer({
+    handle: BLOCKED_HANDLE,
+    code,
+    body,
+    actionRow: true,
+    dirAutoTimestamp: true,
+  });
+  const root = el('div', { id: 'feed-root' }, [createHiddenLayer([stale]), visible]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.ok(stale.closest('[hidden]'), '前提：舊卡落在 hidden 子樹內');
+  assert.equal(stale.getClientRects().length, 0, '前提：隱藏舊卡沒有 box');
+  assert.equal(visible.getClientRects().length, 1, '前提：可見卡有 box');
+
+  assert.equal(tagsIn(visible).length, 1, '看得到的那張要掛 tag');
+  assert.equal(tagsIn(stale).length, 0, '隱藏子樹裡的卡片不得掛 tag');
+  assert.equal(env.tags().length, 1, '整頁只有一顆');
 });
