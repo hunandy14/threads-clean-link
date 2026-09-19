@@ -793,9 +793,9 @@
           if (lastScan.tagged) {
             var main = containerOf(own, lastScan.mainCode);
             if (main) {
-              // 容器可能已被 React 換成新節點，讓位對象跟著改指：不改指的
-              // 話讓位落在已經離開文件的舊節點上，使用者看到的新卡會由查表
-              // 先掛上資訊量較少的那一顆。
+              // 容器可能已被 React 換成新節點，認領跟著拉回活節點：認領留
+              // 在已離開文件的舊節點上，讓位就退化成比 code——同 code 的其
+              // 他可見卡（返回河道時河道層那張）會被一起誤殺。
               claimedMainContainer = main;
               if (!main.querySelector('.' + TAG_CLASS)) insertTag(main);
             }
@@ -855,7 +855,21 @@
           scanState.mainCode = items[0].code;
           scanState.userId = payload.userId;
           scanState.handle = handle;
-          insertTag(containerOf(own, items[0].code));
+
+          // own 是送出訊息當下的容器清單，回應落地前 React 可能已經把主文卡
+          // 換成新節點。這裡重查一次當下的容器再掛：沿用 own 的話 tag 會插
+          // 進已離開文件的舊節點（containerOf 只濾隱藏，認不得「已不在文件
+          // 裡」），使用者看到的是一段整頁零警示的空窗——要等下一次
+          // MutationObserver 觸發才由冪等短路那條路補回，而那不知道什麼時候
+          // 來。認領一併拉到活節點上，讓位才不會退化成比 code。容器根本還沒
+          // 渲染出來時排下一輪重試。
+          var target = containerOf(collectOwnContainers(handle), items[0].code);
+          if (target) {
+            claimedMainContainer = target;
+            insertTag(target);
+          } else {
+            scheduleScan();
+          }
 
           // 首次把作者寫進黑名單才提示，同一 session 只提示一次；既有作者
           // 只補證據（added:false）、寫入被拒或送訊息失敗都不提示。

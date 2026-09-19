@@ -3135,6 +3135,9 @@ test('返回河道：認領不到容器時，陳舊的 code 不得讓掉河道�
     local: { scamBlocklist: buildBlocklist() },
   });
   await env.waitFor(() => env.hits().length === 1, { label: '詳情頁送出的 scam.hit' });
+  // hits 在送出當下就記了一筆，掛 tag 要等回應回呼；等整條鏈結算完，「沒有
+  // 容器可掛」這條前提才問得準。
+  await env.flush();
   assert.equal(env.tags().length, 0, '前提：主文卡缺席，掃描的 tag 沒有容器可掛');
 
   env.setPathname(FEED_PATH);
@@ -3212,10 +3215,12 @@ test('讓位：認領的容器被 React 換掉後，同 code 的新容器照樣�
   await env.waitFor(() => env.hits().length === 1, { label: '詳情頁送出的 scam.hit' });
   assert.ok(replacement, '前提：主文卡已被換成新節點');
   assert.equal(replacement.parentElement, detailRoot, '前提：新節點就位');
-  await env.flush();
 
-  env.triggerObserver();
-  await env.waitFor(() => tagsIn(replacement).length === 1, { label: '新主文卡的 tag' });
+  // 回呼落地就要把 tag 掛上換上來的那一張：不靠測試再觸發一次 observer——真
+  // 實頁面上下一次觸發不知道什麼時候來，這段空窗使用者看到的是整頁零警示。
+  await env.waitFor(() => tagsIn(replacement).length === 1, {
+    label: '回呼落地後新主文卡的 tag',
+  });
 
   assert.equal(
     tagsIn(replacement)[0].getAttribute('title'),
@@ -3223,6 +3228,12 @@ test('讓位：認領的容器被 React 換掉後，同 code 的新容器照樣�
     '換上來的主文卡要拿到掃描那一顆（資訊量較大的 scamTagTooltip），不得被查表先佔位'
   );
   assert.equal(env.tags().length, 1, '整頁只有那一顆');
+
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(tagsIn(replacement).length, 1, '後續觸發不得越掛越多');
+  assert.equal(env.tags().length, 1, '整頁仍只有那一顆');
   assert.equal(env.hits().length, 1, '換節點不得重送 scam.hit');
 });
 
@@ -3267,4 +3278,55 @@ test('查表補回：卡片被收進隱藏層後，「標過」的記憶不得�
     '補回的仍是查表那一顆'
   );
   assert.equal(env.tags().length, 1, '整頁只有那一顆');
+});
+
+test('往返：河道標過的同一篇，進詳情頁補回的是掃描那一顆，不是查表那一顆', async () => {
+  const route = createTwoLayerRoute();
+  setLayerHidden(route.feedLayer, false);
+  setLayerHidden(route.detailLayer, true);
+  const env = loadFeedEnv({
+    pathname: FEED_PATH,
+    page: route.children,
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+  });
+
+  await env.waitFor(() => tagsIn(route.feedCard).length === 1, { label: '河道卡的查表 tag' });
+  assert.equal(
+    tagsIn(route.feedCard)[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '前提：河道那張先拿到查表 tag'
+  );
+
+  // 點進這一篇：河道層原地收起來（內容由 React 卸載，插進去的 tag 跟著消
+  // 失），詳情層攤開。
+  tagsIn(route.feedCard).forEach((tag) => tag.parentNode.removeChild(tag));
+  env.setPathname(DETAIL_PATH);
+  setLayerHidden(route.feedLayer, true);
+  setLayerHidden(route.detailLayer, false);
+  env.triggerObserver();
+
+  const mainCard = route.detailLayer.querySelectorAll(CONTAINER_SELECTOR)[0];
+  await env.waitFor(() => tagsIn(mainCard).length === 1, { label: '主文卡的掃描 tag' });
+  assert.equal(env.hits().length, 1, '詳情頁這一串命中，送出一則 scam.hit');
+  assert.equal(
+    tagsIn(mainCard)[0].getAttribute('title'),
+    TAG_TOOLTIP,
+    '作者已在名單、串文也命中時，主文卡要拿到資訊量較大的掃描那一顆'
+  );
+
+  // React 沖掉主文卡那一顆：補回的仍要是掃描那一顆，查表不得趁隙頂上。
+  tagsIn(mainCard).forEach((tag) => tag.parentNode.removeChild(tag));
+  env.triggerObserver();
+  await env.waitFor(() => tagsIn(mainCard).length === 1, { label: '補回主文卡的 tag' });
+
+  assert.equal(
+    tagsIn(mainCard)[0].getAttribute('title'),
+    TAG_TOOLTIP,
+    '補回的是 scamTagTooltip，不是查表的 scamBlockedByList'
+  );
+  assert.equal(tagsIn(route.feedCard).length, 0, '收起來的河道卡不得被補回查表 tag');
+  assert.deepEqual(hiddenTagsOf(env), [], '隱藏層裡不得有任何 tag');
+  assert.equal(env.tags().length, 1, '整頁只有主文卡那一顆');
 });
