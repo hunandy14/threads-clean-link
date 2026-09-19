@@ -1,0 +1,56 @@
+{
+  "note": "Threads 登入態貼文詳情頁自回覆串的抓取樣本（只保留 code／userId／username／position／selfThreadLength／captionText，無 cookie／token／頭像 URL）。第 1–5 篇 captionText 已截短至 120 字加刪節號，只留足夠辨識的開頭；第 6 篇（招攬篇）是判定靶，原樣保留全文。",
+  "capturedAt": "2026-09-19",
+  "url": "https://www.threads.com/@dakkaknight/post/DdbYCAfgV4M",
+  "selfThreadLength": 6,
+  "posts": [
+    {
+      "code": "DdbYCAfgV4M",
+      "userId": "64349037924",
+      "username": "dakkaknight",
+      "position": 1,
+      "selfThreadLength": 6,
+      "captionText": "我在台積電蹲了十四年的設備，上個月終於滾了。\n先說我不是什麼主管，就一個小小的設備工程師，學歷也不怎麼樣，龍華科大畢業，當初能進台積電自己都覺得是祖墳冒煙。那時候台積電還沒現在這麼難進，我靠著當兵同梯的學長內推，面試的時候連英文自我介紹都講…"
+    },
+    {
+      "code": "DdbYCvvgR-i",
+      "userId": "64349037924",
+      "username": "dakkaknight",
+      "position": 2,
+      "selfThreadLength": 6,
+      "captionText": "前幾年還好，年輕體力撐得住，一天睡四個小時也照樣活跳跳。但過了三十五歲之後，真的不行了。腰酸背痛是基本，手腕因為長期鎖螺絲、搬parts，已經變成慢性發炎。我有一陣子打鍵盤手指都會麻，去醫院檢查，醫生說腕隧道症候群，建議我開刀。我沒開，因為…"
+    },
+    {
+      "code": "DdbYD8XgSl2",
+      "userId": "64349037924",
+      "username": "dakkaknight",
+      "position": 3,
+      "selfThreadLength": 6,
+      "captionText": "後來壓垮我的最後一根稻草，是前年部門調來一個新主管，不到四十歲，空降的，聽說是上面某個副總的親戚。他很喜歡在開會的時候拍桌子，說我們設備都太散漫，要效法什麼鴻海的管理方式。有一次我負責的機台PM延誤，因為備品缺料，我已經跟供應商催了三天，他…"
+    },
+    {
+      "code": "DdbYE8pAdxT",
+      "userId": "64349037924",
+      "username": "dakkaknight",
+      "position": 4,
+      "selfThreadLength": 6,
+      "captionText": "有一天晚上，我無聊打開電腦看股票。我本來就有在買股票，但都是聽同事報明牌，賺小賠大。那天我看著一堆設備廠的線圖，突然想到一件事：我在台積電這十四年，每天都在跟設備商打交道。哪間公司的機台最穩、哪間的客服最爛、哪間的parts交期最會拖、哪間…"
+    },
+    {
+      "code": "DdbYF6sAVys",
+      "userId": "64349037924",
+      "username": "dakkaknight",
+      "position": 5,
+      "selfThreadLength": 6,
+      "captionText": "我現在沒有固定工作，偶爾接一些設備維修的外包，收入比以前少很多，但時間是自己的。我每天接送小孩、煮飯、看盤，生活很規律。說真的，我沒有後悔離職。台積電給了我很多，但也拿走了我很多。我不恨它，只是覺得自己醒了。\n如果你也是科技業的，每天在fa…"
+    },
+    {
+      "code": "DdbYG_QgSQy",
+      "userId": "64349037924",
+      "username": "dakkaknight",
+      "position": 6,
+      "selfThreadLength": 6,
+      "captionText": "如果你也在科技業，每天在fab裡懷疑人生，或想用自己的產業經驗，找出真正的波段黑馬股。我把這段從台積電離職後，用設備眼光重新研究股票、慢慢累積的過程，整理成文字。不報明牌、不收費、不代操，就是一個從無塵室走出來的設備工程師，跟你分享怎麼用查機台的耐心，在市場裡慢慢累積。"
+    }
+  ]
+}
