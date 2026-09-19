@@ -2547,3 +2547,165 @@ test('河道 14：readSettings 回呼前 onChanged 先送新名單，回呼落�
     '啟動讀取帶回的舊快照不得蓋掉 onChanged 已經送到的新名單'
   );
 });
+
+// ============================================================
+// 【第六波：整合審查（F1／S8）釘下的紅燈】
+//
+// 【與實作的契約（本段新增的部分）】
+//   F1 補回的作用域：scan() 的「同鍵補回 tag」以 document 全文件找
+//     `.tcl-scam-tag` 當「警示還在」的證據，但頁面上的 tag 不只一顆來源——
+//     詳情頁的他人回覆卡也可能因查表掛上一顆。補回的判準必須限縮到「主文
+//     卡那一顆」（lastScan.mainCode 指的那張卡內），否則 React 沖掉主文卡
+//     的警示後，全文件仍找得到回覆卡那顆，主文卡的警示就此永久消失。
+//   F1 連帶——解除後不得補回：使用者在選項頁解除封鎖（storage 的
+//     `scamBlocklist.allowlist[userId]` 多一筆解除紀錄）之後，已掛的 tag 被
+//     React 沖掉就該是終局。補回是「還原上一輪判定」，不是「重新判定」，因
+//     此必須先確認該作者仍未被使用者否決。
+//   S8 冪等鍵要涵蓋本文：冪等鍵只取 pathname ＋ 容器 code 集合時，「容器先
+//     掛上、本文後補」這個 React 常見的兩段式渲染會被當成同一輪而整串跳過
+//     ——第一輪掃到的是空白本文，之後再也不掃，招攬篇的錨點永遠看不到。
+// ============================================================
+
+test('F1：主文卡與回覆卡各有一顆 tag 時，主文卡那顆被沖掉仍要補回（不得被回覆卡那顆遮住）', async () => {
+  // createPage() 預設用 MAIN_POSTS（末篇補了 LINE 錨點）→ 掃描必命中，主文
+  // 卡掛上掃描的 tag；黑名單只放回覆者 → 回覆卡掛上查表的 tag。
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: createPage(),
+    local: { scamBlocklist: buildBlocklist({ authors: [[REPLY_ID, REPLY_HANDLE]] }) },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.hits().length, 1, '前提：這一串命中串文判定，送出一次 scam.hit');
+
+  const cards = cardsOf(env);
+  const main = cards[0];
+  const reply = cards[cards.length - 1];
+  assert.ok(
+    reply.querySelector('a[href^="/@' + REPLY_HANDLE + '/post/"]'),
+    '前提：最後一張是他人回覆的卡片'
+  );
+  assert.equal(tagsIn(main).length, 1, '前提：主文卡有掃描掛的那一顆');
+  assert.equal(tagsIn(reply).length, 1, '前提：回覆者在黑名單，回覆卡有查表掛的那一顆');
+
+  // React 重繪只沖掉主文卡那一顆；回覆卡那顆還在，全文件仍找得到 tag。
+  const mainTag = tagsIn(main)[0];
+  mainTag.parentNode.removeChild(mainTag);
+  assert.equal(tagsIn(main).length, 0, '前提：主文卡的 tag 已被外力移除');
+  assert.equal(env.tags().length, 1, '前提：頁面上仍有回覆卡那一顆');
+
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    tagsIn(main).length,
+    1,
+    '別張卡上的 tag 不算主文卡的警示——主文卡那顆被沖掉就要補回來'
+  );
+  assert.equal(tagsIn(reply).length, 1, '回覆卡那顆不得被重複補掛');
+  assert.equal(env.hits().length, 1, '補 tag 是頁面層的事，不得對 background 重送 scam.hit');
+});
+
+test('F1 連帶：掃描命中後使用者在選項頁解除，tag 被沖掉不得再補回', async () => {
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: createPage(),
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.hits().length, 1, '前提：這一串命中串文判定');
+  const main = cardsOf(env)[0];
+  assert.equal(tagsIn(main).length, 1, '前提：主文卡已掛上掃描的 tag');
+
+  // 選項頁按下「解除」：background 把作者寫進 allowlist，onChanged 送到。
+  env.storage.emitChange(
+    {
+      scamBlocklist: {
+        oldValue: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+        newValue: buildBlocklist({
+          authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]],
+          allowlist: [[POSTS[0].userId, AUTHOR]],
+        }),
+      },
+    },
+    'local'
+  );
+  await env.flush();
+
+  const tag = tagsIn(main)[0];
+  if (tag) tag.parentNode.removeChild(tag);
+  assert.equal(env.tags().length, 0, '前提：頁面上已無任何 tag');
+
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    tagsIn(main).length,
+    0,
+    '使用者已否決這個作者，補回只是還原上一輪判定，不得把警示重新掛上'
+  );
+  assert.equal(env.tags().length, 0, '整頁都不該再有警示');
+  assert.equal(env.hits().length, 1, '解除之後也不得重送 scam.hit');
+});
+
+// 「容器先掛上、本文後補」的兩段式渲染：兩輪的容器組成（pathname ＋ code
+// 集合）完全相同，只有本文從空白變成全文。
+function createBodyStagedPage(bodies) {
+  return [
+    el(
+      'div',
+      { id: 'thread-root' },
+      MAIN_POSTS.map((post, index) =>
+        createPostContainer({
+          handle: AUTHOR,
+          code: post.code,
+          body: bodies[index],
+          actionRow: true,
+        })
+      )
+    ),
+  ];
+}
+
+test('S8：容器組成不變、本文由空白補成全文時要重掃並命中（冪等鍵不得只看容器 code）', async () => {
+  // withoutSsr：SSR 也沒有 captionText，第一輪就只有空白本文可掃。
+  const env = loadEnv({ page: createBodyStagedPage(MAIN_POSTS.map(() => '')) });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '前提：第一輪跑過一次判定');
+  assert.equal(
+    env.detectCalls[0].replace(/\s/g, ''),
+    '',
+    '前提：第一輪的本文全空（SSR 也沒有 caption 可補）'
+  );
+  assert.deepEqual(env.hits(), [], '前提：空白本文不會命中');
+  assert.equal(env.tags().length, 0, '前提：第一輪沒有任何 tag');
+
+  // 同樣六個容器、同樣的 code，只是本文渲染出來了。
+  env.setPage(createBodyStagedPage(MAIN_POSTS.map((post) => post.captionText)));
+  env.triggerObserver();
+  await env.flush();
+
+  assert.ok(
+    env.detectCalls.length >= 2,
+    '容器組成相同不代表這一輪沒有新資訊——本文補上了就必須重掃'
+  );
+  assert.ok(
+    env.detectCalls[env.detectCalls.length - 1].includes(SCAM_TAIL.trim()),
+    '重掃時要掃到補上的招攬篇全文'
+  );
+  assert.equal(env.hits().length, 1, '重掃命中後要送出 scam.hit');
+  assert.equal(env.tags().length, 1, '命中後主文卡要掛上一顆警示');
+  assert.equal(tagsIn(cardsOf(env)[0]).length, 1, '那一顆掛在主文卡內');
+});

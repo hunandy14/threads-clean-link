@@ -1402,3 +1402,65 @@ test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
     assert.equal(out.handleIndex['example_author'], '111');
   });
 });
+
+// ============================================================
+// 【整合審查 S7】normalizeScamBlocklist 的 entries／allowlist 鍵必須是
+// userId 形狀（純數字字串，§14）。storage 是使用者可編輯、也可能被他處寫
+// 髒的地方；鍵不驗形狀時，任意字串（handle、路徑、標記字串）都能混進
+// entries 當成一筆「作者」，handleIndex 還會跟著指過去，查表就會拿到一筆
+// 永遠對不上 background 寫入側 userId 的幽靈條目。
+// ============================================================
+
+test.describe('詐騙偵測:normalizeScamBlocklist 的鍵形狀', () => {
+  const SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
+
+  function entryOf(handle) {
+    return { handle: handle, displayName: handle, evidence: [], addedAt: 1, source: 'auto' };
+  }
+
+  test('normalizeScamBlocklist:entries 非數字鍵整筆剝除，handleIndex 不得殘留指向它', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      entries: {
+        abc: entryOf('ghost_author'),
+        '123': entryOf('example_author'),
+        '12a34': entryOf('mixed_author'),
+        '-1': entryOf('negative_author'),
+        '1.5': entryOf('float_author'),
+        '': entryOf('blank_author'),
+        '123456789012345678901': entryOf('overlong_author'),
+      },
+    });
+
+    assert.deepEqual(Object.keys(out.entries), ['123'], 'entries 只留 userId 形狀（純數字、1-20 位）的鍵');
+    Object.keys(out.entries).forEach((id) => {
+      assert.match(id, SCAM_USER_ID_PATTERN, id + ' 應為 userId 形狀');
+    });
+    assert.deepEqual(
+      out.handleIndex,
+      { example_author: '123' },
+      'handleIndex 不得殘留指向被丟棄鍵的項目——那是查不出條目的孤兒鍵'
+    );
+    Object.keys(out.handleIndex).forEach((key) => {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(out.entries, out.handleIndex[key]),
+        'handleIndex[' + key + '] 指向的條目必須還在 entries 裡'
+      );
+    });
+  });
+
+  test('normalizeScamBlocklist:allowlist 同樣只留 userId 形狀的鍵', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      allowlist: {
+        abc: { at: 1, handle: 'ghost_author' },
+        '456': { at: 2, handle: 'example_author' },
+        '4a56': true,
+        '': true,
+      },
+    });
+
+    assert.deepEqual(Object.keys(out.allowlist), ['456'], 'allowlist 只留 userId 形狀的鍵');
+    assert.deepEqual(out.allowlist['456'], { at: 2, handle: 'example_author' }, '合格鍵的值照舊正規化');
+  });
+});
