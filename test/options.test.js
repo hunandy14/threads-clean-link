@@ -5866,3 +5866,459 @@ test.describe('scamGuardEnabled:詐騙串文警示總開關', () => {
     assert.equal(syncWrites.length, 0, 'scamGuardEnabled 不得寫進 chrome.storage.sync');
   });
 });
+
+// ============================================================
+// 投資詐騙黑名單卡(車道 L6;v1 計畫 §5 UI 段與 §14 第二波訊息協議)
+//
+// 資料來源是純本機的 chrome.storage.local.scamBlocklist(不上雲、不進
+// syncState)，經 TCLCore.normalizeScamBlocklist 正規化後渲染;寫入端只有
+// background，本頁一律「讀 storage ＋ 監聽 onChanged」，動作經 runtime
+// 訊息請 background 代寫。
+//
+// 【DOM 契約】以下落點由本組測試釘死，實作端須照此產生節點:
+//   - 卡片:section.card.scam-blocklist，位置在設定卡之後、紀錄卡之前
+//   - 卡頭:標題 data-i18n="opScamListTitle"、右側計數 #scamCount
+//     (文案 opScamListCount,{n} 位作者)
+//   - 名單:#scamList,每列直接掛在它底下、row.dataset.id = userId
+//   - 空狀態:#scamEmpty(文案 opScamEmpty)
+//   - 已解除小節:#scamAllowlist(整個小節,allowlist 為空時 hidden)
+//   - 列內動作鈕以 dataset.act 標記('remove' / 'restore')
+//   節點一律以 createElement/createElementNS 產生(比照 renderDevices),
+//   不得走 innerHTML——displayName／snippet 都是他人貼文帶進來的字串。
+//
+// 【訊息協議】UI 只送 scam.blocklist.remove / scam.blocklist.restore 兩則
+// 訊息(§14)，測試以 stub 回應，不碰 background。
+//
+// 【已知的規格張力】§14 說 background 把「解除」寫進 allowlist 時存的是
+// { at, handle }，但 TCLCore.normalizeScamBlocklist(車道 L1 已合入)只留
+// 值嚴格等於 true 的鍵——條目已從 entries 移除，handle 只剩 allowlist 那
+// 份。已解除小節要顯示 handle，本頁就得讀原始的 allowlist(或由 L1 放寬
+// normalize)，兩條路都在可接受範圍，本測試只釘畫面結果。
+// ============================================================
+
+// 固定時戳:相對時間與「加入於」都由 now() 推導，不吃真實時鐘。
+const SCAM_NOW = 1758240000000;
+const SCAM_HOUR = 3600000;
+const SCAM_DAY = 86400000;
+
+// userId 形狀為純數字字串(§14)。SCAM_ID_A 取自 tmp/thread-fixture.json
+// 那位實際命中的作者。
+const SCAM_ID_A = '64349037924';
+const SCAM_ID_B = '10987654321';
+const SCAM_ID_C = '55566677788';
+
+const SCAM_URL_A1 = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4M';
+const SCAM_URL_A2 = 'https://www.threads.com/@dakkaknight/post/DdbYCAfgV4N';
+const SCAM_URL_B1 = 'https://www.threads.com/@user.b/post/DeF456';
+
+// 超過 40 字的證據片段:連結文字要截到 40 字加刪節號，title 留完整內容。
+const SCAM_SNIPPET_LONG =
+  '加我賴：vg475 帶你抓黑馬股，不報明牌、不收費、不代操，穩賺獲利分享給有緣人，今晚八點開盤前最後名額';
+// 不足 40 字的片段:沒有被截斷，不該硬掛刪節號。
+const SCAM_SNIPPET_SHORT = '賴：vg475 黑馬股';
+
+// 「加入於」用日期(YYYY-MM-DD)，比照裝置列的 formatDateOnly。這裡照同一
+// 套算式在測試端重算，斷言不綁測試機的時區。
+function scamDateOnly(ts) {
+  const d = new Date(ts);
+  const pad = (n) => (n < 10 ? '0' + n : String(n));
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+// 兩位作者:A 有顯示名與兩筆證據、較新;B 只有 handle 與一筆證據、較舊。
+// 排序規則是 addedAt 降冪，期望順序 [A, B]。
+function scamBlocklistFixture(patch) {
+  const list = {
+    version: 1,
+    entries: {
+      [SCAM_ID_A]: {
+        handle: 'dakkaknight',
+        displayName: 'Dakka Knight',
+        evidence: [
+          { postUrl: SCAM_URL_A1, snippet: SCAM_SNIPPET_LONG, at: SCAM_NOW - SCAM_HOUR },
+          { postUrl: SCAM_URL_A2, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 2 * SCAM_HOUR },
+        ],
+        addedAt: SCAM_NOW - SCAM_HOUR,
+        source: 'auto',
+      },
+      [SCAM_ID_B]: {
+        handle: 'user.b',
+        evidence: [
+          { postUrl: SCAM_URL_B1, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 3 * SCAM_DAY },
+        ],
+        addedAt: SCAM_NOW - 3 * SCAM_DAY,
+        source: 'auto',
+      },
+    },
+    handleIndex: { dakkaknight: SCAM_ID_A, 'user.b': SCAM_ID_B },
+    allowlist: {},
+  };
+  return Object.assign(list, patch || {});
+}
+
+// 最小 DOM stub 的 getElementById 是「用到才補建」。黑名單卡這批節點在
+// options.html 裡是靜態存在的，先一次補齊，讓斷言在實作尚未讀取該節點時
+// 也還是斷言失敗(而不是讀 undefined 炸成 TypeError)。
+const SCAM_STUB_IDS = [
+  'scamList',
+  'scamCount',
+  'scamEmpty',
+  'scamAllowlist',
+  'confirmOverlay',
+  'confirmTitleText',
+  'confirmDesc',
+  'confirmOk',
+  'rows',
+  'empty',
+  'toast',
+];
+
+function makeScamCtx(opts) {
+  const o = opts || {};
+  const blocklist = Object.prototype.hasOwnProperty.call(o, 'blocklist')
+    ? o.blocklist
+    : scamBlocklistFixture();
+  const localSeed = { history: [] };
+  if (blocklist !== undefined) localSeed.scamBlocklist = blocklist;
+  const storage = createChromeStorage({ langPref: 'zh' }, localSeed);
+  const doc = makeDocumentStub();
+  SCAM_STUB_IDS.forEach((id) => doc.getElementById(id));
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => DEV_SIGNED_OUT_STATE,
+    'scam.blocklist.remove': o.remove || (() => ({ ok: true })),
+    'scam.blocklist.restore': o.restore || (() => ({ ok: true })),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => SCAM_NOW,
+    runtime,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+// 補建出來的節點 hidden 預設 false，既有的 Esc/Tab 處理會把它們當成「開
+// 著的浮層」;跑完 init 先把各浮層釘成關閉態，讓「點解除才開確認框」這類
+// 斷言反映的是真的被打開，而不是 stub 的預設值。
+async function initScamPage(ctx) {
+  await ctx.controller.init();
+  await settle();
+  ['detailOverlay', 'timelineOverlay', 'overlay', 'confirmOverlay', 'devicesOverlay'].forEach(
+    (id) => {
+      ctx.doc.getElementById(id).hidden = true;
+    }
+  );
+}
+
+function scamRows(doc) {
+  return doc.getElementById('scamList').children;
+}
+function scamRowById(doc, id) {
+  return scamRows(doc).filter((r) => r.dataset && r.dataset.id === id)[0] || null;
+}
+// 已解除小節的列:小節內帶 dataset.id 的節點(小節本身還有標題等非列節點，
+// 不以 children 取，避免綁死小節內部的巢狀結構)。
+function scamAllowRows(doc) {
+  return walkNodes(doc.getElementById('scamAllowlist'), []).filter(
+    (n) => n.dataset && typeof n.dataset.id === 'string' && n.dataset.id !== ''
+  );
+}
+function scamLinks(row) {
+  return walkNodes(row, []).filter((n) => n.tag === 'a');
+}
+// href/target/rel/title 在既有渲染碼是直接設 DOM 屬性(見 buildEntryCard 的
+// quickOpenBtn)，但 setAttribute 也是合法寫法;兩邊都認，不綁實作風格。
+function scamAttrOf(node, name) {
+  const direct = node[name];
+  if (typeof direct === 'string' && direct !== '') return direct;
+  const viaAttr = node.getAttribute(name);
+  return typeof viaAttr === 'string' ? viaAttr : '';
+}
+
+test('黑名單卡:options.html 有 section.card.scam-blocklist，位置在設定卡之後、紀錄卡之前，卡內備齊四個落點', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+  const settingsIdx = html.indexOf('id="scamGuardEnabled"');
+  assert.notEqual(settingsIdx, -1, '前置:設定卡內應已有詐騙警示總開關');
+  const cardIdx = html.search(/<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/);
+  assert.notEqual(cardIdx, -1, 'options.html 應有 section.scam-blocklist 這張獨立卡片');
+  const historyIdx = html.search(/<section[^>]*class="card history"/);
+  assert.notEqual(historyIdx, -1, '前置:應找得到紀錄卡');
+
+  assert.ok(settingsIdx < cardIdx, '黑名單卡應排在設定卡之後');
+  assert.ok(cardIdx < historyIdx, '黑名單卡應排在紀錄卡之前');
+
+  const card = html.slice(cardIdx, historyIdx);
+  assert.ok(
+    /<section[^>]*class="[^"]*\bcard\b[^"]*"/.test(card.slice(0, 200)),
+    '黑名單卡應沿用 .card 外觀(class 同時含 card 與 scam-blocklist)'
+  );
+  assert.ok(/class="card-head"/.test(card), '卡片應有 .card-head 卡頭');
+  assert.ok(/data-i18n="opScamListTitle"/.test(card), '卡頭標題走 data-i18n="opScamListTitle"');
+  assert.ok(/id="scamCount"/.test(card), '卡頭右側應有 #scamCount 計數節點');
+  assert.ok(/id="scamList"/.test(card), '卡內應有 #scamList 名單容器');
+  assert.ok(/id="scamEmpty"/.test(card), '卡內應有 #scamEmpty 空狀態');
+  assert.ok(/id="scamAllowlist"/.test(card), '卡內應有 #scamAllowlist 已解除小節');
+});
+
+test('黑名單卡:storage 沒有 scamBlocklist 時顯示空狀態、計數 0，名單不畫任何列', async () => {
+  const ctx = makeScamCtx({ blocklist: undefined });
+  await initScamPage(ctx);
+
+  assert.equal(scamRows(ctx.doc).length, 0, '沒有資料時不得畫出任何列');
+  assert.equal(ctx.doc.ids.scamEmpty.hidden, false, '空狀態應顯示');
+  assert.ok(
+    joinedText(ctx.doc.ids.scamEmpty).includes(i18n.t('zh', 'opScamEmpty')),
+    '空狀態文案應為 opScamEmpty'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 0 }),
+    '計數應顯示 0 位作者'
+  );
+});
+
+test('黑名單卡:兩位作者依 addedAt 降冪各畫一列，第一行 displayName ＋ @handle、第二行加入日期', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rows = scamRows(ctx.doc);
+  assert.equal(rows.length, 2, '兩位作者應各畫一列');
+  assert.deepEqual(
+    rows.map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '排序為 addedAt 降冪(較新的 A 在前)，dataset.id 為 userId'
+  );
+  assert.equal(ctx.doc.ids.scamEmpty.hidden, true, '有資料時空狀態應收起');
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 2 }),
+    '計數應為 2 位作者'
+  );
+
+  const textA = joinedText(rows[0]);
+  assert.ok(textA.includes('Dakka Knight'), '有顯示名時第一行應顯示 displayName');
+  assert.ok(textA.includes('@dakkaknight'), '第一行同時顯示 @handle');
+  assert.ok(
+    textA.includes(i18n.fmt('zh', 'opScamAddedOn', { d: scamDateOnly(SCAM_NOW - SCAM_HOUR) })),
+    '第二行應是「加入於 <日期>」(opScamAddedOn)'
+  );
+
+  const textB = joinedText(rows[1]);
+  assert.ok(textB.includes('@user.b'), '沒有顯示名時退回顯示 @handle');
+  assert.ok(!/undefined|null/.test(textB), '缺 displayName 不得把 undefined/null 畫進畫面');
+});
+
+test('黑名單卡:每筆證據一個 <a>，href/target/rel 正確、文字截到 40 字加刪節號、title 留完整片段', async () => {
+  assert.ok(SCAM_SNIPPET_LONG.length > 40, '前置:長片段須超過 40 字才測得到截斷');
+  assert.ok(SCAM_SNIPPET_SHORT.length <= 40, '前置:短片段須在 40 字內');
+
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  const links = scamLinks(rowA);
+  assert.equal(links.length, 2, '證據連結數應等於 evidence 筆數');
+  assert.deepEqual(
+    links.map((a) => scamAttrOf(a, 'href')).sort(),
+    [SCAM_URL_A1, SCAM_URL_A2].sort(),
+    '每個連結的 href 是該筆證據的 postUrl'
+  );
+  links.forEach((a) => {
+    assert.equal(scamAttrOf(a, 'target'), '_blank', '證據連結應開新分頁');
+    assert.equal(
+      scamAttrOf(a, 'rel'),
+      'noopener noreferrer',
+      '證據連結 rel 應為 noopener noreferrer'
+    );
+  });
+
+  const longLink = links.filter((a) => scamAttrOf(a, 'href') === SCAM_URL_A1)[0];
+  assert.equal(
+    longLink.textContent,
+    SCAM_SNIPPET_LONG.slice(0, 40) + '…',
+    '超過 40 字的片段截到 40 字並補刪節號'
+  );
+  assert.equal(
+    scamAttrOf(longLink, 'title'),
+    SCAM_SNIPPET_LONG,
+    'title 留完整片段，截斷只發生在顯示文字'
+  );
+
+  const shortLink = links.filter((a) => scamAttrOf(a, 'href') === SCAM_URL_A2)[0];
+  assert.equal(
+    shortLink.textContent,
+    SCAM_SNIPPET_SHORT,
+    '不足 40 字的片段原樣顯示，不硬掛刪節號'
+  );
+});
+
+// displayName／snippet 都是他人貼文帶進來的字串。走 innerHTML 的話
+// '<b>' 會被解析成標籤(畫面上看不到角括號，且開了注入的門);走 textContent
+// 則原樣顯示。這裡以「角括號逐字出現在文字裡」當縱深證據。
+test('黑名單卡:displayName 含 <b> 時以純文字呈現(createElement/textContent，不得走 innerHTML)', async () => {
+  const RAW_NAME = 'Dakka <b>Knight</b>';
+  const list = scamBlocklistFixture();
+  list.entries[SCAM_ID_A].displayName = RAW_NAME;
+  const ctx = makeScamCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  assert.ok(
+    joinedText(rowA).includes(RAW_NAME),
+    'displayName 應逐字出現在文字節點裡(含角括號)，代表是 textContent 而非 innerHTML'
+  );
+});
+
+test('黑名單卡:解除鈕為 #i-circle-minus 圖示鈕，點下先開確認框(標題帶作者名)，確認後才送 scam.blocklist.remove', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  const removeBtn = actBtn(rowA, 'remove');
+  assert.ok(removeBtn, '每一列都應有 dataset.act="remove" 的解除鈕');
+  assert.deepEqual(useHrefs(removeBtn), ['#i-circle-minus'], '解除鈕圖示應為 #i-circle-minus');
+  assert.equal(scamAttrOf(removeBtn, 'title'), i18n.t('zh', 'opScamRemove'), '解除鈕 title 為 opScamRemove');
+
+  removeBtn.fire('click');
+
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '解除應先開確認框，不直接送出');
+  assert.equal(
+    ctx.doc.ids.confirmTitleText.textContent,
+    '解除「Dakka Knight」的黑名單？',
+    '確認框標題帶作者名(opScamRemoveTitle)'
+  );
+  assert.equal(
+    ctx.doc.ids.confirmDesc.textContent,
+    '解除後不會再自動加回；紀錄上的警示會消失。',
+    '確認框內文(opScamRemoveDesc)'
+  );
+  assert.equal(ctx.doc.ids.confirmOk.textContent, '解除', '確認鈕文案為「解除」(opScamRemove)');
+  assert.equal(
+    callsOfType(ctx.runtime, 'scam.blocklist.remove').length,
+    0,
+    '尚未確認，不得送出解除'
+  );
+
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
+    '確認後才送 scam.blocklist.remove，帶正確的 userId(§14)'
+  );
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_B],
+    '回 ok 後該列消失'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 1 }),
+    '計數應同步減一'
+  );
+});
+
+test('黑名單卡:解除回 {ok:false} 時該列保留，並以 toast 回報', async () => {
+  const ctx = makeScamCtx({ remove: () => ({ ok: false, code: 'bad_request' }) });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  const removeBtn = actBtn(rowA, 'remove');
+  assert.ok(removeBtn, '前置:應有解除鈕');
+  removeBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '失敗時該列必須留著，不能樂觀刪掉'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 2 }),
+    '失敗時計數不動'
+  );
+  assert.notEqual(toastTextOf(ctx), '', '失敗應有 toast，不留下「按了沒反應」');
+});
+
+test('黑名單卡:allowlist 有資料時「已解除」小節顯示 handle 與復原鈕，點復原送 scam.blocklist.restore', async () => {
+  const list = scamBlocklistFixture({
+    allowlist: { [SCAM_ID_C]: { at: SCAM_NOW - SCAM_DAY, handle: 'scammer.c' } },
+  });
+  const ctx = makeScamCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const section = ctx.doc.ids.scamAllowlist;
+  assert.equal(section.hidden, false, 'allowlist 有資料時已解除小節應顯示');
+  assert.ok(
+    joinedText(section).includes(i18n.t('zh', 'opScamAllowlistTitle')),
+    '小節標題走 opScamAllowlistTitle'
+  );
+
+  const rows = scamAllowRows(ctx.doc);
+  assert.equal(rows.length, 1, 'allowlist 一筆應畫一列');
+  assert.equal(rows[0].dataset.id, SCAM_ID_C, '列的 dataset.id 為 userId');
+  assert.ok(joinedText(rows[0]).includes('@scammer.c'), '已解除的列顯示 @handle');
+
+  const restoreBtn = actBtn(rows[0], 'restore');
+  assert.ok(restoreBtn, '每一列都應有 dataset.act="restore" 的復原鈕');
+  // 復原鈕是文字鈕或圖示鈕都行,文案落在 textContent 或 title 任一即可。
+  const restoreLabel = joinedText(restoreBtn) + ' ' + scamAttrOf(restoreBtn, 'title');
+  assert.ok(
+    restoreLabel.includes(i18n.t('zh', 'opScamRestore')),
+    '復原鈕文案/標題走 opScamRestore'
+  );
+
+  restoreBtn.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.restore'),
+    [{ type: 'scam.blocklist.restore', userId: SCAM_ID_C }],
+    '點復原直接送 scam.blocklist.restore(不需二次確認)'
+  );
+});
+
+test('黑名單卡:allowlist 為空時「已解除」小節整個隱藏', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  assert.equal(ctx.doc.ids.scamAllowlist.hidden, true, 'allowlist 為空時小節應隱藏');
+  assert.equal(scamAllowRows(ctx.doc).length, 0, '不得畫出任何已解除的列');
+});
+
+// 常開頁面的即時性:background 寫入 scamBlocklist 後，接線層的
+// chrome.storage.onChanged(local 區)把整包 changes 轉給 setLocalSettings
+// (見 options-init.js)，本頁據此重畫黑名單，不需要使用者手動重整。
+test('黑名單卡:storage.onChanged 帶來新的 scamBlocklist 時原地重畫(名單、計數、空狀態一起更新)', async () => {
+  const ctx = makeScamCtx({ blocklist: undefined });
+  await initScamPage(ctx);
+
+  assert.equal(scamRows(ctx.doc).length, 0, '前置:一開始是空名單');
+
+  ctx.controller.setLocalSettings({
+    scamBlocklist: { newValue: scamBlocklistFixture(), oldValue: undefined },
+  });
+  await settle();
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '別處寫入的新名單應即時畫進本頁'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 2 }),
+    '計數跟著更新'
+  );
+  assert.equal(ctx.doc.ids.scamEmpty.hidden, true, '有資料後空狀態收起');
+});
