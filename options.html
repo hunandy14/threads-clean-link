@@ -1053,6 +1053,51 @@
     padding: 26px 16px 24px; color: var(--ink-3); font-size: 13px; text-align: center;
   }
   .device-empty .icon { width: 26px; height: 26px; }
+
+  /* ---- 投資詐騙黑名單卡 ----
+     列的骨架與互動語彙沿用裝置列(.device-row):列高、分隔線、右側 ghost
+     圖示鈕的浮現規則一致，只有證據連結區是本卡獨有。 */
+  .scam-list { padding: 2px 0 0; }
+  .scam-row {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 10px 0; border-bottom: 1px solid var(--grid);
+  }
+  .scam-row:last-child { border-bottom: none; }
+  .scam-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .scam-name-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex-wrap: wrap; }
+  .scam-name {
+    font-size: 13.5px; font-weight: 650; color: var(--ink-1);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  }
+  .scam-handle { font-size: 12.5px; color: var(--ink-3); }
+  .scam-sub { font-size: 12px; color: var(--ink-3); }
+  .scam-evidence { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .scam-evidence-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
+  /* 證據片段可能很長，單行省略;完整片段留在 title 提示。 */
+  .scam-evidence-link {
+    font-size: 12px; color: var(--ink-2); text-decoration: none;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  }
+  .scam-evidence-link:hover { color: var(--accent); text-decoration: underline; }
+  .scam-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .scam-quick-btn {
+    appearance: none; border: none; background: transparent; color: var(--ink-3); width: 28px; height: 28px;
+    border-radius: 8px; display: grid; place-items: center; cursor: pointer;
+  }
+  .scam-quick-btn:hover { background: var(--danger-soft); color: var(--danger); }
+  /* 空狀態語彙比照紀錄卡的 .empty(同 class)，這裡只補圖示與文字的排版。 */
+  .scam-empty {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    font-size: 13px; padding: 26px 16px 24px;
+  }
+  /* 「已解除」小節:與名單之間拉一條分隔線，整節在 allowlist 為空時隱藏。 */
+  .scam-allow {
+    border-top: 1px solid var(--grid); padding-top: 10px; margin-top: 4px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .scam-allow-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
+  .scam-allow-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .scam-allow-row .scam-handle { font-size: 12.5px; }
   .modal {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1142,6 +1187,7 @@
     <symbol id="i-scissors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></symbol>
     <symbol id="i-mouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4.1 12 6"/><path d="m5.1 8-2.9-.8"/><path d="m6 12-1.9 2"/><path d="M7.2 2.2 8 5.1"/><path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
     <symbol id="i-circle-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
@@ -1368,6 +1414,21 @@
         </label>
       </div>
     </div>
+  </section>
+
+  <!-- 投資詐騙黑名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
+       不進 syncState。名單列、證據連結與「已解除」小節都由 options.js 逐一
+       createElement 產生——displayName 與證據片段是他人貼文帶進來的字串，一律
+       走 textContent，不得 innerHTML。寫入端只有 background，本頁讀 storage
+       ＋監聽 onChanged，解除/復原經 runtime 訊息請 background 代寫。 -->
+  <section class="card scam-blocklist">
+    <div class="card-head">
+      <h2 data-i18n="opScamListTitle">投資詐騙黑名單</h2>
+      <span class="hint" id="scamCount"></span>
+    </div>
+    <div class="scam-list" id="scamList"></div>
+    <div class="empty scam-empty" id="scamEmpty" hidden></div>
+    <div class="scam-allow" id="scamAllowlist" hidden></div>
   </section>
 
   <!-- 紀錄清單為卡片牆，單一 view 直接顯示，不分頁 tab。 -->

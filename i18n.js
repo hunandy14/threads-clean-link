@@ -243,6 +243,24 @@
       // 選項頁設定卡的總開關 #scamGuardEnabled。
       opScamGuardName: '投資詐騙警示',
       opScamGuardDesc: '偵測疑似投資詐騙的串文並標記作者；名單只存在這台裝置，不上雲。',
+
+      // ---- 選項頁:投資詐騙黑名單卡(設定卡後、紀錄卡前) ----
+      opScamListTitle: '投資詐騙黑名單',
+      opScamListCount: '{n} 位作者',
+      // 列第二行的加入日期(YYYY-MM-DD，比照裝置列的「新增於」)。
+      opScamAddedOn: '加入於 {d}',
+      // 證據連結區的小標:底下每筆 evidence 一條連結。
+      opScamEvidence: '證據',
+      opScamRemove: '解除',
+      opScamRemoveTitle: '解除「{name}」的黑名單？',
+      // 講清楚解除是永久的:該作者進 allowlist，日後再命中也不會自動加回。
+      opScamRemoveDesc: '解除後不會再自動加回；紀錄上的警示會消失。',
+      opScamRemoveFailed: '解除失敗，請稍後再試',
+      opScamEmpty: '目前沒有被標記的作者',
+      // 「已解除」小節:列出 allowlist，可一鍵復原成黑名單。
+      opScamAllowlistTitle: '已解除',
+      opScamRestore: '復原',
+      opScamRestoreFailed: '復原失敗，請稍後再試',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -421,6 +439,21 @@
       opScamGuardName: 'Investment scam warning',
       opScamGuardDesc:
         'Flag threads that look like investment scams and mark their authors. The list stays on this device.',
+
+      opScamListTitle: 'Investment scam blocklist',
+      // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
+      opScamListCount: '{n} author(s)',
+      opScamAddedOn: 'Added {d}',
+      opScamEvidence: 'Evidence',
+      opScamRemove: 'Remove',
+      opScamRemoveTitle: 'Remove "{name}" from the blocklist?',
+      opScamRemoveDesc:
+        'They will not be added back automatically, and the warning on your records will disappear.',
+      opScamRemoveFailed: 'Remove failed. Please try again later.',
+      opScamEmpty: 'No flagged authors yet',
+      opScamAllowlistTitle: 'Removed',
+      opScamRestore: 'Undo',
+      opScamRestoreFailed: 'Undo failed. Please try again later.',
     },
   };
 
