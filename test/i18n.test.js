@@ -65,3 +65,40 @@ test('favContextLost:zh 與 en 兩份字典皆有此 key，且皆非空字串(�
   assert.equal(typeof i18n.STRINGS.en.favContextLost, 'string');
   assert.ok(i18n.STRINGS.en.favContextLost.length > 0);
 });
+
+// ---- 投資詐騙串文警示(v1 計畫 §3／§6)的文案 ----
+//
+// 上面的 parity 測試只保證「zh 與 en 的鍵集合一致」——兩邊同時漏掉同一顆
+// key 依然全綠。詐騙警示這六顆散落在三個消費端(詳情頁/河道的標籤與
+// tooltip、首次命中的 toast、選項頁總開關的名稱與說明)，漏一顆的症狀是
+// UI 上直接顯示裸 key，這裡逐顆釘住存在性。
+const SCAM_GUARD_KEYS = [
+  // 貼文互動列上方那顆 .tcl-scam-tag 的標籤與原生 tooltip。
+  'scamTagLabel',
+  'scamTagTooltip',
+  // 某作者第一次被判定命中、自動加入本機黑名單時的提示。
+  'scamFirstHitToast',
+  // 作者已在黑名單中(非本次命中)時，標籤改顯示的理由。
+  'scamBlockedByList',
+  // 選項頁設定卡的總開關 #scamGuardEnabled 的名稱與說明。
+  'opScamGuardName',
+  'opScamGuardDesc',
+];
+
+test('scamGuard:六顆警示文案 key 在 zh 與 en 兩份字典皆存在且非空', () => {
+  for (const locale of ['zh', 'en']) {
+    for (const key of SCAM_GUARD_KEYS) {
+      const value = i18n.STRINGS[locale][key];
+      assert.equal(typeof value, 'string', `${locale}.${key} 應為字串`);
+      assert.ok(value.length > 0, `${locale}.${key} 不得為空字串`);
+    }
+  }
+});
+
+test('scamGuard:zh 文案一律全形逗號「，」，不得出現半形 ","', () => {
+  for (const key of SCAM_GUARD_KEYS) {
+    const value = i18n.STRINGS.zh[key];
+    if (typeof value !== 'string') continue;
+    assert.ok(!value.includes(','), `zh.${key} 不得含半形逗號 ","，實際:${value}`);
+  }
+});

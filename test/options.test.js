@@ -5719,3 +5719,150 @@ test('裝置軟刪除:升級前的舊快取列沒有 removedAt 鍵時一律當�
     '缺鍵不得被當成已移除而掛上標記'
   );
 });
+
+// ============================================================
+// 投資詐騙串文警示的總開關(v1 計畫 §3／§6)。
+//
+// 與設定卡既有三顆(autoClean/saveHistory/postCopyEnabled)不同:那三顆存
+// chrome.storage.sync、會跟著帳號跨裝置同步;黑名單與這顆總開關是純本機
+// 功能(不上雲)，值存 chrome.storage.local，故不掛進 SETTING_IDS，讀寫都
+// 走 localStorage 那一區。
+//
+// 預設開(缺席視為 true):storage 裡沒有這顆鍵時開關必須是 checked，否則
+// 首次安裝的使用者會以為功能壞了——「未設定」不等於「關閉」。
+// ============================================================
+
+test.describe('scamGuardEnabled:詐騙串文警示總開關', () => {
+  const SETTINGS_BODY_START = '<div class="settings-body">';
+
+  // 設定卡的 DOM 區塊(靜態檢查):開關必須長在設定卡的 .settings-body 內，
+  // 比照既有 saveHistory 那條 .setting-row 的形狀(label[for] 包 name/desc
+  // 兩段文字 + input.switch)，名稱與說明走 data-i18n 通道。
+  test('options.html 的設定卡內有 #scamGuardEnabled 的 .setting-row，name/desc 走 i18n', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+    const bodyStart = html.indexOf(SETTINGS_BODY_START);
+    assert.notEqual(bodyStart, -1, 'options.html 應有設定卡的 .settings-body');
+    const bodyEnd = html.indexOf('</section>', bodyStart);
+    const settingsBody = html.slice(bodyStart, bodyEnd === -1 ? undefined : bodyEnd);
+
+    assert.ok(
+      /<label[^>]*class="setting-row"[^>]*for="scamGuardEnabled"/.test(settingsBody),
+      '設定卡內應有 for="scamGuardEnabled" 的 .setting-row'
+    );
+    assert.ok(
+      /<input[^>]*type="checkbox"[^>]*id="scamGuardEnabled"[^>]*class="switch"/.test(settingsBody),
+      '#scamGuardEnabled 應為 .switch 樣式的 checkbox，且長在設定卡內'
+    );
+    assert.ok(
+      /data-i18n="opScamGuardName"/.test(settingsBody),
+      '開關名稱應走 data-i18n="opScamGuardName"，不得寫死文案'
+    );
+    assert.ok(
+      /data-i18n="opScamGuardDesc"/.test(settingsBody),
+      '開關說明應走 data-i18n="opScamGuardDesc"，不得寫死文案'
+    );
+  });
+
+  test('storage 缺席時開關為開(預設開，「未設定」不等於「關閉」)', async () => {
+    const storage = createChromeStorage({ langPref: 'zh' }, {});
+    const doc = makeDocumentStub();
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+    });
+
+    await controller.init();
+    await settle();
+
+    // 用 getElementById 取(不讀 doc.ids):stub 的 ids 表只在 options.js
+    // 真的查過這顆 id 之後才有值，直接讀會是 undefined 而炸在測試自己身
+    // 上，拿不到「開關預設值不對」這個本來要測的紅燈。
+    const el = doc.getElementById('scamGuardEnabled');
+    assert.equal(
+      el.checked,
+      true,
+      'local storage 沒有 scamGuardEnabled 這顆鍵時，開關應為開'
+    );
+  });
+
+  test('storage 存 false 時開關為關(已存的值優先於預設)', async () => {
+    const storage = createChromeStorage({ langPref: 'zh' }, { scamGuardEnabled: false });
+    const doc = makeDocumentStub();
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+    });
+
+    await controller.init();
+    await settle();
+
+    assert.equal(
+      doc.getElementById('scamGuardEnabled').checked,
+      false,
+      '已存 false 時開關應為關'
+    );
+  });
+
+  test('切換即寫入 chrome.storage.local:關→false、再開→true(不寫進 sync 區)', async () => {
+    const storage = createChromeStorage({ langPref: 'zh' }, {});
+    const doc = makeDocumentStub();
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+    });
+
+    await controller.init();
+    await settle();
+
+    const el = doc.getElementById('scamGuardEnabled');
+    const syncSetsBefore = storage.calls.set.length;
+
+    // 關掉。
+    el.checked = false;
+    el.fire('change', { type: 'change', target: el });
+    await settle();
+
+    const offWrites = storage.localCalls.set.filter((items) =>
+      Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled')
+    );
+    assert.equal(offWrites.length, 1, '關掉開關應寫入 local 區一次');
+    assert.equal(offWrites[0].scamGuardEnabled, false, '關掉開關應寫入 scamGuardEnabled:false');
+    assert.equal(
+      storage.localSnapshot().scamGuardEnabled,
+      false,
+      '落盤後 local 區的 scamGuardEnabled 應為 false'
+    );
+
+    // 再開回來。
+    el.checked = true;
+    el.fire('change', { type: 'change', target: el });
+    await settle();
+
+    const allWrites = storage.localCalls.set.filter((items) =>
+      Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled')
+    );
+    assert.equal(allWrites.length, 2, '再切回來應再寫入 local 區一次');
+    assert.equal(allWrites[1].scamGuardEnabled, true, '再開回來應寫入 scamGuardEnabled:true');
+    assert.equal(
+      storage.localSnapshot().scamGuardEnabled,
+      true,
+      '落盤後 local 區的 scamGuardEnabled 應為 true'
+    );
+
+    // 這顆是純本機設定，不得混進 sync 區(會被帶去跨裝置同步)。
+    const syncWrites = storage.calls.set
+      .slice(syncSetsBefore)
+      .filter((items) => Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled'));
+    assert.equal(syncWrites.length, 0, 'scamGuardEnabled 不得寫進 chrome.storage.sync');
+  });
+});
