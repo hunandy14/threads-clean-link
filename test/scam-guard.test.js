@@ -1962,3 +1962,332 @@ test('S4：tag 被外力移除後，同鍵的下一次觸發會補回一顆（�
     '補 tag 是頁面層的事，不得對 background 重送 scam.hit'
   );
 });
+
+// ============================================================
+// 【第四波：河道卡片的本機黑名單查表】（車道 L5）
+//
+// 詳情頁的掃描（第二波）負責「發現」詐騙串並把作者寫進黑名單；本段負責
+// 「複用」那份名單——河道（首頁 feed）與任何非詳情頁的貼文卡片，只要作者
+// 已在本機黑名單裡，就掛上同一顆 `.tcl-scam-tag`，讓使用者在點進去之前就
+// 看得到警示。
+//
+// 【與實作的契約】
+//   資料來源：啟動時讀 `chrome.storage.local.scamBlocklist`，經
+//     `TCLCore.normalizeScamBlocklist` 正規化後留在記憶體；另監聽
+//     `chrome.storage.onChanged`（local 區）更新那份快取。只有 background
+//     寫這顆鍵，本段一律唯讀。
+//   查表：每張 `div[data-pressable-container]` 抽出作者 handle →
+//     `handleIndex[handle.toLowerCase()]` → 命中得到 userId → userId 不在
+//     `allowlist`（使用者已解除封鎖）才算命中。
+//   標記：命中即掛 `.tcl-scam-tag`，文字 `scamTagLabel`、title
+//     `scamBlockedByList`（與詳情頁掃描的 `scamTagTooltip` 不同——這顆說的
+//     是「這個帳號在你的黑名單中」，不是「這串貼文疑似詐騙」）。一張卡只
+//     掛一顆，已掛不重掛；MutationObserver 續載的新卡也要補掛。
+//   詳情頁分工：詳情頁上「主文作者自己那一串」由掃描負責（只掛主文卡一
+//     顆），查表不得在六篇上各掛一顆；他人回覆的卡片則照樣查表。
+//   總開關：`scamGuardEnabled` 為 false 時不掛（既有 tag 不撤）；切回 true
+//     後下一次觸發要補上。
+//   零對外：查表是純本機動作——不送任何 `chrome.runtime.sendMessage`、不發
+//     任何 fetch，也不跑 `TCLCore.detectScamPitch`。
+//
+// 【handle 從哪裡來】post-icon.js 的 extractAuthorHandle 宣告在它自己的
+// document 守衛內，Node 匯出的 api 上沒有這支，sandbox 的 TCLPostIcon 因此
+// 也沒有；實作不能假設它在場，要嘛自己從容器的 `a[href^="/@"]` 取（與
+// readContainerPermalink 同一套判準），要嘛在缺席時有等價的後備。
+//
+// 【fetch 的觀測點】sandbox 本來沒有 `fetch` 全域，實作真的去打請求只會丟
+// ReferenceError 被 safeScan 吞掉，測試看不出差別。這裡補一顆會記錄呼叫的
+// 假 fetch（一律 reject），讓「有沒有發請求」變成可觀測的事實。
+// ============================================================
+
+const FEED_PATH = '/';
+const BLOCKED_ID = '123';
+const BLOCKED_HANDLE = 'example_author';
+// 同一個 handle 的大小寫變體：Threads 的 handle 不分大小寫，查表前必須先
+// 小寫化，否則同一個人換個寫法就漏標。
+const BLOCKED_HANDLE_MIXED = 'Example_Author';
+const BLOCKED_DISPLAY = 'Example Author';
+const NEUTRAL_ID = '456';
+const NEUTRAL_HANDLE = 'other';
+// 詳情頁假 DOM（createScanDom）固定附的那張他人回覆卡。
+const REPLY_HANDLE = 'some.other_reader';
+const REPLY_ID = '789';
+const BLOCKED_BY_LIST_TITLE = I18N.t('zh', 'scamBlockedByList');
+
+// 組一份 storage 形狀的黑名單。欄位比照 v1 計畫 §3，能原封不動通過
+// TCLCore.normalizeScamBlocklist（handleIndex 由 entries 重建，這裡照樣寫
+// 上，讓 fixture 自己就是合法形狀）。
+//   authors:   [[userId, handle, displayName?], ...]
+//   allowlist: [[userId, handle], ...]
+function buildBlocklist(options) {
+  const settings = options || {};
+  const authors = settings.authors || [[BLOCKED_ID, BLOCKED_HANDLE, BLOCKED_DISPLAY]];
+  const list = { version: 1, entries: {}, handleIndex: {}, allowlist: {} };
+  authors.forEach(([id, handle, displayName]) => {
+    list.entries[id] = {
+      handle,
+      displayName: displayName || handle,
+      evidence: [],
+      addedAt: 1758280000000,
+      source: 'auto',
+    };
+    list.handleIndex[handle.toLowerCase()] = id;
+  });
+  (settings.allowlist || []).forEach(([id, handle]) => {
+    list.allowlist[id] = { at: 1758290000000, handle };
+  });
+  return list;
+}
+
+// 河道卡片：與詳情頁的容器同一種結構（作者連結、permalink、本文、互動
+// 列），差別只在沒有串文徽章、作者各不相同。code 每張唯一，避免實作以
+// code 當冪等鍵時互相覆蓋。
+let feedCardSeq = 0;
+
+function createFeedCard(handle, body) {
+  feedCardSeq += 1;
+  return createPostContainer({
+    handle,
+    code: 'DfEeD' + String(feedCardSeq).padStart(6, '0'),
+    body: body || '河道上的一則貼文，內容與投資話術無關。',
+    actionRow: true,
+    actionRowCounts: F1_COUNTS,
+    dirAutoTimestamp: true,
+  });
+}
+
+function createFeedRoot(handles) {
+  return el(
+    'div',
+    { id: 'feed-root' },
+    handles.map((handle) => createFeedCard(handle))
+  );
+}
+
+function cardsOf(env) {
+  return env.document.querySelectorAll(CONTAINER_SELECTOR);
+}
+
+function tagsIn(card) {
+  return card.querySelectorAll('.' + TAG_CLASS);
+}
+
+// 預設落在河道（pathname '/'），並補一顆會記錄呼叫的假 fetch。
+function loadFeedEnv(options) {
+  const settings = Object.assign({ pathname: FEED_PATH }, options || {});
+  const env = createScamGuardEnv(settings);
+  const fetchCalls = [];
+  env.fetchCalls = fetchCalls;
+  env.sandbox.fetch = function () {
+    fetchCalls.push(Array.prototype.slice.call(arguments));
+    return Promise.reject(new Error('河道查表不得發任何請求'));
+  };
+  assert.doesNotThrow(() => env.load(), 'scam-guard.js 在河道假 DOM 載入不得丟例外');
+  return env;
+}
+
+test('河道 1：黑名單作者的卡片掛上 tag，其他作者不掛，且完全不對外通訊', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE, BLOCKED_HANDLE_MIXED]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  const cards = cardsOf(env);
+  assert.equal(cards.length, 3, '前提：河道上有三張卡');
+  assert.equal(tagsIn(cards[0]).length, 1, '黑名單作者的卡片要掛一顆 tag');
+  assert.equal(tagsIn(cards[1]).length, 0, '不在黑名單的作者不得被標記');
+  assert.equal(tagsIn(cards[2]).length, 1, 'handle 大小寫變體是同一個人，查表前要小寫化');
+  assert.equal(env.tags().length, 2, '整頁只有兩張命中卡片');
+
+  const tag = tagsIn(cards[0])[0];
+  assert.equal(tag.textContent, TAG_LABEL, 'tag 文字沿用 scamTagLabel');
+  assert.equal(
+    tag.getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '河道的 tag 說的是「這個帳號在你的黑名單中」，不是詳情頁那句串文判定'
+  );
+  assert.equal(tag.closest(CONTAINER_SELECTOR), cards[0], 'tag 要掛在命中的那張卡內');
+
+  assert.deepEqual(env.sent, [], '查表是純本機動作，不得送任何訊息');
+  assert.deepEqual(env.fetchCalls, [], '查表不得發任何請求');
+  assert.deepEqual(env.detectCalls, [], '河道不跑串文判定，只查表');
+});
+
+test('河道 2：observer 重複觸發，每張命中卡片仍只有一顆 tag', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE, BLOCKED_HANDLE_MIXED]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+  await env.flush();
+
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  env.triggerObserver();
+  await env.flush();
+
+  const cards = cardsOf(env);
+  assert.equal(tagsIn(cards[0]).length, 1, '重複觸發不得越掛越多');
+  assert.equal(tagsIn(cards[2]).length, 1, '重複觸發不得越掛越多');
+  assert.equal(env.tags().length, 2);
+  assert.deepEqual(env.sent, [], '重複觸發照樣不得送訊息');
+});
+
+test('河道 3：feed 續載的新卡片會補掛，既有卡片不重掛', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+  await env.flush();
+  assert.equal(env.tags().length, 1, '前提：起始兩張卡只有一張命中');
+
+  root.appendChild(createFeedCard(NEUTRAL_HANDLE));
+  root.appendChild(createFeedCard(BLOCKED_HANDLE_MIXED));
+  env.triggerObserver();
+  await env.flush();
+
+  const cards = cardsOf(env);
+  assert.equal(cards.length, 4, '前提：續載後有四張卡');
+  assert.equal(tagsIn(cards[2]).length, 0, '新載入的非黑名單作者不得被標記');
+  assert.equal(tagsIn(cards[3]).length, 1, '新載入的黑名單作者要補掛');
+  assert.equal(env.tags().length, 2, '舊卡不重掛，總數只多一顆');
+});
+
+test('河道 4：userId 在 allowlist（使用者已解除封鎖）時不掛', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE, BLOCKED_HANDLE_MIXED]);
+  const env = loadFeedEnv({
+    page: [root],
+    local: { scamBlocklist: buildBlocklist({ allowlist: [[BLOCKED_ID, BLOCKED_HANDLE]] }) },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.tags().length, 0, '解除封鎖的作者即使還留在 entries 裡，也不得再被標記');
+});
+
+test('河道 5：總開關關閉時不掛，切回開啟後下一次觸發補上', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE, BLOCKED_HANDLE_MIXED]);
+  const env = loadFeedEnv({
+    page: [root],
+    local: { scamGuardEnabled: false, scamBlocklist: buildBlocklist() },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+  assert.equal(env.tags().length, 0, '開關關閉時不得標記河道卡片');
+
+  env.storage.emitChange({ scamGuardEnabled: { oldValue: false, newValue: true } }, 'local');
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.tags().length, 2, '開關切回 true 後，下一次觸發要把命中的卡片補上');
+  assert.deepEqual(env.sent, [], '補標記照樣不得送訊息');
+});
+
+test('河道 6：storage.onChanged 更新黑名單後，下一次觸發即反映新增與解除', async () => {
+  const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE, BLOCKED_HANDLE_MIXED]);
+  const initial = buildBlocklist();
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: initial } });
+  await env.flush();
+  assert.equal(env.tags().length, 2, '前提：起始名單只命中兩張');
+
+  // ---- 新增一位作者 ----
+  const extended = buildBlocklist({
+    authors: [
+      [BLOCKED_ID, BLOCKED_HANDLE, BLOCKED_DISPLAY],
+      [NEUTRAL_ID, NEUTRAL_HANDLE, 'Other Author'],
+    ],
+  });
+  env.storage.emitChange({ scamBlocklist: { oldValue: initial, newValue: extended } }, 'local');
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  const cards = cardsOf(env);
+  assert.equal(tagsIn(cards[1]).length, 1, '名單新增的作者，下一次觸發要掛上');
+  assert.equal(env.tags().length, 3);
+
+  // ---- 解除原本那一位 ----
+  const lifted = buildBlocklist({
+    authors: [[NEUTRAL_ID, NEUTRAL_HANDLE, 'Other Author']],
+    allowlist: [[BLOCKED_ID, BLOCKED_HANDLE]],
+  });
+  env.storage.emitChange({ scamBlocklist: { oldValue: extended, newValue: lifted } }, 'local');
+  await env.flush();
+  root.appendChild(createFeedCard(BLOCKED_HANDLE));
+  env.triggerObserver();
+  await env.flush();
+
+  const after = cardsOf(env);
+  assert.equal(after.length, 4, '前提：解除後又載進一張同作者的新卡');
+  assert.equal(tagsIn(after[3]).length, 0, '解除後新載入的卡片不得再掛');
+  assert.equal(env.tags().length, 3, '解除不回收既有的 tag，但也不得再新增');
+});
+
+test('河道 7：沒有黑名單或黑名單為空時不掛、不丟例外', async () => {
+  const cases = [
+    ['storage 完全沒有這顆鍵', {}],
+    ['空物件', { scamBlocklist: {} }],
+    ['null', { scamBlocklist: null }],
+    ['正規化後的空名單', { scamBlocklist: buildBlocklist({ authors: [] }) }],
+  ];
+
+  for (const [label, local] of cases) {
+    const env = loadFeedEnv({
+      page: [createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE])],
+      local,
+    });
+    await env.flush();
+    env.triggerObserver();
+    await env.flush();
+
+    assert.equal(env.tags().length, 0, label + '：不得標記任何卡片');
+    assert.deepEqual(env.warnings, [], label + '：不得有例外被吞成 console.warn');
+    assert.deepEqual(env.sent, [], label + '：不得送訊息');
+  }
+});
+
+test('河道 8：詳情頁主文卡由掃描掛好 tag 後，查表不得在同一串上再多掛', async () => {
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: createPage(),
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+  });
+  await env.flush();
+  env.triggerObserver();
+  env.triggerObserver();
+  await env.flush();
+
+  const cards = cardsOf(env);
+  assert.equal(tagsIn(cards[0]).length, 1, '主文卡只有掃描掛的那一顆');
+  assert.equal(
+    env.tags().length,
+    1,
+    '詳情頁上主文作者自己那六篇由掃描負責，查表不得每篇各掛一顆'
+  );
+});
+
+test('河道 8b：詳情頁上他人回覆的卡片照樣查表掛 tag', async () => {
+  // 原始 fixture 全文沒有 LINE 錨點，detectScamPitch 回 hit:false——掃描這
+  // 條路不會掛任何 tag，頁面上剩下的那一顆必然來自查表。
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: createPage({ posts: POSTS }),
+    local: { scamBlocklist: buildBlocklist({ authors: [[REPLY_ID, REPLY_HANDLE]] }) },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.deepEqual(env.hits(), [], '前提：這一串未命中串文判定，不送 scam.hit');
+
+  const cards = cardsOf(env);
+  const reply = cards[cards.length - 1];
+  assert.ok(
+    reply.querySelector('a[href^="/@' + REPLY_HANDLE + '/post/"]'),
+    '前提：最後一張是他人回覆的卡片'
+  );
+  assert.equal(tagsIn(reply).length, 1, '他人回覆的作者在黑名單中，要掛 tag');
+  assert.equal(env.tags().length, 1, '主文作者不在黑名單，不該有第二顆');
+});
