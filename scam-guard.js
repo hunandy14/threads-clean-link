@@ -421,8 +421,10 @@
       // 者就看不到資訊量較大的 scamTagTooltip。
       //
       // 讓位對象記的是容器節點：SPA 留下的隱藏舊卡與主文卡 code 相同，只比
-      // code 會連可見主文卡一起讓掉，兩條路都不掛就沒人掛了。容器取不到時
-      // （collectOwnContainers 這一輪沒收到對應節點）退回以 code 讓位。
+      // code 會連可見主文卡一起讓掉，兩條路都不掛就沒人掛了；比容器也讓陳舊
+      // 的 code 不會跨頁誤殺——返回河道時同一篇的河道卡是另一個節點，照樣查
+      // 得到表。容器缺席時退回以 code 讓位：collectOwnContainers 這一輪沒收
+      // 到對應節點，或認領的節點已被 React 換掉、不在本輪的容器清單裡。
       var claimedMainCode = null;
       var claimedMainContainer = null;
 
@@ -752,8 +754,15 @@
         if (!core || typeof core.detectScamPitch !== 'function') return;
 
         var pathInfo = readPathInfo();
-        // 河道與其他頁面整頁都是別人的貼文片段，不掃。
-        if (!pathInfo) return;
+        // 河道與其他頁面整頁都是別人的貼文片段，不掃。離開詳情頁時一併鬆開
+        // 認領：留著的 code 會讓河道上同一篇的卡片被查表讓掉，而掃描那條路
+        // 已經不在詳情頁上，讓完就沒人掛了。lastScan 留著——返回同一篇時冪
+        // 等鍵照樣命中，不重送 scam.hit。
+        if (!pathInfo) {
+          claimedMainCode = null;
+          claimedMainContainer = null;
+          return;
+        }
 
         // 冪等判斷必須早於任何昂貴的取值（SSR script 的 JSON 走訪、串文判
         // 定）：MutationObserver 在 Threads 上每秒可觸發數十次，先用純 DOM
@@ -784,8 +793,9 @@
           if (lastScan.tagged) {
             var main = containerOf(own, lastScan.mainCode);
             if (main) {
-              // 容器可能已被 React 換成新節點，讓位對象跟著改指，否則查表會
-              // 在新容器上再掛一顆。
+              // 容器可能已被 React 換成新節點，認領跟著拉回活節點：認領留
+              // 在已離開文件的舊節點上，讓位就退化成比 code——同 code 的其
+              // 他可見卡會被一起誤殺。
               claimedMainContainer = main;
               if (!main.querySelector('.' + TAG_CLASS)) insertTag(main);
             }
@@ -834,6 +844,12 @@
         };
 
         sendHit(payload, function (response) {
+          // 這一輪已經作廢就整個收手：往返期間本文被改寫、SPA 換到別篇都會
+          // 換一把冪等鍵、重跑判定，這則回應講的是上一輪的事。照掛的話會依
+          // 一個已被推翻的判定補上警示，還會把認領釘回這張卡，讓查表該掛的
+          // 那一顆也掛不上。
+          if (lastScan !== scanState) return;
+
           // 使用者已在選項頁解除封鎖這個作者：照樣問過 background（白名單只
           // 有它知道），但頁面上不掛警示。
           if (response && response.allowlisted) return;
@@ -845,7 +861,21 @@
           scanState.mainCode = items[0].code;
           scanState.userId = payload.userId;
           scanState.handle = handle;
-          insertTag(containerOf(own, items[0].code));
+
+          // own 是送出訊息當下的容器清單，回應落地前 React 可能已經把主文卡
+          // 換成新節點。這裡重查一次當下的容器再掛：沿用 own 的話 tag 會插
+          // 進已離開文件的舊節點（containerOf 只濾隱藏，認不得「已不在文件
+          // 裡」），使用者看到的是一段整頁零警示的空窗——要等下一次
+          // MutationObserver 觸發才由冪等短路那條路補回，而那不知道什麼時候
+          // 來。認領一併拉到活節點上，讓位才不會退化成比 code。容器根本還沒
+          // 渲染出來時排下一輪重試。
+          var target = containerOf(collectOwnContainers(handle), items[0].code);
+          if (target) {
+            claimedMainContainer = target;
+            insertTag(target);
+          } else {
+            scheduleScan();
+          }
 
           // 首次把作者寫進黑名單才提示，同一 session 只提示一次；既有作者
           // 只補證據（added:false）、寫入被拒或送訊息失敗都不提示。
@@ -936,7 +966,8 @@
 
       // ---- 逐張卡片查表。
       //
-      // 三段短路依序擋下重複工作：
+      // 可見性先過：看不見的卡片一律整張跳過，兩份容器記憶都不得越過這一
+      // 關。接著三段短路依序擋下重複工作：
       //   1. 已掛過 tag 的容器只檢查 tag 還在不在——React 重繪會把節點整個沖
       //      掉，容器本身卻沒換，「已查過表」的記憶不能連警示還在不在一起省
       //      掉（詳情頁掃描那條路的 lastScan.tagged 有同樣的保證）。
@@ -956,8 +987,27 @@
         var ownerHandle = pathInfo ? normalizeHandle(pathInfo.handle) : '';
 
         var containers = document.querySelectorAll(CONTAINER_SELECTOR);
+
+        // 掃描認領的容器在本輪的容器清單裡找不到（React 已經把它換成新節
+        // 點）時視同缺席，讓位退回比 code——否則新卡既不是認領的那一張、又
+        // 拿不到掃描的 tag，兩條路都不掛。
+        var claimedContainer = null;
+        if (claimedMainContainer) {
+          for (var c = 0; c < containers.length; c++) {
+            if (containers[c] !== claimedMainContainer) continue;
+            claimedContainer = claimedMainContainer;
+            break;
+          }
+        }
+
         for (var i = 0; i < containers.length; i++) {
           var container = containers[i];
+
+          // 隱藏子樹（SPA 收起來的舊路由層）裡的卡片使用者看不到，標了也是
+          // 白標。這條必須排在補回捷徑之前：河道卡掛過 tag 之後被原地收起來
+          // 時還是同一個節點，捷徑只問「標過沒有」，排在後面就會讓它在看不
+          // 見的地方把 tag 無條件長回來。
+          if (isHiddenNode(container)) continue;
 
           if (taggedContainers && taggedContainers.has(container)) {
             // 查表只掛 scamBlockedByList 這一種，補回時不必另外記 titleKey。
@@ -972,8 +1022,6 @@
           // 一致。被引用者是誰不影響外層卡的作者，兩邊都不該掛。
           var parent = container.parentElement || container.parentNode;
           if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
-          // 隱藏子樹（SPA 留下的舊路由層）裡的卡片使用者看不到，標了也是白標。
-          if (isHiddenNode(container)) continue;
 
           var permalink = readContainerPermalink(container);
           if (!permalink) {
@@ -984,8 +1032,8 @@
 
           var handle = normalizeHandle(permalink.handle);
           if (ownerHandle && handle === ownerHandle && permalink.code !== pathInfo.code) continue;
-          if (claimedMainContainer) {
-            if (container === claimedMainContainer) continue;
+          if (claimedContainer) {
+            if (container === claimedContainer) continue;
           } else if (claimedMainCode && permalink.code === claimedMainCode) {
             continue;
           }

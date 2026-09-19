@@ -169,10 +169,6 @@ function fakeRect() {
   return { x: 0, y: 0, width: 240, height: 80, top: 0, left: 0, right: 240, bottom: 80 };
 }
 
-function emptyRect() {
-  return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
-}
-
 function el(tag, attributes, children) {
   const node = {
     nodeType: 1,
@@ -262,14 +258,10 @@ function el(tag, attributes, children) {
     addEventListener() {},
     removeEventListener() {},
     // ---- 版面量測：display:none 的子樹在真實 DOM 裡沒有 box，
-    // getClientRects() 為空陣列、getBoundingClientRect() 全零、offsetParent
-    // 為 null、offsetWidth／offsetHeight 為 0、checkVisibility() 為 false。
-    // 假件照同一套語意給值，可見性判準用哪一種寫法都測得出差別。----
+    // getClientRects() 為空陣列、checkVisibility() 為 false、offsetParent 為
+    // null。假件照同一套語意給值，供測試自己驗「這兩張卡確實一隱一現」。----
     getClientRects() {
       return isRenderedHidden(node) ? [] : [fakeRect()];
-    },
-    getBoundingClientRect() {
-      return isRenderedHidden(node) ? emptyRect() : fakeRect();
     },
     checkVisibility() {
       return !isRenderedHidden(node);
@@ -341,21 +333,12 @@ function el(tag, attributes, children) {
       else delete node.attributes.hidden;
     },
   });
-  // offsetParent／offsetWidth／offsetHeight：沒有 box 就沒有 offsetParent，
-  // 尺寸一律 0。有 box 時 offsetParent 取最近的元素祖先（假件不模擬
-  // position 的定位脈絡，本檔的判準只分得清 null 與非 null）。
+  // offsetParent：沒有 box 就沒有 offsetParent。有 box 時取最近的元素祖先
+  // （假件不模擬 position 的定位脈絡，本檔的判準只分得清 null 與非 null）。
   Object.defineProperty(node, 'offsetParent', {
     get() {
       return isRenderedHidden(node) ? null : node.parentElement;
     },
-  });
-  ['offsetWidth', 'offsetHeight'].forEach((property) => {
-    Object.defineProperty(node, property, {
-      get() {
-        if (isRenderedHidden(node)) return 0;
-        return property === 'offsetWidth' ? fakeRect().width : fakeRect().height;
-      },
-    });
   });
   Object.defineProperty(node, 'nextSibling', {
     get() {
@@ -1204,6 +1187,9 @@ function createPage(options) {
 //   local        chrome.storage.local 的初值
 //   page         body 子節點（預設 createPage()）
 //   respond      (msg, index) => 回應物件；丟出 Error 代表 sendMessage 失敗
+//   respondDelayMs 回應結算的延遲（預設 0，即下一個 tick）。真實
+//                chrome.runtime 的往返可能比掃描的 debounce（60ms）還久，要
+//                測「回應落地前頁面已經重掃過」得先把這段窗口撐開。
 //   detect       覆寫 TCLCore.detectScamPitch 的回傳（不給則走真實實作）
 function createScamGuardEnv(options) {
   const settings = options || {};
@@ -1219,6 +1205,9 @@ function createScamGuardEnv(options) {
   const storage = createChromeStorage({ langPref: 'zh' }, settings.local || {});
 
   const sent = [];
+  // 已經結算給實作的回應。回應延遲時「舊回呼已經落地了沒有」沒有別的觀測
+  // 點——過期守衛生效時它什麼都不做，等固定毫秒只是換一種閃爍。
+  const replies = [];
   const toasts = [];
   const observers = [];
   const detectCalls = [];
@@ -1249,25 +1238,6 @@ function createScamGuardEnv(options) {
     navigator: { language: 'zh-TW' },
     document: doc,
     MutationObserver: FakeMutationObserver,
-    // 只回節點「自己」的 display：真實的 getComputedStyle 不把祖先的
-    // display:none 繼承下來，隱藏層底下的子節點自己的 computed display 仍
-    // 是 block。帶 hidden 屬性的節點自己則是 none（UA 樣式）。
-    getComputedStyle(node) {
-      let display = 'block';
-      if (node && node.style && node.style.display) display = node.style.display;
-      else if (node && typeof node.hasAttribute === 'function' && node.hasAttribute('hidden')) {
-        display = 'none';
-      }
-      return {
-        display,
-        visibility: 'visible',
-        getPropertyValue(name) {
-          if (name === 'display') return display;
-          if (name === 'visibility') return 'visible';
-          return '';
-        },
-      };
-    },
     setTimeout,
     clearTimeout,
     setInterval,
@@ -1297,12 +1267,18 @@ function createScamGuardEnv(options) {
           } catch (e) {
             failure = e;
           }
+          const delay = settings.respondDelayMs || 0;
           if (typeof callback === 'function') {
-            setTimeout(() => callback(failure ? undefined : reply), 0);
+            setTimeout(() => {
+              callback(failure ? undefined : reply);
+              // 回呼跑完才記一筆：測試看到它時，實作對這則回應的處理已經結
+              // 束，斷言不會卡在半途。
+              replies.push(index);
+            }, delay);
             return undefined;
           }
           return new Promise((resolve, reject) => {
-            setTimeout(() => (failure ? reject(failure) : resolve(reply)), 0);
+            setTimeout(() => (failure ? reject(failure) : resolve(reply)), delay);
           });
         },
       },
@@ -1344,6 +1320,7 @@ function createScamGuardEnv(options) {
     location,
     storage,
     sent,
+    replies,
     toasts,
     observers,
     detectCalls,
@@ -1387,6 +1364,38 @@ function createScamGuardEnv(options) {
     // 單一 tick 不夠；統一給一段寬裕的時間讓整條鏈結算完。
     flush() {
       return new Promise((resolve) => setTimeout(resolve, 200));
+    },
+    // 條件輪詢：等到 condition() 為真才往下走，逾時才紅燈。固定長度的等待
+    // 在全套併跑時會被排程延遲吃掉（實測 flush() 的 200ms 在負載下不足），
+    // 輪詢則是條件一成立就收工，慢的機器只是多等幾圈。逾時訊息帶 label，
+    // 紅燈時看得出是哪一個條件沒成立。
+    waitFor(condition, options) {
+      const settings = options || {};
+      const timeout = settings.timeout === undefined ? 2000 : settings.timeout;
+      const step = settings.step === undefined ? 20 : settings.step;
+      const deadline = Date.now() + timeout;
+      return new Promise((resolve, reject) => {
+        (function poll() {
+          let value;
+          try {
+            value = condition();
+          } catch (e) {
+            reject(e);
+            return;
+          }
+          if (value) {
+            resolve(value);
+            return;
+          }
+          if (Date.now() >= deadline) {
+            reject(
+              new Error('waitFor 逾時（' + timeout + 'ms）：' + (settings.label || '條件未成立'))
+            );
+            return;
+          }
+          setTimeout(poll, step);
+        })();
+      });
     },
   };
   return env;
@@ -1625,21 +1634,25 @@ test('scam.hit：payload 形狀照 §14，postUrl 為 origin + pathname 正規�
 
 test('toast：回應 added:true 時顯示 scamFirstHitToast', async () => {
   const env = loadEnv();
-  await env.flush();
+  await env.waitFor(() => env.toastTexts().length > 0, { label: '首次命中的 toast' });
 
   assert.deepEqual(env.toastTexts(), [FIRST_HIT_TOAST], '首次入名單應跳一次 toast');
 });
 
 test('toast：同一 session 第二次 added:true 不再 toast，但 tag 照掛', async () => {
   const env = loadEnv();
-  await env.flush();
+  await env.waitFor(() => env.toastTexts().length > 0, { label: '首次命中的 toast' });
   assert.deepEqual(env.toastTexts(), [FIRST_HIT_TOAST], '第一次要 toast');
 
   env.clearToasts();
   env.setPathname(SECOND_PATH);
   env.setPage(createPage({ posts: SECOND_POSTS }));
   env.triggerObserver();
-  await env.flush();
+  // tag 與 toast 在同一個回呼裡結算（tag 先掛、toast 後跳），等到第二串的
+  // tag 就位，「有沒有再 toast」這條負向斷言才問得準。
+  await env.waitFor(() => env.hits().length === 2 && env.tags().length === 1, {
+    label: '第二串的 scam.hit 與 tag',
+  });
 
   assert.equal(env.hits().length, 2, '第二串照樣送 scam.hit');
   assert.deepEqual(env.toastTexts(), [], '同一 session 第二次不得再 toast');
@@ -1650,7 +1663,7 @@ test('toast：added:false（既有作者只補證據）不 toast，tag 仍在', 
   const env = loadEnv({
     respond: () => ({ ok: true, added: false, entry: { handle: AUTHOR } }),
   });
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '主文卡的 tag' });
 
   assert.deepEqual(env.toastTexts(), [], 'added:false 不得 toast');
   assert.equal(env.tags().length, 1, '已在名單內的作者照樣要看到警示');
@@ -2024,7 +2037,7 @@ test('S3：主文卡容器整個缺席時，掃描文字仍含 SSR 的第一篇�
 
 test('S4：tag 被外力移除後，同鍵的下一次觸發會補回一顆（且只補一顆、不重送訊息）', async () => {
   const env = loadEnv();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '第一輪的 tag' });
 
   const tag = env.tags()[0];
   assert.ok(tag, '第一輪應掛上 tag');
@@ -2032,7 +2045,7 @@ test('S4：tag 被外力移除後，同鍵的下一次觸發會補回一顆（�
   assert.equal(env.tags().length, 0, '前提：tag 已被外力移除');
 
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '補回來的 tag' });
 
   assert.equal(env.tags().length, 1, 'React 重繪沖掉 tag 後，下一次觸發要補回來');
 
@@ -2176,7 +2189,7 @@ test('河道 1：黑名單作者的卡片掛上 tag，其他作者不掛，且�
   const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
   await env.flush();
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 2, { label: '兩張命中卡的查表 tag' });
 
   const cards = cardsOf(env);
   assert.equal(cards.length, 3, '前提：河道上有三張卡');
@@ -2220,13 +2233,13 @@ test('河道 2：observer 重複觸發，每張命中卡片仍只有一顆 tag',
 test('河道 3：feed 續載的新卡片會補掛，既有卡片不重掛', async () => {
   const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE]);
   const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '起始那張命中卡的 tag' });
   assert.equal(env.tags().length, 1, '前提：起始兩張卡只有一張命中');
 
   root.appendChild(createFeedCard(NEUTRAL_HANDLE));
   root.appendChild(createFeedCard(BLOCKED_HANDLE_MIXED));
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 2, { label: '續載那張命中卡的 tag' });
 
   const cards = cardsOf(env);
   assert.equal(cards.length, 4, '前提：續載後有四張卡');
@@ -2262,7 +2275,7 @@ test('河道 5：總開關關閉時不掛，切回開啟後下一次觸發補上
   env.storage.emitChange({ scamGuardEnabled: { oldValue: false, newValue: true } }, 'local');
   await env.flush();
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 2, { label: '開關切回後補上的兩顆 tag' });
 
   assert.equal(env.tags().length, 2, '開關切回 true 後，下一次觸發要把命中的卡片補上');
   assert.deepEqual(env.sent, [], '補標記照樣不得送訊息');
@@ -2272,7 +2285,7 @@ test('河道 6：storage.onChanged 更新黑名單後，下一次觸發即反映
   const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE, BLOCKED_HANDLE_MIXED]);
   const initial = buildBlocklist();
   const env = loadFeedEnv({ page: [root], local: { scamBlocklist: initial } });
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 2, { label: '起始名單命中的兩顆 tag' });
   assert.equal(env.tags().length, 2, '前提：起始名單只命中兩張');
 
   // ---- 新增一位作者 ----
@@ -2285,7 +2298,7 @@ test('河道 6：storage.onChanged 更新黑名單後，下一次觸發即反映
   env.storage.emitChange({ scamBlocklist: { oldValue: initial, newValue: extended } }, 'local');
   await env.flush();
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 3, { label: '名單新增那位作者的 tag' });
 
   const cards = cardsOf(env);
   assert.equal(tagsIn(cards[1]).length, 1, '名單新增的作者，下一次觸發要掛上');
@@ -2437,7 +2450,7 @@ function loadRaceEnv(options) {
 test('河道 9：河道卡的 tag 被外力移除後，同一張卡的下一次觸發會補回一顆', async () => {
   const root = createFeedRoot([BLOCKED_HANDLE, NEUTRAL_HANDLE]);
   const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '命中卡片的查表 tag' });
 
   const tag = env.tags()[0];
   assert.ok(tag, '前提：命中的卡片已掛上 tag');
@@ -2447,7 +2460,7 @@ test('河道 9：河道卡的 tag 被外力移除後，同一張卡的下一次�
   assert.equal(env.tags().length, 0, '前提：tag 已被外力移除，容器本身沒換');
 
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => tagsIn(card).length === 1, { label: '補回來的查表 tag' });
 
   assert.equal(
     tagsIn(card).length,
@@ -2765,7 +2778,7 @@ function createBodyStagedPage(bodies) {
 test('S8：容器組成不變、本文由空白補成全文時要重掃並命中（冪等鍵不得只看容器 code）', async () => {
   // withoutSsr：SSR 也沒有 captionText，第一輪就只有空白本文可掃。
   const env = loadEnv({ page: createBodyStagedPage(MAIN_POSTS.map(() => '')) });
-  await env.flush();
+  await env.waitFor(() => env.detectCalls.length >= 1, { label: '第一輪判定' });
 
   assert.equal(env.detectCalls.length, 1, '前提：第一輪跑過一次判定');
   assert.equal(
@@ -2779,7 +2792,7 @@ test('S8：容器組成不變、本文由空白補成全文時要重掃並命中
   // 同樣六個容器、同樣的 code，只是本文渲染出來了。
   env.setPage(createBodyStagedPage(MAIN_POSTS.map((post) => post.captionText)));
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '重掃命中後的 tag' });
 
   assert.ok(
     env.detectCalls.length >= 2,
@@ -2811,12 +2824,10 @@ test('S8：容器組成不變、本文由空白補成全文時要重掃並命中
 //   查表讓位：查表只對「掃描實際掛上的那一張」讓位；同 code 的隱藏舊卡不
 //     算數，不得連可見卡一起讓掉，讓完就沒人掛了。
 //
-// 【假 DOM 的可見性】el() 補了 hidden 布林屬性、getClientRects()／
-// getBoundingClientRect()／offsetParent／offsetWidth／offsetHeight／
-// checkVisibility()，sandbox 補了 getComputedStyle：語意比照真實 DOM——
-// [hidden] 的 UA 樣式是 display:none，display:none 的整棵子樹都沒有 box，
-// 而 getComputedStyle 只回節點自己的 display、不把祖先的繼承下來。實作要用
-// 哪一種可見性判準都測得出差別。
+// 【假 DOM 的可見性】el() 補了 hidden 布林屬性與 getClientRects()／
+// offsetParent／checkVisibility()，語意比照真實 DOM——[hidden] 的 UA 樣式是
+// display:none，display:none 的整棵子樹都沒有 box。本段的前提斷言用這三支
+// 確認「兩張同 code 的卡確實一隱一現」，受測行為本身只看 tag 掛在哪裡。
 // ============================================================
 
 // 隱藏舊卡的本文與詳情頁那張不同（河道卡只有摘要），用來驗判定文字取的是
@@ -2894,7 +2905,9 @@ function assertHiddenRouteShape(env) {
 
 test('隱藏舊卡 1：掃描命中的 tag 要掛在可見主文卡，不得掛進 hidden 子樹', async () => {
   const env = loadEnv({ page: createHiddenRoutePage() });
-  await env.flush();
+  await env.waitFor(() => env.hits().length === 1 && env.tags().length === 1, {
+    label: '掃描的 scam.hit 與 tag',
+  });
 
   const { stale, main } = assertHiddenRouteShape(env);
   assert.equal(env.hits().length, 1, '前提：這一串命中串文判定，送出一則 scam.hit');
@@ -2910,13 +2923,13 @@ test('隱藏舊卡 1：掃描命中的 tag 要掛在可見主文卡，不得掛�
 
 test('隱藏舊卡 2：tag 被沖掉後補回的也是可見主文卡', async () => {
   const env = loadEnv({ page: createHiddenRoutePage() });
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '第一輪的 tag' });
 
   env.tags().forEach((tag) => tag.parentNode.removeChild(tag));
   assert.equal(env.tags().length, 0, '前提：頁面上的 tag 已被外力沖掉');
 
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.tags().length === 1, { label: '補回來的 tag' });
 
   const { stale, main } = assertHiddenRouteShape(env);
   assert.equal(tagsIn(main).length, 1, '補回的那一顆同樣要落在可見主文卡上');
@@ -2935,7 +2948,9 @@ test('隱藏舊卡 3：查表只對掃描實際掛上的那一張讓位，可見
   });
   await env.flush();
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => env.hits().length === 1 && env.tags().length === 1, {
+    label: '掃描的 scam.hit 與可見主文卡的 tag',
+  });
 
   const { stale, main } = assertHiddenRouteShape(env);
   assert.equal(env.hits().length, 1, '前提：這一串命中串文判定');
@@ -3000,7 +3015,7 @@ test('隱藏舊卡 5：河道查表跳過隱藏子樹裡的卡片，只標使用
   const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
   await env.flush();
   env.triggerObserver();
-  await env.flush();
+  await env.waitFor(() => tagsIn(visible).length === 1, { label: '可見卡的查表 tag' });
 
   assert.ok(stale.closest('[hidden]'), '前提：舊卡落在 hidden 子樹內');
   assert.equal(stale.getClientRects().length, 0, '前提：隱藏舊卡沒有 box');
@@ -3009,4 +3024,385 @@ test('隱藏舊卡 5：河道查表跳過隱藏子樹裡的卡片，只標使用
   assert.equal(tagsIn(visible).length, 1, '看得到的那張要掛 tag');
   assert.equal(tagsIn(stale).length, 0, '隱藏子樹裡的卡片不得掛 tag');
   assert.equal(env.tags().length, 1, '整頁只有一顆');
+});
+
+// ============================================================
+// 【第六波：SPA 返回河道與讓位雙判準】
+//
+// SPA 換頁不重載腳本，詳情頁掃描認領的主文卡（claimedMainCode／
+// claimedMainContainer）會一路跟著使用者回到河道。同一篇貼文在河道層與詳
+// 情層各有一張卡、是兩個不同節點，只比 code 的讓位會把河道那張也讓掉，使
+// 用者剛把作者送進黑名單、回到河道卻什麼都看不到。
+//
+// 【與實作的契約】
+//   讓位雙判準：查表對「掃描認領的那一張容器」讓位；認領的容器缺席——掃描
+//     那一輪沒收到節點，或節點已被 React 換掉——才退回比 code。
+//   離開詳情頁：readPathInfo() 回 null 時鬆開認領，但不清 lastScan——返回
+//     同一篇時冪等鍵照樣命中，不得重送 scam.hit。
+// ============================================================
+
+// 收起／攤開一層路由：實機的隱藏層同時帶 hidden 屬性與行內 display:none。
+function setLayerHidden(layer, hidden) {
+  if (hidden) {
+    layer.setAttribute('hidden', '');
+    layer.style.display = 'none';
+  } else {
+    layer.removeAttribute('hidden');
+    layer.style.display = '';
+  }
+}
+
+// SPA 的兩層路由：河道層與詳情層各是一棵子樹，同一篇貼文在兩層各有一張卡
+// ——貼文代碼相同、節點不同。初始狀態停在詳情頁（河道層收起來）。
+function createTwoLayerRoute(options) {
+  const settings = options || {};
+  const posts = settings.posts || MAIN_POSTS;
+  const feedCard = createPostContainer({
+    handle: AUTHOR,
+    code: posts[0].code,
+    body: STALE_BODY,
+    actionRow: true,
+    actionRowCounts: F1_COUNTS,
+    dirAutoTimestamp: true,
+  });
+  const feedLayer = el('div', { id: 'feed-layer' }, [feedCard, createFeedCard(NEUTRAL_HANDLE)]);
+  const detailLayer = el('div', { id: 'detail-layer' }, [createScanDom(posts)]);
+  setLayerHidden(feedLayer, true);
+  return {
+    children: [createSsrScript(posts[0]), feedLayer, detailLayer],
+    feedLayer,
+    detailLayer,
+    feedCard,
+  };
+}
+
+// 從詳情頁返回河道：收起詳情層、攤開河道層，並把詳情層那一顆 tag 當成被
+// React 沖掉拿掉——留著的話「整頁的 tag 都看得見」這條斷言驗不出新掛的那
+// 一顆掛在哪裡。
+function goBackToFeed(env, route) {
+  env.tags().forEach((tag) => tag.parentNode.removeChild(tag));
+  env.setPathname(FEED_PATH);
+  setLayerHidden(route.detailLayer, true);
+  setLayerHidden(route.feedLayer, false);
+  env.triggerObserver();
+}
+
+function hiddenTagsOf(env) {
+  return env.tags().filter((tag) => tag.closest('[hidden]'));
+}
+
+test('返回河道：詳情頁命中寫入名單後切回河道，同一篇的河道卡要掛上查表 tag', async () => {
+  const route = createTwoLayerRoute();
+  const env = loadFeedEnv({ pathname: DETAIL_PATH, page: route.children, local: {} });
+
+  await env.waitFor(() => env.tags().length === 1, { label: '詳情頁主文卡的掃描 tag' });
+  assert.equal(env.hits().length, 1, '前提：這一串命中串文判定，送出一則 scam.hit');
+  assert.equal(tagsIn(route.feedCard).length, 0, '前提：收起來的河道卡還沒有 tag');
+
+  // background 寫好名單後廣播：在此之前查表沒有任何可查的作者。
+  env.storage.emitChange(
+    {
+      scamBlocklist: {
+        oldValue: undefined,
+        newValue: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+      },
+    },
+    'local'
+  );
+  await env.flush();
+
+  goBackToFeed(env, route);
+  await env.waitFor(() => tagsIn(route.feedCard).length === 1, { label: '河道卡的查表 tag' });
+
+  assert.equal(
+    tagsIn(route.feedCard)[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '河道卡上的那一顆來自查表，說的是「這個帳號在你的黑名單中」'
+  );
+  assert.equal(env.hits().length, 1, '回到河道不掃描，不得再送 scam.hit');
+  assert.deepEqual(hiddenTagsOf(env), [], '整頁的 tag 不得落在收起來的路由層裡');
+  assert.equal(env.tags().length, 1, '整頁只有河道卡那一顆');
+});
+
+test('返回河道：認領不到容器時，陳舊的 code 不得讓掉河道上同一篇的卡片', async () => {
+  const posts = MAIN_POSTS;
+  const feedCard = createPostContainer({
+    handle: AUTHOR,
+    code: posts[0].code,
+    body: STALE_BODY,
+    actionRow: true,
+    actionRowCounts: F1_COUNTS,
+    dirAutoTimestamp: true,
+  });
+  const feedLayer = el('div', { id: 'feed-layer' }, [feedCard]);
+  setLayerHidden(feedLayer, true);
+  // 主文卡整個缺席（虛擬化捲動把它回收掉）：掃描由 SSR 補上第一篇的本文，
+  // 認領得到 code 卻認領不到容器，讓位只剩比 code 這條路。
+  const detailRoot = createScanDom(posts);
+  detailRoot.removeChild(detailRoot.children[0]);
+  const detailLayer = el('div', { id: 'detail-layer' }, [detailRoot]);
+
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: [createSsrScript(posts[0]), feedLayer, detailLayer],
+    local: { scamBlocklist: buildBlocklist() },
+  });
+  await env.waitFor(() => env.hits().length === 1, { label: '詳情頁送出的 scam.hit' });
+  // hits 在送出當下就記了一筆，掛 tag 要等回應回呼；等整條鏈結算完，「沒有
+  // 容器可掛」這條前提才問得準。
+  await env.flush();
+  assert.equal(env.tags().length, 0, '前提：主文卡缺席，掃描的 tag 沒有容器可掛');
+
+  env.setPathname(FEED_PATH);
+  setLayerHidden(detailLayer, true);
+  setLayerHidden(feedLayer, false);
+  env.triggerObserver();
+
+  await env.waitFor(() => tagsIn(feedCard).length === 1, { label: '河道卡的查表 tag' });
+  assert.equal(
+    tagsIn(feedCard)[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '河道卡上的那一顆來自查表'
+  );
+  assert.equal(env.tags().length, 1, '整頁只有河道卡那一顆');
+});
+
+test('返回同一篇詳情頁：不重送 scam.hit、不重跑判定，tag 補回可見主文卡', async () => {
+  const route = createTwoLayerRoute();
+  const env = loadEnv({ pathname: DETAIL_PATH, page: route.children });
+
+  await env.waitFor(() => env.tags().length === 1, { label: '詳情頁主文卡的掃描 tag' });
+  assert.equal(env.hits().length, 1, '前提：第一次進來送出一則 scam.hit');
+
+  goBackToFeed(env, route);
+  await env.flush();
+
+  // 再點回同一篇：DOM 與離開前同一棵，冪等鍵不變。
+  env.setPathname(DETAIL_PATH);
+  setLayerHidden(route.feedLayer, true);
+  setLayerHidden(route.detailLayer, false);
+  env.triggerObserver();
+  await env.waitFor(() => env.tags().length === 1, { label: '補回主文卡的 tag' });
+
+  const mainCard = route.detailLayer.querySelectorAll(CONTAINER_SELECTOR)[0];
+  assert.equal(tagsIn(mainCard).length, 1, 'tag 要補回使用者看得到的主文卡');
+  assert.equal(
+    tagsIn(mainCard)[0].getAttribute('title'),
+    TAG_TOOLTIP,
+    '補回的是掃描那一顆，不是查表那一顆'
+  );
+  assert.equal(env.hits().length, 1, '返回同一篇不得重送 scam.hit（lastScan 不得被清掉）');
+  assert.equal(env.detectCalls.length, 1, '冪等鍵不變，不得重跑判定');
+  assert.deepEqual(hiddenTagsOf(env), [], '整頁的 tag 不得落在收起來的路由層裡');
+});
+
+test('讓位：認領的容器被 React 換掉後，同 code 的新容器照樣讓位給掃描的 tag', async () => {
+  const posts = MAIN_POSTS;
+  const detailRoot = createScanDom(posts);
+  let replacement = null;
+
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: [createSsrScript(posts[0]), detailRoot],
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+    // 回應是同步算出、下一個 tick 才回呼的：在這裡換掉主文卡，等於 React
+    // 在「掃描已認領、tag 還沒掛上」的空窗期把那張卡重繪成新節點。
+    respond(message) {
+      if (message && message.type === 'scam.hit' && !replacement) {
+        const stale = detailRoot.children[0];
+        replacement = createPostContainer({
+          handle: AUTHOR,
+          code: posts[0].code,
+          body: withBadge(posts[0].captionText, posts[0].position, posts.length),
+          actionRow: true,
+        });
+        detailRoot.insertBefore(replacement, stale);
+        detailRoot.removeChild(stale);
+      }
+      return { ok: true, added: true, entry: { handle: AUTHOR } };
+    },
+  });
+
+  await env.waitFor(() => env.hits().length === 1, { label: '詳情頁送出的 scam.hit' });
+  assert.ok(replacement, '前提：主文卡已被換成新節點');
+  assert.equal(replacement.parentElement, detailRoot, '前提：新節點就位');
+
+  // 回呼落地就要把 tag 掛上換上來的那一張：不靠測試再觸發一次 observer——真
+  // 實頁面上下一次觸發不知道什麼時候來，這段空窗使用者看到的是整頁零警示。
+  await env.waitFor(() => tagsIn(replacement).length === 1, {
+    label: '回呼落地後新主文卡的 tag',
+  });
+
+  assert.equal(
+    tagsIn(replacement)[0].getAttribute('title'),
+    TAG_TOOLTIP,
+    '換上來的主文卡要拿到掃描那一顆（資訊量較大的 scamTagTooltip），不得被查表先佔位'
+  );
+  assert.equal(env.tags().length, 1, '整頁只有那一顆');
+
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(tagsIn(replacement).length, 1, '後續觸發不得越掛越多');
+  assert.equal(env.tags().length, 1, '整頁仍只有那一顆');
+  assert.equal(env.hits().length, 1, '換節點不得重送 scam.hit');
+});
+
+// staging 實測：河道卡掛上查表 tag、進了 taggedContainers 之後，從它點進詳
+// 情頁，Threads 把河道那一層原地收起來——同一個節點，只是不再渲染。補回捷
+// 徑若排在可見性檢查之前，「標過」的記憶就會讓它在看不見的地方無條件重掛，
+// 隱藏層因此長出一顆查表 tag（手動刪掉後 200ms 內又長回來，MutationObserver
+// 證實是新插入的節點）。
+test('查表補回：卡片被收進隱藏層後，「標過」的記憶不得在看不見的地方把 tag 長回來', async () => {
+  const card = createFeedCard(BLOCKED_HANDLE);
+  const feedLayer = el('div', { id: 'feed-layer' }, [card]);
+  const env = loadFeedEnv({ page: [feedLayer], local: { scamBlocklist: buildBlocklist() } });
+
+  await env.waitFor(() => tagsIn(card).length === 1, { label: '河道卡的查表 tag' });
+  const code = permalinkCodeOf(card);
+  assert.ok(code, '前提：河道卡讀得到貼文代碼');
+
+  // 點進這張卡：河道層原地收起來（同一個節點），詳情層還沒渲染出來。
+  setLayerHidden(feedLayer, true);
+  env.setPathname(`/@${BLOCKED_HANDLE}/post/${code}`);
+  tagsIn(card).forEach((tag) => tag.parentNode.removeChild(tag));
+  assert.equal(env.tags().length, 0, '前提：收起來那張卡上的 tag 已被拿掉');
+
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(tagsIn(card).length, 0, '看不見的卡片不得被補回 tag');
+  assert.deepEqual(hiddenTagsOf(env), [], '隱藏子樹裡不得長出任何 tag');
+  assert.equal(env.tags().length, 0, '整頁一顆都不該有');
+
+  // 返回河道：同一張卡變回可見，補回捷徑要照常運作。
+  env.setPathname(FEED_PATH);
+  setLayerHidden(feedLayer, false);
+  env.triggerObserver();
+  await env.waitFor(() => tagsIn(card).length === 1, { label: '變回可見後補回的 tag' });
+
+  assert.equal(
+    tagsIn(card)[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '補回的仍是查表那一顆'
+  );
+  assert.equal(env.tags().length, 1, '整頁只有那一顆');
+});
+
+test('往返：河道標過的同一篇，進詳情頁補回的是掃描那一顆，不是查表那一顆', async () => {
+  const route = createTwoLayerRoute();
+  setLayerHidden(route.feedLayer, false);
+  setLayerHidden(route.detailLayer, true);
+  const env = loadFeedEnv({
+    pathname: FEED_PATH,
+    page: route.children,
+    local: {
+      scamBlocklist: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+    },
+  });
+
+  await env.waitFor(() => tagsIn(route.feedCard).length === 1, { label: '河道卡的查表 tag' });
+  assert.equal(
+    tagsIn(route.feedCard)[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '前提：河道那張先拿到查表 tag'
+  );
+
+  // 點進這一篇：河道層原地收起來（內容由 React 卸載，插進去的 tag 跟著消
+  // 失），詳情層攤開。
+  tagsIn(route.feedCard).forEach((tag) => tag.parentNode.removeChild(tag));
+  env.setPathname(DETAIL_PATH);
+  setLayerHidden(route.feedLayer, true);
+  setLayerHidden(route.detailLayer, false);
+  env.triggerObserver();
+
+  const mainCard = route.detailLayer.querySelectorAll(CONTAINER_SELECTOR)[0];
+  await env.waitFor(() => tagsIn(mainCard).length === 1, { label: '主文卡的掃描 tag' });
+  assert.equal(env.hits().length, 1, '詳情頁這一串命中，送出一則 scam.hit');
+  assert.equal(
+    tagsIn(mainCard)[0].getAttribute('title'),
+    TAG_TOOLTIP,
+    '作者已在名單、串文也命中時，主文卡要拿到資訊量較大的掃描那一顆'
+  );
+
+  // React 沖掉主文卡那一顆：補回的仍要是掃描那一顆，查表不得趁隙頂上。
+  tagsIn(mainCard).forEach((tag) => tag.parentNode.removeChild(tag));
+  env.triggerObserver();
+  await env.waitFor(() => tagsIn(mainCard).length === 1, { label: '補回主文卡的 tag' });
+
+  assert.equal(
+    tagsIn(mainCard)[0].getAttribute('title'),
+    TAG_TOOLTIP,
+    '補回的是 scamTagTooltip，不是查表的 scamBlockedByList'
+  );
+  assert.equal(tagsIn(route.feedCard).length, 0, '收起來的河道卡不得被補回查表 tag');
+  assert.deepEqual(hiddenTagsOf(env), [], '隱藏層裡不得有任何 tag');
+  assert.equal(env.tags().length, 1, '整頁只有主文卡那一顆');
+});
+
+test('過期回呼：回應落地前整輪已經重掃，舊回呼不得補掛警示、不得釘住認領', async () => {
+  const posts = MAIN_POSTS;
+  const detailRoot = createScanDom(posts);
+  const env = loadFeedEnv({
+    pathname: DETAIL_PATH,
+    page: [createSsrScript(posts[0]), detailRoot],
+    // 回應晚於掃描的 debounce（60ms）才撐得開「送出後、回應落地前」那段
+    // 窗口——真實的 chrome.runtime 往返本來就可能比一次重掃還久。
+    respondDelayMs: 400,
+  });
+
+  await env.waitFor(() => env.hits().length === 1, { label: '第一輪送出的 scam.hit' });
+  assert.equal(env.tags().length, 0, '前提：回應還在路上，tag 還沒掛上');
+
+  // 回應還沒回來，本文先被改寫（展開長文、載入翻譯都會這樣）：冪等鍵換一
+  // 把、整輪重跑，而這一次的全文沒有招攬錨點，判定不命中。
+  const last = posts[posts.length - 1];
+  const bodyNode = detailRoot.children[posts.length - 1]
+    .querySelectorAll('[dir="auto"]')
+    .find((node) => node.textContent === last.captionText);
+  assert.ok(bodyNode, '前提：找得到末篇的本文節點');
+  bodyNode.textContent = POSTS[POSTS.length - 1].captionText;
+
+  env.triggerObserver();
+  await env.waitFor(() => env.detectCalls.length === 2, { label: '改寫後的重掃' });
+  assert.equal(
+    TCLCore.detectScamPitch(env.detectCalls[1]).hit,
+    false,
+    '前提：改寫後的全文不再命中'
+  );
+
+  // 舊回呼這時才落地。
+  await env.waitFor(() => env.replies.length === 1, { label: '第一輪回應落地' });
+
+  assert.equal(env.tags().length, 0, '當下的判定不命中，過期回呼不得補掛警示');
+  assert.deepEqual(env.toastTexts(), [], '過期回呼不得跳 toast');
+  assert.equal(env.hits().length, 1, '重掃未命中，不再送 scam.hit');
+
+  // 認領也不得被過期回呼釘住：作者進名單後，主文卡要由查表掛上 LIST tag，
+  // 而不是被一顆早該作廢的認領讓掉。
+  env.storage.emitChange(
+    {
+      scamBlocklist: {
+        oldValue: undefined,
+        newValue: buildBlocklist({ authors: [[POSTS[0].userId, AUTHOR, DISPLAY_NAME]] }),
+      },
+    },
+    'local'
+  );
+  await env.waitFor(() => env.tags().length === 1, { label: '查表掛上的 tag' });
+
+  assert.equal(
+    env.tags()[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '主文卡要拿得到查表那一顆，不得被過期回呼留下的認領讓掉'
+  );
+  assert.equal(
+    env.tags()[0].closest(CONTAINER_SELECTOR),
+    detailRoot.children[0],
+    'tag 要落在主文卡上'
+  );
 });
