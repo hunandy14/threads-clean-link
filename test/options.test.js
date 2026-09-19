@@ -5907,8 +5907,8 @@ const SCAM_ID_A = '10000000001';
 const SCAM_ID_B = '10987654321';
 const SCAM_ID_C = '55566677788';
 
-const SCAM_URL_A1 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
-const SCAM_URL_A2 = 'https://www.threads.com/@example_author/post/DdbYCAfgV4N';
+const SCAM_URL_A1 = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const SCAM_URL_A2 = 'https://www.threads.com/@example_author/post/DxSyNtH0007';
 const SCAM_URL_B1 = 'https://www.threads.com/@user.b/post/DeF456';
 
 // 超過 40 字的證據片段:連結文字要截到 40 字加刪節號，title 留完整內容。

@@ -1,11 +1,11 @@
 {
   "note": "合成範例，非真實貼文。形狀比照 Threads 登入態貼文詳情頁自回覆串的抓取樣本（只保留 code／userId／username／position／selfThreadLength／captionText，無 cookie／token／頭像 URL）：六篇自回覆，第 1–5 篇約 120 字並以刪節號收尾，第 6 篇（招攬篇）是判定靶，只帶話術詞、不帶 LINE 錨點。",
   "capturedAt": "2026-09-19",
-  "url": "https://www.threads.com/@example_author/post/DdbYCAfgV4M",
+  "url": "https://www.threads.com/@example_author/post/DxSyNtH0001",
   "selfThreadLength": 6,
   "posts": [
     {
-      "code": "DdbYCAfgV4M",
+      "code": "DxSyNtH0001",
       "userId": "10000000001",
       "username": "example_author",
       "position": 1,
@@ -13,7 +13,7 @@
       "captionText": "這是一份合成的範例串文，只用來測試詳情頁的串文擷取。\n主角設定成某半導體廠的設備工程師，在產線待了十多年，習慣用維修紀錄的方式看一家公司：交期準不準、客服回得快不快、備品好不好調，全都寫進自己的筆記本裡…"
     },
     {
-      "code": "DdbYCvvgR-i",
+      "code": "DxSyNtH0002",
       "userId": "10000000001",
       "username": "example_author",
       "position": 2,
@@ -21,7 +21,7 @@
       "captionText": "第二篇繼續鋪陳：輪班把生活切得很碎，排班表一貼出來，整個月的安排就定了。範例主角把通勤的空檔拿來整理機台狀況，久了發現自己記的東西比公司的報表還細，於是開始想，這些紀錄能不能換個用途…"
     },
     {
-      "code": "DdbYD8XgSl2",
+      "code": "DxSyNtH0003",
       "userId": "10000000001",
       "username": "example_author",
       "position": 3,
@@ -29,7 +29,7 @@
       "captionText": "第三篇是轉折：部門換了新主管之後，會議變多、決策變慢，交期延誤的責任常常落在最前線。範例主角覺得每天處理的都是別人排程失誤的結果，於是把心力慢慢挪到下班後的自修，開始認真讀財報與產業報告…"
     },
     {
-      "code": "DdbYE8pAdxT",
+      "code": "DxSyNtH0004",
       "userId": "10000000001",
       "username": "example_author",
       "position": 4,
@@ -37,7 +37,7 @@
       "captionText": "第四篇講方法：他把這些年打過交道的設備廠列成一張表，逐家標上交期、良率、售後反應速度，再對照公開的營收與毛利數字。這種做法很慢，但每一格都有來源，不是聽同事報明牌就下單的那種玩法…"
     },
     {
-      "code": "DdbYF6sAVys",
+      "code": "DxSyNtH0005",
       "userId": "10000000001",
       "username": "example_author",
       "position": 5,
@@ -45,7 +45,7 @@
       "captionText": "第五篇收尾：現在他接一些外包維修，收入少了，時間多了，作息自己安排。\n如果你也在輪班的班表裡打轉，或想把產業裡累積的手感換成看公司的角度，下一篇會把整個流程寫清楚…"
     },
     {
-      "code": "DdbYG_QgSQy",
+      "code": "DxSyNtH0006",
       "userId": "10000000001",
       "username": "example_author",
       "position": 6,
