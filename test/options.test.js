@@ -5903,7 +5903,7 @@ const SCAM_DAY = 86400000;
 
 // userId 形狀為純數字字串(§14)。SCAM_ID_A 取自 test/fixtures/scam-thread.json
 // 的樣本作者。
-const SCAM_ID_A = '64349037924';
+const SCAM_ID_A = '10000000001';
 const SCAM_ID_B = '10987654321';
 const SCAM_ID_C = '55566677788';
 

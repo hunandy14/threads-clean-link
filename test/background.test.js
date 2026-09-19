@@ -4168,7 +4168,7 @@ const SCAM_KEY = 'scamBlocklist';
 const SCAM_ENABLED_KEY = 'scamGuardEnabled';
 
 // 範例比照內部可行性評估：@example_author 的六篇自回覆串，末篇留 LINE 帳號。
-const SCAM_USER_ID = '64349037924';
+const SCAM_USER_ID = '10000000001';
 const SCAM_HANDLE = 'example_author';
 const SCAM_DISPLAY_NAME = 'Example Author';
 const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DdbYCAfgV4M';
@@ -4437,7 +4437,7 @@ const SCAM_BAD_PAYLOADS = [
   ['userId 非數字字串', { userId: 'abcdef' }],
   ['userId 為空字串', { userId: '' }],
   ['userId 超過 20 位', { userId: '1'.repeat(21) }],
-  ['userId 為數字型別而非字串', { userId: 64349037924 }],
+  ['userId 為數字型別而非字串', { userId: 10000000001 }],
   ['at 非數字', { at: 'now' }],
 ];
 
@@ -4484,7 +4484,7 @@ test('L4 scam.hit:非 threads 分頁與擴充頁送來的一律忽略（不回�
 test('L4 scam.hit:併發兩筆經 writeChain 序列化，互不覆蓋（延遲 storage 撐開讀改寫視窗）', async () => {
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, delayMs: 20 });
 
-  const other = { userId: '10000000001', handle: 'otherscammer', postUrl: SCAM_POST_URL_2 };
+  const other = { userId: '10000000002', handle: 'otherscammer', postUrl: SCAM_POST_URL_2 };
   const both = await Promise.all([bg.send(scamHit(), SCAM_TAB_SENDER), bg.send(scamHit(other), SCAM_TAB_SENDER)]);
   await settle(800);
 

@@ -57,9 +57,10 @@
 //   buildThreadText(items) → string
 //     以 '\n\n' 串接所有 item.text，供後續正則掃描。非陣列／空陣列回 ''。
 //
-// 【fixture】test/fixtures/scam-thread.json 為實機抓取的六篇全文（只留
-// code／userId／username／position／selfThreadLength／captionText，無
-// cookie／token／頭像 URL）。本檔用它組出 (a) 仿 SSR JSON 字串、(b) 假 DOM。
+// 【fixture】test/fixtures/scam-thread.json 為合成的六篇範例串文，形狀比照
+// 實機抓取樣本（只留 code／userId／username／position／selfThreadLength／
+// captionText，無 cookie／token／頭像 URL）。本檔用它組出 (a) 仿 SSR JSON
+// 字串、(b) 假 DOM。
 // ============================================================
 'use strict';
 
@@ -635,8 +636,8 @@ test('stripPositionBadge：只有尾端「N/M」才算徽章，文中的數字�
   const stripPositionBadge = loadFn('stripPositionBadge');
 
   assert.deepEqual(
-    stripPositionBadge('一天睡 4/24 小時，撐了十四年'),
-    { text: '一天睡 4/24 小時，撐了十四年', position: null, total: null },
+    stripPositionBadge('排程 4/24 小時輪一次，撐了十多年'),
+    { text: '排程 4/24 小時輪一次，撐了十多年', position: null, total: null },
     '斜線不在尾端就不是徽章'
   );
   assert.deepEqual(
@@ -720,8 +721,8 @@ test('extractThreadFromDom：結果依 position 升冪，不跟著 DOM 順序走
   // DOM 順序刻意打亂成 2、3、1，徽章才是權威。本文一律寫得比作者 handle
   // 節點長，才不會被「取最長的 [dir="auto"]」這條規則誤選成 handle。
   const bodies = {
-    1: '第一篇：我在台積電蹲了十四年的設備，上個月終於滾了。',
-    2: '第二篇：這十四年怎麼過的？簡單講就是拿肝換錢。',
+    1: '第一篇：範例主角在產線待了十多年，上個月正式離職。',
+    2: '第二篇：這十多年怎麼過的？簡單講就是拿作息換薪水。',
     3: '第三篇：不報明牌、不收費、不代操，就是分享。',
   };
   const root = el('div', {}, [
@@ -884,7 +885,7 @@ test('extractSsrRoot：給 expectedCode 時只收 post.code 相符的節點，�
 
 test('extractThreadFromDom：permalink 帶 ?xmt= 追蹤參數時照樣收，code 不含 query', () => {
   const extractThreadFromDom = loadFn('extractThreadFromDom');
-  const body = '第一篇：我在台積電蹲了十四年的設備，上個月終於滾了。';
+  const body = '第一篇：範例主角在產線待了十多年，上個月正式離職。';
   const root = el('div', {}, [
     createPostContainer({
       handle: AUTHOR,
@@ -894,7 +895,7 @@ test('extractThreadFromDom：permalink 帶 ?xmt= 追蹤參數時照樣收，code
     createPostContainer({
       handle: AUTHOR,
       code: 'DsQuErY002#focus',
-      body: withBadge('第二篇：這十四年怎麼過的？簡單講就是拿肝換錢。', 2, 2),
+      body: withBadge('第二篇：這十多年怎麼過的？簡單講就是拿作息換薪水。', 2, 2),
     }),
   ]);
 
@@ -937,7 +938,7 @@ test('extractThreadFromDom：句尾日期與離譜總數不得被當成徽章，
 
 test('extractThreadFromDom：[dir="auto"] 互相巢狀時取最內層，外層包裝節點不得被選', () => {
   const extractThreadFromDom = loadFn('extractThreadFromDom');
-  const body = '第一篇：我在台積電蹲了十四年的設備，上個月終於滾了，這串講完整個過程。';
+  const body = '第一篇：範例主角在產線待了十多年，上個月正式離職，這串講完整個過程。';
   // 外層 [dir="auto"] 的 textContent 是「作者名 + 本文」，恆為最長，只靠
   // 長度會選到它。
   const root = el('div', {}, [
@@ -1662,8 +1663,8 @@ test('樣式：注入一次 <style id="tcl-scam-guard-style">，內含 .tcl-scam
 //   - 互動列計數（「92」「3,440」）：post-icon 的 classifyExcerptCandidate
 //     已經有這條判準（COUNT_LIKE_RE → 'stop'），實作可直接複用。
 const F1_LINES = [
-  '在台積電蹲了十四年的設備，離職之後才發現，真正難的不是技術，而是每天被排班表切碎的生活。',
-  '不報明牌、不收費、不代操，就是一個從無塵室走出來的設備工程師，跟你分享怎麼找波段黑馬股。',
+  '第一段鋪陳：範例主角在產線待了十多年，離職之後才發現，難的不是技術，而是被排班表切碎的生活。',
+  '不報明牌、不收費、不代操，就是一個待過產線的設備工程師，跟你分享怎麼找波段黑馬股。',
   '有興趣的加我 賴：ex01abc',
 ];
 const F1_TEXT = F1_LINES.join('\n');
