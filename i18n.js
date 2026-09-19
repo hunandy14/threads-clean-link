@@ -231,6 +231,18 @@
       // 頁面端呼叫 chrome.* API 失敗時顯示此提示，請使用者重新整理頁面
       // (post-icon.js 的失敗 toast 使用)。
       favContextLost: '擴充功能已更新，請重新整理頁面',
+
+      // ---- scam-guard:投資詐騙串文警示 ----
+      // 詳情頁與河道共用的 .tcl-scam-tag:標籤文字與原生 tooltip(title)。
+      scamTagLabel: '疑似投資詐騙',
+      scamTagTooltip: '這串貼文含加 LINE 與投資話術，疑似詐騙引導。請勿加好友或提供個資。',
+      // 某作者首次被判定命中、自動加入本機黑名單時的提示。
+      scamFirstHitToast: '已把這個帳號加入本機黑名單，可在設定頁管理。',
+      // 作者已在黑名單中(非本次命中)時，標籤顯示的理由。
+      scamBlockedByList: '這個帳號在你的黑名單中',
+      // 選項頁設定卡的總開關 #scamGuardEnabled。
+      opScamGuardName: '投資詐騙警示',
+      opScamGuardDesc: '偵測疑似投資詐騙的串文並標記作者；名單只存在這台裝置，不上雲。',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -400,6 +412,15 @@
       iconCopied: 'Original link copied',
 
       favContextLost: 'Extension updated — please refresh the page',
+
+      scamTagLabel: 'Possible investment scam',
+      scamTagTooltip:
+        'This thread pushes a LINE contact alongside investment pitches — a common scam funnel. Do not add them or share personal details.',
+      scamFirstHitToast: 'Added this account to your local blocklist. Manage it in Settings.',
+      scamBlockedByList: 'This account is on your blocklist',
+      opScamGuardName: 'Investment scam warning',
+      opScamGuardDesc:
+        'Flag threads that look like investment scams and mark their authors. The list stays on this device.',
     },
   };
 

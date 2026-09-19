@@ -23,6 +23,12 @@
   };
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
+  // 純本機開關:值存 chrome.storage.local，不進 SETTING_IDS(那三顆走 sync、
+  // 跟著帳號跨裝置同步)。詐騙警示的黑名單只存在這台裝置，開關跟著留在本機。
+  // 缺席視為 true——「未設定」不等於「關閉」，首次安裝即生效。
+  var LOCAL_SETTING_DEFAULTS = { scamGuardEnabled: true };
+  var LOCAL_SETTING_IDS = ['scamGuardEnabled'];
+
   var HISTORY_KEY = 'history';
   // 帳號同步狀態(docs/cloud-sync.md 4.2)。options 只讀 userId 判斷登入
   // 態、只寫 clearedAt(清除全部的全域水位線)，其餘欄位由同步引擎維護。
@@ -3093,6 +3099,16 @@
           syncStorage.set(patch);
         });
       });
+      LOCAL_SETTING_IDS.forEach(function (id) {
+        var el = byId(id);
+        if (!el || typeof el.addEventListener !== 'function') return;
+        el.addEventListener('change', function (event) {
+          var checked = event && event.target ? event.target.checked : el.checked;
+          var patch = {};
+          patch[id] = checked;
+          localStore.set(patch);
+        });
+      });
     }
 
     function bindTopbar() {
@@ -3112,7 +3128,11 @@
     function init() {
       var keys = Object.assign({ langPref: null, themePref: 'auto' }, OPTIONS_DEFAULT_SETTINGS);
       var readSync = Promise.resolve(syncStorage.get(keys));
-      var readLocal = Promise.resolve(localStore.get({ [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null }));
+      var localKeys = Object.assign(
+        { [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null },
+        LOCAL_SETTING_DEFAULTS
+      );
+      var readLocal = Promise.resolve(localStore.get(localKeys));
       return Promise.all([readSync, readLocal]).then(function (results) {
         var settings = results[0] || {};
         var localData = results[1] || {};
@@ -3128,6 +3148,12 @@
           if (!el) return;
           var hasValue = Object.prototype.hasOwnProperty.call(settings, id);
           el.checked = hasValue && typeof settings[id] === 'boolean' ? settings[id] : OPTIONS_DEFAULT_SETTINGS[id];
+        });
+        LOCAL_SETTING_IDS.forEach(function (id) {
+          var el = byId(id);
+          if (!el) return;
+          var value = localData[id];
+          el.checked = typeof value === 'boolean' ? value : LOCAL_SETTING_DEFAULTS[id];
         });
 
         applyTheme();
@@ -3236,6 +3262,22 @@
       if (needsRender) renderAll();
     }
 
+    // storage.onChanged(local 區)的設定側,由接線層呼叫:純本機開關
+    // (LOCAL_SETTING_IDS)在別處被改動時(例如另一個開著的 options 分頁)，
+    // 讓常開的本頁同步反映。比照 setSyncSettings，直接設 checkbox.checked
+    // 不觸發 change 事件，不會迴圈寫回 storage;newValue 被整顆移除(型別非
+    // boolean)時退回預設值。
+    function setLocalSettings(changes) {
+      if (!changes) return;
+      LOCAL_SETTING_IDS.forEach(function (id) {
+        if (!Object.prototype.hasOwnProperty.call(changes, id)) return;
+        var el = byId(id);
+        if (!el) return;
+        var newValue = changes[id] && changes[id].newValue;
+        el.checked = typeof newValue === 'boolean' ? newValue : LOCAL_SETTING_DEFAULTS[id];
+      });
+    }
+
     // 常開分頁的相對時間標籤刷新(60s ticker 與 visibilitychange 回分頁時
     // 由接線層呼叫)。走輕量路徑:只逐一改已登錄時間節點的 textContent，
     // 不呼叫 renderAll 整面重建卡片——全量重建會偷走使用者的鍵盤焦點與
@@ -3254,6 +3296,7 @@
       init: init,
       setHistory: setHistory,
       setSyncSettings: setSyncSettings,
+      setLocalSettings: setLocalSettings,
       refresh: refresh,
       setSyncState: setSyncState,
       focusAccountArea: focusAccountArea,

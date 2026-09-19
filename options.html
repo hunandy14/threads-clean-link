@@ -1356,6 +1356,16 @@
           </span>
           <input type="checkbox" id="saveHistory" class="switch" />
         </label>
+        <!-- 詐騙串文警示的總開關。純本機功能，值存 chrome.storage.local，
+             不跟著帳號跨裝置同步，也不鏡像到 popup(見 options.js 的
+             LOCAL_SETTING_IDS)。 -->
+        <label class="setting-row" for="scamGuardEnabled">
+          <span class="txt">
+            <span class="name" data-i18n="opScamGuardName">投資詐騙警示</span>
+            <div class="desc" data-i18n="opScamGuardDesc">偵測疑似投資詐騙的串文並標記作者；名單只存在這台裝置，不上雲。</div>
+          </span>
+          <input type="checkbox" id="scamGuardEnabled" class="switch" />
+        </label>
       </div>
     </div>
   </section>
