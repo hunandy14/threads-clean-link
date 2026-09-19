@@ -30,6 +30,10 @@
   var LOCAL_SETTING_IDS = ['scamGuardEnabled'];
 
   var HISTORY_KEY = 'history';
+  // 投資詐騙黑名單(v1 計畫 §5):純本機、只有 background 寫，本頁讀＋監聽
+  // onChanged。證據連結的顯示文字裁到 40 字，完整片段留在 title。
+  var SCAM_BLOCKLIST_KEY = 'scamBlocklist';
+  var SCAM_SNIPPET_DISPLAY = 40;
   // 帳號同步狀態(docs/cloud-sync.md 4.2)。options 只讀 userId 判斷登入
   // 態、只寫 clearedAt(清除全部的全域水位線)，其餘欄位由同步引擎維護。
   var SYNC_ACCOUNT_KEY = 'syncState';
@@ -645,6 +649,9 @@
     // 卡片狀態是兩回事)。刪除與清除全部依它的 userId 分流(D6:未登入行為與
     // 現況完全一致)。
     var syncAccount = TCLCore.normalizeSyncState(null);
+    // chrome.storage.local.scamBlocklist 的正規化複本(見 readScamBlocklist)。
+    // init 讀一次，之後由 setLocalSettings 接 onChanged 整包換新。
+    var scamBlocklist = readScamBlocklist(null);
 
     function isSignedIn() {
       return nonEmptyString(syncAccount.userId) !== null;
@@ -1844,9 +1851,9 @@
     function canLoadDevices() {
       return hasCloudSession() && !!runtime && typeof runtime.sendMessage === 'function';
     }
-    // 三則裝置訊息共用的送出通道:回應原樣送回(含 { ok:false })，runtime
-    // 缺席/拋例外/沒人接聽一律退成 null，由呼叫端當失敗處理。
-    function sendDeviceMessage(message) {
+    // 頁面對 background 的送出通道(裝置三則、黑名單解除/復原):回應原樣送回
+    // (含 { ok:false })，runtime 缺席/拋例外/沒人接聽一律退成 null，由呼叫端當失敗處理。
+    function sendBackgroundMessage(message) {
       if (!runtime || typeof runtime.sendMessage !== 'function') return Promise.resolve(null);
       var result;
       try {
@@ -1886,7 +1893,7 @@
       devicesEverFetched = true;
       var message = { type: 'sync.devices.list' };
       if (force) message.force = true;
-      return sendDeviceMessage(message).then(applyDeviceList);
+      return sendBackgroundMessage(message).then(applyDeviceList);
     }
 
     // 帳號選單「管理裝置」右側的台數:0 台時整個 span 收掉，不顯示「0 台」。
@@ -2136,7 +2143,7 @@
       var previous = deviceDisplayName(device);
       var refs = deviceRowRefs[device.deviceId];
       setDeviceRowName(device, refs, name);
-      sendDeviceMessage({ type: 'sync.devices.rename', deviceId: device.deviceId, name: name }).then(
+      sendBackgroundMessage({ type: 'sync.devices.rename', deviceId: device.deviceId, name: name }).then(
         function (res) {
           if (res && res.ok === true) {
             var confirmed = res.device ? nonEmptyString(res.device.name) : null;
@@ -2171,7 +2178,7 @@
       });
     }
     function submitDeviceRemove(device) {
-      sendDeviceMessage({ type: 'sync.devices.remove', deviceId: device.deviceId }).then(function (res) {
+      sendBackgroundMessage({ type: 'sync.devices.remove', deviceId: device.deviceId }).then(function (res) {
         if (!(res && res.ok === true)) {
           // 失敗不樂觀刪:那一列留著，只用 toast 說明。
           toast(tt('opDeviceRemoveFailed'));
@@ -2279,7 +2286,7 @@
       on('deviceEmptySyncBtn', 'click', function () {
         if (!canLoadDevices()) return;
         var hadNone = activeDevices().length === 0;
-        sendDeviceMessage({ type: 'sync.now' })
+        sendBackgroundMessage({ type: 'sync.now' })
           .then(function () {
             return loadDevices(true);
           })
@@ -2288,6 +2295,292 @@
               toast(tt('opDeviceRegisteredToast'));
             }
           });
+      });
+    }
+
+    // ---- 投資詐騙黑名單卡(v1 計畫 §5 UI 段／§14 訊息協議)----
+    //
+    // 資料是純本機的 chrome.storage.local.scamBlocklist:不上雲、不進 syncState。
+    // 寫入端只有 background，本頁只讀 storage ＋ 監聽 onChanged(見
+    // setLocalSettings)，解除/復原一律經 runtime 訊息請 background 代寫。
+    // displayName 與證據片段都是他人貼文帶進來的字串:整張卡逐一
+    // createElement ＋ textContent，不走 innerHTML。
+
+    // storage 讀回的黑名單:entries/handleIndex 走 TCLCore.normalizeScamBlocklist
+    // (與 background 寫入側共用同一把尺)，allowlist 另外自己讀一份——「已解除」
+    // 小節要顯示 handle，而 normalize 的舊版契約只留值為 true 的鍵、把 handle
+    // 丟掉。兩種值都容忍:{ at, handle }(§14 第二波)與舊值 true(退成無 handle)。
+    function readScamBlocklist(raw) {
+      var list = TCLCore.normalizeScamBlocklist(raw);
+      list.allowlist = readScamAllowlist(raw);
+      return list;
+    }
+
+    function readScamAllowlist(raw) {
+      var out = {};
+      var map = raw && typeof raw === 'object' ? raw.allowlist : null;
+      if (!map || typeof map !== 'object') return out;
+      Object.keys(map).forEach(function (userId) {
+        // 原型污染鍵拒收，比照 TCLCore 的 isUnsafeMapKey。
+        if (userId === '__proto__') return;
+        var value = map[userId];
+        if (value === true) {
+          out[userId] = { at: 0, handle: '' };
+          return;
+        }
+        if (!value || typeof value !== 'object') return;
+        var at = finiteOrNull(value.at);
+        var handle = nonEmptyString(value.handle);
+        out[userId] = { at: at === null ? 0 : at, handle: handle === null ? '' : handle };
+      });
+      return out;
+    }
+
+    // 名單依 addedAt 降冪:最近被標記的在最前。
+    function sortedScamEntries() {
+      var map = scamBlocklist.entries;
+      return Object.keys(map)
+        .map(function (userId) {
+          return { userId: userId, entry: map[userId] };
+        })
+        .sort(function (a, b) {
+          return b.entry.addedAt - a.entry.addedAt;
+        });
+    }
+
+    // 已解除的清單依解除時間降冪;舊值 true 補出來的 at 為 0，一律排在最後。
+    function sortedScamAllow() {
+      var map = scamBlocklist.allowlist;
+      return Object.keys(map)
+        .map(function (userId) {
+          return { userId: userId, at: map[userId].at, handle: map[userId].handle };
+        })
+        .sort(function (a, b) {
+          return b.at - a.at;
+        });
+    }
+
+    // handle 一律以 @ 開頭顯示;缺 handle(舊值 true 的 allowlist 條目)退成
+    // 「@?」，不把 undefined 畫進畫面。
+    function scamHandleLabel(handle) {
+      var value = nonEmptyString(handle);
+      if (value === null) return '@?';
+      return value.charAt(0) === '@' ? value : '@' + value;
+    }
+
+    // 確認框標題與 aria-label 用的作者稱呼:沒有 displayName 就用 @handle。
+    function scamAuthorLabel(entry) {
+      var name = entry ? nonEmptyString(entry.displayName) : null;
+      return name === null ? scamHandleLabel(entry && entry.handle) : name;
+    }
+
+    // 每筆證據一條外開連結:顯示文字裁到 SCAM_SNIPPET_DISPLAY 字並補刪節號，
+    // 未超長則原樣顯示;完整片段留在 title。
+    function buildScamEvidenceLink(evidence) {
+      var link = document.createElement('a');
+      link.className = 'scam-evidence-link';
+      link.href = evidence.postUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      var snippet = typeof evidence.snippet === 'string' ? evidence.snippet : '';
+      link.title = snippet;
+      link.textContent =
+        snippet.length > SCAM_SNIPPET_DISPLAY
+          ? snippet.slice(0, SCAM_SNIPPET_DISPLAY) + '…'
+          : snippet;
+      return link;
+    }
+
+    function buildScamRow(item) {
+      var entry = item.entry;
+      var row = document.createElement('div');
+      row.className = 'scam-row';
+      row.dataset.id = item.userId;
+
+      var textWrap = document.createElement('div');
+      textWrap.className = 'scam-text';
+
+      // 第一行:displayName ＋ @handle。沒有 displayName 時只留 @handle 一段，
+      // 不用 handle 充當顯示名再重複一次(§14)。
+      var nameRow = document.createElement('div');
+      nameRow.className = 'scam-name-row';
+      var displayName = nonEmptyString(entry.displayName);
+      if (displayName !== null) {
+        var nameEl = document.createElement('span');
+        nameEl.className = 'scam-name';
+        nameEl.textContent = displayName;
+        nameRow.appendChild(nameEl);
+      }
+      var handleEl = document.createElement('span');
+      handleEl.className = displayName === null ? 'scam-name' : 'scam-handle';
+      handleEl.textContent = scamHandleLabel(entry.handle);
+      nameRow.appendChild(handleEl);
+      textWrap.appendChild(nameRow);
+
+      // 第二行:加入日期，只取日期(比照裝置列的「新增於」)。
+      var sub = document.createElement('div');
+      sub.className = 'scam-sub';
+      sub.textContent = tf('opScamAddedOn', { d: formatDateOnly(entry.addedAt) });
+      textWrap.appendChild(sub);
+
+      if (entry.evidence.length > 0) {
+        var evidenceWrap = document.createElement('div');
+        evidenceWrap.className = 'scam-evidence';
+        var evidenceTitle = document.createElement('div');
+        evidenceTitle.className = 'scam-evidence-title';
+        evidenceTitle.textContent = tt('opScamEvidence');
+        evidenceWrap.appendChild(evidenceTitle);
+        entry.evidence.forEach(function (evidence) {
+          evidenceWrap.appendChild(buildScamEvidenceLink(evidence));
+        });
+        textWrap.appendChild(evidenceWrap);
+      }
+      row.appendChild(textWrap);
+
+      var actions = document.createElement('div');
+      actions.className = 'scam-actions';
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'scam-quick-btn';
+      removeBtn.dataset.act = 'remove';
+      removeBtn.title = tt('opScamRemove');
+      removeBtn.setAttribute('aria-label', tt('opScamRemove') + ' ' + scamAuthorLabel(entry));
+      removeBtn.appendChild(svgUse('#i-circle-minus', 'icon'));
+      removeBtn.addEventListener('click', function () {
+        requestScamRemove(item.userId);
+      });
+      actions.appendChild(removeBtn);
+      row.appendChild(actions);
+      return row;
+    }
+
+    function buildScamAllowRow(item) {
+      var row = document.createElement('div');
+      row.className = 'scam-allow-row';
+      row.dataset.id = item.userId;
+
+      var handleEl = document.createElement('span');
+      handleEl.className = 'scam-handle';
+      handleEl.textContent = scamHandleLabel(item.handle);
+      row.appendChild(handleEl);
+
+      var restoreBtn = document.createElement('button');
+      restoreBtn.type = 'button';
+      restoreBtn.className = 'link-btn';
+      restoreBtn.dataset.act = 'restore';
+      restoreBtn.textContent = tt('opScamRestore');
+      restoreBtn.addEventListener('click', function () {
+        submitScamRestore(item.userId);
+      });
+      row.appendChild(restoreBtn);
+      return row;
+    }
+
+    // 空狀態的圖示與文案由 JS 重建(容器每次重畫都清空)，比照 renderDeviceEmpty。
+    function renderScamEmpty() {
+      var emptyEl = byId('scamEmpty');
+      if (!emptyEl) return;
+      emptyEl.textContent = '';
+      emptyEl.appendChild(svgUse('#i-shield-check', 'icon'));
+      var textEl = document.createElement('div');
+      textEl.textContent = tt('opScamEmpty');
+      emptyEl.appendChild(textEl);
+    }
+
+    function renderScamList() {
+      var rows = sortedScamEntries();
+      var countEl = byId('scamCount');
+      // 0 位也照常顯示計數(§14)，不像裝置台數那樣整個收掉。
+      if (countEl) countEl.textContent = tf('opScamListCount', { n: rows.length });
+
+      var listEl = byId('scamList');
+      if (listEl) {
+        listEl.textContent = '';
+        rows.forEach(function (item) {
+          listEl.appendChild(buildScamRow(item));
+        });
+        listEl.hidden = rows.length === 0;
+      }
+
+      var emptyEl = byId('scamEmpty');
+      if (emptyEl) {
+        emptyEl.hidden = rows.length !== 0;
+        if (!emptyEl.hidden) renderScamEmpty();
+      }
+    }
+
+    // 「已解除」小節:小標與列都是 JS 產生的，allowlist 為空時整節隱藏。
+    function renderScamAllowlist() {
+      var sectionEl = byId('scamAllowlist');
+      if (!sectionEl) return;
+      var rows = sortedScamAllow();
+      sectionEl.textContent = '';
+      sectionEl.hidden = rows.length === 0;
+      if (rows.length === 0) return;
+
+      var titleEl = document.createElement('div');
+      titleEl.className = 'scam-allow-title';
+      titleEl.textContent = tt('opScamAllowlistTitle');
+      sectionEl.appendChild(titleEl);
+      rows.forEach(function (item) {
+        sectionEl.appendChild(buildScamAllowRow(item));
+      });
+    }
+
+    function renderScamBlocklist() {
+      renderScamList();
+      renderScamAllowlist();
+    }
+
+    // 解除是破壞性動作(日後再命中也不會自動加回)，先開確認框。
+    function requestScamRemove(userId) {
+      var entry = scamBlocklist.entries[userId];
+      if (!entry) return;
+      openConfirm({
+        title: tf('opScamRemoveTitle', { name: scamAuthorLabel(entry) }),
+        okKey: 'opScamRemove',
+        tone: 'danger',
+        icon: '#i-circle-minus',
+        desc: tt('opScamRemoveDesc'),
+        action: function () {
+          submitScamRemove(userId);
+        },
+      });
+    }
+
+    function submitScamRemove(userId) {
+      var entry = scamBlocklist.entries[userId];
+      if (!entry) return;
+      sendBackgroundMessage({ type: 'scam.blocklist.remove', userId: userId }).then(function (res) {
+        if (!(res && res.ok === true)) {
+          // 失敗不樂觀刪:那一列留著，只用 toast 說明。
+          toast(tt('opScamRemoveFailed'));
+          return;
+        }
+        // background 寫回 storage 後的 onChanged 才是權威;本地先做同一件事
+        // (條目移出、進 allowlist)，畫面不必等一次 storage 往返。
+        delete scamBlocklist.entries[userId];
+        var handleKey = typeof entry.handle === 'string' ? entry.handle.toLowerCase() : null;
+        if (handleKey !== null && scamBlocklist.handleIndex[handleKey] === userId) {
+          delete scamBlocklist.handleIndex[handleKey];
+        }
+        var handle = nonEmptyString(entry.handle);
+        scamBlocklist.allowlist[userId] = { at: now(), handle: handle === null ? '' : handle };
+        renderScamBlocklist();
+      });
+    }
+
+    // 復原不做二次確認:它是「誤解除」的補救動作，本身不破壞任何資料。條目
+    // 本體由 background 決定要不要加回，本頁只把 allowlist 那一列收掉。
+    function submitScamRestore(userId) {
+      if (!Object.prototype.hasOwnProperty.call(scamBlocklist.allowlist, userId)) return;
+      sendBackgroundMessage({ type: 'scam.blocklist.restore', userId: userId }).then(function (res) {
+        if (!(res && res.ok === true)) {
+          toast(tt('opScamRestoreFailed'));
+          return;
+        }
+        delete scamBlocklist.allowlist[userId];
+        renderScamBlocklist();
       });
     }
 
@@ -2866,6 +3159,9 @@
       var stats = renderStats();
       renderChart(stats);
       renderList();
+      // 黑名單卡整張是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃:
+      // 排在 applyI18nDom 之後，切語言時跟著整張重畫。
+      renderScamBlocklist();
       // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderAccount
       // 必須排在它後面才能把已登入態的文案蓋回去。
       renderAccount(syncState);
@@ -3129,7 +3425,7 @@
       var keys = Object.assign({ langPref: null, themePref: 'auto' }, OPTIONS_DEFAULT_SETTINGS);
       var readSync = Promise.resolve(syncStorage.get(keys));
       var localKeys = Object.assign(
-        { [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null },
+        { [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null, [SCAM_BLOCKLIST_KEY]: null },
         LOCAL_SETTING_DEFAULTS
       );
       var readLocal = Promise.resolve(localStore.get(localKeys));
@@ -3138,6 +3434,7 @@
         var localData = results[1] || {};
         entries = sanitizeEntries(localData[HISTORY_KEY]);
         syncAccount = TCLCore.normalizeSyncState(localData[SYNC_ACCOUNT_KEY]);
+        scamBlocklist = readScamBlocklist(localData[SCAM_BLOCKLIST_KEY]);
 
         langPref = settings.langPref === 'zh' || settings.langPref === 'en' ? settings.langPref : null;
         locale = i18n.resolveLocale(langPref);
@@ -3276,6 +3573,13 @@
         var newValue = changes[id] && changes[id].newValue;
         el.checked = typeof newValue === 'boolean' ? newValue : LOCAL_SETTING_DEFAULTS[id];
       });
+      // 黑名單整包由 background 寫入(解除/復原、掃描命中)，帶來新值就原地
+      // 重畫，常開的頁面不必手動重整。
+      if (Object.prototype.hasOwnProperty.call(changes, SCAM_BLOCKLIST_KEY)) {
+        var change = changes[SCAM_BLOCKLIST_KEY];
+        scamBlocklist = readScamBlocklist(change && change.newValue);
+        renderScamBlocklist();
+      }
     }
 
     // 常開分頁的相對時間標籤刷新(60s ticker 與 visibilitychange 回分頁時
