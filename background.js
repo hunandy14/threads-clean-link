@@ -618,8 +618,20 @@ const SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
 // 值對不上，河道標記形同失效），更擋不住夾帶控制字元的假帳號。
 const SCAM_HANDLE_PATTERN = /^[A-Za-z0-9._]{1,80}$/;
 
-// 匿名 GET 回應裡的作者數字 id（SSR JSON 欄位）。
-const SCAM_AUTHOR_ID_PATTERN = /"post_author_id":"(\d{1,20})"/;
+// 匿名 GET 回應裡的作者數字 id（SSR JSON 欄位）。頁面可能出現多個（引用貼
+// 文、推薦貼文、側欄作者各有一個），因此是 global，逐個候選試。
+const SCAM_AUTHOR_ID_PATTERN = /"post_author_id":"(\d{1,20})"/g;
+
+// 備援回應的掃描上限。**刻意不與 og 擷取的 OG_SCAN_LIMIT 共用**：og:meta 必
+// 在 <head>，64KB 綽綽有餘；這裡要的 RelayPrefetchedStreamCache 是 SSR 的
+// JSON 酬載，真實貼文頁常把它推到文件中後段，用 64KB 切會把 post_author_id
+// 切在範圍外，備援等於長期失效。仍保留上限，不對超大回應做無界正則掃描。
+const SCAM_SCAN_LIMIT = 524288;
+
+// 交叉驗證的比對視窗（以命中的 post_author_id 位置為中心，前後各這麼多字）。
+// 整份文字比對太寬：頁面任何角落出現過本人的 username，就會替一個不相干的
+// id 背書。
+const SCAM_AUTHOR_ID_WINDOW = 2000;
 
 // 匿名備援的逾時：SW 不能掛在一個永遠不回的請求上。
 const SCAM_FETCH_TIMEOUT_MS = 8000;
@@ -714,9 +726,10 @@ function scamThrottleArea() {
 //
 // 【交叉驗證】回應裡的 post_author_id 未必就是 handle 那個人：轉址到別篇貼
 // 文、頁面嵌了他人的引用貼文、或 content script 被頁面腳本餵了假 handle，都
-// 會讓不相干的帳號被寫進黑名單。同一段掃描文字裡必須也找得到對應的
-// username（Threads 的 handle 不分大小寫，比對亦不分）才回傳 id。掃描長度
-// 與 og 擷取同一把尺（OG_SCAN_LIMIT），不整份掃到底。
+// 會讓不相干的帳號被寫進黑名單。逐個 post_author_id 候選試，每個只在它前後
+// SCAM_AUTHOR_ID_WINDOW 字的切片內找對應的 username（Threads 的 handle 不分
+// 大小寫，比對亦不分；handle 先正則逸出，句點不得當萬用字元），全部落空回
+// null——本篇作者的 id 與 username 必然相鄰，隔著幾千字的那一組不是同一筆。
 async function fetchScamAuthorId(postUrl, handle) {
   const response = await fetch(postUrl, {
     method: 'GET',
@@ -725,12 +738,18 @@ async function fetchScamAuthorId(postUrl, handle) {
     redirect: 'error',
     signal: AbortSignal.timeout(SCAM_FETCH_TIMEOUT_MS),
   });
-  const scanText = (await response.text()).slice(0, OG_SCAN_LIMIT);
-
-  const idMatch = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
-  if (!idMatch) return null;
+  const scanText = (await response.text()).slice(0, SCAM_SCAN_LIMIT);
   const usernamePattern = new RegExp('"username":"' + escapeRegExp(handle) + '"', 'i');
-  return usernamePattern.test(scanText) ? idMatch[1] : null;
+
+  // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
+  SCAM_AUTHOR_ID_PATTERN.lastIndex = 0;
+  let match = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
+  while (match !== null) {
+    const from = Math.max(0, match.index - SCAM_AUTHOR_ID_WINDOW);
+    if (usernamePattern.test(scanText.slice(from, match.index + SCAM_AUTHOR_ID_WINDOW))) return match[1];
+    match = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
+  }
+  return null;
 }
 
 // 節流表淘汰：先剔除已過期（早就不再有節流作用）的鍵，補上本次這一篇，再以
@@ -751,36 +770,59 @@ function capScamThrottleTable(table, postUrl, now) {
   return capped;
 }
 
-// 帶兩道閘門的備援：逐篇 24 小時節流、全域每分鐘 SCAM_FETCH_RATE_MAX 次。
-// 兩者都在發請求前就記下，成功與失敗一視同仁——撈不到 id 的原因（SPA 殼、
-// 站方限流、貼文已刪）重試也不會變，只會替使用者多發網路請求。撈不到回 null。
-async function resolveScamAuthorId(postUrl, handle) {
+// 閘門的讀改寫序列鏈。河道一次捲動會同時派出幾十則 scam.hit，它們是同一
+// tick 進來的：讀改寫沒有序列化，七則各自讀到「目前 0 次」再各自寫回，閘門
+// 等於不存在，節流表也會互相覆蓋成少於實際請求數。不共用 historyWriteChain
+// ——兩者沒有共用資料，紀錄寫入不該被備援的閘門排隊拖慢。
+let scamFetchChain = Promise.resolve();
+
+function enqueueScamFetchGate(fn) {
+  const run = scamFetchChain.then(fn);
+  scamFetchChain = run.catch(() => {});
+  return run;
+}
+
+// 在兩張表上各佔一個名額：逐篇 24 小時節流、全域每分鐘 SCAM_FETCH_RATE_MAX
+// 次。兩者都在發請求前就記下，成功與失敗一視同仁——撈不到 id 的原因（SPA
+// 殼、站方限流、貼文已刪）重試也不會變，只會替使用者多發網路請求。回 false
+// 代表本次不得發請求。讀寫失敗或沒有可用區域時放行：閘門是替站方節流用的，
+// 不是功能開關，不該因為 storage 故障把備援整條關掉。
+async function reserveScamFetchSlot(postUrl) {
   const area = scamThrottleArea();
+  if (!area) return true;
   const now = Date.now();
 
-  if (area) {
-    try {
-      const stored = await area.get({ [SCAM_FETCH_THROTTLE_KEY]: {}, [SCAM_FETCH_RATE_KEY]: [] });
-      const rawTable = stored && stored[SCAM_FETCH_THROTTLE_KEY];
-      const table = rawTable && typeof rawTable === 'object' ? rawTable : {};
-      const last = table[postUrl];
-      if (typeof last === 'number' && isFinite(last) && now - last < SCAM_FETCH_THROTTLE_MS) return null;
+  try {
+    const stored = await area.get({ [SCAM_FETCH_THROTTLE_KEY]: {}, [SCAM_FETCH_RATE_KEY]: [] });
+    const rawTable = stored && stored[SCAM_FETCH_THROTTLE_KEY];
+    const table = rawTable && typeof rawTable === 'object' ? rawTable : {};
+    const last = table[postUrl];
+    if (typeof last === 'number' && isFinite(last) && now - last < SCAM_FETCH_THROTTLE_MS) return false;
 
-      const rawLog = stored && stored[SCAM_FETCH_RATE_KEY];
-      const recent = (Array.isArray(rawLog) ? rawLog : []).filter(
-        (at) => typeof at === 'number' && isFinite(at) && now - at < SCAM_FETCH_RATE_WINDOW_MS
-      );
-      if (recent.length >= SCAM_FETCH_RATE_MAX) return null;
-      recent.push(now);
+    const rawLog = stored && stored[SCAM_FETCH_RATE_KEY];
+    const recent = (Array.isArray(rawLog) ? rawLog : []).filter(
+      (at) => typeof at === 'number' && isFinite(at) && now - at < SCAM_FETCH_RATE_WINDOW_MS
+    );
+    if (recent.length >= SCAM_FETCH_RATE_MAX) return false;
+    recent.push(now);
 
-      await area.set({
-        [SCAM_FETCH_THROTTLE_KEY]: capScamThrottleTable(table, postUrl, now),
-        [SCAM_FETCH_RATE_KEY]: recent,
-      });
-    } catch (err) {
-      console.warn('[threads-clean-link] 讀寫取作者 id 的節流表失敗', err);
-    }
+    await area.set({
+      [SCAM_FETCH_THROTTLE_KEY]: capScamThrottleTable(table, postUrl, now),
+      [SCAM_FETCH_RATE_KEY]: recent,
+    });
+    return true;
+  } catch (err) {
+    console.warn('[threads-clean-link] 讀寫取作者 id 的節流表失敗', err);
+    return true;
   }
+}
+
+// 帶兩道閘門的備援。佔名額走序列鏈（同 tick 的併發必須排隊），真正的網路請
+// 求留在鏈外——鏈上 await 一個可能跑滿 8 秒的 fetch，會把後面所有人一起卡住。
+// 撈不到回 null。
+async function resolveScamAuthorId(postUrl, handle) {
+  const allowed = await enqueueScamFetchGate(() => reserveScamFetchSlot(postUrl));
+  if (!allowed) return null;
 
   try {
     return await fetchScamAuthorId(postUrl, handle);
