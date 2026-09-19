@@ -196,28 +196,30 @@ Used to schedule the periodic execution of Cloud Sync (a recurring alarm that wa
 
 **English:**
 ```
-Host permissions are limited to these two Threads domains and used for exactly two purposes:
-(1) The background service worker sends one anonymous GET request (credentials: 'omit', no cookies) to a Threads share URL to follow its redirect and read the resolved destination — equivalent to Threads recording one anonymous click, with no user identity attached.
+Host permissions are limited to these two Threads domains and used for exactly three purposes:
+(1) The background service worker sends one anonymous GET request (credentials: 'omit', no cookies) to a Threads URL (a share short link, or the post permalink for the scam-check fallback) to follow its redirect and read the resolved destination — equivalent to Threads recording one anonymous click, with no user identity attached.
 (2) A content script is injected only on these two domains to intercept the site's own navigator.clipboard.writeText()/write() calls, so tracking parameters or share short codes can be stripped or resolved before the content reaches the clipboard. The content script does not read pre-existing clipboard contents and does not run on, or send data to, any other website.
+(3) The same content script also runs the on-device investment-scam check on a post detail page the user opens: it reads that page's own public post text locally to decide whether to show a warning badge. Nothing is transmitted — the result and a 120-character evidence snippet are stored only in chrome.storage.local. When the page itself does not carry the author's numeric id, the background service worker sends one additional anonymous GET (credentials: 'omit', no cookies) to that same post's permalink to read it, at most once per post per 24 hours, subject to a global rate limit, and never when the feature's master switch is off.
 ```
 
 **繁中對照:**
 ```
-host permissions 限定在這兩個 Threads 網域，只用於兩件事:
-①背景 service worker 對 Threads 分享短連結發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
+host permissions 限定在這兩個 Threads 網域，只用於三件事:
+①背景 service worker 對 Threads 網址(分享短連結，或詐騙警示備援時的貼文永久連結)發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
 ②content script 只注入這兩個網域的頁面，攔截網站自己呼叫的 navigator.clipboard.writeText()/write()，在追蹤參數或分享短碼進入剪貼簿前先行剪除或解析。這個 content script 不會讀取剪貼簿裡原本的內容，也不會在其他任何網站上執行或傳送資料。
+③同一支 content script 也會在使用者開啟的貼文詳情頁上執行本機投資詐騙判定:只在本機讀取該頁自己的公開貼文內文，決定要不要掛上警示標記。判定結果與一段 120 字的證據片段只寫入 chrome.storage.local，不對外傳輸。當頁面本身沒有帶出作者的數字識別碼時，背景 service worker 會對同一篇貼文的永久連結額外發出一次不帶 cookie 的匿名 GET(credentials: 'omit')來取得該識別碼，同一篇貼文 24 小時內至多一次，並受全域請求限流約束;功能總開關關閉時完全不發。
 ```
 
 ### Remote code(遠端程式碼)
 
 **English:**
 ```
-None. This extension does not download, fetch, or execute any remote code. All logic ships inside the packaged extension. Unless Cloud Sync is separately enabled via Google sign-in, the only network requests it makes are the anonymous GET requests to Threads described above, used solely to resolve a share short code into its final URL — the response is read for its resolved URL only and is never executed as code. When Cloud Sync is enabled, the extension additionally exchanges JSON data with its own backend as described in the Host permissions section above; that data is likewise never executed as code.
+None. This extension does not download, fetch, or execute any remote code. All logic ships inside the packaged extension. Unless Cloud Sync is separately enabled via Google sign-in, the only network requests it makes are the anonymous GET requests to Threads described above, used either to resolve a share short code into its final URL or (for the on-device scam check) to read a post's own author id from its HTML — in both cases the response is parsed as text only and never executed as code. When Cloud Sync is enabled, the extension additionally exchanges JSON data with its own backend as described in the Host permissions section above; that data is likewise never executed as code.
 ```
 
 **繁中對照:**
 ```
-無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。除非另行以 Google 帳號登入啟用「雲端同步」，否則唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的僅是把分享短碼解析成最終網址——回應內容只拿來讀取解析後的網址，絕不會被當成程式碼執行。啟用雲端同步後，本擴充功能會額外與自己的後端交換 JSON 資料(如上方 Host permissions 小節所述)，該資料同樣絕不會被當成程式碼執行。
+無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。除非另行以 Google 帳號登入啟用「雲端同步」，否則唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的是把分享短碼解析成最終網址，或(在本機投資詐騙判定時)從貼文 HTML 讀出該貼文自己的作者識別碼——兩種情況下回應都只當成文字解析，絕不會被當成程式碼執行。啟用雲端同步後，本擴充功能會額外與自己的後端交換 JSON 資料(如上方 Host permissions 小節所述)，該資料同樣絕不會被當成程式碼執行。
 ```
 
 ### identity(選用權限，僅登入當下請求)

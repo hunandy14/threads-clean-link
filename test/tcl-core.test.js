@@ -828,7 +828,7 @@ test.describe('詐騙偵測:isPostDetailPath', () => {
     assert.equal(C.isPostDetailPath('/@example_author/post/DdbYCAfgV4M'), true);
     assert.equal(C.isPostDetailPath('/@user_c/post/GhI789'), true);
     assert.equal(
-      C.isPostDetailPath('/@da.fu.coding/post/A-b_C1'),
+      C.isPostDetailPath('/@some.other_reader/post/A-b_C1'),
       true,
       'handle 含句點、ID 含連字號都在既有白名單字元類內'
     );
