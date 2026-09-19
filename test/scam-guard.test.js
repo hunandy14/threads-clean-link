@@ -67,7 +67,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { runInSandbox } = require('./support/helpers');
+const { runInSandbox, createChromeStorage } = require('./support/helpers');
 
 const SCAM_GUARD_PATH = path.join(__dirname, '..', 'scam-guard.js');
 
@@ -110,15 +110,33 @@ const CONTAINER_SELECTOR = 'div[data-pressable-container]';
 // 祖先查找、後代查詢、文字串接；不擴充成通用 DOM harness。
 // ============================================================
 
-// 只支援本檔用得到的選擇器形狀：`tag`、`tag[attr]`、`[attr="value"]`、
-// `tag[attr="value"]`、`tag[attr^="value"]`。
-const SELECTOR_PATTERN = /^([a-zA-Z]*)(?:\[([a-zA-Z-]+)(?:(\^?=)"([^"]*)")?\])?$/;
+// 只支援本檔用得到的單段選擇器形狀：`tag`、`.class`、`#id`、`[attr]`、
+// `[attr="value"]`、`[attr^="value"]` 與它們的組合（例如
+// `div.tcl-scam-tag[role="note"]`）。以空白分隔的後代選擇器由
+// querySelectorAll 逐段處理，不在本樣式內。
+const SELECTOR_PATTERN =
+  /^([a-zA-Z]*)((?:[.#][A-Za-z0-9_-]+)*)(?:\[([a-zA-Z-]+)(?:(\^?=)"([^"]*)")?\])?$/;
+
+function classListOf(node) {
+  return String(node.getAttribute('class') || '')
+    .split(/\s+/)
+    .filter(Boolean);
+}
 
 function matchesSelector(node, selector) {
   const parsed = SELECTOR_PATTERN.exec(String(selector).trim());
   assert.ok(parsed, `假 DOM 不支援的選擇器：${selector}`);
-  const [, tag, attr, operator, value] = parsed;
+  const [, tag, qualifiers, attr, operator, value] = parsed;
   if (tag && node.nodeName !== tag.toUpperCase()) return false;
+  const marks = qualifiers ? qualifiers.match(/[.#][A-Za-z0-9_-]+/g) || [] : [];
+  for (const mark of marks) {
+    const name = mark.slice(1);
+    if (mark.charAt(0) === '.') {
+      if (classListOf(node).indexOf(name) === -1) return false;
+    } else if (node.getAttribute('id') !== name) {
+      return false;
+    }
+  }
   if (!attr) return true;
   const actual = node.getAttribute(attr);
   if (actual === null) return false;
@@ -159,18 +177,33 @@ function el(tag, attributes, children) {
       }
       return null;
     },
+    setAttribute(name, value) {
+      node.attributes[name] = String(value);
+    },
+    removeAttribute(name) {
+      delete node.attributes[name];
+    },
     // 前序走訪後代（不含自己），與真實 querySelectorAll 的文件序一致；
     // 巢狀容器內的節點照樣列出——過濾是受測程式的責任，不是假件的。
+    // 以空白分隔的後代選擇器（例如 `[role="button"] svg`）逐段收斂：每
+    // 一段都從上一段的結果往下再走一次後代。
     querySelectorAll(selector) {
-      const out = [];
-      (function walk(current) {
-        current.childNodes.forEach((child) => {
-          if (child.nodeType !== 1) return;
-          if (child.matches(selector)) out.push(child);
-          walk(child);
+      const parts = String(selector).trim().split(/\s+/);
+      let current = [node];
+      parts.forEach((part) => {
+        const next = [];
+        current.forEach((context) => {
+          (function walk(cursor) {
+            cursor.childNodes.forEach((child) => {
+              if (child.nodeType !== 1) return;
+              if (child.matches(part) && next.indexOf(child) === -1) next.push(child);
+              walk(child);
+            });
+          })(context);
         });
-      })(node);
-      return out;
+        current = next;
+      });
+      return current;
     },
     querySelector(selector) {
       return node.querySelectorAll(selector)[0] || null;
@@ -183,6 +216,45 @@ function el(tag, attributes, children) {
       }
       return child;
     },
+    insertBefore(newNode, refNode) {
+      const index = refNode ? node.childNodes.indexOf(refNode) : -1;
+      if (index === -1) return node.appendChild(newNode);
+      node.childNodes.splice(index, 0, newNode);
+      if (newNode.nodeType === 1) {
+        newNode.parentElement = node;
+        newNode.parentNode = node;
+      }
+      return newNode;
+    },
+    removeChild(child) {
+      const index = node.childNodes.indexOf(child);
+      if (index !== -1) node.childNodes.splice(index, 1);
+      if (child.nodeType === 1) {
+        child.parentElement = null;
+        child.parentNode = null;
+      }
+      return child;
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    style: {},
+    classList: {
+      add(...names) {
+        const list = classListOf(node);
+        names.forEach((name) => {
+          if (list.indexOf(name) === -1) list.push(name);
+        });
+        node.attributes.class = list.join(' ');
+      },
+      remove(...names) {
+        node.attributes.class = classListOf(node)
+          .filter((name) => names.indexOf(name) === -1)
+          .join(' ');
+      },
+      contains(name) {
+        return classListOf(node).indexOf(name) !== -1;
+      },
+    },
   };
 
   Object.defineProperty(node, 'children', {
@@ -194,14 +266,65 @@ function el(tag, attributes, children) {
     get() {
       return node.childNodes.map((child) => child.textContent).join('');
     },
+    // 注入端以 textContent 寫入文案（不得用 innerHTML），寫入等同清空子
+    // 節點後掛上單一文字節點。
+    set(value) {
+      node.childNodes.length = 0;
+      if (value !== null && value !== undefined && value !== '') {
+        node.appendChild(text(String(value)));
+      }
+    },
+  });
+  // id／className／title 三個 IDL 屬性與對應的 HTML 屬性互為表裡：注入端
+  // 用哪一種寫法都要能被 getAttribute 與選擇器看見。
+  [
+    ['id', 'id'],
+    ['className', 'class'],
+    ['title', 'title'],
+  ].forEach(([property, attribute]) => {
+    Object.defineProperty(node, property, {
+      get() {
+        return node.getAttribute(attribute) || '';
+      },
+      set(value) {
+        node.attributes[attribute] = String(value);
+      },
+    });
+  });
+  Object.defineProperty(node, 'nextSibling', {
+    get() {
+      const parent = node.parentElement;
+      if (!parent) return null;
+      return parent.childNodes[parent.childNodes.indexOf(node) + 1] || null;
+    },
   });
 
   (children || []).forEach((child) => node.appendChild(child));
   return node;
 }
 
+// 原生互動列：四顆按鈕包裝節點，每顆內含 `[role="button"] svg`，svg 同時
+// 帶 aria-label 與 <title>（Threads 2026-09 起只剩 title，兩種讀法都要能
+// 命中）。結構與標籤比照 post-icon 的 collectActionRowCandidates 與
+// ACTION_ROW_LABEL_WHITELIST，注入端才找得到「互動列」這個錨點。
+const ACTION_LABELS = ['讚', '回覆', '轉發', '分享'];
+
+function createActionRow() {
+  return el(
+    'div',
+    { 'data-tcl-fake-action-row': 'true' },
+    ACTION_LABELS.map((label) =>
+      el('div', {}, [
+        el('div', { role: 'button' }, [
+          el('svg', { 'aria-label': label }, [el('title', {}, [text(label)])]),
+        ]),
+      ])
+    )
+  );
+}
+
 // 一個貼文容器：作者連結（不帶 /post/）、permalink 連結（時間戳記）、
-// 本文 span，外加可選的巢狀子節點（引用貼文）。
+// 本文 span，可選的原生互動列，外加可選的巢狀子節點（引用貼文）。
 function createPostContainer(options) {
   const children = [
     el('a', { href: `/@${options.handle}` }, [
@@ -212,6 +335,7 @@ function createPostContainer(options) {
     ]),
     el('div', {}, [el('span', { dir: 'auto' }, [text(options.body)])]),
   ];
+  if (options.actionRow) children.push(createActionRow());
   (options.extraChildren || []).forEach((child) => children.push(child));
   return el('div', { 'data-pressable-container': 'true' }, children);
 }
@@ -794,4 +918,685 @@ test('extractThreadFromDom：[dir="auto"] 互相巢狀時取最內層，外層�
 
   assert.equal(items.length, 1);
   assert.equal(items[0].text, body, '本文應取最內層的 span，不含作者名');
+});
+
+// ============================================================
+// 【第二波：守衛內的瀏覽器整合層】詳情頁掃描時機、命中後掛 tag、送
+// `scam.hit`、toast、樣式注入。上方既有測試維持原樣，本段只新增。
+//
+// 受測對象是 scam-guard.js 的 `if (typeof document !== 'undefined')` 守衛
+// 內那段——Node 直接 require() 永遠進不去，因此改用 vm sandbox：先把真的
+// i18n.js 與 tcl-core.js 載進同一個 sandbox（讓 window.TCLI18N /
+// window.TCLCore 就位），再載 scam-guard.js。sandbox 的 `window` 就是
+// sandbox 自己，比照瀏覽器的 window === globalThis，不論實作是讀
+// `root.TCLCore` 還是裸的 `TCLCore` 都拿得到。
+//
+// 【與實作的契約】
+//   路由：只有 location.pathname 為 `/@handle/post/CODE`（容忍尾隨斜線與
+//     query/hash）才掃描；河道與其他路徑一律不掃、不送訊息。
+//   總開關：chrome.storage.local.scamGuardEnabled === false 不掃；缺席視
+//     為 true；onChanged 切回 true 後下一次觸發要掃得到。
+//   冪等：MutationObserver 重複觸發時，同一頁同一組容器只掃一次、只掛一
+//     顆 tag、只送一則 scam.hit。
+//   取值順序：script[type="application/json"] → extractSsrRoot(texts,
+//     網址列 code) → extractThreadFromDom(document, ssrRoot.username,
+//     ssrRoot.selfThreadLength) → buildThreadText → TCLCore.detectScamPitch。
+//   tag：主文卡（position 1 的容器）互動列「上方」插一顆 `.tcl-scam-tag`，
+//     role="note"、文字 scamTagLabel、title scamTagTooltip，一律用
+//     textContent 寫入（不得 innerHTML）。
+//   訊息：`scam.hit` 的 payload 形狀見 §14；postUrl 為
+//     location.origin + pathname 正規化後的乾淨網址（去 query/hash）。
+//   toast：回應 added:true 且本次 session 首見 → showToast(scamFirstHitToast)；
+//     added:false／allowlisted／disabled／失敗都不 toast，allowlisted 另外
+//     不掛 tag。
+//
+// 【toast 的兩條觀測管道】規格指名沿用 post-icon.js 的 showToast，但該函
+// 式目前並未掛上 TCLPostIcon（見 post-icon.js 守衛內的 api.xxx 掛載），實
+// 作可能改為由 post-icon 匯出後呼叫，也可能自己畫一顆。斷言因此同時看兩
+// 條管道：sandbox 注入的 window.TCLPostIcon.showToast 記錄，以及 DOM 上的
+// #tcl-toast 節點文字。兩條都空才算「沒有 toast」。
+//
+// 【TCLCore 的可得性】本段在 sandbox 內先載入真的 tcl-core.js，因此
+// TCLCore 必然在場；但 manifest 目前沒有把 tcl-core.js 排進 content_scripts
+// 的 ISOLATED 陣列（它只被 background 以 importScripts 載入）。實作若真的
+// 呼叫 TCLCore.detectScamPitch，manifest 必須同步登記，否則真實頁面上
+// TCLCore 會是 undefined——見下方 test/package.test.js 的 manifest 測試。
+// ============================================================
+
+const I18N_SRC = fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8');
+const CORE_PATH = path.join(__dirname, '..', 'tcl-core.js');
+const CORE_SRC = fs.readFileSync(CORE_PATH, 'utf8');
+const TCLCore = require(CORE_PATH);
+const I18N = require(path.join(__dirname, '..', 'i18n.js'));
+
+const ORIGIN = 'https://www.threads.com';
+const DETAIL_PATH = `/@${AUTHOR}/post/${POSTS[0].code}`;
+const CLEAN_POST_URL = ORIGIN + DETAIL_PATH;
+const TAG_CLASS = 'tcl-scam-tag';
+const STYLE_ID = 'tcl-scam-guard-style';
+const TAG_LABEL = I18N.t('zh', 'scamTagLabel');
+const TAG_TOOLTIP = I18N.t('zh', 'scamTagTooltip');
+const FIRST_HIT_TOAST = I18N.t('zh', 'scamFirstHitToast');
+
+// fixture 的招攬篇只留了話術詞、沒留 LINE 錨點（detectScamPitch 對原始
+// fixture 全文回 hit:false）。掃描流程要走到「命中」這條路，末篇必須帶錨
+// 點——這裡補回可行性報告記載的原句形狀。
+const SCAM_TAIL = '\n有興趣的加我 賴：vg475，我再把整理好的筆記傳給你。';
+
+const MAIN_POSTS = POSTS.map((post, index) =>
+  index === POSTS.length - 1
+    ? Object.assign({}, post, { captionText: post.captionText + SCAM_TAIL })
+    : Object.assign({}, post)
+);
+
+// 注入端該交給 detectScamPitch 的全文：buildThreadText 以空行串接六篇。
+const EXPECTED_THREAD_TEXT = MAIN_POSTS.map((post) => post.captionText).join('\n\n');
+const EXPECTED_DETECTION = TCLCore.detectScamPitch(EXPECTED_THREAD_TEXT);
+
+// 第二串（同作者、不同貼文），用來測「同 session 第二次命中不再 toast」。
+const SECOND_CODE = 'DsSeCoNd001';
+const SECOND_PATH = `/@${AUTHOR}/post/${SECOND_CODE}`;
+const SECOND_POSTS = [
+  {
+    code: SECOND_CODE,
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 1,
+    selfThreadLength: 3,
+    captionText: '第二串第一篇：離職之後很多人私訊問我，到底是怎麼開始研究股票的。',
+  },
+  {
+    code: 'DsSeCoNd002',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 2,
+    selfThreadLength: 3,
+    captionText: '第二串第二篇：我把流程整理成三步，先翻財報再看機台稼動率，最後才看線型。',
+  },
+  {
+    code: 'DsSeCoNd003',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 3,
+    selfThreadLength: 3,
+    captionText: '第二串第三篇：不報明牌、不收費，想看完整筆記的加我 賴：vg999，我傳給你。',
+  },
+];
+
+// ---- 假 document ----
+
+// 整棵頁面樹：html > head + body，body 掛 SSR script 與貼文容器。
+function createFakeDocument(bodyChildren) {
+  const head = el('head', {}, []);
+  const body = el('body', {}, bodyChildren || []);
+  const html = el('html', {}, [head, body]);
+  return {
+    readyState: 'complete',
+    documentElement: html,
+    head,
+    body,
+    createElement(tag) {
+      return el(tag, {}, []);
+    },
+    createTextNode(value) {
+      return text(value);
+    },
+    getElementById(id) {
+      return html.querySelectorAll(`[id="${id}"]`)[0] || null;
+    },
+    querySelector(selector) {
+      return html.querySelectorAll(selector)[0] || null;
+    },
+    querySelectorAll(selector) {
+      return html.querySelectorAll(selector);
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+}
+
+function createSsrScript(post) {
+  return el('script', { type: 'application/json' }, [text(buildSsrJson(post))]);
+}
+
+// 詳情頁的貼文容器樹：作者本人 N 篇（第 1..N-1 篇帶徽章、末篇無），外加
+// 一篇他人回覆當干擾項。每個容器都有原生互動列。
+function createScanDom(posts) {
+  const total = posts.length;
+  const containers = posts.map((post, index) =>
+    createPostContainer({
+      handle: AUTHOR,
+      code: post.code,
+      body:
+        index === total - 1
+          ? post.captionText
+          : withBadge(post.captionText, post.position, total),
+      actionRow: true,
+    })
+  );
+  containers.push(
+    createPostContainer({
+      handle: 'some.other_reader',
+      code: 'DxReplY001A',
+      body: '推推，恭喜脫離輪班人生，接下來就是自由的日子了！',
+      actionRow: true,
+    })
+  );
+  return el('div', { id: 'thread-root' }, containers);
+}
+
+// 一頁的 body 子節點：SSR script（可關閉）＋貼文容器樹。
+function createPage(options) {
+  const settings = options || {};
+  const posts = settings.posts || MAIN_POSTS;
+  const children = [];
+  if (!settings.withoutSsr) children.push(createSsrScript(posts[0]));
+  children.push(createScanDom(posts));
+  return children;
+}
+
+// ---- sandbox ----
+
+// options:
+//   pathname     網址列路徑，預設詳情頁
+//   local        chrome.storage.local 的初值
+//   page         body 子節點（預設 createPage()）
+//   respond      (msg, index) => 回應物件；丟出 Error 代表 sendMessage 失敗
+//   detect       覆寫 TCLCore.detectScamPitch 的回傳（不給則走真實實作）
+function createScamGuardEnv(options) {
+  const settings = options || {};
+  const pathname = settings.pathname === undefined ? DETAIL_PATH : settings.pathname;
+  const location = {
+    origin: ORIGIN,
+    pathname,
+    search: '',
+    hash: '',
+    href: ORIGIN + pathname,
+  };
+  const doc = createFakeDocument(settings.page || createPage());
+  const storage = createChromeStorage({ langPref: 'zh' }, settings.local || {});
+
+  const sent = [];
+  const toasts = [];
+  const observers = [];
+  const detectCalls = [];
+  const warnings = [];
+
+  function replyFor(msg, index) {
+    if (typeof settings.respond === 'function') return settings.respond(msg, index);
+    return { ok: true, added: true, entry: { handle: AUTHOR } };
+  }
+
+  class FakeMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      observers.push(this);
+    }
+    observe() {}
+    disconnect() {
+      this.disconnected = true;
+    }
+    takeRecords() {
+      return [];
+    }
+  }
+
+  const sandbox = {
+    location,
+    navigator: { language: 'zh-TW' },
+    document: doc,
+    MutationObserver: FakeMutationObserver,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    Promise,
+    URL,
+    Date,
+    console: {
+      warn: (...args) => warnings.push(args.map(String).join(' ')),
+      error: (...args) => warnings.push(args.map(String).join(' ')),
+      log: () => {},
+    },
+    chrome: {
+      runtime: {
+        id: 'nbjjhmlhnadnjfoheeimcmlkfhgaggeb',
+        lastError: undefined,
+        // 兩種呼叫慣例都要撐住：帶 callback（回 undefined）與不帶
+        // callback（回 Promise）。回應一律延遲一個 tick 結算，避免同
+        // tick 假綠燈。
+        sendMessage(message, callback) {
+          const index = sent.length;
+          sent.push(message);
+          let reply;
+          let failure = null;
+          try {
+            reply = replyFor(message, index);
+          } catch (e) {
+            failure = e;
+          }
+          if (typeof callback === 'function') {
+            setTimeout(() => callback(failure ? undefined : reply), 0);
+            return undefined;
+          }
+          return new Promise((resolve, reject) => {
+            setTimeout(() => (failure ? reject(failure) : resolve(reply)), 0);
+          });
+        },
+      },
+      storage: storage.api,
+      i18n: { getUILanguage: () => 'zh-TW' },
+    },
+  };
+  // 瀏覽器裡 window === globalThis；sandbox 也照這個關係接起來，實作讀
+  // `root.TCLCore` 或裸的 `TCLCore` 都拿得到同一份。
+  sandbox.window = sandbox;
+  sandbox.self = sandbox;
+  sandbox.globalThis = sandbox;
+
+  runInSandbox(I18N_SRC, sandbox);
+  runInSandbox(CORE_SRC, sandbox);
+
+  // 記錄判定的輸入（驗「掃了什麼文字」與「掃了幾次」），必要時覆寫回
+  // 傳。包裝必須發生在載入 scam-guard.js 之前。
+  const realDetect = sandbox.TCLCore.detectScamPitch;
+  sandbox.TCLCore.detectScamPitch = function (input) {
+    detectCalls.push(input);
+    return typeof settings.detect === 'function' ? settings.detect(input) : realDetect(input);
+  };
+
+  // post-icon 的 showToast 記錄管道（見本段開頭說明）。
+  sandbox.TCLPostIcon = {
+    showToast(value) {
+      toasts.push(String(value));
+    },
+  };
+
+  const env = {
+    sandbox,
+    document: doc,
+    location,
+    storage,
+    sent,
+    toasts,
+    observers,
+    detectCalls,
+    warnings,
+    load() {
+      runInSandbox(fs.readFileSync(SCAM_GUARD_PATH, 'utf8'), sandbox);
+      return env;
+    },
+    hits() {
+      return sent.filter((msg) => msg && msg.type === 'scam.hit');
+    },
+    tags() {
+      return doc.querySelectorAll('.' + TAG_CLASS);
+    },
+    toastTexts() {
+      const out = toasts.slice();
+      const node = doc.getElementById('tcl-toast');
+      if (node && node.textContent) out.push(node.textContent);
+      return out;
+    },
+    // 清掉兩條 toast 管道，讓「下一次有沒有再 toast」可以獨立觀測。
+    clearToasts() {
+      toasts.length = 0;
+      const node = doc.getElementById('tcl-toast');
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+    },
+    setPathname(next) {
+      location.pathname = next;
+      location.href = ORIGIN + next;
+    },
+    setPage(children) {
+      doc.body.childNodes.length = 0;
+      children.forEach((child) => doc.body.appendChild(child));
+    },
+    triggerObserver() {
+      observers
+        .filter((observer) => !observer.disconnected)
+        .forEach((observer) => observer.callback([], observer));
+    },
+    // 實作可能用 debounce（post-icon 是 60ms）＋ storage 的非同步回呼，
+    // 單一 tick 不夠；統一給一段寬裕的時間讓整條鏈結算完。
+    flush() {
+      return new Promise((resolve) => setTimeout(resolve, 200));
+    },
+  };
+  return env;
+}
+
+// 先確認 scam-guard.js 在假 DOM 環境載入不會崩，紅燈才落在行為斷言上。
+function loadEnv(options) {
+  const env = createScamGuardEnv(options);
+  assert.doesNotThrow(() => env.load(), 'scam-guard.js 在假 DOM 環境載入不得丟例外');
+  return env;
+}
+
+// 文件序：用來驗「tag 插在互動列上方」。
+function documentOrder(root) {
+  const out = [];
+  (function walk(node) {
+    node.childNodes.forEach((child) => {
+      if (child.nodeType !== 1) return;
+      out.push(child);
+      walk(child);
+    });
+  })(root);
+  return out;
+}
+
+// ---- 1. 路由判定 ----
+
+test('路由：河道等非詳情頁一律不掃描、不送 scam.hit、不掛 tag', async () => {
+  const env = loadEnv({ pathname: '/' });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.deepEqual(env.detectCalls, [], '非詳情頁不得跑判定');
+  assert.deepEqual(env.hits(), [], '非詳情頁不得送 scam.hit');
+  assert.equal(env.tags().length, 0, '非詳情頁不得掛 tag');
+});
+
+test('路由：個人頁這類帶 handle 但不帶 /post/ 的路徑也不掃描', async () => {
+  const env = loadEnv({ pathname: `/@${AUTHOR}` });
+  await env.flush();
+
+  assert.deepEqual(env.detectCalls, [], '個人頁不是詳情頁，不得跑判定');
+  assert.deepEqual(env.hits(), []);
+});
+
+test('路由：詳情頁載入後掃描一次，命中即送 scam.hit', async () => {
+  const env = loadEnv();
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '詳情頁應掃描一次');
+  assert.equal(env.hits().length, 1, '命中應送出一則 scam.hit');
+});
+
+test('路由：網址帶 ?xmt= 追蹤參數時照樣認得是詳情頁', async () => {
+  const env = loadEnv({ pathname: `${DETAIL_PATH}?xmt=AQGzabcdef` });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, 'query 不得讓詳情頁被判成河道');
+});
+
+test('冪等：MutationObserver 重複觸發，同一組容器只掃一次、只送一則、只掛一顆 tag', async () => {
+  const env = loadEnv();
+  await env.flush();
+
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '容器數沒變就不該重掃');
+  assert.equal(env.hits().length, 1, 'scam.hit 不得重複送');
+  assert.equal(env.tags().length, 1, 'tag 不得重複插');
+});
+
+test('冪等：容器數變動（SPA 換頁）時會重掃並對新頁另送一則 scam.hit', async () => {
+  const env = loadEnv();
+  await env.flush();
+  assert.equal(env.hits().length, 1);
+
+  env.setPathname(SECOND_PATH);
+  env.setPage(createPage({ posts: SECOND_POSTS }));
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 2, '換一串貼文要重掃');
+  assert.equal(env.hits().length, 2, '新的一串命中要另外送一則');
+});
+
+// ---- 2. 總開關 ----
+
+test('總開關：scamGuardEnabled 為 false 時不掃描、不送訊息、不掛 tag', async () => {
+  const env = loadEnv({ local: { scamGuardEnabled: false } });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.deepEqual(env.detectCalls, [], '開關關閉不得跑判定');
+  assert.deepEqual(env.hits(), []);
+  assert.equal(env.tags().length, 0);
+});
+
+test('總開關：storage.local 沒有 scamGuardEnabled 這顆鍵時視為開啟', async () => {
+  const env = loadEnv({ local: {} });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '缺席＝預設開，應照樣掃描');
+  assert.equal(env.hits().length, 1);
+});
+
+test('總開關：onChanged 切回 true 後，下一次觸發就掃得到', async () => {
+  const env = loadEnv({ local: { scamGuardEnabled: false } });
+  await env.flush();
+  assert.deepEqual(env.detectCalls, [], '起始狀態是關閉');
+
+  env.storage.emitChange({ scamGuardEnabled: { oldValue: false, newValue: true } }, 'local');
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '開關切回 true 後應恢復掃描');
+  assert.equal(env.hits().length, 1);
+  assert.equal(env.tags().length, 1);
+});
+
+// ---- 3. 掃描流程 ----
+
+test('掃描流程：交給 detectScamPitch 的是 buildThreadText 串好的六篇全文', async () => {
+  const env = loadEnv();
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1);
+  assert.equal(
+    env.detectCalls[0],
+    EXPECTED_THREAD_TEXT,
+    'SSR 取 username/串長、DOM 取六篇文字、buildThreadText 以空行串接'
+  );
+});
+
+test('掃描流程：命中後在主文卡互動列「上方」插一顆 .tcl-scam-tag', async () => {
+  const env = loadEnv();
+  await env.flush();
+
+  const tags = env.tags();
+  assert.equal(tags.length, 1, '整頁只掛一顆 tag');
+
+  const tag = tags[0];
+  const containers = env.document.querySelectorAll(CONTAINER_SELECTOR);
+  const mainCard = containers[0];
+  assert.equal(
+    tag.closest(CONTAINER_SELECTOR),
+    mainCard,
+    'tag 應掛在 position 1 的主文卡內，不是自回覆的第二篇'
+  );
+
+  const row = mainCard.querySelectorAll('div[data-tcl-fake-action-row]')[0];
+  assert.ok(row, '假 DOM 的主文卡應有互動列');
+  assert.notEqual(
+    tag.closest('div[data-tcl-fake-action-row]'),
+    row,
+    'tag 不得塞進互動列內部'
+  );
+
+  const order = documentOrder(mainCard);
+  assert.ok(
+    order.indexOf(tag) !== -1 && order.indexOf(tag) < order.indexOf(row),
+    'tag 的文件序必須早於互動列（插在互動列上方）'
+  );
+});
+
+test('掃描流程：tag 的無障礙語意與文案走 i18n，且以 textContent 寫入', async () => {
+  const env = loadEnv();
+  await env.flush();
+
+  const tag = env.tags()[0];
+  assert.ok(tag, '命中應掛上 tag');
+  assert.equal(tag.getAttribute('role'), 'note', 'tag 應為 role="note"');
+  assert.equal(tag.textContent, TAG_LABEL, 'tag 文字應為 i18n 的 scamTagLabel');
+  assert.equal(tag.getAttribute('title'), TAG_TOOLTIP, 'title 應為 i18n 的 scamTagTooltip');
+  assert.equal(
+    tag.querySelectorAll('*').length,
+    0,
+    '文案以 textContent 寫入（不得用 innerHTML 組 HTML 片段）'
+  );
+});
+
+test('掃描流程：未命中時不掛 tag、不送訊息', async () => {
+  const env = loadEnv({
+    detect: () => ({ hit: false, anchorMatch: '', pitchMatches: ['黑馬股'], snippet: '' }),
+  });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '詳情頁照樣掃描');
+  assert.equal(env.tags().length, 0, '沒命中不得掛 tag');
+  assert.deepEqual(env.hits(), [], '沒命中不得送 scam.hit');
+});
+
+// ---- 4. scam.hit 與 toast ----
+
+test('scam.hit：payload 形狀照 §14，postUrl 為 origin + pathname 正規化後的乾淨網址', async () => {
+  const startedAt = Date.now();
+  const env = loadEnv({ pathname: `${DETAIL_PATH}?xmt=AQGzabcdef` });
+  await env.flush();
+
+  const hits = env.hits();
+  assert.equal(hits.length, 1);
+  const payload = hits[0];
+
+  assert.equal(payload.type, 'scam.hit');
+  assert.equal(payload.userId, POSTS[0].userId, 'userId 取自 SSR 的 post.user.id');
+  assert.equal(payload.handle, AUTHOR, 'handle 為不帶 @ 的原樣帳號');
+  assert.equal(payload.displayName, DISPLAY_NAME, 'displayName 取自 SSR 的 full_name');
+  assert.equal(payload.postUrl, CLEAN_POST_URL, 'postUrl 不得帶 query/hash');
+  assert.equal(
+    payload.snippet,
+    EXPECTED_DETECTION.snippet,
+    'snippet 原樣帶 detectScamPitch 的結果'
+  );
+  assert.ok(
+    payload.snippet.length <= TCLCore.SCAM_LIMITS.SNIPPET_MAX,
+    'snippet 不得超過 120 字'
+  );
+  assert.equal(payload.anchorMatch, EXPECTED_DETECTION.anchorMatch);
+  assert.deepEqual(payload.pitchMatches, EXPECTED_DETECTION.pitchMatches);
+  assert.equal(typeof payload.at, 'number', 'at 應為毫秒時間戳');
+  assert.ok(
+    payload.at >= startedAt - 1000 && payload.at <= Date.now() + 1000,
+    'at 應是本次命中的時間'
+  );
+});
+
+test('toast：回應 added:true 時顯示 scamFirstHitToast', async () => {
+  const env = loadEnv();
+  await env.flush();
+
+  assert.deepEqual(env.toastTexts(), [FIRST_HIT_TOAST], '首次入名單應跳一次 toast');
+});
+
+test('toast：同一 session 第二次 added:true 不再 toast，但 tag 照掛', async () => {
+  const env = loadEnv();
+  await env.flush();
+  assert.deepEqual(env.toastTexts(), [FIRST_HIT_TOAST], '第一次要 toast');
+
+  env.clearToasts();
+  env.setPathname(SECOND_PATH);
+  env.setPage(createPage({ posts: SECOND_POSTS }));
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.hits().length, 2, '第二串照樣送 scam.hit');
+  assert.deepEqual(env.toastTexts(), [], '同一 session 第二次不得再 toast');
+  assert.equal(env.tags().length, 1, '第二頁的主文卡照樣掛 tag');
+});
+
+test('toast：added:false（既有作者只補證據）不 toast，tag 仍在', async () => {
+  const env = loadEnv({
+    respond: () => ({ ok: true, added: false, entry: { handle: AUTHOR } }),
+  });
+  await env.flush();
+
+  assert.deepEqual(env.toastTexts(), [], 'added:false 不得 toast');
+  assert.equal(env.tags().length, 1, '已在名單內的作者照樣要看到警示');
+});
+
+test('scam.hit：allowlisted 時不掛 tag、不 toast（使用者已解除封鎖）', async () => {
+  const env = loadEnv({
+    respond: () => ({ ok: true, added: false, allowlisted: true }),
+  });
+  await env.flush();
+
+  assert.equal(env.hits().length, 1, '仍要問過 background 才知道在不在白名單');
+  assert.deepEqual(env.toastTexts(), []);
+  assert.equal(env.tags().length, 0, '白名單作者不得掛 tag');
+});
+
+test('scam.hit：回應 disabled 時不 toast，tag 仍在', async () => {
+  const env = loadEnv({ respond: () => ({ ok: false, code: 'disabled' }) });
+  await env.flush();
+
+  assert.deepEqual(env.toastTexts(), []);
+  assert.equal(env.tags().length, 1, '寫入被拒不影響頁面上的警示');
+});
+
+test('scam.hit：sendMessage 失敗時不 toast、不丟例外，tag 仍在', async () => {
+  const env = loadEnv({
+    respond: () => {
+      throw new Error('Extension context invalidated');
+    },
+  });
+  await env.flush();
+
+  assert.deepEqual(env.toastTexts(), [], '送訊息失敗不得 toast');
+  assert.equal(env.tags().length, 1, '送訊息失敗不影響頁面上的警示');
+});
+
+// ---- 5. SSR 缺 id ----
+
+test('SSR 缺席：仍以 pathname 的 handle 掃 DOM，scam.hit 帶 userId:null', async () => {
+  const env = loadEnv({ page: createPage({ withoutSsr: true }) });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '沒有 SSR 也要掃得動');
+  assert.equal(
+    env.detectCalls[0],
+    EXPECTED_THREAD_TEXT,
+    '作者 handle 改從 pathname 取，六篇全文照樣串得起來'
+  );
+
+  const hits = env.hits();
+  assert.equal(hits.length, 1);
+  assert.equal(
+    hits[0].userId,
+    null,
+    'SSR 取不到 id 時 userId 為 null，交給 background 走匿名備援'
+  );
+  assert.equal(hits[0].handle, AUTHOR);
+  assert.equal(hits[0].postUrl, CLEAN_POST_URL);
+  assert.equal(env.tags().length, 1, 'userId 缺席不影響頁面上的警示');
+});
+
+// ---- 7. 樣式 ----
+
+test('樣式：注入一次 <style id="tcl-scam-guard-style">，內含 .tcl-scam-tag 規則', async () => {
+  const env = loadEnv();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  const styles = env.document
+    .querySelectorAll('style')
+    .filter((node) => node.getAttribute('id') === STYLE_ID);
+  assert.equal(styles.length, 1, '樣式節點只能有一個，重複掃描不得重複注入');
+  assert.ok(
+    styles[0].textContent.indexOf('.' + TAG_CLASS) !== -1,
+    '樣式應含 .tcl-scam-tag 規則'
+  );
 });

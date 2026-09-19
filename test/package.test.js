@@ -152,3 +152,38 @@ test('manifest:host 權限不得含開發用的 localhost／127.0.0.1／http://'
     assert.doesNotMatch(host, /^http:\/\//i, `host 權限混入明文 http://:${host}`);
   });
 });
+
+// ---- scam-guard.js（詐騙串文警示 content script）的登記 ----
+//
+// scam-guard.js 讀 DOM、掛 tag、對 background 送 scam.hit，屬 ISOLATED world
+// 的 content script，必須排在 post-icon.js 之後——它要沿用 post-icon 已建立
+// 的樣式／toast 基礎設施，順序倒過來時 post-icon 的 api 還沒掛上。
+
+// ISOLATED world 的 content_scripts 條目（沒有 world 欄位者即為預設的
+// ISOLATED），目前就是載入 i18n.js / post-icon.js 的那條 document_idle 條目。
+function isolatedContentScript() {
+  const manifest = JSON.parse(read('manifest.json'));
+  const entries = (manifest.content_scripts || []).filter(
+    (cs) => !cs.world || cs.world === 'ISOLATED'
+  );
+  const entry = entries.find((cs) => (cs.js || []).includes('post-icon.js'));
+  assert.ok(entry, 'manifest 應有一條載入 post-icon.js 的 ISOLATED content script');
+  return entry;
+}
+
+test('manifest:ISOLATED content script 陣列含 scam-guard.js，且排在 post-icon.js 之後', () => {
+  const js = isolatedContentScript().js || [];
+
+  assert.ok(js.includes('scam-guard.js'), `ISOLATED 陣列應含 scam-guard.js，實際為:${js.join(', ')}`);
+  assert.ok(
+    js.indexOf('scam-guard.js') > js.indexOf('post-icon.js'),
+    'scam-guard.js 必須排在 post-icon.js 之後'
+  );
+});
+
+test('打包白名單:scam-guard.js 在 build-release.ps1 的 $includeFiles 內', () => {
+  assert.ok(
+    readIncludeFiles().includes('scam-guard.js'),
+    'scam-guard.js 漏進白名單時，上架 zip 會缺檔，詐騙警示在商店版整個不會動'
+  );
+});
