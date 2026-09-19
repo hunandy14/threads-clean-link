@@ -52,6 +52,8 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 • 貼文互動列新增「複製原始連結」按鈕:在 Threads 每篇貼文的互動列(分享按鈕旁)多一顆鏈節圖示，點一下就把該貼文的乾淨網址複製到剪貼簿——不含追蹤參數、也不是短碼。外觀比照原生按鈕(顏色自動跟隨、hover 提示採原生 tooltip)，文字支援中英文並跟隨介面語言設定。
 
+【投資詐騙警示】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的投資招攬串文(判準是加 LINE 錨點＋投資話術詞同時出現)，命中就在貼文上掛一枚警示標記，並把該作者記進黑名單，之後在首頁時間軸上再遇到同一位作者也會標記。黑名單可在「紀錄與設定」頁管理(附證據連結、可解除，解除後不再自動加回)，只存在你這台裝置、不會上傳，也不與其他使用者共享;不想用可以用總開關整個關掉。
+
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
 【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄預設僅保存在你的裝置上(chrome.storage.local)，不會上傳(除非另行啟用「雲端同步」並以 Google 帳號登入)，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
@@ -76,6 +78,9 @@ THREE FEATURES
 • Right-click resolve: Right-click a Threads share link (/share/XXXX) and choose "Copy clean Threads post link" to resolve it and copy the clean post URL — works on any site's tab, not just threads.com.
 • Auto-clean "Copy Link": Threads' official web "Copy Link" button now writes either a /share/ short code or a full URL with tracking parameters. This extension handles both automatically, so what you paste is always clean.
 • "Copy original link" button on every post: A link icon is added to each Threads post's action row (next to the share button). One click copies that post's clean URL — no tracking parameters, no short code — to your clipboard. It matches the native buttons in appearance (color follows the page, native hover tooltip), and its label follows your interface language.
+
+INVESTMENT SCAM WARNING
+When you open a Threads post, the extension checks on-device whether the thread follows the "long investment story, then add me on LINE" solicitation pattern (it requires both a LINE hand-off and investment pitch wording). On a match it marks the post and adds that author to a blocklist, so the same author is flagged on your feed too. The blocklist lives in the History & Settings page (with evidence links and a one-click remove that is never undone automatically). It stays on this device only, is never uploaded, and is never shared with other users; a single switch turns the whole feature off.
 
 POPUP SETTINGS
 Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting).
@@ -260,6 +265,8 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
 | User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。登入後另同步一組隨機裝置識別碼與可自訂的裝置名稱，用於標示紀錄來源裝置。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方。<br>Occurs only after sign-in: syncs the cleaning-history records the user's own actions generate (post URL, removed tracking parameters, post author and summary, cleaning timestamp), solely to keep that user's own cleaning history consistent across devices, including the companion mobile app (App functionality). Signing in also syncs a randomly generated device identifier and a user-editable device name, used to label which device a record came from. Not used to analyze aggregate user behavior, not used for ads, not shared or sold to third parties. |
 | Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
+
+**投資詐騙警示(0.8.0)對本表的影響**:無須新增任何勾選項，也無須改動既有勾選。該功能的偵測全在使用者自己的瀏覽器完成，產出的黑名單、證據片段與已解除名單只寫入 `chrome.storage.local`，不傳輸給開發者或任何第三方，依 CWS 定義不構成蒐集(與「淨化紀錄」同一道理，見上表 Web history 一列);它讀的是使用者當下主動開啟的那一頁貼文內文，用途僅為在本機當場判斷並警示，不擷取、不留存頁面資料，因此 Website content 與 Personal communications 維持不勾。功能本身也屬既有單一用途的延伸——同樣是針對使用者正在看的這一則 Threads 貼文提供保護，沒有引入無關目的。
 
 **「單一用途」聲明相容性說明**:雲端同步是既有「保存清理紀錄」子功能的延伸——把原本只存在本機的同一份紀錄，改為選用地額外存一份到使用者自己的雲端帳號，讓同一位使用者可以跨裝置(含手機版 App)看到同一份紀錄;沒有新增與「Threads 連結淨化」無關的目的，因此第 5 節的單一用途聲明文字不需要修改。
 
