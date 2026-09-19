@@ -309,11 +309,35 @@ function el(tag, attributes, children) {
 // ACTION_ROW_LABEL_WHITELIST，注入端才找得到「互動列」這個錨點。
 const ACTION_LABELS = ['讚', '回覆', '轉發', '分享'];
 
-function createActionRow() {
+// counts：每顆按鈕旁的互動計數（實測為「92」「3,440」這類字串，同樣包在
+// [dir="auto"] 裡）。不給就不產生計數節點，既有呼叫的結構不變。
+function createActionRow(options) {
+  const counts = (options && options.counts) || [];
   return el(
     'div',
     { 'data-tcl-fake-action-row': 'true' },
-    ACTION_LABELS.map((label) =>
+    ACTION_LABELS.map((label, index) => {
+      const children = [
+        el('div', { role: 'button' }, [
+          el('svg', { 'aria-label': label }, [el('title', {}, [text(label)])]),
+        ]),
+      ];
+      if (counts[index]) children.push(el('span', { dir: 'auto' }, [text(counts[index])]));
+      return el('div', {}, children);
+    })
+  );
+}
+
+// 影片貼文多出來的播放器工具列：結構上同樣是「>=4 個子元素、每個都含
+// [role="button"] svg」，但標籤全不在 ACTION_ROW_LABEL_WHITELIST 內。實測
+// 它可能排在互動列之後，靠「取文件序最後一個候選」會挑錯列。
+const PLAYER_LABELS = ['追蹤', '更多', '已靜音', '排序', '附加影音內容'];
+
+function createPlayerRow() {
+  return el(
+    'div',
+    { 'data-tcl-fake-player-row': 'true' },
+    PLAYER_LABELS.map((label) =>
       el('div', {}, [
         el('div', { role: 'button' }, [
           el('svg', { 'aria-label': label }, [el('title', {}, [text(label)])]),
@@ -325,17 +349,31 @@ function createActionRow() {
 
 // 一個貼文容器：作者連結（不帶 /post/）、permalink 連結（時間戳記）、
 // 本文 span，可選的原生互動列，外加可選的巢狀子節點（引用貼文）。
+//
+// options.body 可為字串（單一 span）或字串陣列（多個各自獨立的葉
+// [dir="auto"] span，對應實機把一篇貼文拆成多段的版面）。傳字串時的結構
+// 與擴充前逐字相同。
+// options.actionRowCounts：互動列各按鈕的計數字串。
+// options.dirAutoTimestamp：時間戳記改用 [dir="auto"] span（實測版面），
+//   而非 <time> 元素。
 function createPostContainer(options) {
+  const lines = Array.isArray(options.body) ? options.body : [options.body];
   const children = [
     el('a', { href: `/@${options.handle}` }, [
       el('span', { dir: 'auto' }, [text(options.handle)]),
     ]),
     el('a', { href: `/@${options.handle}/post/${options.code}` }, [
-      el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
+      options.dirAutoTimestamp
+        ? el('span', { dir: 'auto' }, [text(options.timestamp || '2 小時')])
+        : el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
     ]),
-    el('div', {}, [el('span', { dir: 'auto' }, [text(options.body)])]),
+    el(
+      'div',
+      {},
+      lines.map((line) => el('span', { dir: 'auto' }, [text(line)]))
+    ),
   ];
-  if (options.actionRow) children.push(createActionRow());
+  if (options.actionRow) children.push(createActionRow({ counts: options.actionRowCounts }));
   (options.extraChildren || []).forEach((child) => children.push(child));
   return el('div', { 'data-pressable-container': 'true' }, children);
 }
@@ -965,6 +1003,7 @@ const CORE_PATH = path.join(__dirname, '..', 'tcl-core.js');
 const CORE_SRC = fs.readFileSync(CORE_PATH, 'utf8');
 const TCLCore = require(CORE_PATH);
 const I18N = require(path.join(__dirname, '..', 'i18n.js'));
+const POST_ICON_API = require(path.join(__dirname, '..', 'post-icon.js'));
 
 const ORIGIN = 'https://www.threads.com';
 const DETAIL_PATH = `/@${AUTHOR}/post/${POSTS[0].code}`;
@@ -1203,12 +1242,16 @@ function createScamGuardEnv(options) {
     return typeof settings.detect === 'function' ? settings.detect(input) : realDetect(input);
   };
 
-  // post-icon 的 showToast 記錄管道（見本段開頭說明）。
-  sandbox.TCLPostIcon = {
+  // window.TCLPostIcon：post-icon.js 在 Node 環境匯出的純函式（
+  // readActionLabel／pickActionRowIndex／classifyExcerptCandidate 等，實作
+  // 要複用的就是這幾支），外加一顆會記錄呼叫的 showToast 當 toast 的觀測
+  // 點。這裡不整支跑 post-icon 的 DOM 注入層——它會往假 DOM 塞複製 icon、
+  // 另起一個 MutationObserver，對本段要驗的行為只是雜訊。
+  sandbox.TCLPostIcon = Object.assign({}, POST_ICON_API, {
     showToast(value) {
       toasts.push(String(value));
     },
-  };
+  });
 
   const env = {
     sandbox,
@@ -1599,5 +1642,323 @@ test('樣式：注入一次 <style id="tcl-scam-guard-style">，內含 .tcl-scam
   assert.ok(
     styles[0].textContent.indexOf('.' + TAG_CLASS) !== -1,
     '樣式應含 .tcl-scam-tag 規則'
+  );
+});
+
+// ============================================================
+// 【第三波：審查 FAIL 回歸】多行 span 本文、冪等快取的重讀、互動列消歧、
+// SSR 交叉校驗、tag 補回。上方既有測試維持原樣，本段只新增。
+// ============================================================
+
+// ---- F1 多行本文 ----
+//
+// 實機的一篇貼文常被拆成多個各自獨立的葉 [dir="auto"] span（段落、短句、
+// 結尾的一行招攬），「取最長的那一個」只會拿到最長的段落，招攬那一行
+// （「有興趣的加我 賴：vg475」）反而是最短的，錨點因此整個掉了——串文判
+// 定的門檻是「錨點 + 強詞」，少了錨點必定漏判。
+//
+// 同一個容器內還有兩類 [dir="auto"] 不是本文，必須排除：
+//   - 作者名與時間戳記：包在 <a> 裡（作者頁連結、permalink）。
+//   - 互動列計數（「92」「3,440」）：post-icon 的 classifyExcerptCandidate
+//     已經有這條判準（COUNT_LIKE_RE → 'stop'），實作可直接複用。
+const F1_LINES = [
+  '在台積電蹲了十四年的設備，離職之後才發現，真正難的不是技術，而是每天被排班表切碎的生活。',
+  '不報明牌、不收費、不代操，就是一個從無塵室走出來的設備工程師，跟你分享怎麼找波段黑馬股。',
+  '有興趣的加我 賴：vg475',
+];
+const F1_TEXT = F1_LINES.join('\n');
+const F1_COUNTS = ['92', '3,440', '12', '48'];
+
+// 多行版的完整串文：前五篇照 fixture 原樣，末篇（招攬篇）拆成三段。
+const MULTILINE_POSTS = POSTS.slice(0, 5)
+  .map((post) => Object.assign({}, post))
+  .concat([Object.assign({}, POSTS[5], { captionText: F1_TEXT, lines: F1_LINES })]);
+const MULTILINE_THREAD_TEXT = MULTILINE_POSTS.map((post) => post.captionText).join('\n\n');
+
+// 依 posts 建一串貼文容器：第 1..N-1 篇帶徽章、末篇無；每篇都有互動列與
+// 互動計數。decorate(index) 可為指定的第幾篇追加容器設定。
+function buildThreadContainers(posts, decorate) {
+  const total = posts.length;
+  return posts.map((post, index) => {
+    const isLast = index === total - 1;
+    const body = post.lines
+      ? post.lines
+      : isLast
+        ? post.captionText
+        : withBadge(post.captionText, post.position, total);
+    return createPostContainer(
+      Object.assign(
+        {
+          handle: AUTHOR,
+          code: post.code,
+          body,
+          actionRow: true,
+          actionRowCounts: F1_COUNTS,
+          dirAutoTimestamp: true,
+        },
+        (decorate && decorate(index, post)) || {}
+      )
+    );
+  });
+}
+
+// 一頁：SSR script ＋ 由 posts 建出的容器樹。decorate 讓個別測試只動自己
+// 關心的那一篇。
+function createDecoratedPage(posts, decorate) {
+  return [
+    createSsrScript(posts[0]),
+    el('div', { id: 'thread-root' }, buildThreadContainers(posts, decorate)),
+  ];
+}
+
+function createMultilinePage(decorate) {
+  return createDecoratedPage(MULTILINE_POSTS, decorate);
+}
+
+test('F1：容器本文由多個獨立 [dir="auto"] span 組成時，以 \\n 串接全部段落', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  const root = el('div', {}, [
+    createPostContainer({
+      handle: AUTHOR,
+      code: 'DsMuLtI0001',
+      body: F1_LINES,
+      actionRow: true,
+      actionRowCounts: F1_COUNTS,
+      dirAutoTimestamp: true,
+    }),
+  ]);
+
+  const items = extractThreadFromDom(root, AUTHOR);
+
+  assert.equal(items.length, 1);
+  assert.equal(
+    items[0].text,
+    F1_TEXT,
+    '三段本文都要收，取最長的那一段會把招攬的短行丟掉'
+  );
+  assert.ok(items[0].text.includes('賴：vg475'), '錨點所在的短行必須留在本文裡');
+});
+
+test('F1：作者名、時間戳記與互動列計數都不得混進本文', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  const root = el('div', {}, [
+    createPostContainer({
+      handle: AUTHOR,
+      code: 'DsMuLtI0002',
+      body: F1_LINES,
+      actionRow: true,
+      actionRowCounts: F1_COUNTS,
+      dirAutoTimestamp: true,
+      timestamp: '3 小時',
+    }),
+  ]);
+
+  const body = extractThreadFromDom(root, AUTHOR)[0].text;
+
+  assert.ok(!body.includes(AUTHOR), '作者名的 [dir="auto"] 包在 <a> 內，不是本文');
+  assert.ok(!body.includes('3 小時'), '時間戳記的 [dir="auto"] 包在 <a> 內，不是本文');
+  F1_COUNTS.forEach((count) => {
+    assert.ok(!body.includes(count), `互動列計數「${count}」不是本文`);
+  });
+});
+
+test('F1 端到端：多行本文的詳情頁照樣掃到錨點，命中、送 scam.hit、掛 tag', async () => {
+  const env = loadEnv({ page: createMultilinePage() });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1);
+  assert.equal(
+    env.detectCalls[0],
+    MULTILINE_THREAD_TEXT,
+    '六篇（末篇三段）串起來的全文'
+  );
+  assert.ok(env.detectCalls[0].includes('賴：vg475'), '錨點必須進得了判定的輸入');
+  assert.equal(env.hits().length, 1, '多行本文照樣要命中並通報');
+  assert.equal(env.tags().length, 1, '多行本文照樣要掛警示');
+});
+
+// ---- S1 效能：同鍵重複觸發不重讀 SSR script ----
+//
+// 詳情頁有數十份 SSR script，其中不乏數百 KB 的大塊 JSON。MutationObserver
+// 在 Threads 上每秒可觸發數十次，每次都把所有 script 的 textContent 收成字
+// 串陣列（等於整包複製一次）是主執行緒上付不起的成本。冪等判斷必須發生在
+// 讀 script 之前，或把上一輪的結果快取起來。
+
+// 會計數 textContent 讀取次數的 SSR script 節點。el() 的 textContent 是不可
+// 重新定義的存取器，因此這裡自帶一份最小節點，只實作 querySelectorAll 走訪
+// 與選擇器比對需要的介面。
+function createCountingSsrScript(post) {
+  const json = buildSsrJson(post);
+  const counter = { reads: 0 };
+  const node = {
+    nodeType: 1,
+    nodeName: 'SCRIPT',
+    tagName: 'SCRIPT',
+    attributes: { type: 'application/json' },
+    childNodes: [],
+    parentElement: null,
+    parentNode: null,
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(node.attributes, name)
+        ? String(node.attributes[name])
+        : null;
+    },
+    hasAttribute(name) {
+      return node.getAttribute(name) !== null;
+    },
+    matches(selector) {
+      return matchesSelector(node, selector);
+    },
+    closest(selector) {
+      let cursor = node;
+      while (cursor) {
+        if (cursor.matches && cursor.matches(selector)) return cursor;
+        cursor = cursor.parentElement;
+      }
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    appendChild(child) {
+      node.childNodes.push(child);
+      return child;
+    },
+  };
+  Object.defineProperty(node, 'textContent', {
+    get() {
+      counter.reads += 1;
+      return json;
+    },
+  });
+  Object.defineProperty(node, 'children', {
+    get() {
+      return [];
+    },
+  });
+  return { node, counter };
+}
+
+test('S1：同一頁同一組容器重複觸發時，不再重讀 SSR script', async () => {
+  const script = createCountingSsrScript(MAIN_POSTS[0]);
+  const env = loadEnv({ page: [script.node, createScanDom(MAIN_POSTS)] });
+  await env.flush();
+
+  assert.ok(script.counter.reads > 0, '第一輪掃描本來就要讀 SSR script');
+  assert.equal(env.hits().length, 1, '第一輪應完成一次完整掃描');
+
+  script.counter.reads = 0;
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    script.counter.reads,
+    0,
+    '冪等判斷必須早於讀 script：同鍵重掃不得再把整包 SSR JSON 複製一遍'
+  );
+});
+
+// ---- S2 互動列消歧 ----
+
+// 本文刻意用單段（MAIN_POSTS），讓紅燈只反映「挑錯互動列」這一件事，不
+// 與 F1 的多行本文互相遮蔽。
+test('S2：容器內有播放器工具列排在互動列之後時，tag 仍插在互動列上方', async () => {
+  const env = loadEnv({
+    page: createDecoratedPage(MAIN_POSTS, (index) =>
+      index === 0 ? { extraChildren: [createPlayerRow()] } : null
+    ),
+  });
+  await env.flush();
+
+  const tag = env.tags()[0];
+  assert.ok(tag, '命中應掛上 tag');
+
+  const mainCard = env.document.querySelectorAll(CONTAINER_SELECTOR)[0];
+  const actionRow = mainCard.querySelectorAll('div[data-tcl-fake-action-row]')[0];
+  const playerRow = mainCard.querySelectorAll('div[data-tcl-fake-player-row]')[0];
+  assert.ok(actionRow && playerRow, '假 DOM 的主文卡應同時有互動列與播放器工具列');
+
+  const order = documentOrder(mainCard);
+  assert.ok(
+    order.indexOf(actionRow) < order.indexOf(playerRow),
+    '假 DOM 前提：播放器工具列排在互動列之後'
+  );
+  assert.equal(
+    tag.parentElement,
+    actionRow.parentElement,
+    'tag 應與互動列同一層，不是掛在播放器工具列旁'
+  );
+  assert.ok(
+    order.indexOf(tag) < order.indexOf(actionRow),
+    '標籤白名單（讚／回覆／轉發／分享）才是互動列，不能只取文件序最後一個候選'
+  );
+});
+
+// ---- S3 SSR 交叉校驗 ----
+
+test('S3：主文卡的 DOM 本文為空時，掃描文字仍含 SSR 的第一篇全文', async () => {
+  const env = loadEnv({
+    page: createDecoratedPage(MAIN_POSTS, (index) => (index === 0 ? { body: '' } : null)),
+  });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '第一篇沒渲染出文字也要掃得動');
+  assert.ok(
+    env.detectCalls[0].includes(POSTS[0].captionText),
+    'DOM 取不到第一篇本文時，應改用 SSR 的 captionText 補上'
+  );
+});
+
+test('S3：主文卡容器整個缺席時，掃描文字仍含 SSR 的第一篇全文', async () => {
+  const env = loadEnv({
+    page: [
+      createSsrScript(MAIN_POSTS[0]),
+      el('div', { id: 'thread-root' }, buildThreadContainers(MAIN_POSTS.slice(1))),
+    ],
+  });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '第一篇容器還沒渲染也要掃得動');
+  assert.ok(
+    env.detectCalls[0].includes(POSTS[0].captionText),
+    'SSR 已經帶著第一篇全文，不該因為容器缺席就整篇漏掃'
+  );
+});
+
+// ---- S4 tag 補回 ----
+//
+// Threads 是 React 渲染的虛擬化頁面，主文卡重繪時我們插進去的節點會整個被
+// 沖掉。冪等鍵擋住重掃的同時，也把「補回 tag」一起擋掉了——使用者捲一下就
+// 再也看不到警示。
+
+test('S4：tag 被外力移除後，同鍵的下一次觸發會補回一顆（且只補一顆、不重送訊息）', async () => {
+  const env = loadEnv();
+  await env.flush();
+
+  const tag = env.tags()[0];
+  assert.ok(tag, '第一輪應掛上 tag');
+  tag.parentNode.removeChild(tag);
+  assert.equal(env.tags().length, 0, '前提：tag 已被外力移除');
+
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.tags().length, 1, 'React 重繪沖掉 tag 後，下一次觸發要補回來');
+
+  env.triggerObserver();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(env.tags().length, 1, '補回之後不得越補越多');
+  assert.equal(
+    env.hits().length,
+    1,
+    '補 tag 是頁面層的事，不得對 background 重送 scam.hit'
   );
 });
