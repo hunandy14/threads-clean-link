@@ -1123,3 +1123,166 @@ test.describe('詐騙偵測:makeBlocklistEntry 與 mergeBlocklistEvidence', () =
     }
   });
 });
+
+// ---- 詐騙偵測的誤報防線(審查 FAIL 回歸) ----
+//
+// 首版實作讓五類誤報過關:「信賴：」開頭的正常句被當錨點、體育/職場語境的
+// 「內線」被當投資話術、「免費教學／不收費」單詞就足以命中、全形帳號漏抓、
+// 64KB 預算用 JS 字元數而非真位元組(中文 snippet 實際佔 3 倍),外加
+// `__proto__` 鍵與 displayName 換行兩個衛生問題。此區塊逐條釘死。
+
+test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
+  // 「賴」前面接 信/依/無/仰 時整個詞是「信賴/依賴/無賴/仰賴」，後面的冒號
+  // 是正常標點,不是 LINE 帳號引導。這類句子常同時帶投資詞(討論股票時說
+  // 「我信賴某某分析」),光靠 PITCH 二次確認擋不住,錨點本身必須排除。
+  test('detectScamPitch:信賴／依賴／無賴／仰賴 後接冒號不是錨點', () => {
+    const negatives = [
+      '我信賴：Apple 的品質，這檔是飆股',
+      '感謝大家的信賴：thanks，一起抓飆股',
+      '依賴：technical analysis 的人很容易買到假飆股',
+      '無賴：scammer123 這種人才會報明牌',
+      '仰賴：xyz123 黑馬股',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤報');
+    }
+    // 對照組:排除清單只針對 信/依/無/仰，不得擴成「前面是中文就不算錨點」
+    // ——真實詐騙句「我的賴：vg475」正是這個形狀。
+    assert.equal(C.detectScamPitch('我的賴：vg475，專攻波段黑馬股').hit, true, '排除清單不得過寬');
+    assert.equal(C.detectScamPitch('找我聊 賴：vg475，有黑馬股').hit, true, '排除清單不得過寬');
+  });
+
+  // 【PM 裁決】話術表回歸規格原文:刪除「內線」。內線在中文是體育(內線傳
+  // 球)、職場(內線消息)、電話分機的日常詞，投資語境的辨識力不足以單獨撐起
+  // PITCH,留著只會把球評與八卦貼文一起掃進黑名單。表定保留:黑馬股／報明牌
+  // ／代操／帶單／飆股／穩賺／獲利分享。
+  test('detectScamPitch:內線不在話術表內', () => {
+    const text = '他的內線很強，禁區沒人擋得住，加入LINE看直播';
+    const res = C.detectScamPitch(text);
+    assert.equal(res.hit, false, '內線不得撐起 PITCH');
+    assert.equal(res.pitchMatches.includes('內線'), false, '內線不得出現在 pitchMatches');
+    // 表定的七個詞逐一確認仍在(各配一個錨點)。
+    const kept = ['黑馬股', '報明牌', '代操', '帶單', '飆股', '穩賺', '獲利分享'];
+    for (const word of kept) {
+      const hitRes = C.detectScamPitch('加入我的LINE，' + word + '都有');
+      assert.equal(hitRes.hit, true, word + ' 應仍是話術詞');
+      assert.equal(hitRes.pitchMatches.includes(word), true, word + ' 應出現在 pitchMatches');
+    }
+  });
+
+  // pitchMatches 會直接進證據卡給使用者看:「明牌」是「報明牌」的子字串，同
+  // 一段文字兩個都列等於同一件事數兩次，也讓「PITCH >= 1」的門檻被子字串灌
+  // 水。被包含的短詞在長詞已命中時不列入。
+  test('detectScamPitch:pitchMatches 去除被包含詞', () => {
+    const res = C.detectScamPitch('加入我的LINE，不報明牌也能賺');
+    assert.equal(res.hit, true);
+    assert.equal(res.pitchMatches.includes('報明牌'), true, '長詞列入');
+    assert.equal(res.pitchMatches.includes('明牌'), false, '被包含的短詞不重複列');
+    assert.equal(new Set(res.pitchMatches).size, res.pitchMatches.length, 'pitchMatches 不得有重複項');
+    // 只出現短詞時，短詞照列。
+    const short = C.detectScamPitch('加入我的LINE，明牌直接給你');
+    assert.equal(short.pitchMatches.includes('明牌'), true);
+  });
+
+  // 「免費教學」「不收費」在補習、餐飲、健身、公益貼文裡是中性詞,辨識力遠
+  // 低於「黑馬股」「代操」。降權成弱詞:只有它們時不足以命中，必須再有一個
+  // 其他投資詞才算 PITCH 成立。
+  test('detectScamPitch:免費教學／不收費是弱詞，單獨不足以命中', () => {
+    assert.equal(C.detectScamPitch('烘焙免費教學，加入LINE官方帳號領取食譜').hit, false, '免費教學單獨不成立');
+    assert.equal(C.detectScamPitch('瑜珈課程不收費，加入我的LINE').hit, false, '不收費單獨不成立');
+    // 弱詞 + 一個強詞 → 成立。
+    assert.equal(C.detectScamPitch('黑馬股免費教學，加入我的LINE').hit, true, '弱詞配強詞應命中');
+    assert.equal(C.detectScamPitch('代操不收費，賴：vg475').hit, true, '弱詞配強詞應命中');
+    // 範例第六篇原句:「不報明牌、不收費、不代操」含兩個強詞，降權後仍命中。
+    assert.equal(C.detectScamPitch(SCAM_POST_TEXT).hit, true, '真實詐騙貼文不得因降權漏抓');
+  });
+
+  // 詐騙帳號會用全形英數規避純 ASCII 的帳號樣式。錨點要吃全形，且
+  // anchorMatch／snippet 必須保留原文全形——證據卡要讓使用者一眼看出對方用
+  // 了規避字元，不能偷偷正規化成半形。
+  test('detectScamPitch:全形英數帳號照樣是錨點，原文全形保留', () => {
+    const text = '賴：ｖｇ４７５ 有黑馬股';
+    const res = C.detectScamPitch(text);
+    assert.equal(res.hit, true, '全形帳號應命中');
+    assert.equal(
+      res.anchorMatch.includes('ｖｇ４７５') || res.snippet.includes('ｖｇ４７５'),
+      true,
+      'anchorMatch 或 snippet 必須保留原文全形'
+    );
+    // 3 位的門檻對全形一視同仁:2 位仍不算帳號。
+    assert.equal(C.detectScamPitch('賴：ｖｇ 有黑馬股').hit, false, '全形也要滿 3 位');
+  });
+
+  // 64KB 是 chrome.storage 的位元組配額,不是 JS 字元數。snippet 幾乎必然是
+  // 中文(詐騙話術本體),UTF-8 每字 3 bytes——用 String#length 當預算會讓實際
+  // 寫入量膨脹到三倍而撞配額。
+  test('capScamBlocklist:64KB 軟預算算的是 UTF-8 真位元組', () => {
+    const entries = {};
+    const handleIndex = {};
+    for (let i = 1; i <= 250; i++) {
+      const id = 'u' + i;
+      const evidence = [];
+      for (let e = 0; e < 3; e++) {
+        evidence.push({
+          postUrl: 'https://www.threads.com/@h' + i + '/post/CODE' + e,
+          snippet: '詐騙'.repeat(60), // 120 字 / 360 bytes
+          at: i * 1000 + e,
+        });
+      }
+      entries[id] = { handle: 'h' + i, displayName: '帳號' + i, evidence: evidence, addedAt: i, source: 'auto' };
+      handleIndex['h' + i] = id;
+    }
+    const out = C.capScamBlocklist({ version: 1, entries: entries, handleIndex: handleIndex, allowlist: {} });
+    const bytes = new TextEncoder().encode(JSON.stringify(out)).length;
+    assert.equal(bytes <= 64 * 1024, true, '真位元組不得超過 64KB，實得 ' + bytes);
+    assert.equal(Object.keys(out.entries).length > 0, true, '不得把整份名單清空');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, 'u250'), true, '最新的一筆永遠留著');
+  });
+
+  // storage 讀回的 JSON 可能含 `__proto__` 鍵(手工編輯的匯入檔、或他處寫入
+  // 的髒資料)。`out.entries['__proto__'] = entry` 不會建出自有鍵，而是把
+  // entries 的原型整個換掉:Object.keys 看不到它，handleIndex 卻留下指向它的
+  // 孤兒鍵,之後的查表會拿到一筆撈不出來的條目。
+  test('normalizeScamBlocklist:__proto__ 鍵拒收，原型不受污染', () => {
+    const raw = JSON.parse(
+      '{"entries":{"__proto__":{"handle":"evil","displayName":"x","evidence":[],"addedAt":1,"polluted":"yes"},' +
+        '"111":{"handle":"ok","evidence":[],"addedAt":2}}}'
+    );
+    const out = C.normalizeScamBlocklist(raw);
+    assert.deepEqual(Object.keys(out.entries), ['111'], '__proto__ 鍵不得成為條目');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '__proto__'), false);
+    assert.equal(Object.getPrototypeOf(out.entries), Object.prototype, 'entries 的原型不得被換掉');
+    assert.deepEqual(out.handleIndex, { ok: '111' }, 'handleIndex 不得留下孤兒鍵');
+    assert.equal({}.polluted, undefined, 'Object.prototype 不得被污染');
+    assert.equal(Object.prototype.polluted, undefined, 'Object.prototype 不得被污染');
+
+    const allowOut = C.normalizeScamBlocklist(JSON.parse('{"allowlist":{"__proto__":true,"777":true}}'));
+    assert.deepEqual(Object.keys(allowOut.allowlist), ['777'], 'allowlist 同樣拒收 __proto__');
+    assert.equal(Object.getPrototypeOf(allowOut.allowlist), Object.prototype);
+  });
+
+  // 黑名單卡片是單行版面:displayName 帶換行/tab 會把卡片撐開或截斷。比照
+  // sanitizeDisplayName 的做法把連續空白摺成一個半形空格並去頭尾。
+  test('makeBlocklistEntry:displayName 摺疊空白成單行', () => {
+    const entry = C.makeBlocklistEntry({
+      userId: '1234567890',
+      handle: 'DakkaKnight',
+      displayName: '  Dakka\n\tKnight \n 投資 ',
+      postUrl: SCAM_POST_URL,
+      snippet: '賴：vg475',
+      at: 1700000000000,
+      source: 'auto',
+    });
+    assert.equal(entry.displayName, 'Dakka Knight 投資', '連續空白摺成單一半形空格並去頭尾');
+    assert.equal(/[\r\n\t]/.test(entry.displayName), false, 'displayName 不得留下換行或 tab');
+    const dirtyHandle = C.makeBlocklistEntry({
+      userId: '1',
+      handle: 'Dakka\tKnight\n',
+      postUrl: SCAM_POST_URL,
+      snippet: 's',
+      at: 1,
+      source: 'auto',
+    });
+    assert.equal(/[\r\n\t]/.test(dirtyHandle.handle), false, 'handle 不得留下換行或 tab');
+  });
+});
