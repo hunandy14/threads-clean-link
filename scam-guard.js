@@ -946,7 +946,8 @@
 
       // ---- 逐張卡片查表。
       //
-      // 三段短路依序擋下重複工作：
+      // 可見性先過：看不見的卡片一律整張跳過，兩份容器記憶都不得越過這一
+      // 關。接著三段短路依序擋下重複工作：
       //   1. 已掛過 tag 的容器只檢查 tag 還在不在——React 重繪會把節點整個沖
       //      掉，容器本身卻沒換，「已查過表」的記憶不能連警示還在不在一起省
       //      掉（詳情頁掃描那條路的 lastScan.tagged 有同樣的保證）。
@@ -982,6 +983,12 @@
         for (var i = 0; i < containers.length; i++) {
           var container = containers[i];
 
+          // 隱藏子樹（SPA 收起來的舊路由層）裡的卡片使用者看不到，標了也是
+          // 白標。這條必須排在補回捷徑之前：河道卡掛過 tag 之後被原地收起來
+          // 時還是同一個節點，捷徑只問「標過沒有」，排在後面就會讓它在看不
+          // 見的地方把 tag 無條件長回來。
+          if (isHiddenNode(container)) continue;
+
           if (taggedContainers && taggedContainers.has(container)) {
             // 查表只掛 scamBlockedByList 這一種，補回時不必另外記 titleKey。
             if (!container.querySelector || !container.querySelector('.' + TAG_CLASS)) {
@@ -995,8 +1002,6 @@
           // 一致。被引用者是誰不影響外層卡的作者，兩邊都不該掛。
           var parent = container.parentElement || container.parentNode;
           if (parent && parent.closest && parent.closest(CONTAINER_SELECTOR)) continue;
-          // 隱藏子樹（SPA 留下的舊路由層）裡的卡片使用者看不到，標了也是白標。
-          if (isHiddenNode(container)) continue;
 
           var permalink = readContainerPermalink(container);
           if (!permalink) {

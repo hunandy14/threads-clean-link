@@ -3225,3 +3225,46 @@ test('讓位：認領的容器被 React 換掉後，同 code 的新容器照樣�
   assert.equal(env.tags().length, 1, '整頁只有那一顆');
   assert.equal(env.hits().length, 1, '換節點不得重送 scam.hit');
 });
+
+// staging 實測：河道卡掛上查表 tag、進了 taggedContainers 之後，從它點進詳
+// 情頁，Threads 把河道那一層原地收起來——同一個節點，只是不再渲染。補回捷
+// 徑若排在可見性檢查之前，「標過」的記憶就會讓它在看不見的地方無條件重掛，
+// 隱藏層因此長出一顆查表 tag（手動刪掉後 200ms 內又長回來，MutationObserver
+// 證實是新插入的節點）。
+test('查表補回：卡片被收進隱藏層後，「標過」的記憶不得在看不見的地方把 tag 長回來', async () => {
+  const card = createFeedCard(BLOCKED_HANDLE);
+  const feedLayer = el('div', { id: 'feed-layer' }, [card]);
+  const env = loadFeedEnv({ page: [feedLayer], local: { scamBlocklist: buildBlocklist() } });
+
+  await env.waitFor(() => tagsIn(card).length === 1, { label: '河道卡的查表 tag' });
+  const code = permalinkCodeOf(card);
+  assert.ok(code, '前提：河道卡讀得到貼文代碼');
+
+  // 點進這張卡：河道層原地收起來（同一個節點），詳情層還沒渲染出來。
+  setLayerHidden(feedLayer, true);
+  env.setPathname(`/@${BLOCKED_HANDLE}/post/${code}`);
+  tagsIn(card).forEach((tag) => tag.parentNode.removeChild(tag));
+  assert.equal(env.tags().length, 0, '前提：收起來那張卡上的 tag 已被拿掉');
+
+  env.triggerObserver();
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(tagsIn(card).length, 0, '看不見的卡片不得被補回 tag');
+  assert.deepEqual(hiddenTagsOf(env), [], '隱藏子樹裡不得長出任何 tag');
+  assert.equal(env.tags().length, 0, '整頁一顆都不該有');
+
+  // 返回河道：同一張卡變回可見，補回捷徑要照常運作。
+  env.setPathname(FEED_PATH);
+  setLayerHidden(feedLayer, false);
+  env.triggerObserver();
+  await env.waitFor(() => tagsIn(card).length === 1, { label: '變回可見後補回的 tag' });
+
+  assert.equal(
+    tagsIn(card)[0].getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '補回的仍是查表那一顆'
+  );
+  assert.equal(env.tags().length, 1, '整頁只有那一顆');
+});
