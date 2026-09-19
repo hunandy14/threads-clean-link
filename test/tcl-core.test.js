@@ -937,7 +937,57 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
     assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
     assert.deepEqual(C.normalizeScamBlocklist({ allowlist: 'nope' }).allowlist, {});
     assert.deepEqual(C.normalizeScamBlocklist({ allowlist: null }).allowlist, {});
-    assert.deepEqual(C.normalizeScamBlocklist({ allowlist: { '777': true } }).allowlist, { '777': true });
+    assert.deepEqual(C.normalizeScamBlocklist({ allowlist: { '777': true } }).allowlist, { '777': { at: 0, handle: '' } });
+  });
+
+  // allowlist 的值是「解除紀錄」：at 為解除時間，handle 為解除當下的帳
+  // 號，選項頁「已解除」小節靠這兩欄排序與顯示。舊版只存 true，讀回來要能
+  // 自動升成新形狀，不得讓使用者已解除的作者被下一次掃描復活。
+  test('normalizeScamBlocklist:allowlist 值為 { at, handle }——舊值 true 相容、髒值剝除', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      allowlist: {
+        '111': { at: 1700000000000, handle: 'DakkaKnight' },
+        '222': true,
+        '333': { at: 'nope', handle: 42 },
+        '444': { at: 1700000000001 },
+        '555': false,
+        '666': 'yes',
+        '777': null,
+        '888': 0,
+        '999': ['DakkaKnight'],
+      },
+    });
+
+    assert.deepEqual(
+      out.allowlist['111'],
+      { at: 1700000000000, handle: 'DakkaKnight' },
+      '合格的 { at, handle } 原樣保留，handle 維持原始大小寫'
+    );
+    assert.deepEqual(out.allowlist['222'], { at: 0, handle: '' }, '舊值 true 升成空解除紀錄 { at:0, handle }');
+    assert.deepEqual(out.allowlist['333'], { at: 0, handle: '' }, '欄位髒值各自退回預設，不整筆丟棄');
+    assert.deepEqual(out.allowlist['444'], { at: 1700000000001, handle: '' }, 'handle 缺席退成空字串');
+    assert.deepEqual(
+      Object.keys(out.allowlist).sort(),
+      ['111', '222', '333', '444'],
+      'true 以外的非物件值（false／字串／null／0／陣列）一律剝除'
+    );
+    assert.equal(Object.getPrototypeOf(out.allowlist['111']), Object.prototype);
+  });
+
+  test('capScamBlocklist:allowlist 透傳正規化後的 { at, handle }', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {},
+      handleIndex: {},
+      allowlist: { '111': { at: 5, handle: 'foo' }, '222': true, '333': 'nope' },
+    });
+    assert.deepEqual(
+      out.allowlist,
+      { '111': { at: 5, handle: 'foo' }, '222': { at: 0, handle: '' } },
+      'capScamBlocklist 不碰 allowlist，只把 normalizeScamBlocklist 的結果原樣帶出來'
+    );
   });
 });
 
