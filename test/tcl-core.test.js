@@ -917,6 +917,21 @@ test.describe('詐騙偵測:LINE 提及 ＋ 群組／加入詞', () => {
     );
   });
 
+  // 帳號型錨點的繫詞(是／ID／帳號)可選:真實招攬句常補上繫詞再接冒號，不只
+  // 是「賴：xxx」這種裸冒號寫法。
+  test('detectScamPitch:帳號型錨點的繫詞(是／ID／帳號)可選，繫詞在前也算', () => {
+    const positives = [
+      '想來的朋友，我的賴是：ab12cd，加入後傳訊「63」，我拉你進群組。',
+      'LINE 帳號：ab12cd，私訊我拉你進群',
+      '賴帳號：ab12cd 加入群組',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+    const withCopula = C.detectScamPitch('想來的朋友，我的賴是：ab12cd，加入後傳訊「63」，我拉你進群組。');
+    assert.equal(withCopula.anchorMatch.includes('賴是：ab12cd'), true, 'anchorMatch 應涵蓋繫詞本體');
+  });
+
   // 【負例是本體】LINE 是英文詞的常見結尾:ONLINE／deadline／LINEUP 都不是
   // LINE 提及，前後接英文字母時一律不算。
   test('detectScamPitch:ONLINE／deadline／LINEUP 不算 LINE 提及', () => {
@@ -1481,6 +1496,20 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     // ——詐騙招攬句「我的賴：ex01abc」正是這個形狀。
     assert.equal(C.detectScamPitch('我的賴：ex01abc，專攻波段黑馬股').hit, true, '排除清單不得過寬');
     assert.equal(C.detectScamPitch('找我聊 賴：ex01abc，有黑馬股').hit, true, '排除清單不得過寬');
+  });
+
+  // 帳號型錨點加了繫詞(是／ID／帳號)可選之後，信賴／依賴的負向邊界不能跟著
+  // 鬆動——「信賴是：」「依賴是：」後面接的仍是正常標點，不是 LINE 帳號引
+  // 導；「賴清德」是姓氏，後面接的是人名不是繫詞或冒號，本來就不成立錨點。
+  test('detectScamPitch:帳號型繫詞加入後，信賴／依賴／賴清德的負向邊界照舊', () => {
+    const negatives = [
+      '我最信賴是：Apple2024 的品質，加入我們的社群討論。',
+      '過度依賴是：problem1 的根源，歡迎加入讀書會群組。',
+      '賴清德的政見群組，加入後可以討論 policy2024 的細節。',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤報');
+    }
   });
 
   // 【PM 裁決】話術表回歸規格原文:刪除「內線」。內線在中文是體育(內線傳
