@@ -730,15 +730,24 @@ function scamThrottleArea() {
   return hasStorageLocal() ? chrome.storage.local : null;
 }
 
-// 貼文網址的身分鍵：正規化後把 handle 段轉小寫，供兩個網址比「是不是同一
-// 篇」。Threads 的 handle 不分大小寫（/@Example/post/X 與 /@example/post/X 是
-// 同一篇），post 識別碼則分大小寫，只壓前半段、`/post/` 之後原樣保留。不是
-// 貼文永久連結（正規化失敗）回 null——無從比對，不算身分宣告。
+// 身分鍵的網域歸一：threads.net 與 threads.com 是同一個站的兩個網域，`www.`
+// 也可有可無，一律寫成 `https://www.threads.com/`。使用者可能停在 threads.net
+// 的分頁上，回應的 og:url 卻一律是 www.threads.com，不歸一就會判成兩篇不同的
+// 貼文，備援在 .net 分頁上全面失效。
+const SCAM_IDENTITY_HOST_PATTERN = /^https:\/\/(?:www\.)?threads\.(?:com|net)\//;
+const SCAM_IDENTITY_HOST = 'https://www.threads.com/';
+
+// 貼文網址的身分鍵：正規化後把網域歸一、handle 段轉小寫，供兩個網址比「是不
+// 是同一篇」。Threads 的 handle 不分大小寫（/@Example/post/X 與 /@example/post/X
+// 是同一篇），post 識別碼則分大小寫，只壓前半段、`/post/` 之後原樣保留。比對
+// 兩側（請求的 postUrl 與回應宣告的身分網址）都走這支，歸一規則必然一致。不
+// 是貼文永久連結（正規化失敗）回 null——無從比對，不算身分宣告。
 function scamPostIdentityKey(url) {
   const normalized = TCLCore.normalizePostUrl(url);
   if (normalized === null) return null;
   const at = normalized.lastIndexOf('/post/');
-  return normalized.slice(0, at).toLowerCase() + normalized.slice(at);
+  const head = normalized.slice(0, at).toLowerCase().replace(SCAM_IDENTITY_HOST_PATTERN, SCAM_IDENTITY_HOST);
+  return head + normalized.slice(at);
 }
 
 // 逐個 <meta> 拆屬性，取出文件身分 meta（og:url／al:android:url）的 content，
@@ -830,8 +839,13 @@ async function fetchScamAuthorId(postUrl, handle) {
   if (!response.ok) return null;
   const scanText = (await response.text()).slice(0, SCAM_SCAN_LIMIT);
 
+  // 身分 meta 只掃前 OG_SCAN_LIMIT 字，post_author_id 才吃整份 1MB 切片：og
+  // meta 必在 <head>，離文件開頭很近。兩個理由——正則的最壞成本回到既有
+  // extractOgMeta 同級（<meta> 標籤掃描不對 1MB 正文做無界比對）；正文區的未
+  // 逸出字串（貼文內文可以原樣寫出一段 <meta property="og:url" …>）不會被當
+  // 成這份文件的身分宣告，身分只認 head 裡站方自己產的那幾個標籤。
   const wanted = scamPostIdentityKey(postUrl);
-  const claimed = scamDocIdentityUrls(scanText).map(scamPostIdentityKey);
+  const claimed = scamDocIdentityUrls(scanText.slice(0, OG_SCAN_LIMIT)).map(scamPostIdentityKey);
   if (claimed.some((key) => key !== null && key !== wanted)) return null;
   if (claimed.some((key) => key !== null && key === wanted)) return scamSoleAuthorId(scanText);
 

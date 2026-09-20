@@ -5514,6 +5514,28 @@ test('L4 文件身分:og:url 的 handle 大小寫與請求不同仍算同一篇�
   assert.ok(scamEntry(bg, SCAM_USER_ID));
 });
 
+// threads.net 與 threads.com 是同一個站的兩個網域，www 前綴也可有可無。使用者
+// 可能停在 threads.net 的分頁上，回應的 og:url 卻一律是 www.threads.com——兩
+// 側都歸一到同一種寫法再比，否則備援在 .net 分頁上全面失效。
+test('L4 文件身分:請求走 threads.net 而 og:url 回 www.threads.com 時仍算同一篇（網域歸一）', async () => {
+  const netPostUrl = 'https://threads.net/@example_author/post/DxSyNtH0001';
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  assert.ok(meta.indexOf('https://www.threads.com/') !== -1, '前提：回應宣告的是 www.threads.com');
+
+  const fetchStub = makeScamFetch({ [netPostUrl]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null, postUrl: netPostUrl }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'threads.net 與 www.threads.com 指的是同一篇貼文');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
 // ---- 負例：文件身分對不上、或 id 不唯一 ----
 
 test('L4 文件身分:og:url 的 handle 與請求不同（轉址到別人的貼文）回 no_user_id 且不寫', async () => {
@@ -5564,6 +5586,31 @@ test('L4 文件身分:og:url 的 post code 與請求不同回 no_user_id 且不�
   await settle(600);
 
   assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' }, '同一位作者的另一篇貼文也不算同一篇');
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+// 兩道判準的先後順序：og:url 說「是本篇」、al:android:url 說「是別篇」，先問
+// 「有沒有指向別篇的」才問「有沒有指向本篇的」。順序對調就變成一張對得上的
+// 身分標籤足以蓋過另一張對不上的，攻擊者只要多塞一個指向本篇的 meta 就能讓
+// 任意 id 過關——否決必須是最優先的那一關。
+test('L4 文件身分:一份文件同時宣告本篇與別篇時，否決優先於採信', async () => {
+  const meta =
+    scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001')) +
+    scamOgMeta('al:android:url', scamEntityUrl('other_author', 'DxSyNtH0009'));
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '身分標籤彼此矛盾時整份不足採信，對得上的那一張不得蓋過對不上的那一張'
+  );
   assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
 });
 
