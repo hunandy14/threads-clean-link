@@ -6381,3 +6381,763 @@ test('標記名單卡:allowlist 的 handle 清洗走 TCLCore 同一把尺（連�
     );
   });
 });
+
+// ============================================================
+// 【車道 feat/options-tabs】選項頁三分頁:總覽／貼文／標記
+//
+// 使用者裁決:選項頁一路往下捲太長，改切成三個分頁，分頁列放 header 下方。
+//   - 總覽(overview):統計磚 ＋ 近 14 天圖表 ＋ 設定卡(section.duo)
+//   - 貼文(posts):紀錄卡(搜尋/篩選/每頁/匯出/選單)
+//   - 標記(flags):標記名單卡(名單 ＋ 已解除)
+//
+// 【DOM 契約】header 下方 nav.tabs[role="tablist"]，內含三顆
+// button[role="tab"][data-tab="overview"|"posts"|"flags"];每個分頁內容
+// 是 section[role="tabpanel"][data-panel=…]，非當前者 hidden。選中的 tab
+// aria-selected="true"，其餘 "false"。
+//
+// 【路由契約】location.hash 是分頁狀態的唯一權威:#overview／#posts／
+// #flags，缺席或未知一律退回 overview。點 tab 改寫 hash(history.replaceState
+// 或直接設 location.hash 皆可)，但不得走會重載整頁的通道(location.assign／
+// replace／reload)。外部改 hash(上一頁、手打網址)發出的 hashchange 要同步
+// 畫面;重新整理靠「載入時讀 hash」停在原分頁。
+//
+// 【相依注入】Node 測試環境沒有全域 window／location(實測皆為 undefined)，
+// options.js 也刻意不碰全域(檔頭註解:不碰全域 chrome 才能離線測試)。分頁
+// 路由需要的瀏覽器物件一律由呼叫端注入，本檔同時給 window／location／
+// history 三個 dep 指向同一組假件，實作採哪一種注入風格都測得到:
+//   createOptionsController({ …, window: win, location: win.location,
+//                             history: win.history })
+// hashchange 只從 window.addEventListener 派送(onhashchange 賦值式不支援)。
+// ============================================================
+
+const TAB_NAMES = ['overview', 'posts', 'flags'];
+const TAB_I18N = { overview: 'opTabOverview', posts: 'opTabPosts', flags: 'opTabFlags' };
+const TAB_TEXT_ZH = { overview: '總覽', posts: '貼文', flags: '標記' };
+const TAB_TEXT_EN = { overview: 'Overview', posts: 'Posts', flags: 'Flags' };
+
+// ---- 假 window:hash、replaceState 與 hashchange ----
+
+// 真實瀏覽器裡「改 hash」有三條不重載整頁的路(直接設 location.hash、
+// history.replaceState、同頁錨點 <a href="#…">)，以及三條會重載的路
+// (location.assign／replace／reload)。假件把前三條做成真的會改 hash，後
+// 三條只記帳不動作——測試據此斷言「切分頁不得重載整頁」。
+function makeFakeWindow(initialHash) {
+  const listeners = {};
+  const navigations = [];
+  const location = {
+    hash: typeof initialHash === 'string' ? initialHash : '',
+    assign(url) {
+      navigations.push(['assign', url]);
+    },
+    replace(url) {
+      navigations.push(['replace', url]);
+    },
+    reload() {
+      navigations.push(['reload']);
+    },
+  };
+  // replaceState/pushState 帶 '#flags' 或 'options.html#flags' 都只改寫位址
+  // 列的 hash，不重載、也不自己發 hashchange(比照真實瀏覽器)。
+  function applyUrl(url) {
+    if (typeof url !== 'string') return;
+    const at = url.indexOf('#');
+    if (at !== -1) location.hash = url.slice(at);
+  }
+  const history = {
+    calls: [],
+    replaceState(state, title, url) {
+      history.calls.push(['replaceState', url]);
+      applyUrl(url);
+    },
+    pushState(state, title, url) {
+      history.calls.push(['pushState', url]);
+      applyUrl(url);
+    },
+  };
+  const win = {
+    location,
+    history,
+    navigations,
+    addEventListener(type, fn) {
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(fn);
+    },
+    removeEventListener() {},
+    fire(type, event) {
+      (listeners[type] || []).slice().forEach((fn) => fn(event || { type }));
+    },
+    // 測試專用:模擬「外部」改 hash(瀏覽器上一頁、使用者手打網址)——先改
+    // location.hash 再派送 hashchange，順序與真實瀏覽器一致。
+    gotoHash(hash) {
+      if (location.hash === hash) return;
+      location.hash = hash;
+      win.fire('hashchange', { type: 'hashchange' });
+    },
+  };
+  return win;
+}
+
+// ---- 假 DOM 的選擇器支援(分頁列與面板沒有 id，只能靠 querySelectorAll 取) ----
+
+// 既有 makeNode 兩種 class 寫法都有(options.js 多半直接設 className，HTML
+// 靜態節點則是 class 屬性)，比對時兩邊都認。
+function selAttrValue(node, name) {
+  if (name === 'id' && typeof node.id === 'string' && node.id !== '') return node.id;
+  if (name === 'hidden') return node.hidden ? '' : null;
+  const viaAttr = typeof node.getAttribute === 'function' ? node.getAttribute(name) : null;
+  if (viaAttr !== null) return viaAttr;
+  if (name.indexOf('data-') === 0 && node.dataset) {
+    const key = name.slice(5).replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+    if (Object.prototype.hasOwnProperty.call(node.dataset, key)) return String(node.dataset[key]);
+  }
+  return null;
+}
+
+function selHasClass(node, cls) {
+  if (classListOf(node).indexOf(cls) !== -1) return true;
+  return !!(node.classList && node.classList.contains && node.classList.contains(cls));
+}
+
+// 支援的選擇器語法:tag、.class、#id、[attr]、[attr="value"]、以上的複合
+// 寫法，加上空白分隔的後代組合與逗號分組。足以涵蓋實作可能用的
+// '[data-panel]'、'.tabs [role="tab"]'、'nav.tabs button[data-tab]' 等寫法。
+function selMatchCompound(node, compound) {
+  const tokens = compound.match(/\*|[.#]?[A-Za-z][\w-]*|\[[^\]]*\]/g) || [];
+  if (tokens.length === 0) return false;
+  return tokens.every((tk) => {
+    if (tk === '*') return true;
+    if (tk.charAt(0) === '.') return selHasClass(node, tk.slice(1));
+    if (tk.charAt(0) === '#') return selAttrValue(node, 'id') === tk.slice(1);
+    if (tk.charAt(0) === '[') {
+      const m = /^\[([\w-]+)(?:=["']?([^\]"']*)["']?)?\]$/.exec(tk);
+      if (!m) return false;
+      const value = selAttrValue(node, m[1]);
+      if (value === null) return false;
+      return m[2] === undefined || value === m[2];
+    }
+    return node.tag === tk;
+  });
+}
+
+function selMatch(node, selector) {
+  const parts = selector.trim().split(/\s+/);
+  if (!selMatchCompound(node, parts[parts.length - 1])) return false;
+  let cur = node.parentNode;
+  for (let i = parts.length - 2; i >= 0; i--) {
+    while (cur && !selMatchCompound(cur, parts[i])) cur = cur.parentNode;
+    if (!cur) return false;
+    cur = cur.parentNode;
+  }
+  return true;
+}
+
+function selQueryAll(root, selector) {
+  const groups = String(selector)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return walkNodes(root, []).filter((n) => groups.some((g) => selMatch(n, g)));
+}
+
+// 各分頁該收哪些靜態節點(規格的分配)。假 DOM 照這份表把既有的 id 節點掛進
+// 對應面板，讓「面板被 hidden 時卡片仍在該面板底下」這件事有結構可驗。
+const PANEL_STATIC_IDS = {
+  overview: [
+    'statTotal',
+    'statWeek',
+    'statShare',
+    'statStrip',
+    'statIcon',
+    'chartWrap',
+    'chart',
+    'chartTip',
+    'autoClean',
+    'postCopyEnabled',
+    'saveHistory',
+    'scamGuardEnabled',
+    'scamManageLink',
+  ],
+  posts: [
+    'rows',
+    'empty',
+    'countHint',
+    'searchInput',
+    'chips',
+    'chipsRow',
+    'pageSizeSel',
+    'moreMenu',
+    'deviceNote',
+  ],
+  flags: ['scamList', 'scamCount', 'scamEmpty', 'scamAllowlist'],
+};
+
+// 頁首與浮層這些不屬於任何面板的節點，維持既有的扁平 stub 行為(不掛進面板)。
+const TABS_LOOSE_IDS = [
+  'langBtn',
+  'themeBtn',
+  'themeIcon',
+  'toast',
+  'overlay',
+  'confirmOverlay',
+  'confirmTitleText',
+  'confirmDesc',
+  'confirmOk',
+  'detailOverlay',
+  'timelineOverlay',
+  'devicesOverlay',
+];
+
+// 分頁版的 DOM stub:在既有 makeDocumentStub 之上補三樣東西——
+//   1. 真的能用的 document.querySelectorAll/querySelector(既有 stub 恆回
+//      空陣列;分頁列與面板沒有 id，只能靠選擇器取);
+//   2. header 下方的 nav.tabs[role=tablist] 與三個 section[role=tabpanel];
+//   3. getElementById 順手補上 node.id，讓 '#foo' 選擇器也成立。
+//
+// 刻意不預設任何選中態:三個面板一律 hidden=false、三顆 tab 都不帶
+// aria-selected。分頁狀態的唯一權威是控制器，stub 預設成「全開、沒人被選
+// 中」，控制器沒接手時每一條路由斷言都會紅，不會被 HTML 的靜態初值蒙混過
+// 去(靜態初值另由 options.html 的文字測試釘住)。
+function makeTabsDocumentStub() {
+  const doc = makeDocumentStub();
+  const rawGetById = doc.getElementById.bind(doc);
+  doc.getElementById = function (id) {
+    const node = rawGetById(id);
+    if (node && !node.id) node.id = id;
+    return node;
+  };
+  doc.querySelectorAll = function (selector) {
+    return selQueryAll(doc.documentElement, selector);
+  };
+  doc.querySelector = function (selector) {
+    return selQueryAll(doc.documentElement, selector)[0] || null;
+  };
+
+  const nav = doc.createElement('nav');
+  nav.className = 'tabs';
+  nav.classList.add('tabs');
+  nav.setAttribute('role', 'tablist');
+  doc.documentElement.appendChild(nav);
+  doc.tabsNav = nav;
+
+  TAB_NAMES.forEach((name) => {
+    const btn = doc.createElement('button');
+    btn.setAttribute('type', 'button');
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('data-tab', name);
+    btn.dataset.tab = name;
+    btn.setAttribute('data-i18n', TAB_I18N[name]);
+    nav.appendChild(btn);
+
+    const panel = doc.createElement('section');
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('data-panel', name);
+    panel.dataset.panel = name;
+    panel.hidden = false;
+    doc.documentElement.appendChild(panel);
+    PANEL_STATIC_IDS[name].forEach((id) => panel.appendChild(doc.getElementById(id)));
+  });
+
+  TABS_LOOSE_IDS.forEach((id) => doc.getElementById(id));
+  // 設定卡裡的「管理名單 →」連結:靜態 HTML 就帶 href 與 data-i18n。
+  const manage = doc.getElementById('scamManageLink');
+  manage.tag = 'a';
+  manage.setAttribute('href', '#flags');
+  manage.setAttribute('data-i18n', 'opScamManageLink');
+  return doc;
+}
+
+function tabButtons(doc) {
+  return doc.querySelectorAll('[role="tab"]');
+}
+function tabByName(doc, name) {
+  return tabButtons(doc).filter((b) => selAttrValue(b, 'data-tab') === name)[0] || null;
+}
+function panelByName(doc, name) {
+  return (
+    doc.querySelectorAll('[data-panel]').filter((p) => selAttrValue(p, 'data-panel') === name)[0] ||
+    null
+  );
+}
+function selectedTabNames(doc) {
+  return tabButtons(doc)
+    .filter((b) => b.getAttribute('aria-selected') === 'true')
+    .map((b) => selAttrValue(b, 'data-tab'));
+}
+function visiblePanelNames(doc) {
+  return doc
+    .querySelectorAll('[data-panel]')
+    .filter((p) => !p.hidden)
+    .map((p) => selAttrValue(p, 'data-panel'));
+}
+
+// 一次把「選中的 tab／可見的面板／未選中者的 aria-selected」三件事釘死。
+function assertActiveTab(ctx, name, label) {
+  const doc = ctx.doc;
+  assert.deepEqual(
+    selectedTabNames(doc),
+    [name],
+    label + ':只有 ' + name + ' 這顆 tab aria-selected="true"'
+  );
+  TAB_NAMES.filter((n) => n !== name).forEach((other) => {
+    assert.equal(
+      tabByName(doc, other).getAttribute('aria-selected'),
+      'false',
+      label + ':未選中的 ' + other + ' 要顯式寫 aria-selected="false"，不是拿掉屬性'
+    );
+  });
+  assert.deepEqual(visiblePanelNames(doc), [name], label + ':只有 ' + name + ' 面板不帶 hidden');
+}
+
+function makeTabsCtx(opts) {
+  const o = opts || {};
+  const localSeed = { history: o.history || [] };
+  if (o.blocklist !== undefined) localSeed.scamBlocklist = o.blocklist;
+  const storage = createChromeStorage({ langPref: o.lang || 'zh' }, localSeed);
+  const doc = makeTabsDocumentStub();
+  const win = makeFakeWindow(o.hash);
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => DEV_SIGNED_OUT_STATE,
+    'scam.blocklist.remove': o.remove || (() => ({ ok: true })),
+    'scam.blocklist.restore': o.restore || (() => ({ ok: true })),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => SCAM_NOW,
+    runtime,
+    window: win,
+    location: win.location,
+    history: win.history,
+  });
+  return { storage, doc, win, runtime, controller };
+}
+
+async function initTabsPage(ctx) {
+  await ctx.controller.init();
+  await settle();
+  ['detailOverlay', 'timelineOverlay', 'overlay', 'confirmOverlay', 'devicesOverlay'].forEach(
+    (id) => {
+      ctx.doc.getElementById(id).hidden = true;
+    }
+  );
+}
+
+// 同頁錨點的點擊:先派送 click，沒被 preventDefault 就照瀏覽器原生行為改
+// hash 並發 hashchange。實作要攔截自行切換(preventDefault)，或完全靠原生
+// <a href="#flags"> ＋ hashchange 同步，兩種都算通過。
+function clickAnchor(ctx, node) {
+  const ev = {
+    type: 'click',
+    target: node,
+    defaultPrevented: false,
+    preventDefault() {
+      ev.defaultPrevented = true;
+    },
+    stopPropagation() {},
+  };
+  node.fire('click', ev);
+  if (!ev.defaultPrevented) {
+    const href = scamAttrOf(node, 'href');
+    if (href.charAt(0) === '#') ctx.win.gotoHash(href);
+  }
+}
+
+// ---- options.html 靜態結構 ----
+
+function readOptionsHtml() {
+  return fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+}
+
+// 三個面板的原始碼區間:從自己的開標籤到下一個面板的開標籤(最後一個到
+// <footer)。卡片落在哪個面板，就看它的索引落在誰的區間裡。
+function panelSlices(html) {
+  const re = /<section[^>]*\bdata-panel="([a-z]+)"[^>]*>/g;
+  const found = [];
+  let m;
+  while ((m = re.exec(html)) !== null) found.push({ name: m[1], start: m.index, tag: m[0] });
+  const footerIdx = html.indexOf('<footer');
+  const slices = {};
+  found.forEach((p, i) => {
+    const end =
+      i + 1 < found.length ? found[i + 1].start : footerIdx === -1 ? html.length : footerIdx;
+    slices[p.name] = { tag: p.tag, body: html.slice(p.start, end), start: p.start };
+  });
+  return { order: found.map((p) => p.name), slices: slices };
+}
+
+test('分頁列:options.html 在 header 下方有 nav.tabs[role=tablist]，三顆 tab 帶 data-tab／data-i18n，overview 為初始選中', () => {
+  const html = readOptionsHtml();
+
+  const headerEnd = html.indexOf('</header>');
+  assert.notEqual(headerEnd, -1, '前置:應找得到頁首 </header>');
+  const navIdx = html.search(/<nav[^>]*role="tablist"/);
+  assert.notEqual(navIdx, -1, 'options.html 應有 nav[role="tablist"] 分頁列');
+  assert.ok(navIdx > headerEnd, '分頁列要放在 header 之後(使用者裁決:分頁列放 header 下方)');
+
+  const navTag = html.slice(navIdx, html.indexOf('>', navIdx) + 1);
+  assert.match(navTag, /class="[^"]*\btabs\b[^"]*"/, '分頁列 class 應含 tabs');
+
+  const navEnd = html.indexOf('</nav>', navIdx);
+  assert.notEqual(navEnd, -1, '前置:分頁列應正常收尾');
+  const navBlock = html.slice(navIdx, navEnd);
+  const btnTags = navBlock.match(/<button[^>]*>/g) || [];
+  assert.equal(btnTags.length, 3, '分頁列內應剛好三顆 button(總覽／貼文／標記)');
+
+  TAB_NAMES.forEach((name, i) => {
+    const tag = btnTags[i];
+    assert.match(tag, /\brole="tab"/, '第 ' + (i + 1) + ' 顆按鈕要標 role="tab"');
+    assert.ok(
+      tag.indexOf('data-tab="' + name + '"') !== -1,
+      '第 ' + (i + 1) + ' 顆按鈕的 data-tab 應為 ' + name + '(順序:總覽→貼文→標記)'
+    );
+    assert.ok(
+      tag.indexOf('data-i18n="' + TAB_I18N[name] + '"') !== -1,
+      name + ' 分頁文案走 data-i18n="' + TAB_I18N[name] + '"'
+    );
+    assert.ok(
+      tag.indexOf('aria-selected="' + (i === 0 ? 'true' : 'false') + '"') !== -1,
+      '靜態初值:overview 為 aria-selected="true"，其餘顯式 "false"'
+    );
+  });
+});
+
+test('分頁列:三個 section[role=tabpanel][data-panel] 齊備，非當前者靜態就帶 hidden(避免載入瞬間三頁一起閃出來)', () => {
+  const html = readOptionsHtml();
+  const parsed = panelSlices(html);
+
+  assert.deepEqual(parsed.order, TAB_NAMES, '三個面板依序為 overview／posts／flags');
+  TAB_NAMES.forEach((name) => {
+    assert.match(parsed.slices[name].tag, /\brole="tabpanel"/, name + ' 面板要標 role="tabpanel"');
+  });
+  assert.ok(
+    !/\shidden[\s>]/.test(parsed.slices.overview.tag),
+    'overview 是預設分頁，靜態 HTML 不帶 hidden'
+  );
+  ['posts', 'flags'].forEach((name) => {
+    assert.match(
+      parsed.slices[name].tag,
+      /\shidden[\s>]/,
+      name + ' 面板靜態 HTML 就要帶 hidden，否則 JS 接手前三頁內容會一起畫出來'
+    );
+  });
+});
+
+test('分頁分配:統計磚與 section.duo 在 overview、紀錄卡在 posts、標記名單卡在 flags', () => {
+  const html = readOptionsHtml();
+  const parsed = panelSlices(html);
+  assert.deepEqual(parsed.order, TAB_NAMES, '前置:三個面板齊備');
+
+  assert.match(
+    parsed.slices.overview.body,
+    /<section[^>]*class="stats"/,
+    '統計磚(section.stats)應落在 overview 面板內'
+  );
+  assert.match(
+    parsed.slices.overview.body,
+    /<section[^>]*class="duo"/,
+    '圖表＋設定卡(section.duo)應落在 overview 面板內'
+  );
+  assert.match(
+    parsed.slices.posts.body,
+    /<section[^>]*class="card history"/,
+    '紀錄卡(section.card.history)應落在 posts 面板內'
+  );
+  assert.match(
+    parsed.slices.flags.body,
+    /<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/,
+    '標記名單卡(section.card.scam-blocklist)應落在 flags 面板內'
+  );
+
+  // 反向:同一張卡不得同時掛在別的面板(複製貼上重複掛)。
+  assert.doesNotMatch(
+    parsed.slices.posts.body,
+    /<section[^>]*class="stats"/,
+    '統計磚不該出現在 posts'
+  );
+  assert.doesNotMatch(
+    parsed.slices.flags.body,
+    /<section[^>]*class="card history"/,
+    '紀錄卡不該出現在 flags'
+  );
+  assert.doesNotMatch(
+    parsed.slices.overview.body,
+    /<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/,
+    '標記名單卡不該出現在 overview(設定卡只放「管理名單 →」連結)'
+  );
+});
+
+test('分頁列 i18n:三顆 tab 與「管理名單 →」的文案 key 在 zh／en 兩份字典都齊備且逐字正確', () => {
+  TAB_NAMES.forEach((name) => {
+    const key = TAB_I18N[name];
+    assert.equal(i18n.t('zh', key), TAB_TEXT_ZH[name], key + ' 的 zh 文案');
+    assert.equal(i18n.t('en', key), TAB_TEXT_EN[name], key + ' 的 en 文案');
+  });
+  assert.equal(i18n.t('zh', 'opScamManageLink'), '管理名單 →', 'opScamManageLink 的 zh 文案');
+  assert.equal(i18n.t('en', 'opScamManageLink'), 'Manage list →', 'opScamManageLink 的 en 文案');
+});
+
+test('分頁路由:hash 缺席時停在 overview，三顆 tab 文案由 i18n 字典套上', async () => {
+  const ctx = makeTabsCtx({ hash: '' });
+  await initTabsPage(ctx);
+
+  assertActiveTab(ctx, 'overview', 'hash 缺席');
+  TAB_NAMES.forEach((name) => {
+    assert.equal(
+      tabByName(ctx.doc, name).textContent,
+      TAB_TEXT_ZH[name],
+      name + ' 分頁的按鈕文字應為 zh 字典的 ' + TAB_I18N[name]
+    );
+  });
+});
+
+test('分頁路由:載入時 hash 為 #flags／#posts 就停在該分頁(重新整理不會跳回總覽)', async () => {
+  for (const name of ['flags', 'posts']) {
+    const ctx = makeTabsCtx({ hash: '#' + name, blocklist: scamBlocklistFixture() });
+    await initTabsPage(ctx);
+    assertActiveTab(ctx, name, '載入 hash=#' + name);
+    assert.equal(ctx.win.location.hash, '#' + name, '載入既有 hash 不應被改寫');
+    assert.deepEqual(
+      ctx.win.navigations,
+      [],
+      '切分頁不得走 assign／replace／reload 這類重載整頁的通道'
+    );
+  }
+});
+
+test('分頁路由:未知 hash 退回 overview，不留下三頁全開或全關的破畫面', async () => {
+  const ctx = makeTabsCtx({ hash: '#nope' });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'overview', '未知 hash');
+});
+
+test('分頁路由:點 tab 切換面板並改寫 hash，aria-selected 跟著搬家，且不重載整頁', async () => {
+  const ctx = makeTabsCtx({ blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'overview', '前置');
+
+  tabByName(ctx.doc, 'posts').fire('click');
+  await settle();
+  assertActiveTab(ctx, 'posts', '點貼文分頁');
+  assert.equal(ctx.win.location.hash, '#posts', '點 tab 要把 hash 改成 #posts');
+
+  tabByName(ctx.doc, 'flags').fire('click');
+  await settle();
+  assertActiveTab(ctx, 'flags', '點標記分頁');
+  assert.equal(ctx.win.location.hash, '#flags', '點 tab 要把 hash 改成 #flags');
+
+  assert.deepEqual(
+    ctx.win.navigations,
+    [],
+    '改 hash 只能走 location.hash 或 history.replaceState，不得用 assign／replace／reload'
+  );
+});
+
+test('分頁路由:外部改 hash(上一頁／手打網址)發出的 hashchange 要同步畫面', async () => {
+  const ctx = makeTabsCtx({ blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+
+  ctx.win.gotoHash('#flags');
+  await settle();
+  assertActiveTab(ctx, 'flags', 'hashchange 到 #flags');
+
+  ctx.win.gotoHash('#overview');
+  await settle();
+  assertActiveTab(ctx, 'overview', 'hashchange 回 #overview');
+
+  ctx.win.gotoHash('#bogus');
+  await settle();
+  assertActiveTab(ctx, 'overview', '外部改成未知 hash 時同樣退回 overview');
+});
+
+test('分頁路由:切語言後留在原分頁，tab 文案換成英文(renderAll 不得把分頁重設回 overview)', async () => {
+  const ctx = makeTabsCtx({ hash: '#flags', blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'flags', '前置');
+
+  ctx.doc.ids.langBtn.fire('click');
+  await settle();
+
+  assertActiveTab(ctx, 'flags', '切語言後');
+  assert.equal(ctx.win.location.hash, '#flags', '切語言不得改動 hash');
+  TAB_NAMES.forEach((name) => {
+    assert.equal(
+      tabByName(ctx.doc, name).textContent,
+      TAB_TEXT_EN[name],
+      name + ' 分頁的按鈕文字應換成 en 字典的 ' + TAB_I18N[name]
+    );
+  });
+  assert.equal(
+    ctx.doc.ids.scamManageLink.textContent,
+    i18n.t('en', 'opScamManageLink'),
+    '「管理名單 →」連結同樣走 data-i18n，切語言要跟著換'
+  );
+});
+
+test('管理名單連結:options.html 的設定卡內有 a#scamManageLink[href="#flags"]，走 opScamManageLink 文案', () => {
+  const html = readOptionsHtml();
+
+  const anchorIdx = html.search(/<a[^>]*id="scamManageLink"/);
+  assert.notEqual(anchorIdx, -1, '設定卡應有 a#scamManageLink');
+  const anchorEnd = html.indexOf('</a>', anchorIdx);
+  const anchorBlock = html.slice(anchorIdx, anchorEnd === -1 ? anchorIdx : anchorEnd);
+  assert.match(
+    html.slice(anchorIdx, html.indexOf('>', anchorIdx) + 1),
+    /href="#flags"/,
+    '連結指向標記分頁的 hash'
+  );
+  assert.ok(
+    anchorBlock.indexOf('data-i18n="opScamManageLink"') !== -1,
+    '連結文案走 data-i18n="opScamManageLink"'
+  );
+
+  // 位置:掛在「LINE 群組引導標記」那一列的設定 row 之內(開關旁邊)，不另起一區。
+  const toggleIdx = html.indexOf('id="scamGuardEnabled"');
+  assert.notEqual(toggleIdx, -1, '前置:設定卡內應有 LINE 群組引導標記總開關');
+  const rowStart = html.lastIndexOf('<label', toggleIdx);
+  const rowEnd = html.indexOf('</label>', toggleIdx);
+  assert.ok(
+    anchorIdx > rowStart && anchorIdx < rowEnd,
+    '「管理名單 →」要掛在 LINE 群組引導標記的開關那一列內，不另開區塊'
+  );
+});
+
+test('管理名單連結:點下去切到標記分頁(原生錨點或 JS 攔截都可)，hash 同步為 #flags', async () => {
+  const ctx = makeTabsCtx({ blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'overview', '前置:設定卡在總覽分頁');
+
+  clickAnchor(ctx, ctx.doc.ids.scamManageLink);
+  await settle();
+
+  assertActiveTab(ctx, 'flags', '點管理名單連結後');
+  assert.equal(ctx.win.location.hash, '#flags', 'hash 應同步為 #flags');
+  assert.deepEqual(ctx.win.navigations, [], '同頁錨點不得造成整頁重載');
+});
+
+// ---- 標記分頁:證據列的小字 meta ----
+
+// 同一個作者的多筆證據常是同文異篇(同一段招攬文案貼了好幾篇)，只看片段會
+// 以為畫了重複的兩列。每筆證據在片段前補一行小字「貼文代碼尾 6 碼 ·
+// YYYY-MM-DD」:代碼取自 postUrl 的 /post/ 段，日期取自該筆證據的 at。
+function evidenceMetaText(postUrl, at) {
+  const id = /\/post\/([^/?#]+)/.exec(postUrl)[1];
+  return id.slice(-6) + ' · ' + scamDateOnly(at);
+}
+
+test('標記名單卡:每筆證據在片段前有 .scam-evidence-meta 小字(貼文代碼尾 6 碼 · 日期)，同文異篇不會看起來重複', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+
+  const metas = findByClass(rowA, 'scam-evidence-meta');
+  assert.equal(metas.length, 2, '每筆證據各一行 meta，數量等於 evidence 筆數');
+
+  const expected = [
+    evidenceMetaText(SCAM_URL_A1, SCAM_NOW - SCAM_HOUR),
+    evidenceMetaText(SCAM_URL_A2, SCAM_NOW - 2 * SCAM_HOUR),
+  ];
+  assert.notEqual(expected[0], expected[1], '前置:兩筆證據的尾碼須不同，才測得出去重複的效果');
+  assert.deepEqual(
+    metas.map((m) => m.textContent),
+    expected,
+    'meta 文字為「貼文代碼尾 6 碼 · YYYY-MM-DD」，以「 · 」相隔'
+  );
+  metas.forEach((m) => {
+    assert.match(
+      m.textContent,
+      /^[\w-]{1,6} · \d{4}-\d{2}-\d{2}$/,
+      'meta 只放代碼尾碼與日期，不夾帶完整網址或時分'
+    );
+  });
+
+  // 順序:每筆 meta 要排在它那筆的片段連結之前(walkNodes 是前序走訪，對這
+  // 種淺層結構等同文件順序)。
+  const order = walkNodes(rowA, []);
+  const links = order.filter((n) => n.tag === 'a');
+  assert.equal(links.length, 2, '前置:兩筆證據各一個連結');
+  metas.forEach((m, i) => {
+    assert.ok(
+      order.indexOf(m) < order.indexOf(links[i]),
+      '第 ' + (i + 1) + ' 筆的 meta 要排在片段之前'
+    );
+  });
+});
+
+test('標記名單卡:貼文代碼剛好 6 碼時原樣顯示，不補位也不取到別的路徑片段', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  assert.ok(rowB, '前置:應畫出作者 B 那一列');
+  const metas = findByClass(rowB, 'scam-evidence-meta');
+  assert.equal(metas.length, 1, 'B 只有一筆證據');
+  assert.equal(
+    metas[0].textContent,
+    evidenceMetaText(SCAM_URL_B1, SCAM_NOW - 3 * SCAM_DAY),
+    '代碼剛好 6 碼(DeF456)時原樣顯示'
+  );
+});
+
+// ---- 既有行為在分頁化之後不變 ----
+
+test('分頁化後既有行為不變:標記分頁上 storage.onChanged 照常同步、解除流程照常走完', async () => {
+  const ctx = makeTabsCtx({ hash: '#flags' });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'flags', '前置:停在標記分頁');
+  assert.equal(scamRows(ctx.doc).length, 0, '前置:一開始是空名單');
+
+  ctx.controller.setLocalSettings({
+    scamBlocklist: { newValue: scamBlocklistFixture(), oldValue: undefined },
+  });
+  await settle();
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '別處寫入的新名單即時畫進標記分頁'
+  );
+  assertActiveTab(ctx, 'flags', 'onChanged 重畫後仍停在標記分頁');
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const removeBtn = actBtn(rowA, 'remove');
+  assert.ok(removeBtn, '前置:應有解除鈕');
+  removeBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
+    '解除流程在分頁內照常送出'
+  );
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_B],
+    '回 ok 後該列消失'
+  );
+  assertActiveTab(ctx, 'flags', '解除完成後不得被彈回總覽');
+});
+
+test('分頁化後既有行為不變:貼文分頁上紀錄卡照常渲染，切回總覽時統計磚數值仍在', async () => {
+  const ctx = makeTabsCtx({
+    hash: '#posts',
+    history: [
+      { url: URL_A, kind: 'share', at: SCAM_NOW - SCAM_HOUR },
+      { url: URL_B, kind: 'strip', at: SCAM_NOW - 2 * SCAM_HOUR },
+    ],
+  });
+  await initTabsPage(ctx);
+
+  assertActiveTab(ctx, 'posts', '前置:停在貼文分頁');
+  assert.equal(ctx.doc.ids.rows.children.length, 2, '紀錄卡片牆照常畫出兩張卡');
+  assert.equal(ctx.doc.ids.statTotal.textContent, '2', '統計磚照常聚合(面板 hidden 不影響渲染)');
+
+  tabByName(ctx.doc, 'overview').fire('click');
+  await settle();
+  assertActiveTab(ctx, 'overview', '切回總覽');
+  assert.equal(ctx.doc.ids.statTotal.textContent, '2', '切回總覽後統計磚數值仍在');
+});
