@@ -1075,6 +1075,7 @@
         'timelineOverlay',
         'confirmOverlay',
         'scamHitsOverlay',
+        'scamInfoOverlay',
         'overlay',
         'devicesOverlay',
         'detailOverlay',
@@ -2597,6 +2598,65 @@
       }
     }
 
+    // ---- 卡頭資訊鈕:「這個功能怎麼運作」說明視窗 ----
+    //
+    // 五段條列都是 i18n 字串，每一段以 '|' 分成「粗體開頭句」與「說明」兩
+    // 段:開頭句本身就是重點，粗體讓人掃得動;沒有分隔符時整句當說明。文案裡
+    // 不放任何標記語言，全程 textContent——這段說的是擴充怎麼判人，內容本身
+    // 不該有被注入的餘地。
+    var SCAM_INFO_KEYS = [
+      'opScamInfo1',
+      'opScamInfo2',
+      'opScamInfo3',
+      'opScamInfo4',
+      'opScamInfo5',
+    ];
+
+    function renderScamInfo() {
+      // 標題在 HTML 裡就帶 data-i18n(首次開啟前也是對的語言)，這裡再寫一次
+      // 是為了讓「開著的時候切語言」也跟著換——applyI18nDom 掃得到它，但重畫
+      // 條列時一併更新比較不容易漏。
+      var titleEl = byId('scamInfoTitle');
+      if (titleEl) titleEl.textContent = tt('opScamInfoTitle');
+      var listEl = byId('scamInfoList');
+      if (!listEl) return;
+      listEl.textContent = '';
+      SCAM_INFO_KEYS.forEach(function (key) {
+        var text = tt(key);
+        var li = document.createElement('li');
+        var at = text.indexOf('|');
+        if (at === -1) {
+          li.textContent = text;
+        } else {
+          var lead = document.createElement('span');
+          lead.className = 'scam-info-lead';
+          lead.textContent = text.slice(0, at);
+          li.appendChild(lead);
+          li.appendChild(document.createTextNode(' ' + text.slice(at + 1)));
+        }
+        listEl.appendChild(li);
+      });
+    }
+
+    function openScamInfo() {
+      var overlay = byId('scamInfoOverlay');
+      if (!overlay) return;
+      // 每次開都重畫:切語言時不必另外掛一條刷新路徑。
+      renderScamInfo();
+      overlay.hidden = false;
+      focusInto('scamInfoOverlay', 'scamInfoClose');
+    }
+
+    function closeScamInfo() {
+      var overlay = byId('scamInfoOverlay');
+      if (!overlay || overlay.hidden) return;
+      overlay.hidden = true;
+      var btn = byId('scamInfoBtn');
+      if (btn && typeof btn.focus === 'function') {
+        try { btn.focus(); } catch (e) {}
+      }
+    }
+
     // ---- 每一列右上角的 ⋯ 選單 ----
     //
     // 名單的列是動態產生的，選單跟著各列走，因此開合狀態記在這個模組變數上
@@ -2807,11 +2867,18 @@
         var overlay = byId('scamHitsOverlay');
         if (overlay && ev.target === overlay) closeScamHits();
       });
+      on('scamInfoBtn', 'click', openScamInfo);
+      on('scamInfoClose', 'click', closeScamInfo);
+      on('scamInfoOverlay', 'click', function (ev) {
+        var overlay = byId('scamInfoOverlay');
+        if (overlay && ev.target === overlay) closeScamInfo();
+      });
       if (typeof document.addEventListener !== 'function') return;
       document.addEventListener('keydown', function (ev) {
         if (!ev || ev.key !== 'Escape') return;
         closeScamMenu();
         closeScamHits();
+        closeScamInfo();
       });
       document.addEventListener('click', function (ev) {
         // 點到選單自己或它的 ⋯ 鈕以外的任何地方就收起來。⋯ 鈕的 click 已

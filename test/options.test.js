@@ -5984,6 +5984,12 @@ const SCAM_STUB_IDS = [
   'scamHitsTitle',
   'scamHitsList',
   'scamHitsClose',
+  // 卡頭資訊鈕開的「這個功能怎麼運作」說明視窗。
+  'scamInfoBtn',
+  'scamInfoOverlay',
+  'scamInfoTitle',
+  'scamInfoList',
+  'scamInfoClose',
   'confirmOverlay',
   'confirmTitleText',
   'confirmDesc',
@@ -8175,6 +8181,153 @@ test('證據卡:langPref 為 en 時，命中數／相對時間／標記 pill／�
   assert.equal(findByClass(dialog, 'scam-signal').length, 0, '訊號 chips 不再輸出');
 });
 
+// ---- 卡頭資訊鈕與「這個功能怎麼運作」說明視窗 ----
+//
+// 這是一份對真人帳號的負面標記，使用者有權知道它憑什麼下判斷、資料落在哪、
+// 以及它會誤判。五段條列因此逐段釘住文案，不只釘「有開出來」。
+
+// 每段條列的完整文字（粗體開頭句 ＋ 說明），把字典裡的 '|' 分隔符還原成實
+// 際畫面上的一個空白。
+function scamInfoText(locale, key) {
+  const raw = i18n.t(locale, key);
+  const at = raw.indexOf('|');
+  return at === -1 ? raw : raw.slice(0, at) + ' ' + raw.slice(at + 1);
+}
+
+test('警示名單卡:卡頭標題右邊有資訊鈕(#i-info)，點下去開說明視窗', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  // 按鈕與它的圖示是 options.html 裡的靜態節點（DOM stub 不解析 HTML，因此
+  // 圖示、aria 屬性與 overlay 的 hidden 由下面的 options.html 測試釘），這
+  // 裡只驗接線。stub 的節點是按需建出、hidden 預設 false，先補齊前置。
+  const btn = ctx.doc.ids.scamInfoBtn;
+  assert.ok(btn, '卡頭應有 #scamInfoBtn');
+  ctx.doc.ids.scamInfoOverlay.hidden = true;
+
+  btn.fire('click');
+  assert.equal(ctx.doc.ids.scamInfoOverlay.hidden, false, '點資訊鈕應開啟說明視窗');
+  assert.equal(
+    ctx.doc.ids.scamInfoTitle.textContent,
+    i18n.t('zh', 'opScamInfoTitle'),
+    '標題走 opScamInfoTitle'
+  );
+  assert.equal(ctx.doc.ids.scamInfoTitle.textContent, '這個功能怎麼運作', 'zh 文案');
+});
+
+test('警示名單卡:說明視窗是五段 ol > li，逐段文案與字典相符(zh)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+  ctx.doc.ids.scamInfoBtn.fire('click');
+
+  const list = ctx.doc.ids.scamInfoList;
+  assert.equal(list.children.length, 5, '五段');
+  list.children.forEach((li, i) => {
+    assert.equal(li.tag, 'li', '每段是 <li>');
+    assert.equal(
+      scamTextOf(li),
+      scamInfoText('zh', 'opScamInfo' + (i + 1)),
+      '第 ' + (i + 1) + ' 段的 zh 文案'
+    );
+    const lead = firstByClass(li, 'scam-info-lead');
+    assert.ok(lead, '第 ' + (i + 1) + ' 段應有粗體開頭句 .scam-info-lead');
+    assert.ok(lead.textContent.endsWith('。'), '開頭句自己就是一句完整的話');
+  });
+
+  // 逐段的開頭句照定稿釘住:這五句就是這個功能對使用者的承諾。
+  assert.deepEqual(
+    list.children.map((li) => firstByClass(li, 'scam-info-lead').textContent),
+    [
+      '只在你點進貼文時掃描。',
+      '命中就掛標記並記下作者。',
+      '河道只查表不掃文。',
+      '資料只在這台裝置。',
+      '判定是規則比對，可能誤判。',
+    ],
+    '五段開頭句'
+  );
+  // 全程 createElement/textContent:條列裡除了 li、粗體 span 與文字節點之
+  // 外不該有別的東西（走 innerHTML 的話文案裡的字元可能被當成標記解析）。
+  const inside = walkNodes(list, []).slice(1);
+  assert.deepEqual(
+    Array.from(new Set(inside.map((n) => n.tag))).sort(),
+    ['#text', 'li', 'span'],
+    '條列內只有 li、粗體 span 與文字節點'
+  );
+});
+
+test('警示名單卡:說明視窗的五段文案在 en 也備齊', async () => {
+  const ctx = makeScamCardCtx({ lang: 'en' });
+  await initScamPage(ctx);
+  ctx.doc.ids.scamInfoBtn.fire('click');
+
+  assert.equal(ctx.doc.ids.scamInfoTitle.textContent, 'How this works', 'opScamInfoTitle 的 en');
+  const list = ctx.doc.ids.scamInfoList;
+  assert.equal(list.children.length, 5, '五段');
+  list.children.forEach((li, i) => {
+    const key = 'opScamInfo' + (i + 1);
+    assert.notEqual(i18n.t('en', key), key, key + ' 的 en 文案尚未進字典');
+    assert.equal(scamTextOf(li), scamInfoText('en', key), '第 ' + (i + 1) + ' 段的 en 文案');
+  });
+});
+
+test('警示名單卡:說明視窗可由 ✕、遮罩與 Esc 關閉，焦點回到資訊鈕', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+  const btn = ctx.doc.ids.scamInfoBtn;
+  const overlay = ctx.doc.ids.scamInfoOverlay;
+
+  ctx.doc.ids.scamInfoOverlay.hidden = true;
+  btn.fire('click');
+  ctx.doc.ids.scamInfoClose.fire('click');
+  assert.equal(overlay.hidden, true, '✕ 應關閉');
+  assert.equal(ctx.doc.activeElement, btn, '關閉後焦點回到資訊鈕');
+
+  btn.fire('click');
+  overlay.fire('click', { target: ctx.doc.ids.scamInfoList });
+  assert.equal(overlay.hidden, false, '點內容區不得關閉');
+  overlay.fire('click', { target: overlay });
+  assert.equal(overlay.hidden, true, '點遮罩本身才關閉');
+
+  btn.fire('click');
+  ctx.doc.fire('keydown', { key: 'Escape' });
+  assert.equal(overlay.hidden, true, 'Esc 應關閉');
+});
+
+test('警示名單卡:說明視窗納入中央 Tab focus trap', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  // 真實 options.html 裡每個 overlay 都帶 hidden；DOM stub 的節點按需建出、
+  // hidden 預設 false，補齊前置才測得準 topmostOverlayId 的優先序。
+  ['timelineOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'].forEach((id) => {
+    ctx.doc.getElementById(id).hidden = true;
+  });
+  ctx.doc.ids.scamInfoBtn.fire('click');
+
+  const overlay = ctx.doc.ids.scamInfoOverlay;
+  const first = ctx.doc.createElement('button');
+  const last = ctx.doc.createElement('a');
+  overlay.querySelectorAll = () => [first, last];
+  overlay.contains = (node) => node === overlay || node === first || node === last;
+
+  last.focus();
+  let prevented = false;
+  ctx.doc.fire('keydown', {
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, true, 'Tab 走到最後一顆時要攔下預設行為');
+  assert.equal(
+    ctx.doc.activeElement,
+    first,
+    '焦點循環回說明視窗內——沒納入 topmostOverlayId 的話會跑到視窗背後的頁面上'
+  );
+});
+
 // ---- 版面樣式 ----
 
 // 【斷言翻轉】清單隨版面收斂了兩輪:先移除 .scam-avatar／
@@ -8214,5 +8367,51 @@ test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結�
   assert.ok(
     /id="scamHitsOverlay"/.test(html) && /id="scamHitsList"/.test(html),
     'options.html 應備妥證據對話框的落點'
+  );
+});
+
+test('警示名單卡:options.html 備妥資訊鈕與說明視窗(靜態節點與 #i-info symbol)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+  assert.ok(/<symbol id="i-info"/.test(html), '頁面 SVG symbol 集合應有 #i-info（Lucide info）');
+
+  const btn = /<button[^>]*id="scamInfoBtn"[^>]*>[\s\S]*?<\/button>/.exec(html);
+  assert.ok(btn, '卡頭應有 button#scamInfoBtn');
+  assert.ok(/class="[^"]*\bscam-info-btn\b/.test(btn[0]), '資訊鈕的 class 為 scam-info-btn');
+  assert.ok(/type="button"/.test(btn[0]), '明寫 type=button，免得在表單內變成送出鈕');
+  assert.ok(/aria-haspopup="dialog"/.test(btn[0]), 'aria-haspopup 應為 dialog');
+  assert.ok(
+    /data-i18n-aria="opScamInfoTitle"/.test(btn[0]),
+    '無障礙名稱走 opScamInfoTitle（鈕內只有圖示，沒有文字）'
+  );
+  assert.ok(/href="#i-info"/.test(btn[0]), '圖示為 #i-info');
+  // 卡頭的順序:標題 → 資訊鈕 → 計數。
+  const head = /<div class="card-head">[\s\S]*?<\/div>/.exec(
+    html.slice(html.indexOf('class="card scam-blocklist"'))
+  );
+  assert.ok(head, '前置:應找得到警示名單卡的卡頭');
+  assert.ok(
+    head[0].indexOf('opScamListTitle') < head[0].indexOf('scamInfoBtn') &&
+      head[0].indexOf('scamInfoBtn') < head[0].indexOf('scamCount'),
+    '資訊鈕排在標題之後、計數之前'
+  );
+
+  const overlay = /<div class="overlay" id="scamInfoOverlay"[^>]*>/.exec(html);
+  assert.ok(overlay, 'options.html 應有 #scamInfoOverlay');
+  assert.ok(/\bhidden\b/.test(overlay[0]), '說明視窗預設收起——沒有 hidden 會在載入時就蓋住整頁');
+  assert.ok(
+    /id="scamInfoOverlay"[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"[\s\S]*?aria-labelledby="scamInfoTitle"/.test(
+      html
+    ),
+    '沿用既有 modal 的 dialog 語意'
+  );
+  assert.ok(/id="scamInfoClose"/.test(html), '應有 ✕ 關閉鈕');
+  assert.ok(/<ol class="scam-info-list" id="scamInfoList">/.test(html), '五段條列的落點是 <ol>');
+  assert.ok(html.includes('.scam-info-btn'), 'options.html 應有 .scam-info-btn 的樣式規則');
+  assert.ok(html.includes('.scam-info-lead'), 'options.html 應有 .scam-info-lead 的樣式規則');
+  assert.ok(
+    /\.scam-info-list\s*\{[^}]*overflow\s*:\s*auto/.test(html) &&
+      /\.scam-info-list\s*\{[^}]*max-height/.test(html),
+    '五段說明疊起來可能超過一個螢幕，容器要能捲'
   );
 });
