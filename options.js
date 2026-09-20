@@ -2375,26 +2375,22 @@
       return 'https://www.threads.com/@' + encodeURIComponent(value);
     }
 
-    // 頭像圓內的首字母:優先取顯示名，沒有就取 handle，都沒有時畫「?」。
-    // BMP 之外的首字元(emoji 等)以代理對存放，charAt(0) 會切出半個字，代理
-    // 對要連著低位一起取。
-    function scamAvatarLetter(entry) {
-      var source = nonEmptyString(entry.displayName) || nonEmptyString(entry.handle);
-      if (source === null) return '?';
-      var code = source.charCodeAt(0);
-      var first =
-        code >= 0xd800 && code <= 0xdbff && source.length > 1 ? source.slice(0, 2) : source.charAt(0);
-      return first.toUpperCase();
-    }
-
     // 一筆證據的「證據貼文」網址:錨點篇優先，舊證據(沒有 anchorPostUrl)退回
     // postUrl。兩者都缺時回 null，該筆不畫連結。
     function scamEvidencePostUrl(evidence) {
       return nonEmptyString(evidence.anchorPostUrl) || nonEmptyString(evidence.postUrl);
     }
 
+    // 一筆證據要顯示的日期:貼文發布時間優先，缺席(舊證據)退回 at。at 是
+    // 「掃到的時間」——只反映使用者什麼時候剛好滑到那一頁，但有個日期仍然比
+    // 整欄空著好。
+    function scamEvidenceDateAt(evidence) {
+      var posted = finiteOrNull(evidence.postedAt);
+      return posted === null ? finiteOrNull(evidence.at) : posted;
+    }
+
     // 貼文代碼尾 6 碼。同一位作者的多筆證據常是同文異篇(同一段招攬文案貼了
-    // 好幾篇)，只看片段會以為畫了重複的兩列;代碼走 TCLCore.extractPostId
+    // 好幾篇)，片段一模一樣時只剩代碼分得出各篇;代碼走 TCLCore.extractPostId
     // (嚴格樣式)，抽不出來時(分享短碼等)回空字串。
     function scamEvidenceCode(url) {
       var postId = url === null ? null : TCLCore.extractPostId(url);
@@ -2403,42 +2399,45 @@
 
     // 外開連結的共用組法:一律新分頁 ＋ noopener noreferrer(證據連到的是詐騙
     // 招攬貼文，不讓對方頁面拿到 window.opener 與來源)。
-    function buildScamExternalLink(cls, href, text, title) {
+    function buildScamExternalLink(cls, href, text, opts) {
+      var o = opts || {};
       var link = document.createElement('a');
       link.className = cls;
       link.href = href;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
       link.textContent = text;
-      if (title) link.title = title;
+      if (o.title) link.title = o.title;
+      if (o.ariaLabel) link.setAttribute('aria-label', o.ariaLabel);
       return link;
     }
 
-    // 一組證據的 meta 列:日期 ＋ 每篇一條「證據貼文」連結(同文異篇時並列)
-    // ＋「整串」連結 ＋ 訊號 chips ＋ 同文篇數標示。貼文代碼尾碼放在連結的
-    // title 上，列上不再多佔一段文字。
-    function buildScamEvidenceMeta(group) {
+    // 一筆證據的 meta 列:日期連結 ＋「整串」連結 ＋ 訊號 chips。
+    //
+    // 日期本身就是那篇的永久連結(比照 Threads:卡上的時間就是連結)，不再另外
+    // 放一段「證據貼文」文字。連結文字只有一個日期，讀屏讀不出它連去哪，因此
+    // 補 aria-label(文案 ＋ 代碼尾碼);代碼尾碼同時留在 title 上，滑鼠也分得
+    // 出同文異篇的各篇。
+    function buildScamEvidenceMeta(evidence) {
       var meta = document.createElement('div');
       meta.className = 'scam-evidence-meta';
 
-      var at = finiteOrNull(group.at);
-      if (at !== null) {
+      var at = scamEvidenceDateAt(evidence);
+      var date = at === null ? '' : formatDateOnly(at);
+      var href = scamEvidencePostUrl(evidence);
+      var code = scamEvidenceCode(href);
+      if (href === null) {
+        // 網址都缺時只留日期文字，不畫一顆點不動的連結。
         var dateEl = document.createElement('span');
         dateEl.className = 'scam-evidence-date';
-        dateEl.textContent = formatDateOnly(at);
+        dateEl.textContent = date;
         meta.appendChild(dateEl);
-      }
-
-      group.items.forEach(function (evidence) {
-        var href = scamEvidencePostUrl(evidence);
-        if (href === null) return;
+      } else {
         meta.appendChild(
-          buildScamExternalLink(
-            'scam-evidence-post',
-            href,
-            tt('opScamEvidencePost'),
-            scamEvidenceCode(href)
-          )
+          buildScamExternalLink('scam-evidence-date', href, date, {
+            title: code,
+            ariaLabel: code === '' ? tt('opScamEvidencePost') : tt('opScamEvidencePost') + ' ' + code,
+          })
         );
         // 整串連結只在串頭與證據貼文不是同一篇時才畫——同一篇不必給兩條路。
         var threadUrl = nonEmptyString(evidence.threadUrl);
@@ -2447,16 +2446,9 @@
             buildScamExternalLink('scam-evidence-thread', threadUrl, tt('opScamEvidenceThread'))
           );
         }
-      });
-
-      if (group.items.length > 1) {
-        var sameEl = document.createElement('span');
-        sameEl.className = 'scam-same-text';
-        sameEl.textContent = tf('opScamSameText', { n: group.items.length });
-        meta.appendChild(sameEl);
       }
 
-      var signals = Array.isArray(group.items[0].signals) ? group.items[0].signals : [];
+      var signals = Array.isArray(evidence.signals) ? evidence.signals : [];
       signals.forEach(function (signal) {
         var key = SCAM_SIGNAL_KEYS[signal];
         if (!key) return;
@@ -2492,98 +2484,156 @@
       return el;
     }
 
-    // 證據分組:片段與錨點都逐字相同的多筆併成一組(同一段招攬文案貼了好幾
-    // 篇)，片段只畫一次，各篇的連結並列在同一條 meta 列上。錨點也要相同才
-    // 併——高亮位置不同就是兩段不一樣的呈現，併起來會漏掉其中一段的錨點。
-    // 組序依首見順序，也就是 at 降冪排序後的順序;組的 at 取組內最新的一筆。
-    function groupScamEvidence(evidence) {
-      var groups = [];
-      var byText = {};
-      evidence
-        .slice()
-        .sort(function (a, b) {
-          return (finiteOrNull(b.at) || 0) - (finiteOrNull(a.at) || 0);
-        })
-        .forEach(function (item) {
-          // \u0000 當分隔符:片段與錨點都是貼文文字，控制字元在寫入端已被剝
-          // 掉，不可能出現在任一段裡，兩段拼起來不會誤撞。
-          var key =
-            (typeof item.snippet === 'string' ? item.snippet : '') +
-            '\u0000' +
-            (nonEmptyString(item.anchorMatch) || '');
-          // 片段可能剛好長得像 Object.prototype 的鍵名，查表前先確認是自有鍵。
-          var group = Object.prototype.hasOwnProperty.call(byText, key) ? byText[key] : null;
-          if (group) {
-            group.items.push(item);
-            return;
-          }
-          group = { at: finiteOrNull(item.at), items: [item] };
-          byText[key] = group;
-          groups.push(group);
-        });
-      return groups;
-    }
-
-    // 一組證據的區塊:meta 列在上、片段在下。
-    function buildScamEvidenceGroup(group) {
+    // 一筆證據的完整節點:meta 列在上、片段在下。
+    //
+    // 主卡上的那一筆與「命中 N 篇」對話框裡的每一筆都走這支，兩邊的結構與
+    // class 因此逐一相同——證據長什麼樣只有一個定義，改版時不會有一邊被漏掉。
+    function buildScamEvidenceItem(evidence) {
       var block = document.createElement('div');
       block.className = 'scam-evidence-item';
-      block.appendChild(buildScamEvidenceMeta(group));
-      block.appendChild(buildScamEvidenceText(group.items[0]));
+      block.appendChild(buildScamEvidenceMeta(evidence));
+      block.appendChild(buildScamEvidenceText(evidence));
       return block;
     }
 
-    // 證據區塊:預設只露最新一組，其餘收進原生 <details>(開合狀態交給瀏覽
-    // 器，不自刻)。只有一組時不畫摺疊區——沒有「另外 0 筆」這種東西。
-    function buildScamEvidence(entry) {
-      var wrap = document.createElement('div');
-      wrap.className = 'scam-evidence';
-      var title = document.createElement('div');
-      title.className = 'scam-evidence-title';
-      title.textContent = tt('opScamEvidence');
-      wrap.appendChild(title);
-      var groups = groupScamEvidence(entry.evidence);
-      wrap.appendChild(buildScamEvidenceGroup(groups[0]));
-      if (groups.length > 1) {
-        var more = document.createElement('details');
-        more.className = 'scam-evidence-more';
-        var summary = document.createElement('summary');
-        summary.textContent = tf('opScamShowMore', { n: groups.length - 1 });
-        more.appendChild(summary);
-        groups.slice(1).forEach(function (group) {
-          more.appendChild(buildScamEvidenceGroup(group));
-        });
-        wrap.appendChild(more);
-      }
-      return wrap;
+    // 條目的證據依 at 降冪(最新在前)。storage 的正規化不保證順序。
+    function sortedScamEvidence(entry) {
+      return entry.evidence.slice().sort(function (a, b) {
+        return (finiteOrNull(b.at) || 0) - (finiteOrNull(a.at) || 0);
+      });
     }
 
-    // 最近一次命中的時間:證據 at 的最大值，一筆證據都沒有時回 null。
-    function scamLastHitAt(entry) {
-      var latest = null;
-      entry.evidence.forEach(function (evidence) {
-        var at = finiteOrNull(evidence.at);
-        if (at !== null && (latest === null || at > latest)) latest = at;
+    // 對話框標題左半:「顯示名 @handle」;沒有顯示名時只留 @handle 一段。
+    function scamAuthorTitle(entry) {
+      var name = nonEmptyString(entry.displayName);
+      var handle = scamHandleLabel(entry.handle);
+      return name === null ? handle : name + ' ' + handle;
+    }
+
+    // ---- 「命中 N 篇」證據對話框 ----
+    //
+    // 主卡只放最新一筆(一張卡上同時擺三段完整片段太重)，全部證據在這裡逐筆
+    // 列出。開啟它的 pill 直接記下來，關閉時把焦點還回去——這裡不走
+    // rememberFocus/restoreFocus:那支記的是 document.activeElement，而 pill
+    // 是滑鼠點開的，焦點未必在它身上。
+    var scamHitsTrigger = null;
+
+    function renderScamHits(entry) {
+      var titleEl = byId('scamHitsTitle');
+      if (titleEl) {
+        titleEl.textContent =
+          scamAuthorTitle(entry) + ' · ' + tf('opScamHitCount', { n: entry.evidence.length });
+      }
+      var listEl = byId('scamHitsList');
+      if (!listEl) return;
+      listEl.textContent = '';
+      sortedScamEvidence(entry).forEach(function (evidence) {
+        listEl.appendChild(buildScamEvidenceItem(evidence));
       });
-      return latest;
+    }
+
+    function openScamHits(entry, trigger) {
+      var overlay = byId('scamHitsOverlay');
+      if (!overlay) return;
+      renderScamHits(entry);
+      scamHitsTrigger = trigger || null;
+      overlay.hidden = false;
+      focusInto('scamHitsOverlay', 'scamHitsClose');
+    }
+
+    function closeScamHits() {
+      var overlay = byId('scamHitsOverlay');
+      if (!overlay || overlay.hidden) return;
+      overlay.hidden = true;
+      var trigger = scamHitsTrigger;
+      scamHitsTrigger = null;
+      if (trigger && typeof trigger.focus === 'function') {
+        try { trigger.focus(); } catch (e) {}
+      }
+    }
+
+    // ---- 每一列右上角的 ⋯ 選單 ----
+    //
+    // 名單的列是動態產生的，選單跟著各列走，因此開合狀態記在這個模組變數上
+    // 而不是像 #moreMenu 那樣綁一組固定 id。整份重畫時一併關掉:留著的參照會
+    // 指向已被換掉的節點。
+    var openScamMenu = null;
+
+    function closeScamMenu() {
+      if (!openScamMenu) return;
+      openScamMenu.menu.hidden = true;
+      openScamMenu.btn.setAttribute('aria-expanded', 'false');
+      openScamMenu = null;
+    }
+
+    // 列右上角的 ⋯ 選項鈕與它的選單。選單目前只有「解除」一項(破壞性動作，
+    // 走 danger 色與既有的二次確認);圖示與 .menu/.menu-item 樣式沿用紀錄卡
+    // 那一套。
+    function buildScamActions(item) {
+      var entry = item.entry;
+      var actions = document.createElement('div');
+      actions.className = 'scam-actions menu-wrap';
+
+      var menu = document.createElement('div');
+      menu.className = 'menu scam-menu';
+      menu.setAttribute('role', 'menu');
+      menu.hidden = true;
+
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scam-menu-btn';
+      btn.title = tt('opMoreTitle');
+      btn.setAttribute('aria-haspopup', 'menu');
+      btn.setAttribute('aria-expanded', 'false');
+      btn.setAttribute('aria-label', tt('opMoreTitle') + ' ' + scamAuthorLabel(entry));
+      btn.appendChild(svgUse('#i-more', 'icon'));
+      btn.addEventListener('click', function (ev) {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        var opening = menu.hidden;
+        closeScamMenu();
+        if (!opening) return;
+        menu.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        openScamMenu = { menu: menu, btn: btn };
+      });
+      actions.appendChild(btn);
+
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'menu-item danger';
+      removeBtn.dataset.act = 'remove';
+      removeBtn.setAttribute('role', 'menuitem');
+      removeBtn.title = tt('opScamRemove');
+      removeBtn.setAttribute('aria-label', tt('opScamRemove') + ' ' + scamAuthorLabel(entry));
+      removeBtn.appendChild(svgUse('#i-circle-minus', 'icon'));
+      var removeText = document.createElement('span');
+      removeText.textContent = tt('opScamRemove');
+      removeBtn.appendChild(removeText);
+      removeBtn.addEventListener('click', function () {
+        closeScamMenu();
+        requestScamRemove(item.userId);
+      });
+      menu.appendChild(removeBtn);
+
+      actions.appendChild(menu);
+      return actions;
     }
 
     function buildScamRow(item) {
       var entry = item.entry;
+      var evidence = sortedScamEvidence(entry);
+      var latest = evidence.length > 0 ? evidence[0] : null;
+
       var row = document.createElement('div');
       row.className = 'scam-row';
       row.dataset.id = item.userId;
 
-      var avatar = document.createElement('span');
-      avatar.className = 'scam-avatar';
-      avatar.textContent = scamAvatarLetter(entry);
-      row.appendChild(avatar);
-
       var textWrap = document.createElement('div');
       textWrap.className = 'scam-text';
 
-      // 標題列:作者頁連結(顯示名 ＋ @handle)。沒有 displayName 時只留
-      // @handle 一段，不用 handle 充當顯示名再重複一次(§14)。
+      // 標題列:作者頁連結(顯示名 ＋ @handle) ＋ 貼文日期 ＋ 加入於 ＋ 命中
+      // 篇數。沒有 displayName 時只留 @handle 一段，不用 handle 充當顯示名
+      // 再重複一次(§14)。
       var nameRow = document.createElement('div');
       nameRow.className = 'scam-name-row';
       var displayName = nonEmptyString(entry.displayName);
@@ -2608,42 +2658,63 @@
       nameLink.appendChild(handleEl);
       nameRow.appendChild(nameLink);
 
-      var hitCount = document.createElement('span');
-      hitCount.className = 'scam-hit-count';
+      // 貼文發布日期，日期本身連到最新那筆證據貼文。
+      if (latest) {
+        var postedAt = scamEvidenceDateAt(latest);
+        var postedHref = scamEvidencePostUrl(latest);
+        if (postedAt !== null) {
+          var postedText = tf('opScamPostedAt', { date: formatDateOnly(postedAt) });
+          if (postedHref === null) {
+            var postedEl = document.createElement('span');
+            postedEl.className = 'scam-posted';
+            postedEl.textContent = postedText;
+            nameRow.appendChild(postedEl);
+          } else {
+            nameRow.appendChild(
+              buildScamExternalLink('scam-posted', postedHref, postedText, {
+                title: scamEvidenceCode(postedHref),
+              })
+            );
+          }
+        }
+      }
+
+      // 加入名單的日期(首見時間)，推到標題列右側的小字。
+      var added = document.createElement('span');
+      added.className = 'scam-added';
+      added.textContent = tf('opScamAddedOn', { d: formatDateOnly(entry.addedAt) });
+      nameRow.appendChild(added);
+
+      // 命中篇數。兩筆以上才可點——只有一筆時對話框裡看到的就是卡上那一筆，
+      // 給一顆點了沒變化的按鈕只會讓人以為壞了。
+      var hitCount;
+      if (entry.evidence.length > 1) {
+        hitCount = document.createElement('button');
+        hitCount.type = 'button';
+        hitCount.className = 'scam-hit-count';
+        hitCount.setAttribute('aria-haspopup', 'dialog');
+        hitCount.addEventListener('click', function () {
+          closeScamMenu();
+          openScamHits(entry, hitCount);
+        });
+      } else {
+        hitCount = document.createElement('span');
+        hitCount.className = 'scam-hit-count';
+      }
       hitCount.textContent = tf('opScamHitCount', { n: entry.evidence.length });
       nameRow.appendChild(hitCount);
       textWrap.appendChild(nameRow);
 
-      // 副標:加入日期 ＋ 最近命中日期，只取日期(比照裝置列的「新增於」)。
-      // 加入於是首見時間、最近命中是最後一次踩到，兩者常差好幾天，只給其中
-      // 一個看不出這個帳號還在不在活動。
-      var sub = document.createElement('div');
-      sub.className = 'scam-sub';
-      var subText = tf('opScamAddedOn', { d: formatDateOnly(entry.addedAt) });
-      var lastHit = scamLastHitAt(entry);
-      if (lastHit !== null) {
-        subText += ' · ' + tf('opScamLastHit', { date: formatDateOnly(lastHit) });
+      // 證據:主卡只放最新一筆，其餘在「命中 N 篇」對話框裡。
+      if (latest) {
+        var evidenceWrap = document.createElement('div');
+        evidenceWrap.className = 'scam-evidence';
+        evidenceWrap.appendChild(buildScamEvidenceItem(latest));
+        textWrap.appendChild(evidenceWrap);
       }
-      sub.textContent = subText;
-      textWrap.appendChild(sub);
-
-      if (entry.evidence.length > 0) textWrap.appendChild(buildScamEvidence(entry));
       row.appendChild(textWrap);
 
-      var actions = document.createElement('div');
-      actions.className = 'scam-actions';
-      var removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'scam-quick-btn';
-      removeBtn.dataset.act = 'remove';
-      removeBtn.title = tt('opScamRemove');
-      removeBtn.setAttribute('aria-label', tt('opScamRemove') + ' ' + scamAuthorLabel(entry));
-      removeBtn.appendChild(svgUse('#i-circle-minus', 'icon'));
-      removeBtn.addEventListener('click', function () {
-        requestScamRemove(item.userId);
-      });
-      actions.appendChild(removeBtn);
-      row.appendChild(actions);
+      row.appendChild(buildScamActions(item));
       return row;
     }
 
@@ -2681,6 +2752,10 @@
     }
 
     function renderScamList() {
+      // 整份重畫會把列(連同它的 ⋯ 選單與 pill)整個換掉，開著的選單與對話框
+      // 都會指向已離開文件的舊節點，先一併收掉。
+      closeScamMenu();
+      closeScamHits();
       var rows = sortedScamEntries();
       var countEl = byId('scamCount');
       // 0 位也照常顯示計數(§14)，不像裝置台數那樣整個收掉。
@@ -2723,6 +2798,30 @@
     function renderScamBlocklist() {
       renderScamList();
       renderScamAllowlist();
+    }
+
+    // 證據對話框與列上 ⋯ 選單的關閉路徑。Esc 與「點外面關掉」都自己登記一條
+    // document 監聽，不併進紀錄卡那組集中式 Esc 鏈:那條鏈是按對話框疊放層級
+    // 由上而下試的，而標記名單卡與紀錄卡的對話框互不疊放，硬插進去只會讓兩
+    // 邊的層級假設互相牽動。
+    function bindScamDialogs() {
+      on('scamHitsClose', 'click', closeScamHits);
+      on('scamHitsOverlay', 'click', function (ev) {
+        var overlay = byId('scamHitsOverlay');
+        if (overlay && ev.target === overlay) closeScamHits();
+      });
+      if (typeof document.addEventListener !== 'function') return;
+      document.addEventListener('keydown', function (ev) {
+        if (!ev || ev.key !== 'Escape') return;
+        closeScamMenu();
+        closeScamHits();
+      });
+      document.addEventListener('click', function (ev) {
+        // 點到選單自己或它的 ⋯ 鈕以外的任何地方就收起來。⋯ 鈕的 click 已
+        // stopPropagation，走到這裡的一定是別處。
+        var wrap = ev && ev.target && ev.target.closest ? ev.target.closest('.scam-actions') : null;
+        if (!wrap) closeScamMenu();
+      });
     }
 
     // 解除是破壞性動作(日後再命中也不會自動加回)，先開確認框。
@@ -3711,6 +3810,7 @@
         bindChartTooltip();
         bindAccount();
         bindDevices();
+        bindScamDialogs();
         bindTabs();
         renderAll();
 
