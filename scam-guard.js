@@ -207,6 +207,12 @@
   //
   // datetime 解析失敗（缺屬性、格式不是 Date.parse 認得的）一律回 null：證
   // 據卡上補 0 會畫成 1970，比整欄不畫更糟。
+  //
+  // 找到相符的那一顆就早退（解析失敗也不再往後找），依據的是
+  // readContainerPermalink 的不變量：code 取自本容器**文件序第一個**
+  // `/post/` 連結，也就是作者列時間那一顆，一張卡不會有第二顆指向同一篇的
+  // 時間連結。這個前提若被改掉（例如 permalink 改成別的取法），這裡的早退
+  // 要跟著改成「繼續往後找下一顆」。
   function readContainerPostedAt(container, code) {
     var times;
     try {

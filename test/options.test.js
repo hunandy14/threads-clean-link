@@ -7674,6 +7674,48 @@ test('證據卡:證據對話框可由 ✕、遮罩與 Esc 關閉，焦點回到 
   assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, 'Esc 應關閉對話框');
 });
 
+test('證據卡:證據對話框納入中央 Tab focus trap——開著時 Tab 不會跳出對話框', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  // 真實 options.html 裡每個 overlay 都帶 hidden；DOM stub 的節點是按需建出
+  // 來的，hidden 預設 false，這裡補齊前置，topmostOverlayId 的優先序才測得
+  // 準（證據對話框排在 confirmOverlay 之後）。
+  ['timelineOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'].forEach((id) => {
+    ctx.doc.getElementById(id).hidden = true;
+  });
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  openScamHits(ctx, rowA);
+
+  // focus trap 靠 overlay.querySelectorAll 取可聚焦元素，stub 預設回空陣列
+  // （整段 no-op），餵兩顆進去才驗得到循環。
+  const overlay = ctx.doc.ids.scamHitsOverlay;
+  const first = ctx.doc.createElement('button');
+  const last = ctx.doc.createElement('a');
+  overlay.querySelectorAll = () => [first, last];
+  overlay.contains = (node) => node === overlay || node === first || node === last;
+
+  last.focus();
+  assert.equal(ctx.doc.activeElement, last, '前置：焦點停在對話框最後一個可聚焦元素');
+
+  let prevented = false;
+  ctx.doc.fire('keydown', {
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+
+  assert.equal(prevented, true, '走到最後一顆時 Tab 的預設行為要攔下來');
+  assert.equal(
+    ctx.doc.activeElement,
+    first,
+    '焦點循環回對話框第一個可聚焦元素——沒把 scamHitsOverlay 納入 topmostOverlayId 的話，焦點會跑到對話框背後的頁面上'
+  );
+});
+
 // ---- ⋯ 選單 ----
 
 test('證據卡:右上角是 ⋯ 選項鈕(#i-more)，選單只放「解除」;不再有 ⊖ 快捷鈕', async () => {

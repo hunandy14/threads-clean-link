@@ -1077,8 +1077,17 @@
     }
     // 目前疊在最上層、開著的對話框(決定 Tab trap 的作用範圍):時間軸與
     // 刪除確認會疊在詳細視窗之上，匯入是獨立頂層框，優先序由上而下。
+    // 標記名單的證據對話框排在刪除確認之後——它自己不疊在誰之上，但從它裡面
+    // 按解除會開出確認框，那時確認框要接手 trap。
     function topmostOverlayId() {
-      var order = ['timelineOverlay', 'confirmOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'];
+      var order = [
+        'timelineOverlay',
+        'confirmOverlay',
+        'scamHitsOverlay',
+        'overlay',
+        'devicesOverlay',
+        'detailOverlay',
+      ];
       for (var i = 0; i < order.length; i++) {
         var el = byId(order[i]);
         if (el && !el.hidden) return order[i];
