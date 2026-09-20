@@ -234,10 +234,6 @@
       // 紀錄的 seen 事件帶了 deviceId，但清單裡活躍與已移除都查不到那台裝置。
       opDeviceUnknown: '未知裝置',
 
-      // ---- popup:雲端同步狀態列(唯讀，點擊導向 options 頁的雲端同步卡片) ----
-      ppSyncInactive: '雲端同步：未啟用',
-      ppSyncActive: '已同步 · {t}',
-
       // ---- post-icon:貼文互動列注入的複製連結 icon ----
       iconTooltip: '複製原始連結',
       iconCopied: '已複製原始連結',
@@ -493,9 +489,6 @@
       opDeviceRemoveFailed: 'Remove failed. Please try again later.',
       opDeviceRemovedTag: 'Removed',
       opDeviceUnknown: 'Unknown device',
-
-      ppSyncInactive: 'Cloud sync: off',
-      ppSyncActive: 'Synced · {t}',
 
       iconTooltip: 'Copy original link',
       iconCopied: 'Original link copied',
