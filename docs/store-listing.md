@@ -52,6 +52,8 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 • 貼文互動列新增「複製原始連結」按鈕:在 Threads 每篇貼文的互動列(分享按鈕旁)多一顆鏈節圖示，點一下就把該貼文的乾淨網址複製到剪貼簿——不含追蹤參數、也不是短碼。外觀比照原生按鈕(顏色自動跟隨、hover 提示採原生 tooltip)，文字支援中英文並跟隨介面語言設定。
 
+【LINE 群組引導警示】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的招攬串文。命中有三條路:(1)貼文裡出現 LINE 加好友／加群組的深連結(line.me、lin.ee、linktr.ee)即成立;(2)出現 LINE 帳號或「加 LINE」這類字句，且同時有群組或加入的行動呼籲(例如拉你進群、加入、私訊我);(3)出現 LINE 帳號並搭配投資話術詞(黑馬股、報明牌、代操等)。命中就在貼文上掛一枚標記，並把該作者記進警示名單，之後在首頁時間軸上再遇到同一位作者也會標記。判定為規則比對，正當的社團或商家招攬也可能被標記，使用者可一鍵解除，解除後不再自動標記。頁面本身沒帶作者識別碼時，會對同一篇貼文發一次不帶登入的請求補查。警示名單可在「紀錄與設定」頁管理(附證據連結)，只存在你這台裝置、不會上傳，也不與其他使用者共享;不想用可以用總開關整個關掉。
+
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
 【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄預設僅保存在你的裝置上(chrome.storage.local)，不會上傳(除非另行啟用「雲端同步」並以 Google 帳號登入)，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
@@ -76,6 +78,9 @@ THREE FEATURES
 • Right-click resolve: Right-click a Threads share link (/share/XXXX) and choose "Copy clean Threads post link" to resolve it and copy the clean post URL — works on any site's tab, not just threads.com.
 • Auto-clean "Copy Link": Threads' official web "Copy Link" button now writes either a /share/ short code or a full URL with tracking parameters. This extension handles both automatically, so what you paste is always clean.
 • "Copy original link" button on every post: A link icon is added to each Threads post's action row (next to the share button). One click copies that post's clean URL — no tracking parameters, no short code — to your clipboard. It matches the native buttons in appearance (color follows the page, native hover tooltip), and its label follows your interface language.
+
+LINE GROUP FUNNEL FLAGS
+When you open a Threads post, the extension checks on-device whether the thread follows the "long investment story, then add me on LINE" solicitation pattern. A post is flagged on any one of three paths: (1) it carries a LINE add-friend or add-group deep link (line.me, lin.ee, linktr.ee); (2) it shows a LINE account or an "add me on LINE" phrase together with a group-or-join call to action (for example "I'll pull you into the group", "join", "DM me"); (3) it shows a LINE account alongside investment pitch wording (hot stock tips, paid stock picks, managed trading and the like). On a match it flags the post and adds that author to your flagged list, so the same author is flagged on your feed too. The check is plain rule matching, so a legitimate club, study group or shop solicitation can be flagged too — one click unflags it, and it is never flagged automatically again. When the page itself does not carry the author's identifier, one logged-out request is sent for that same post to look it up. The flagged list lives in the History & Settings page (with evidence links). It stays on this device only, is never uploaded, and is never shared with other users; a single switch turns the whole feature off.
 
 POPUP SETTINGS
 Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting).
@@ -191,28 +196,30 @@ Used to schedule the periodic execution of Cloud Sync (a recurring alarm that wa
 
 **English:**
 ```
-Host permissions are limited to these two Threads domains and used for exactly two purposes:
-(1) The background service worker sends one anonymous GET request (credentials: 'omit', no cookies) to a Threads share URL to follow its redirect and read the resolved destination — equivalent to Threads recording one anonymous click, with no user identity attached.
+Host permissions are limited to these two Threads domains and used for exactly three purposes:
+(1) The background service worker sends one anonymous GET request (credentials: 'omit', no cookies) to a Threads URL, with no user identity attached. For a share short link it follows the redirect and reads the resolved destination — equivalent to Threads recording one anonymous click. For the LINE group funnel check fallback it requests that post's own permalink and does not follow redirects (redirect: 'error'); it only reads the author identifier out of the response.
 (2) A content script is injected only on these two domains to intercept the site's own navigator.clipboard.writeText()/write() calls, so tracking parameters or share short codes can be stripped or resolved before the content reaches the clipboard. The content script does not read pre-existing clipboard contents and does not run on, or send data to, any other website.
+(3) The same content script also runs the on-device LINE group funnel check on a post detail page the user opens: it reads that page's own public post text locally to decide whether to show a flag badge. Nothing is transmitted — the result and a 120-character evidence snippet are stored only in chrome.storage.local. When the page itself does not carry the author's numeric id, the background service worker sends one additional anonymous GET (credentials: 'omit', no cookies) to that same post's permalink to read it, at most once per post per 24 hours, subject to a global rate limit, and never when the feature's master switch is off.
 ```
 
 **繁中對照:**
 ```
-host permissions 限定在這兩個 Threads 網域，只用於兩件事:
-①背景 service worker 對 Threads 分享短連結發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
+host permissions 限定在這兩個 Threads 網域，只用於三件事:
+①背景 service worker 對 Threads 網址發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，不會關聯到使用者身分:分享短連結會跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊;LINE 群組引導警示的備援請求則是對該篇貼文的永久連結本身發出，不跟隨轉址(redirect: 'error')，只讀取回應中的作者識別碼。
 ②content script 只注入這兩個網域的頁面，攔截網站自己呼叫的 navigator.clipboard.writeText()/write()，在追蹤參數或分享短碼進入剪貼簿前先行剪除或解析。這個 content script 不會讀取剪貼簿裡原本的內容，也不會在其他任何網站上執行或傳送資料。
+③同一支 content script 也會在使用者開啟的貼文詳情頁上執行本機 LINE 群組引導判定:只在本機讀取該頁自己的公開貼文內文，決定要不要掛上標記。判定結果與一段 120 字的證據片段只寫入 chrome.storage.local，不對外傳輸。當頁面本身沒有帶出作者的數字識別碼時，背景 service worker 會對同一篇貼文的永久連結額外發出一次不帶 cookie 的匿名 GET(credentials: 'omit')來取得該識別碼，同一篇貼文 24 小時內至多一次，並受全域請求限流約束;功能總開關關閉時完全不發。
 ```
 
 ### Remote code(遠端程式碼)
 
 **English:**
 ```
-None. This extension does not download, fetch, or execute any remote code. All logic ships inside the packaged extension. Unless Cloud Sync is separately enabled via Google sign-in, the only network requests it makes are the anonymous GET requests to Threads described above, used solely to resolve a share short code into its final URL — the response is read for its resolved URL only and is never executed as code. When Cloud Sync is enabled, the extension additionally exchanges JSON data with its own backend as described in the Host permissions section above; that data is likewise never executed as code.
+None. This extension does not download, fetch, or execute any remote code. All logic ships inside the packaged extension. Unless Cloud Sync is separately enabled via Google sign-in, the only network requests it makes are the anonymous GET requests to Threads described above, used either to resolve a share short code into its final URL or (for the on-device LINE group funnel check) to read a post's own author id from its HTML — in both cases the response is parsed as text only and never executed as code. When Cloud Sync is enabled, the extension additionally exchanges JSON data with its own backend as described in the Host permissions section above; that data is likewise never executed as code.
 ```
 
 **繁中對照:**
 ```
-無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。除非另行以 Google 帳號登入啟用「雲端同步」，否則唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的僅是把分享短碼解析成最終網址——回應內容只拿來讀取解析後的網址，絕不會被當成程式碼執行。啟用雲端同步後，本擴充功能會額外與自己的後端交換 JSON 資料(如上方 Host permissions 小節所述)，該資料同樣絕不會被當成程式碼執行。
+無。本擴充功能不下載、抓取或執行任何遠端程式碼，所有邏輯都包在安裝包內。除非另行以 Google 帳號登入啟用「雲端同步」，否則唯一的網路請求就是上面說明的、對 Threads 發出的匿名 GET，目的是把分享短碼解析成最終網址，或(在本機 LINE 群組引導判定時)從貼文 HTML 讀出該貼文自己的作者識別碼——兩種情況下回應都只當成文字解析，絕不會被當成程式碼執行。啟用雲端同步後，本擴充功能會額外與自己的後端交換 JSON 資料(如上方 Host permissions 小節所述)，該資料同樣絕不會被當成程式碼執行。
 ```
 
 ### identity(選用權限，僅登入當下請求)
@@ -255,11 +262,17 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Health information | 不勾 | 無關 |
 | Financial and payment information | 不勾 | 無關 |
 | Authentication information | **勾選** | 僅在使用者主動點擊「使用 Google 帳號登入」後才會取得(Google OAuth 身分權杖)，唯一用途是向開發者自營後端建立/維持雲端同步的登入工作階段(App functionality)。不用於廣告或分析，不轉讓、不出售給第三方，不取得或儲存使用者的 Google 密碼。<br>Obtained only after the user actively clicks "Sign in with Google" (a Google OAuth identity token); its sole purpose is establishing/maintaining the cloud-sync login session with the developer's own backend (App functionality). Not used for ads or analytics, not shared or sold to third parties; the user's Google password is never obtained or stored. |
-| Personal communications | 不勾 | 不讀取頁面內容、不讀取剪貼簿既有內容 |
+| Personal communications | 不勾 | 不讀取剪貼簿既有內容;LINE 群組引導警示讀取的是使用者自己開啟的**公開貼文內文**，不是收件匣、私訊或任何私人通訊，且只在本機判定、不傳輸 |
 | Location | 不勾 | 不存取地理位置 |
-| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;唯一送出的請求對象是使用者主動觸發還原/複製的那一條 Threads 連結本身，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
+| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;送出的請求對象一律是使用者自己觸發的那一條 Threads 連結本身(還原/複製為手動觸發;LINE 群組引導警示的作者識別碼備援請求由使用者開啟貼文頁自動觸發，對象仍只限使用者當下正在看的那一篇貼文)，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
 | User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。登入後另同步一組隨機裝置識別碼與可自訂的裝置名稱，用於標示紀錄來源裝置。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方。<br>Occurs only after sign-in: syncs the cleaning-history records the user's own actions generate (post URL, removed tracking parameters, post author and summary, cleaning timestamp), solely to keep that user's own cleaning history consistent across devices, including the companion mobile app (App functionality). Signing in also syncs a randomly generated device identifier and a user-editable device name, used to label which device a record came from. Not used to analyze aggregate user behavior, not used for ads, not shared or sold to third parties. |
-| Website content | 不勾 | content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫，不讀取頁面 DOM 內容、不擷取頁面資料 |
+| Website content | 不勾 | 連結淨化的 content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫。LINE 群組引導警示會讀取使用者當下開啟的貼文內文做判定，但讀取與留存都只發生在這台裝置上(命中時只留一段 120 字的證據片段與貼文網址，寫入 `chrome.storage.local`)，不傳輸給開發者或任何第三方——依 CWS 定義，未傳輸即不構成蒐集 |
+
+**LINE 群組引導警示(0.8.0)對本表的影響**:無須新增任何勾選項，也無須改動既有勾選。該功能的偵測全在使用者自己的瀏覽器完成:它會讀取使用者當下主動開啟的那一頁貼文內文，命中時留下作者資料與一段證據片段——**讀取與留存都只在本機(`chrome.storage.local`；備援請求的節流表寫 `chrome.storage.session`，瀏覽器關閉即清)，不傳輸給開發者或第三方，依 CWS 定義不構成蒐集**(與「淨化紀錄」同一道理，見上表 Web history 一列)，因此 Website content 與 Personal communications 維持不勾。
+
+少數情況下(貼文頁本身沒帶作者識別碼)，會對**使用者當下正在看的同一篇貼文**發一次匿名請求取得該識別碼:不帶 cookie 與登入憑證、同一篇 24 小時內只發一次、資料不經過也不回傳給開發者，總開關關閉即完全不發。這與上表 Web history 一列既有的敘述是同一型態——請求對象就是使用者自己觸發的那一條 Threads 連結本身，因此該列維持不勾。
+
+功能本身也屬既有單一用途的延伸——同樣是針對使用者正在看的這一則 Threads 貼文提供保護，沒有引入無關目的。
 
 **「單一用途」聲明相容性說明**:雲端同步是既有「保存清理紀錄」子功能的延伸——把原本只存在本機的同一份紀錄，改為選用地額外存一份到使用者自己的雲端帳號，讓同一位使用者可以跨裝置(含手機版 App)看到同一份紀錄;沒有新增與「Threads 連結淨化」無關的目的，因此第 5 節的單一用途聲明文字不需要修改。
 

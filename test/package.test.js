@@ -152,3 +152,94 @@ test('manifest:host 權限不得含開發用的 localhost／127.0.0.1／http://'
     assert.doesNotMatch(host, /^http:\/\//i, `host 權限混入明文 http://:${host}`);
   });
 });
+
+// ---- scam-guard.js（詐騙串文警示 content script）的登記 ----
+//
+// scam-guard.js 讀 DOM、掛 tag、對 background 送 scam.hit，屬 ISOLATED world
+// 的 content script，必須排在 post-icon.js 之後——它要沿用 post-icon 已建立
+// 的樣式／toast 基礎設施，順序倒過來時 post-icon 的 api 還沒掛上。
+
+// ISOLATED world 的 content_scripts 條目（沒有 world 欄位者即為預設的
+// ISOLATED），目前就是載入 i18n.js / post-icon.js 的那條 document_idle 條目。
+function isolatedContentScript() {
+  const manifest = JSON.parse(read('manifest.json'));
+  const entries = (manifest.content_scripts || []).filter(
+    (cs) => !cs.world || cs.world === 'ISOLATED'
+  );
+  const entry = entries.find((cs) => (cs.js || []).includes('post-icon.js'));
+  assert.ok(entry, 'manifest 應有一條載入 post-icon.js 的 ISOLATED content script');
+  return entry;
+}
+
+test('manifest:ISOLATED content script 陣列含 scam-guard.js，且排在 post-icon.js 之後', () => {
+  const js = isolatedContentScript().js || [];
+
+  assert.ok(js.includes('scam-guard.js'), `ISOLATED 陣列應含 scam-guard.js，實際為:${js.join(', ')}`);
+  assert.ok(
+    js.indexOf('scam-guard.js') > js.indexOf('post-icon.js'),
+    'scam-guard.js 必須排在 post-icon.js 之後'
+  );
+});
+
+test('打包白名單:scam-guard.js 在 build-release.ps1 的 $includeFiles 內', () => {
+  assert.ok(
+    readIncludeFiles().includes('scam-guard.js'),
+    'scam-guard.js 漏進白名單時，上架 zip 會缺檔，詐騙警示在商店版整個不會動'
+  );
+});
+
+// ---- ISOLATED content_scripts 的完整載入順序（PM 裁決）----
+//
+// scam-guard.js 呼叫 TCLCore.detectScamPitch 做話術判定，但 tcl-core.js 原本
+// 只由 background 以 importScripts 載入，不在 content_scripts 內——真實頁面上
+// TCLCore 會是 undefined。tcl-core.js 因此要一併登記進 ISOLATED 陣列。
+//
+// 四支的相依方向是單向的：i18n 提供文案字典，tcl-core 提供判定與黑名單純函
+// 式，post-icon 建立樣式／toast 基礎設施並匯出 showToast，scam-guard 三者都
+// 用。content script 依陣列順序同步執行，排錯順序時後者讀到的是 undefined，
+// 因此順序本身就是契約，逐一釘死而不只驗「有沒有」。
+//
+// tcl-core.js 早已在 build-release.ps1 的 $includeFiles 內（background 需
+// 要），這裡不必另外加。
+const ISOLATED_JS_ORDER = ['i18n.js', 'tcl-core.js', 'post-icon.js', 'scam-guard.js'];
+
+test('manifest:ISOLATED content script 的 js 陣列恰為 i18n → tcl-core → post-icon → scam-guard', () => {
+  assert.deepEqual(
+    isolatedContentScript().js || [],
+    ISOLATED_JS_ORDER,
+    'content script 依陣列順序同步執行，排錯順序時後載入者讀到的相依模組會是 undefined'
+  );
+});
+
+test('打包白名單:ISOLATED 陣列的每一支都在 build-release.ps1 的 $includeFiles 內', () => {
+  const included = readIncludeFiles();
+  const missing = ISOLATED_JS_ORDER.filter((file) => !included.includes(file));
+
+  assert.deepEqual(
+    missing,
+    [],
+    `ISOLATED content script 漏進白名單時，上架 zip 會缺檔:${missing.join(', ')}`
+  );
+});
+
+// SW 的匿名備援直接呼叫 AbortSignal.timeout()（Chrome 103 才有），沒有
+// typeof 守衛；舊版 Chrome 載入後會在第一次備援請求就丟 ReferenceError。
+// manifest 宣告 minimum_chrome_version，讓商店端在安裝前就擋掉，而不是讓
+// 使用者裝完才發現功能壞掉。
+test('manifest:宣告 minimum_chrome_version，且不低於 103（AbortSignal.timeout）', () => {
+  const manifest = JSON.parse(read('manifest.json'));
+
+  assert.equal(
+    typeof manifest.minimum_chrome_version,
+    'string',
+    'manifest 應宣告 minimum_chrome_version（字串形式的版本號）'
+  );
+  const major = Number(String(manifest.minimum_chrome_version).split('.')[0]);
+  assert.ok(Number.isFinite(major), 'minimum_chrome_version 的主版號應為數字');
+  assert.ok(
+    major >= 103,
+    'AbortSignal.timeout() 自 Chrome 103 起才有，minimum_chrome_version 不得低於 103（目前為 ' +
+      manifest.minimum_chrome_version +
+      '）'
+  );
+});

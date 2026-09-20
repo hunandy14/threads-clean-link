@@ -5719,3 +5719,2699 @@ test('裝置軟刪除:升級前的舊快取列沒有 removedAt 鍵時一律當�
     '缺鍵不得被當成已移除而掛上標記'
   );
 });
+
+// ============================================================
+// LINE 群組引導警示的總開關(v1 計畫 §3／§6)。
+//
+// 與設定卡既有三顆(autoClean/saveHistory/postCopyEnabled)不同:那三顆存
+// chrome.storage.sync、會跟著帳號跨裝置同步;警示名單與這顆總開關是純本機
+// 功能(不上雲)，值存 chrome.storage.local，故不掛進 SETTING_IDS，讀寫都
+// 走 localStorage 那一區。
+//
+// 預設開(缺席視為 true):storage 裡沒有這顆鍵時開關必須是 checked，否則
+// 首次安裝的使用者會以為功能壞了——「未設定」不等於「關閉」。
+// ============================================================
+
+test.describe('scamGuardEnabled:LINE 群組引導警示總開關', () => {
+  const SETTINGS_BODY_START = '<div class="settings-body">';
+
+  // 設定卡的 DOM 區塊(靜態檢查):開關必須長在設定卡的 .settings-body 內，
+  // 比照既有 saveHistory 那條 .setting-row 的形狀(label[for] 包 name/desc
+  // 兩段文字 + input.switch)，名稱與說明走 data-i18n 通道。
+  test('options.html 的設定卡內有 #scamGuardEnabled 的 .setting-row，name/desc 走 i18n', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+    const bodyStart = html.indexOf(SETTINGS_BODY_START);
+    assert.notEqual(bodyStart, -1, 'options.html 應有設定卡的 .settings-body');
+    const bodyEnd = html.indexOf('</section>', bodyStart);
+    const settingsBody = html.slice(bodyStart, bodyEnd === -1 ? undefined : bodyEnd);
+
+    assert.ok(
+      /<label[^>]*class="setting-row"[^>]*for="scamGuardEnabled"/.test(settingsBody),
+      '設定卡內應有 for="scamGuardEnabled" 的 .setting-row'
+    );
+    assert.ok(
+      /<input[^>]*type="checkbox"[^>]*id="scamGuardEnabled"[^>]*class="switch"/.test(settingsBody),
+      '#scamGuardEnabled 應為 .switch 樣式的 checkbox，且長在設定卡內'
+    );
+    assert.ok(
+      /data-i18n="opScamGuardName"/.test(settingsBody),
+      '開關名稱應走 data-i18n="opScamGuardName"，不得寫死文案'
+    );
+    assert.ok(
+      /data-i18n="opScamGuardDesc"/.test(settingsBody),
+      '開關說明應走 data-i18n="opScamGuardDesc"，不得寫死文案'
+    );
+  });
+
+  test('storage 缺席時開關為開(預設開，「未設定」不等於「關閉」)', async () => {
+    const storage = createChromeStorage({ langPref: 'zh' }, {});
+    const doc = makeDocumentStub();
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+    });
+
+    await controller.init();
+    await settle();
+
+    // 用 getElementById 取(不讀 doc.ids):stub 的 ids 表只在 options.js
+    // 真的查過這顆 id 之後才有值，直接讀會是 undefined 而炸在測試自己身
+    // 上，拿不到「開關預設值不對」這個本來要測的紅燈。
+    const el = doc.getElementById('scamGuardEnabled');
+    assert.equal(
+      el.checked,
+      true,
+      'local storage 沒有 scamGuardEnabled 這顆鍵時，開關應為開'
+    );
+  });
+
+  test('storage 存 false 時開關為關(已存的值優先於預設)', async () => {
+    const storage = createChromeStorage({ langPref: 'zh' }, { scamGuardEnabled: false });
+    const doc = makeDocumentStub();
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+    });
+
+    await controller.init();
+    await settle();
+
+    assert.equal(
+      doc.getElementById('scamGuardEnabled').checked,
+      false,
+      '已存 false 時開關應為關'
+    );
+  });
+
+  test('切換即寫入 chrome.storage.local:關→false、再開→true(不寫進 sync 區)', async () => {
+    const storage = createChromeStorage({ langPref: 'zh' }, {});
+    const doc = makeDocumentStub();
+    const controller = options.createOptionsController({
+      document: doc,
+      syncStorage: storage.sync,
+      localStorage: storage.local,
+      i18n,
+      now: () => 100000,
+    });
+
+    await controller.init();
+    await settle();
+
+    const el = doc.getElementById('scamGuardEnabled');
+    const syncSetsBefore = storage.calls.set.length;
+
+    // 關掉。
+    el.checked = false;
+    el.fire('change', { type: 'change', target: el });
+    await settle();
+
+    const offWrites = storage.localCalls.set.filter((items) =>
+      Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled')
+    );
+    assert.equal(offWrites.length, 1, '關掉開關應寫入 local 區一次');
+    assert.equal(offWrites[0].scamGuardEnabled, false, '關掉開關應寫入 scamGuardEnabled:false');
+    assert.equal(
+      storage.localSnapshot().scamGuardEnabled,
+      false,
+      '落盤後 local 區的 scamGuardEnabled 應為 false'
+    );
+
+    // 再開回來。
+    el.checked = true;
+    el.fire('change', { type: 'change', target: el });
+    await settle();
+
+    const allWrites = storage.localCalls.set.filter((items) =>
+      Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled')
+    );
+    assert.equal(allWrites.length, 2, '再切回來應再寫入 local 區一次');
+    assert.equal(allWrites[1].scamGuardEnabled, true, '再開回來應寫入 scamGuardEnabled:true');
+    assert.equal(
+      storage.localSnapshot().scamGuardEnabled,
+      true,
+      '落盤後 local 區的 scamGuardEnabled 應為 true'
+    );
+
+    // 這顆是純本機設定，不得混進 sync 區(會被帶去跨裝置同步)。
+    const syncWrites = storage.calls.set
+      .slice(syncSetsBefore)
+      .filter((items) => Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled'));
+    assert.equal(syncWrites.length, 0, 'scamGuardEnabled 不得寫進 chrome.storage.sync');
+  });
+});
+
+// ============================================================
+// 警示名單卡(車道 L6;v1 計畫 §5 UI 段與 §14 第二波訊息協議)
+//
+// 資料來源是純本機的 chrome.storage.local.scamBlocklist(不上雲、不進
+// syncState)，經 TCLCore.normalizeScamBlocklist 正規化後渲染;寫入端只有
+// background，本頁一律「讀 storage ＋ 監聽 onChanged」，動作經 runtime
+// 訊息請 background 代寫。
+//
+// 【DOM 契約】以下落點由本組測試釘死，實作端須照此產生節點:
+//   - 卡片:section.card.scam-blocklist，位置在設定卡之後、紀錄卡之前
+//   - 卡頭:標題 data-i18n="opScamListTitle"、右側計數 #scamCount
+//     (文案 opScamListCount,{n} 位作者)
+//   - 名單:#scamList,每列直接掛在它底下、row.dataset.id = userId
+//   - 空狀態:#scamEmpty(文案 opScamEmpty)
+//   - 已解除小節:#scamAllowlist(整個小節，allowlist 為空時 hidden)
+//   - 列內動作鈕以 dataset.act 標記('remove' / 'restore')
+//   節點一律以 createElement/createElementNS 產生(比照 renderDevices),
+//   不得走 innerHTML——displayName／snippet 都是他人貼文帶進來的字串。
+//
+// 【訊息協議】UI 只送 scam.blocklist.remove / scam.blocklist.restore 兩則
+// 訊息(§14)，測試以 stub 回應，不碰 background。
+//
+// 【已知的規格張力】§14 說 background 把「解除」寫進 allowlist 時存的是
+// { at, handle }，但 TCLCore.normalizeScamBlocklist(車道 L1 已合入)只留
+// 值嚴格等於 true 的鍵——條目已從 entries 移除，handle 只剩 allowlist 那
+// 份。已解除小節要顯示 handle，本頁就得讀原始的 allowlist(或由 L1 放寬
+// normalize)，兩條路都在可接受範圍，本測試只釘畫面結果。
+// ============================================================
+
+// 固定時戳:相對時間與「加入於」都由 now() 推導，不吃真實時鐘。
+const SCAM_NOW = 1758240000000;
+const SCAM_HOUR = 3600000;
+const SCAM_DAY = 86400000;
+
+// userId 形狀為純數字字串(§14)。SCAM_ID_A 取自 test/fixtures/scam-thread.json
+// 的樣本作者。
+const SCAM_ID_A = '10000000001';
+const SCAM_ID_B = '10987654321';
+const SCAM_ID_C = '55566677788';
+
+const SCAM_URL_A1 = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const SCAM_URL_A2 = 'https://www.threads.com/@example_author/post/DxSyNtH0007';
+const SCAM_URL_B1 = 'https://www.threads.com/@user.b/post/DeF456';
+
+// 超過 40 字的證據片段:連結文字要截到 40 字加刪節號，title 留完整內容。
+const SCAM_SNIPPET_LONG =
+  '加我賴：ex01abc 聊黑馬股，不報明牌、不收費、不代操，合成範例句，只為湊過四十字的截斷門檻';
+// 不足 40 字的片段:沒有被截斷，不該硬掛刪節號。
+const SCAM_SNIPPET_SHORT = '賴：ex01abc 黑馬股';
+
+// 「加入於」用日期(YYYY-MM-DD)，比照裝置列的 formatDateOnly。這裡照同一
+// 套算式在測試端重算，斷言不綁測試機的時區。
+function scamDateOnly(ts) {
+  const d = new Date(ts);
+  const pad = (n) => (n < 10 ? '0' + n : String(n));
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+// 證據上的時間文字，格式照 Threads 自己的貼文時間：一週內是極短的相對時間
+// （數字與單位之間不留空白、不帶「前」字），滿七天改絕對日期。這裡照同一套
+// 算式在測試端重算，不把實作的字串硬寫進斷言。
+function scamRelDate(ts, locale) {
+  const lang = locale || 'zh';
+  const diff = Math.max(0, SCAM_NOW - ts);
+  if (diff >= 7 * SCAM_DAY) return scamDateOnly(ts);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return i18n.t(lang, 'opRelNow');
+  if (m < 60) return i18n.fmt(lang, 'opRelMinutes', { n: m });
+  const h = Math.floor(m / 60);
+  if (h < 24) return i18n.fmt(lang, 'opRelHours', { n: h });
+  return i18n.fmt(lang, 'opRelDaysShort', { n: Math.floor(h / 24) });
+}
+
+// 兩位作者:A 有顯示名與兩筆證據、較新;B 只有 handle 與一筆證據、較舊。
+// 排序規則是 addedAt 降冪，期望順序 [A, B]。
+function scamBlocklistFixture(patch) {
+  const list = {
+    version: 1,
+    entries: {
+      [SCAM_ID_A]: {
+        handle: 'example_author',
+        displayName: 'Example Author',
+        evidence: [
+          { postUrl: SCAM_URL_A1, snippet: SCAM_SNIPPET_LONG, at: SCAM_NOW - SCAM_HOUR },
+          { postUrl: SCAM_URL_A2, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 2 * SCAM_HOUR },
+        ],
+        addedAt: SCAM_NOW - SCAM_HOUR,
+        source: 'auto',
+      },
+      [SCAM_ID_B]: {
+        handle: 'user.b',
+        evidence: [
+          { postUrl: SCAM_URL_B1, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 3 * SCAM_DAY },
+        ],
+        addedAt: SCAM_NOW - 3 * SCAM_DAY,
+        source: 'auto',
+      },
+    },
+    handleIndex: { example_author: SCAM_ID_A, 'user.b': SCAM_ID_B },
+    allowlist: {},
+  };
+  return Object.assign(list, patch || {});
+}
+
+// 最小 DOM stub 的 getElementById 是「用到才補建」。警示名單卡這批節點在
+// options.html 裡是靜態存在的，先一次補齊，讓斷言在實作尚未讀取該節點時
+// 也還是斷言失敗(而不是讀 undefined 炸成 TypeError)。
+const SCAM_STUB_IDS = [
+  'scamList',
+  'scamCount',
+  'scamEmpty',
+  'scamAllowlist',
+  // 「命中 N 篇」pill 開的證據對話框（沿用既有 overlay/modal 那一套）。
+  'scamHitsOverlay',
+  'scamHitsTitle',
+  'scamHitsList',
+  'scamHitsClose',
+  // 卡頭資訊鈕開的「這個功能怎麼運作」說明視窗。
+  'scamInfoBtn',
+  'scamInfoOverlay',
+  'scamInfoTitle',
+  'scamInfoList',
+  'scamInfoClose',
+  'confirmOverlay',
+  'confirmTitleText',
+  'confirmDesc',
+  'confirmOk',
+  'rows',
+  'empty',
+  'toast',
+];
+
+function makeScamCtx(opts) {
+  const o = opts || {};
+  const blocklist = Object.prototype.hasOwnProperty.call(o, 'blocklist')
+    ? o.blocklist
+    : scamBlocklistFixture();
+  const localSeed = { history: [] };
+  if (blocklist !== undefined) localSeed.scamBlocklist = blocklist;
+  const storage = createChromeStorage({ langPref: 'zh' }, localSeed);
+  const doc = makeDocumentStub();
+  SCAM_STUB_IDS.forEach((id) => doc.getElementById(id));
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => DEV_SIGNED_OUT_STATE,
+    'scam.blocklist.remove': o.remove || (() => ({ ok: true })),
+    'scam.blocklist.restore': o.restore || (() => ({ ok: true })),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => SCAM_NOW,
+    runtime,
+  });
+  return { storage, doc, runtime, controller };
+}
+
+// 補建出來的節點 hidden 預設 false，既有的 Esc/Tab 處理會把它們當成「開
+// 著的浮層」;跑完 init 先把各浮層釘成關閉態，讓「點解除才開確認框」這類
+// 斷言反映的是真的被打開，而不是 stub 的預設值。
+async function initScamPage(ctx) {
+  await ctx.controller.init();
+  await settle();
+  ['detailOverlay', 'timelineOverlay', 'overlay', 'confirmOverlay', 'devicesOverlay'].forEach(
+    (id) => {
+      ctx.doc.getElementById(id).hidden = true;
+    }
+  );
+}
+
+function scamRows(doc) {
+  return doc.getElementById('scamList').children;
+}
+function scamRowById(doc, id) {
+  return scamRows(doc).filter((r) => r.dataset && r.dataset.id === id)[0] || null;
+}
+// 已解除小節的列:小節內帶 dataset.id 的節點(小節本身還有標題等非列節點，
+// 不以 children 取，避免綁死小節內部的巢狀結構)。
+function scamAllowRows(doc) {
+  return walkNodes(doc.getElementById('scamAllowlist'), []).filter(
+    (n) => n.dataset && typeof n.dataset.id === 'string' && n.dataset.id !== ''
+  );
+}
+// href/target/rel/title 在既有渲染碼是直接設 DOM 屬性(見 buildEntryCard 的
+// quickOpenBtn)，但 setAttribute 也是合法寫法;兩邊都認，不綁實作風格。
+function scamAttrOf(node, name) {
+  const direct = node[name];
+  if (typeof direct === 'string' && direct !== '') return direct;
+  const viaAttr = node.getAttribute(name);
+  return typeof viaAttr === 'string' ? viaAttr : '';
+}
+
+// 【斷言翻轉】原斷言為「警示名單卡在設定卡之後、紀錄卡之前」。選項頁改成
+// 總覽／貼文／標記三分頁後，卡片順序由分頁順序決定:設定卡在 overview、紀錄
+// 卡在 posts、警示名單卡在 flags，三者在原始碼裡的先後跟著翻成
+// 設定 → 紀錄 → 警示名單。卡內四個落點(#scamCount／#scamList／#scamEmpty／
+// #scamAllowlist)與 .card 外觀不變。
+test('警示名單卡:options.html 有 section.card.scam-blocklist，位置在設定卡與紀錄卡之後(警示名單分頁排最後)，卡內備齊四個落點', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+  const settingsIdx = html.indexOf('id="scamGuardEnabled"');
+  assert.notEqual(settingsIdx, -1, '前置:設定卡內應已有 LINE 群組引導警示總開關');
+  const cardIdx = html.search(/<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/);
+  assert.notEqual(cardIdx, -1, 'options.html 應有 section.scam-blocklist 這張獨立卡片');
+  const historyIdx = html.search(/<section[^>]*class="card history"/);
+  assert.notEqual(historyIdx, -1, '前置:應找得到紀錄卡');
+
+  assert.ok(settingsIdx < historyIdx, '設定卡(總覽分頁)應排在紀錄卡(貼文分頁)之前');
+  assert.ok(historyIdx < cardIdx, '警示名單卡(警示名單分頁)應排在紀錄卡之後');
+
+  const footerIdx = html.indexOf('<footer');
+  const card = html.slice(cardIdx, footerIdx === -1 ? html.length : footerIdx);
+  assert.ok(
+    /<section[^>]*class="[^"]*\bcard\b[^"]*"/.test(card.slice(0, 200)),
+    '警示名單卡應沿用 .card 外觀(class 同時含 card 與 scam-blocklist)'
+  );
+  assert.ok(/class="card-head"/.test(card), '卡片應有 .card-head 卡頭');
+  assert.ok(/data-i18n="opScamListTitle"/.test(card), '卡頭標題走 data-i18n="opScamListTitle"');
+  assert.ok(/id="scamCount"/.test(card), '卡頭右側應有 #scamCount 計數節點');
+  assert.ok(/id="scamList"/.test(card), '卡內應有 #scamList 名單容器');
+  assert.ok(/id="scamEmpty"/.test(card), '卡內應有 #scamEmpty 空狀態');
+  assert.ok(/id="scamAllowlist"/.test(card), '卡內應有 #scamAllowlist 已解除小節');
+});
+
+test('警示名單卡:storage 沒有 scamBlocklist 時顯示空狀態、計數 0，名單不畫任何列', async () => {
+  const ctx = makeScamCtx({ blocklist: undefined });
+  await initScamPage(ctx);
+
+  assert.equal(scamRows(ctx.doc).length, 0, '沒有資料時不得畫出任何列');
+  assert.equal(ctx.doc.ids.scamEmpty.hidden, false, '空狀態應顯示');
+  assert.ok(
+    joinedText(ctx.doc.ids.scamEmpty).includes(i18n.t('zh', 'opScamEmpty')),
+    '空狀態文案應為 opScamEmpty'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 0 }),
+    '計數應顯示 0 位作者'
+  );
+});
+
+// 【斷言翻轉】原斷言為「第二行是『加入於 <日期>』(opScamAddedOn)」。副標列
+// 先併進標題列，使用者再定案為**不顯示**——`addedAt` 照存不動，只是畫面上不
+// 再出現。作者列改成 Threads 的貼文排法：顯示名、@handle、那篇的時間。
+test('警示名單卡:兩位作者依 addedAt 降冪各畫一列，作者列有 displayName ＋ @handle ＋ 貼文時間', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rows = scamRows(ctx.doc);
+  assert.equal(rows.length, 2, '兩位作者應各畫一列');
+  assert.deepEqual(
+    rows.map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '排序為 addedAt 降冪(較新的 A 在前)，dataset.id 為 userId'
+  );
+  assert.equal(ctx.doc.ids.scamEmpty.hidden, true, '有資料時空狀態應收起');
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 2 }),
+    '計數應為 2 位作者'
+  );
+
+  const textA = joinedText(rows[0]);
+  assert.ok(textA.includes('Example Author'), '有顯示名時作者列應顯示 displayName');
+  assert.ok(textA.includes('@example_author'), '作者列同時顯示 @handle');
+  assert.equal(
+    firstByClass(rows[0], 'scam-evidence-date').textContent,
+    scamRelDate(SCAM_NOW - SCAM_HOUR),
+    '作者列的時間是最新那筆證據的時間，緊接在帳號之後'
+  );
+  assert.ok(!textA.includes('加入於'), '「加入於 <日期>」不得再出現在卡片上');
+  assert.ok(!textA.includes('標記於'), '「標記於 <日期>」同樣不顯示');
+
+  const textB = joinedText(rows[1]);
+  assert.ok(textB.includes('@user.b'), '沒有顯示名時退回顯示 @handle');
+  assert.ok(!/undefined|null/.test(textB), '缺 displayName 不得把 undefined/null 畫進畫面');
+});
+
+// 【斷言翻轉】原斷言為「每筆證據一個 <a>，連結文字＝片段截到 40 字加刪節
+// 號、完整片段留在 title」。證據卡改版後片段不再充當連結文字:
+//   - 片段獨立成 p.scam-evidence-text，完整呈現不截斷(40 字截斷本身是
+//     bug，PM 裁決移除，因此不保留任何等價的截斷斷言)。
+//   - 連結改為 a.scam-evidence-date：日期本身就是那篇的永久連結(比照
+//     Threads)，href 取 anchorPostUrl，缺席(舊證據)時退回 postUrl。
+//   - 主卡只畫最新一筆，其餘要開「命中 N 篇」對話框才看得到。
+// target/rel 的要求不變，仍在此逐一斷言。
+test('警示名單卡:證據連結是日期本身而非片段，href 退回 postUrl 時 target/rel 照舊', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  assert.equal(evidenceDateLinks(rowA).length, 1, '主卡只畫最新那一筆');
+
+  const list = openScamHits(ctx, rowA);
+  const links = evidenceDateLinks(list);
+  assert.equal(links.length, 2, '對話框裡的連結數應等於 evidence 筆數');
+  assert.deepEqual(
+    links.map((a) => scamAttrOf(a, 'href')).sort(),
+    [SCAM_URL_A1, SCAM_URL_A2].sort(),
+    '舊證據沒有 anchorPostUrl，href 退回該筆的 postUrl'
+  );
+  links.forEach((a) => {
+    assert.equal(a.tag, 'a', '證據日期必須是 <a>');
+    assert.equal(scamAttrOf(a, 'target'), '_blank', '證據連結應開新分頁');
+    assert.equal(
+      scamAttrOf(a, 'rel'),
+      'noopener noreferrer',
+      '證據連結 rel 應為 noopener noreferrer'
+    );
+    assert.ok(
+      !a.textContent.includes(SCAM_SNIPPET_SHORT),
+      '連結文字是日期，片段已經搬進 p.scam-evidence-text'
+    );
+  });
+
+  const texts = findByClass(list, 'scam-evidence-text');
+  assert.equal(texts.length, 2, '每筆證據各一段片段');
+  assert.deepEqual(
+    texts.map((n) => walkNodes(n, []).map((x) => x.textContent || '').join('')).sort(),
+    [SCAM_SNIPPET_LONG, SCAM_SNIPPET_SHORT].sort(),
+    '兩筆片段都完整呈現——超過 40 字的那筆不得被截斷'
+  );
+});
+
+// displayName／snippet 都是他人貼文帶進來的字串。走 innerHTML 的話
+// '<b>' 會被解析成標籤(畫面上看不到角括號，且開了注入的門);走 textContent
+// 則原樣顯示。這裡以「角括號逐字出現在文字裡」當縱深證據。
+test('警示名單卡:displayName 含 <b> 時以純文字呈現(createElement/textContent，不得走 innerHTML)', async () => {
+  const RAW_NAME = 'Example <b>Author</b>';
+  const list = scamBlocklistFixture();
+  list.entries[SCAM_ID_A].displayName = RAW_NAME;
+  const ctx = makeScamCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  assert.ok(
+    joinedText(rowA).includes(RAW_NAME),
+    'displayName 應逐字出現在文字節點裡(含角括號)，代表是 textContent 而非 innerHTML'
+  );
+});
+
+test('警示名單卡:解除鈕為 #i-circle-minus 圖示鈕，點下先開確認框(標題帶作者名)，確認後才送 scam.blocklist.remove', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  const removeBtn = actBtn(rowA, 'remove');
+  assert.ok(removeBtn, '每一列都應有 dataset.act="remove" 的解除鈕');
+  assert.deepEqual(useHrefs(removeBtn), ['#i-circle-minus'], '解除鈕圖示應為 #i-circle-minus');
+  assert.equal(scamAttrOf(removeBtn, 'title'), i18n.t('zh', 'opScamRemove'), '解除鈕 title 為 opScamRemove');
+
+  removeBtn.fire('click');
+
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '解除應先開確認框，不直接送出');
+  assert.equal(
+    ctx.doc.ids.confirmTitleText.textContent,
+    '解除「Example Author」的警示？',
+    '確認框標題帶作者名(opScamRemoveTitle)'
+  );
+  assert.equal(
+    ctx.doc.ids.confirmDesc.textContent,
+    '解除後不會再自動加入警示名單；貼文上的標記會消失。',
+    '確認框內文(opScamRemoveDesc)'
+  );
+  assert.equal(ctx.doc.ids.confirmOk.textContent, '解除', '確認鈕文案為「解除」(opScamRemove)');
+  assert.equal(
+    callsOfType(ctx.runtime, 'scam.blocklist.remove').length,
+    0,
+    '尚未確認，不得送出解除'
+  );
+
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
+    '確認後才送 scam.blocklist.remove，帶正確的 userId(§14)'
+  );
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_B],
+    '回 ok 後該列消失'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 1 }),
+    '計數應同步減一'
+  );
+});
+
+test('警示名單卡:解除回 {ok:false} 時該列保留，並以 toast 回報', async () => {
+  const ctx = makeScamCtx({ remove: () => ({ ok: false, code: 'bad_request' }) });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  const removeBtn = actBtn(rowA, 'remove');
+  assert.ok(removeBtn, '前置:應有解除鈕');
+  removeBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '失敗時該列必須留著，不能樂觀刪掉'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 2 }),
+    '失敗時計數不動'
+  );
+  assert.notEqual(toastTextOf(ctx), '', '失敗應有 toast，不留下「按了沒反應」');
+});
+
+test('警示名單卡:allowlist 有資料時「已解除」小節顯示 handle 與復原鈕，點復原送 scam.blocklist.restore', async () => {
+  const list = scamBlocklistFixture({
+    allowlist: { [SCAM_ID_C]: { at: SCAM_NOW - SCAM_DAY, handle: 'scammer.c' } },
+  });
+  const ctx = makeScamCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const section = ctx.doc.ids.scamAllowlist;
+  assert.equal(section.hidden, false, 'allowlist 有資料時已解除小節應顯示');
+  assert.ok(
+    joinedText(section).includes(i18n.t('zh', 'opScamAllowlistTitle')),
+    '小節標題走 opScamAllowlistTitle'
+  );
+
+  const rows = scamAllowRows(ctx.doc);
+  assert.equal(rows.length, 1, 'allowlist 一筆應畫一列');
+  assert.equal(rows[0].dataset.id, SCAM_ID_C, '列的 dataset.id 為 userId');
+  assert.ok(joinedText(rows[0]).includes('@scammer.c'), '已解除的列顯示 @handle');
+
+  const restoreBtn = actBtn(rows[0], 'restore');
+  assert.ok(restoreBtn, '每一列都應有 dataset.act="restore" 的復原鈕');
+  // 復原鈕是文字鈕或圖示鈕都行，文案落在 textContent 或 title 任一即可。
+  const restoreLabel = joinedText(restoreBtn) + ' ' + scamAttrOf(restoreBtn, 'title');
+  assert.ok(
+    restoreLabel.includes(i18n.t('zh', 'opScamRestore')),
+    '復原鈕文案/標題走 opScamRestore'
+  );
+
+  restoreBtn.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.restore'),
+    [{ type: 'scam.blocklist.restore', userId: SCAM_ID_C }],
+    '點復原直接送 scam.blocklist.restore(不需二次確認)'
+  );
+});
+
+test('警示名單卡:allowlist 為空時「已解除」小節整個隱藏', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  assert.equal(ctx.doc.ids.scamAllowlist.hidden, true, 'allowlist 為空時小節應隱藏');
+  assert.equal(scamAllowRows(ctx.doc).length, 0, '不得畫出任何已解除的列');
+});
+
+// 常開頁面的即時性:background 寫入 scamBlocklist 後，接線層的
+// chrome.storage.onChanged(local 區)把整包 changes 轉給 setLocalSettings
+// (見 options-init.js)，本頁據此重畫警示名單，不需要使用者手動重整。
+test('警示名單卡:storage.onChanged 帶來新的 scamBlocklist 時原地重畫(名單、計數、空狀態一起更新)', async () => {
+  const ctx = makeScamCtx({ blocklist: undefined });
+  await initScamPage(ctx);
+
+  assert.equal(scamRows(ctx.doc).length, 0, '前置:一開始是空名單');
+
+  ctx.controller.setLocalSettings({
+    scamBlocklist: { newValue: scamBlocklistFixture(), oldValue: undefined },
+  });
+  await settle();
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '別處寫入的新名單應即時畫進本頁'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 2 }),
+    '計數跟著更新'
+  );
+  assert.equal(ctx.doc.ids.scamEmpty.hidden, true, '有資料後空狀態收起');
+});
+
+// ============================================================
+// 【整合審查 F4】allowlist 的 handle 清洗要與 core 同一把尺。
+//
+// options.js 的 readScamBlocklist 先跑 TCLCore.normalizeScamBlocklist，再用
+// 自建的 readScamAllowlist 把結果整個蓋掉——兩邊對 handle 的清洗程度不同
+// （core 走 sanitizeDisplayName：摺疊連續空白、trim、截到 DISPLAY_NAME_MAX；
+// 本頁那份只檢查「非空字串」），髒 handle 一路漂到畫面上。allowlist 的
+// handle 與 entries 的 handle 都是他人帳號帶進來的字串，清洗尺度只能有一
+// 把，且必須是 core 那把。
+// ============================================================
+
+const SCAM_ID_D = '66677788899';
+// 連續空白／定位字元：core 摺成單一半形空白，未清洗則原樣渲染。
+const SCAM_ALLOW_HANDLE_SPACED = 'scammer \t  c';
+// 超過 DISPLAY_NAME_MAX（80）：core 截斷，未清洗則整串渲染。
+const SCAM_ALLOW_HANDLE_LONG = 'l'.repeat(100);
+
+test('警示名單卡:allowlist 的 handle 清洗走 TCLCore 同一把尺（連續空白摺疊、超長截斷）', async () => {
+  const TCLCore = require(path.join(__dirname, '..', 'tcl-core.js'));
+  const raw = scamBlocklistFixture({
+    allowlist: {
+      [SCAM_ID_C]: { at: SCAM_NOW - SCAM_DAY, handle: SCAM_ALLOW_HANDLE_SPACED },
+      [SCAM_ID_D]: { at: SCAM_NOW - 2 * SCAM_DAY, handle: SCAM_ALLOW_HANDLE_LONG },
+    },
+  });
+  // 期望值一律由 core 現算，不在測試裡重刻一份清洗規則。
+  const expected = TCLCore.normalizeScamBlocklist(raw).allowlist;
+  assert.notEqual(
+    expected[SCAM_ID_C].handle,
+    SCAM_ALLOW_HANDLE_SPACED,
+    '前提：core 對連續空白的 handle 確實有清洗'
+  );
+  assert.notEqual(
+    expected[SCAM_ID_D].handle,
+    SCAM_ALLOW_HANDLE_LONG,
+    '前提：core 對超長 handle 確實有截斷'
+  );
+
+  const ctx = makeScamCtx({ blocklist: raw });
+  await initScamPage(ctx);
+
+  const rows = scamAllowRows(ctx.doc);
+  assert.deepEqual(
+    rows.map((r) => r.dataset.id),
+    [SCAM_ID_C, SCAM_ID_D],
+    '前提：已解除小節依解除時間降冪畫出兩列'
+  );
+
+  rows.forEach((row) => {
+    const handleEl = findByClass(row, 'scam-handle')[0];
+    assert.ok(handleEl, '每一列都有顯示 handle 的節點');
+    assert.equal(
+      handleEl.textContent,
+      '@' + expected[row.dataset.id].handle,
+      '已解除小節的 handle 必須與 TCLCore.normalizeScamBlocklist 的結果逐字相同'
+    );
+  });
+});
+
+// ============================================================
+// 【車道 feat/options-tabs】選項頁三分頁:總覽／貼文／標記
+//
+// 使用者裁決:選項頁一路往下捲太長，改切成三個分頁，分頁列放 header 下方。
+//   - 總覽(overview):統計磚 ＋ 近 14 天圖表 ＋ 設定卡(section.duo)
+//   - 貼文(posts):紀錄卡(搜尋/篩選/每頁/匯出/選單)
+//   - 標記(flags):警示名單卡(名單 ＋ 已解除)
+//
+// 【DOM 契約】header 下方 nav.tabs[role="tablist"]，內含三顆
+// button[role="tab"][data-tab="overview"|"posts"|"flags"];每個分頁內容
+// 是 section[role="tabpanel"][data-panel=…]，非當前者 hidden。選中的 tab
+// aria-selected="true"，其餘 "false"。
+//
+// 【路由契約】location.hash 是分頁狀態的唯一權威:#overview／#posts／
+// #flags，缺席或未知一律退回 overview。點 tab 改寫 hash(history.replaceState
+// 或直接設 location.hash 皆可)，但不得走會重載整頁的通道(location.assign／
+// replace／reload)。外部改 hash(上一頁、手打網址)發出的 hashchange 要同步
+// 畫面;重新整理靠「載入時讀 hash」停在原分頁。
+//
+// 【相依注入】Node 測試環境沒有全域 window／location(實測皆為 undefined)，
+// options.js 也刻意不碰全域(檔頭註解:不碰全域 chrome 才能離線測試)。分頁
+// 路由需要的瀏覽器物件一律由呼叫端注入，本檔同時給 window／location／
+// history 三個 dep 指向同一組假件，實作採哪一種注入風格都測得到:
+//   createOptionsController({ …, window: win, location: win.location,
+//                             history: win.history })
+// hashchange 只從 window.addEventListener 派送(onhashchange 賦值式不支援)。
+// ============================================================
+
+const TAB_NAMES = ['overview', 'posts', 'flags'];
+const TAB_I18N = { overview: 'opTabOverview', posts: 'opTabPosts', flags: 'opTabFlags' };
+const TAB_TEXT_ZH = { overview: '總覽', posts: '貼文', flags: '警示名單' };
+const TAB_TEXT_EN = { overview: 'Overview', posts: 'Posts', flags: 'Warning list' };
+
+// ---- 假 window:hash、replaceState 與 hashchange ----
+
+// 真實瀏覽器裡「改 hash」有三條不重載整頁的路(直接設 location.hash、
+// history.replaceState、同頁錨點 <a href="#…">)，以及三條會重載的路
+// (location.assign／replace／reload)。假件把前三條做成真的會改 hash，後
+// 三條只記帳不動作——測試據此斷言「切分頁不得重載整頁」。
+function makeFakeWindow(initialHash) {
+  const listeners = {};
+  const navigations = [];
+  const location = {
+    hash: typeof initialHash === 'string' ? initialHash : '',
+    assign(url) {
+      navigations.push(['assign', url]);
+    },
+    replace(url) {
+      navigations.push(['replace', url]);
+    },
+    reload() {
+      navigations.push(['reload']);
+    },
+  };
+  // replaceState/pushState 帶 '#flags' 或 'options.html#flags' 都只改寫位址
+  // 列的 hash，不重載、也不自己發 hashchange(比照真實瀏覽器)。
+  function applyUrl(url) {
+    if (typeof url !== 'string') return;
+    const at = url.indexOf('#');
+    if (at !== -1) location.hash = url.slice(at);
+  }
+  const history = {
+    calls: [],
+    replaceState(state, title, url) {
+      history.calls.push(['replaceState', url]);
+      applyUrl(url);
+    },
+    pushState(state, title, url) {
+      history.calls.push(['pushState', url]);
+      applyUrl(url);
+    },
+  };
+  const win = {
+    location,
+    history,
+    navigations,
+    addEventListener(type, fn) {
+      if (!listeners[type]) listeners[type] = [];
+      listeners[type].push(fn);
+    },
+    removeEventListener() {},
+    fire(type, event) {
+      (listeners[type] || []).slice().forEach((fn) => fn(event || { type }));
+    },
+    // 測試專用:模擬「外部」改 hash(瀏覽器上一頁、使用者手打網址)——先改
+    // location.hash 再派送 hashchange，順序與真實瀏覽器一致。
+    gotoHash(hash) {
+      if (location.hash === hash) return;
+      location.hash = hash;
+      win.fire('hashchange', { type: 'hashchange' });
+    },
+  };
+  return win;
+}
+
+// ---- 假 DOM 的選擇器支援(分頁列與面板沒有 id，只能靠 querySelectorAll 取) ----
+
+// 既有 makeNode 兩種 class 寫法都有(options.js 多半直接設 className，HTML
+// 靜態節點則是 class 屬性)，比對時兩邊都認。
+function selAttrValue(node, name) {
+  if (name === 'id' && typeof node.id === 'string' && node.id !== '') return node.id;
+  if (name === 'hidden') return node.hidden ? '' : null;
+  const viaAttr = typeof node.getAttribute === 'function' ? node.getAttribute(name) : null;
+  if (viaAttr !== null) return viaAttr;
+  if (name.indexOf('data-') === 0 && node.dataset) {
+    const key = name.slice(5).replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+    if (Object.prototype.hasOwnProperty.call(node.dataset, key)) return String(node.dataset[key]);
+  }
+  return null;
+}
+
+function selHasClass(node, cls) {
+  if (classListOf(node).indexOf(cls) !== -1) return true;
+  return !!(node.classList && node.classList.contains && node.classList.contains(cls));
+}
+
+// 支援的選擇器語法:tag、.class、#id、[attr]、[attr="value"]、以上的複合
+// 寫法，加上空白分隔的後代組合與逗號分組。足以涵蓋實作可能用的
+// '[data-panel]'、'.tabs [role="tab"]'、'nav.tabs button[data-tab]' 等寫法。
+function selMatchCompound(node, compound) {
+  const tokens = compound.match(/\*|[.#]?[A-Za-z][\w-]*|\[[^\]]*\]/g) || [];
+  if (tokens.length === 0) return false;
+  return tokens.every((tk) => {
+    if (tk === '*') return true;
+    if (tk.charAt(0) === '.') return selHasClass(node, tk.slice(1));
+    if (tk.charAt(0) === '#') return selAttrValue(node, 'id') === tk.slice(1);
+    if (tk.charAt(0) === '[') {
+      const m = /^\[([\w-]+)(?:=["']?([^\]"']*)["']?)?\]$/.exec(tk);
+      if (!m) return false;
+      const value = selAttrValue(node, m[1]);
+      if (value === null) return false;
+      return m[2] === undefined || value === m[2];
+    }
+    return node.tag === tk;
+  });
+}
+
+function selMatch(node, selector) {
+  const parts = selector.trim().split(/\s+/);
+  if (!selMatchCompound(node, parts[parts.length - 1])) return false;
+  let cur = node.parentNode;
+  for (let i = parts.length - 2; i >= 0; i--) {
+    while (cur && !selMatchCompound(cur, parts[i])) cur = cur.parentNode;
+    if (!cur) return false;
+    cur = cur.parentNode;
+  }
+  return true;
+}
+
+function selQueryAll(root, selector) {
+  const groups = String(selector)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return walkNodes(root, []).filter((n) => groups.some((g) => selMatch(n, g)));
+}
+
+// 各分頁該收哪些靜態節點(規格的分配)。假 DOM 照這份表把既有的 id 節點掛進
+// 對應面板，讓「面板被 hidden 時卡片仍在該面板底下」這件事有結構可驗。
+const PANEL_STATIC_IDS = {
+  overview: [
+    'statTotal',
+    'statWeek',
+    'statShare',
+    'statStrip',
+    'statIcon',
+    'chartWrap',
+    'chart',
+    'chartTip',
+    'autoClean',
+    'postCopyEnabled',
+    'saveHistory',
+    'scamGuardEnabled',
+    'scamManageLink',
+  ],
+  posts: [
+    'rows',
+    'empty',
+    'countHint',
+    'searchInput',
+    'chips',
+    'chipsRow',
+    'pageSizeSel',
+    'moreMenu',
+    'deviceNote',
+  ],
+  flags: ['scamList', 'scamCount', 'scamEmpty', 'scamAllowlist'],
+};
+
+// 頁首與浮層這些不屬於任何面板的節點，維持既有的扁平 stub 行為(不掛進面板)。
+const TABS_LOOSE_IDS = [
+  'langBtn',
+  'themeBtn',
+  'themeIcon',
+  'toast',
+  'overlay',
+  'confirmOverlay',
+  'confirmTitleText',
+  'confirmDesc',
+  'confirmOk',
+  'detailOverlay',
+  'timelineOverlay',
+  'devicesOverlay',
+];
+
+// 分頁版的 DOM stub:在既有 makeDocumentStub 之上補三樣東西——
+//   1. 真的能用的 document.querySelectorAll/querySelector(既有 stub 恆回
+//      空陣列;分頁列與面板沒有 id，只能靠選擇器取);
+//   2. header 下方的 nav.tabs[role=tablist] 與三個 section[role=tabpanel];
+//   3. getElementById 順手補上 node.id，讓 '#foo' 選擇器也成立。
+//
+// 刻意不預設任何選中態:三個面板一律 hidden=false、三顆 tab 都不帶
+// aria-selected。分頁狀態的唯一權威是控制器，stub 預設成「全開、沒人被選
+// 中」，控制器沒接手時每一條路由斷言都會紅，不會被 HTML 的靜態初值蒙混過
+// 去(靜態初值另由 options.html 的文字測試釘住)。
+function makeTabsDocumentStub() {
+  const doc = makeDocumentStub();
+  const rawGetById = doc.getElementById.bind(doc);
+  doc.getElementById = function (id) {
+    const node = rawGetById(id);
+    if (node && !node.id) node.id = id;
+    return node;
+  };
+  doc.querySelectorAll = function (selector) {
+    return selQueryAll(doc.documentElement, selector);
+  };
+  doc.querySelector = function (selector) {
+    return selQueryAll(doc.documentElement, selector)[0] || null;
+  };
+
+  const nav = doc.createElement('nav');
+  nav.className = 'tabs';
+  nav.classList.add('tabs');
+  nav.setAttribute('role', 'tablist');
+  doc.documentElement.appendChild(nav);
+  doc.tabsNav = nav;
+
+  TAB_NAMES.forEach((name) => {
+    const btn = doc.createElement('button');
+    btn.setAttribute('type', 'button');
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('data-tab', name);
+    btn.dataset.tab = name;
+    btn.setAttribute('data-i18n', TAB_I18N[name]);
+    nav.appendChild(btn);
+
+    const panel = doc.createElement('section');
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('data-panel', name);
+    panel.dataset.panel = name;
+    panel.hidden = false;
+    doc.documentElement.appendChild(panel);
+    PANEL_STATIC_IDS[name].forEach((id) => panel.appendChild(doc.getElementById(id)));
+  });
+
+  TABS_LOOSE_IDS.forEach((id) => doc.getElementById(id));
+  // 設定卡裡的「管理警示名單 →」連結:靜態 HTML 就帶 href 與 data-i18n。
+  const manage = doc.getElementById('scamManageLink');
+  manage.tag = 'a';
+  manage.setAttribute('href', '#flags');
+  manage.setAttribute('data-i18n', 'opScamManageLink');
+  return doc;
+}
+
+function tabButtons(doc) {
+  return doc.querySelectorAll('[role="tab"]');
+}
+function tabByName(doc, name) {
+  return tabButtons(doc).filter((b) => selAttrValue(b, 'data-tab') === name)[0] || null;
+}
+function panelByName(doc, name) {
+  return (
+    doc.querySelectorAll('[data-panel]').filter((p) => selAttrValue(p, 'data-panel') === name)[0] ||
+    null
+  );
+}
+function selectedTabNames(doc) {
+  return tabButtons(doc)
+    .filter((b) => b.getAttribute('aria-selected') === 'true')
+    .map((b) => selAttrValue(b, 'data-tab'));
+}
+function visiblePanelNames(doc) {
+  return doc
+    .querySelectorAll('[data-panel]')
+    .filter((p) => !p.hidden)
+    .map((p) => selAttrValue(p, 'data-panel'));
+}
+
+// 一次把「選中的 tab／可見的面板／未選中者的 aria-selected」三件事釘死。
+function assertActiveTab(ctx, name, label) {
+  const doc = ctx.doc;
+  assert.deepEqual(
+    selectedTabNames(doc),
+    [name],
+    label + ':只有 ' + name + ' 這顆 tab aria-selected="true"'
+  );
+  TAB_NAMES.filter((n) => n !== name).forEach((other) => {
+    assert.equal(
+      tabByName(doc, other).getAttribute('aria-selected'),
+      'false',
+      label + ':未選中的 ' + other + ' 要顯式寫 aria-selected="false"，不是拿掉屬性'
+    );
+  });
+  assert.deepEqual(visiblePanelNames(doc), [name], label + ':只有 ' + name + ' 面板不帶 hidden');
+}
+
+function makeTabsCtx(opts) {
+  const o = opts || {};
+  const localSeed = { history: o.history || [] };
+  if (o.blocklist !== undefined) localSeed.scamBlocklist = o.blocklist;
+  const storage = createChromeStorage({ langPref: o.lang || 'zh' }, localSeed);
+  const doc = makeTabsDocumentStub();
+  const win = makeFakeWindow(o.hash);
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => DEV_SIGNED_OUT_STATE,
+    'scam.blocklist.remove': o.remove || (() => ({ ok: true })),
+    'scam.blocklist.restore': o.restore || (() => ({ ok: true })),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => SCAM_NOW,
+    runtime,
+    window: win,
+    location: win.location,
+    history: win.history,
+  });
+  return { storage, doc, win, runtime, controller };
+}
+
+async function initTabsPage(ctx) {
+  await ctx.controller.init();
+  await settle();
+  ['detailOverlay', 'timelineOverlay', 'overlay', 'confirmOverlay', 'devicesOverlay'].forEach(
+    (id) => {
+      ctx.doc.getElementById(id).hidden = true;
+    }
+  );
+}
+
+// 同頁錨點的點擊:先派送 click，沒被 preventDefault 就照瀏覽器原生行為改
+// hash 並發 hashchange。實作要攔截自行切換(preventDefault)，或完全靠原生
+// <a href="#flags"> ＋ hashchange 同步，兩種都算通過。
+function clickAnchor(ctx, node) {
+  const ev = {
+    type: 'click',
+    target: node,
+    defaultPrevented: false,
+    preventDefault() {
+      ev.defaultPrevented = true;
+    },
+    stopPropagation() {},
+  };
+  node.fire('click', ev);
+  if (!ev.defaultPrevented) {
+    const href = scamAttrOf(node, 'href');
+    if (href.charAt(0) === '#') ctx.win.gotoHash(href);
+  }
+}
+
+// ---- options.html 靜態結構 ----
+
+function readOptionsHtml() {
+  return fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+}
+
+// 三個面板的原始碼區間:從自己的開標籤到下一個面板的開標籤(最後一個到
+// <footer)。卡片落在哪個面板，就看它的索引落在誰的區間裡。
+function panelSlices(html) {
+  const re = /<section[^>]*\bdata-panel="([a-z]+)"[^>]*>/g;
+  const found = [];
+  let m;
+  while ((m = re.exec(html)) !== null) found.push({ name: m[1], start: m.index, tag: m[0] });
+  const footerIdx = html.indexOf('<footer');
+  const slices = {};
+  found.forEach((p, i) => {
+    const end =
+      i + 1 < found.length ? found[i + 1].start : footerIdx === -1 ? html.length : footerIdx;
+    slices[p.name] = { tag: p.tag, body: html.slice(p.start, end), start: p.start };
+  });
+  return { order: found.map((p) => p.name), slices: slices };
+}
+
+test('分頁列:options.html 在 header 下方有 nav.tabs[role=tablist]，三顆 tab 帶 data-tab／data-i18n，overview 為初始選中', () => {
+  const html = readOptionsHtml();
+
+  const headerEnd = html.indexOf('</header>');
+  assert.notEqual(headerEnd, -1, '前置:應找得到頁首 </header>');
+  const navIdx = html.search(/<nav[^>]*role="tablist"/);
+  assert.notEqual(navIdx, -1, 'options.html 應有 nav[role="tablist"] 分頁列');
+  assert.ok(navIdx > headerEnd, '分頁列要放在 header 之後(使用者裁決:分頁列放 header 下方)');
+
+  const navTag = html.slice(navIdx, html.indexOf('>', navIdx) + 1);
+  assert.match(navTag, /class="[^"]*\btabs\b[^"]*"/, '分頁列 class 應含 tabs');
+
+  const navEnd = html.indexOf('</nav>', navIdx);
+  assert.notEqual(navEnd, -1, '前置:分頁列應正常收尾');
+  const navBlock = html.slice(navIdx, navEnd);
+  const btnTags = navBlock.match(/<button[^>]*>/g) || [];
+  assert.equal(btnTags.length, 3, '分頁列內應剛好三顆 button(總覽／貼文／標記)');
+
+  TAB_NAMES.forEach((name, i) => {
+    const tag = btnTags[i];
+    assert.match(tag, /\brole="tab"/, '第 ' + (i + 1) + ' 顆按鈕要標 role="tab"');
+    assert.ok(
+      tag.indexOf('data-tab="' + name + '"') !== -1,
+      '第 ' + (i + 1) + ' 顆按鈕的 data-tab 應為 ' + name + '(順序:總覽→貼文→標記)'
+    );
+    assert.ok(
+      tag.indexOf('data-i18n="' + TAB_I18N[name] + '"') !== -1,
+      name + ' 分頁文案走 data-i18n="' + TAB_I18N[name] + '"'
+    );
+    assert.ok(
+      tag.indexOf('aria-selected="' + (i === 0 ? 'true' : 'false') + '"') !== -1,
+      '靜態初值:overview 為 aria-selected="true"，其餘顯式 "false"'
+    );
+  });
+});
+
+test('分頁列:三個 section[role=tabpanel][data-panel] 齊備，非當前者靜態就帶 hidden(避免載入瞬間三頁一起閃出來)', () => {
+  const html = readOptionsHtml();
+  const parsed = panelSlices(html);
+
+  assert.deepEqual(parsed.order, TAB_NAMES, '三個面板依序為 overview／posts／flags');
+  TAB_NAMES.forEach((name) => {
+    assert.match(parsed.slices[name].tag, /\brole="tabpanel"/, name + ' 面板要標 role="tabpanel"');
+  });
+  assert.ok(
+    !/\shidden[\s>]/.test(parsed.slices.overview.tag),
+    'overview 是預設分頁，靜態 HTML 不帶 hidden'
+  );
+  ['posts', 'flags'].forEach((name) => {
+    assert.match(
+      parsed.slices[name].tag,
+      /\shidden[\s>]/,
+      name + ' 面板靜態 HTML 就要帶 hidden，否則 JS 接手前三頁內容會一起畫出來'
+    );
+  });
+});
+
+test('分頁分配:統計磚與 section.duo 在 overview、紀錄卡在 posts、警示名單卡在 flags', () => {
+  const html = readOptionsHtml();
+  const parsed = panelSlices(html);
+  assert.deepEqual(parsed.order, TAB_NAMES, '前置:三個面板齊備');
+
+  assert.match(
+    parsed.slices.overview.body,
+    /<section[^>]*class="stats"/,
+    '統計磚(section.stats)應落在 overview 面板內'
+  );
+  assert.match(
+    parsed.slices.overview.body,
+    /<section[^>]*class="duo"/,
+    '圖表＋設定卡(section.duo)應落在 overview 面板內'
+  );
+  assert.match(
+    parsed.slices.posts.body,
+    /<section[^>]*class="card history"/,
+    '紀錄卡(section.card.history)應落在 posts 面板內'
+  );
+  assert.match(
+    parsed.slices.flags.body,
+    /<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/,
+    '警示名單卡(section.card.scam-blocklist)應落在 flags 面板內'
+  );
+
+  // 反向:同一張卡不得同時掛在別的面板(複製貼上重複掛)。
+  assert.doesNotMatch(
+    parsed.slices.posts.body,
+    /<section[^>]*class="stats"/,
+    '統計磚不該出現在 posts'
+  );
+  assert.doesNotMatch(
+    parsed.slices.flags.body,
+    /<section[^>]*class="card history"/,
+    '紀錄卡不該出現在 flags'
+  );
+  assert.doesNotMatch(
+    parsed.slices.overview.body,
+    /<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/,
+    '警示名單卡不該出現在 overview(設定卡只放「管理警示名單 →」連結)'
+  );
+});
+
+test('分頁列 i18n:三顆 tab 與「管理警示名單 →」的文案 key 在 zh／en 兩份字典都齊備且逐字正確', () => {
+  TAB_NAMES.forEach((name) => {
+    const key = TAB_I18N[name];
+    assert.equal(i18n.t('zh', key), TAB_TEXT_ZH[name], key + ' 的 zh 文案');
+    assert.equal(i18n.t('en', key), TAB_TEXT_EN[name], key + ' 的 en 文案');
+  });
+  assert.equal(i18n.t('zh', 'opScamManageLink'), '管理警示名單 →', 'opScamManageLink 的 zh 文案');
+  assert.equal(i18n.t('en', 'opScamManageLink'), 'Manage warning list →', 'opScamManageLink 的 en 文案');
+});
+
+test('分頁路由:hash 缺席時停在 overview，三顆 tab 文案由 i18n 字典套上', async () => {
+  const ctx = makeTabsCtx({ hash: '' });
+  await initTabsPage(ctx);
+
+  assertActiveTab(ctx, 'overview', 'hash 缺席');
+  TAB_NAMES.forEach((name) => {
+    assert.equal(
+      tabByName(ctx.doc, name).textContent,
+      TAB_TEXT_ZH[name],
+      name + ' 分頁的按鈕文字應為 zh 字典的 ' + TAB_I18N[name]
+    );
+  });
+});
+
+test('分頁路由:載入時 hash 為 #flags／#posts 就停在該分頁(重新整理不會跳回總覽)', async () => {
+  for (const name of ['flags', 'posts']) {
+    const ctx = makeTabsCtx({ hash: '#' + name, blocklist: scamBlocklistFixture() });
+    await initTabsPage(ctx);
+    assertActiveTab(ctx, name, '載入 hash=#' + name);
+    assert.equal(ctx.win.location.hash, '#' + name, '載入既有 hash 不應被改寫');
+    assert.deepEqual(
+      ctx.win.navigations,
+      [],
+      '切分頁不得走 assign／replace／reload 這類重載整頁的通道'
+    );
+  }
+});
+
+test('分頁路由:未知 hash 退回 overview，不留下三頁全開或全關的破畫面', async () => {
+  const ctx = makeTabsCtx({ hash: '#nope' });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'overview', '未知 hash');
+});
+
+test('分頁路由:點 tab 切換面板並改寫 hash，aria-selected 跟著搬家，且不重載整頁', async () => {
+  const ctx = makeTabsCtx({ blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'overview', '前置');
+
+  tabByName(ctx.doc, 'posts').fire('click');
+  await settle();
+  assertActiveTab(ctx, 'posts', '點貼文分頁');
+  assert.equal(ctx.win.location.hash, '#posts', '點 tab 要把 hash 改成 #posts');
+
+  tabByName(ctx.doc, 'flags').fire('click');
+  await settle();
+  assertActiveTab(ctx, 'flags', '點警示名單分頁');
+  assert.equal(ctx.win.location.hash, '#flags', '點 tab 要把 hash 改成 #flags');
+
+  assert.deepEqual(
+    ctx.win.navigations,
+    [],
+    '改 hash 只能走 location.hash 或 history.replaceState，不得用 assign／replace／reload'
+  );
+});
+
+test('分頁路由:外部改 hash(上一頁／手打網址)發出的 hashchange 要同步畫面', async () => {
+  const ctx = makeTabsCtx({ blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+
+  ctx.win.gotoHash('#flags');
+  await settle();
+  assertActiveTab(ctx, 'flags', 'hashchange 到 #flags');
+
+  ctx.win.gotoHash('#overview');
+  await settle();
+  assertActiveTab(ctx, 'overview', 'hashchange 回 #overview');
+
+  ctx.win.gotoHash('#bogus');
+  await settle();
+  assertActiveTab(ctx, 'overview', '外部改成未知 hash 時同樣退回 overview');
+});
+
+test('分頁路由:切語言後留在原分頁，tab 文案換成英文(renderAll 不得把分頁重設回 overview)', async () => {
+  const ctx = makeTabsCtx({ hash: '#flags', blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'flags', '前置');
+
+  ctx.doc.ids.langBtn.fire('click');
+  await settle();
+
+  assertActiveTab(ctx, 'flags', '切語言後');
+  assert.equal(ctx.win.location.hash, '#flags', '切語言不得改動 hash');
+  TAB_NAMES.forEach((name) => {
+    assert.equal(
+      tabByName(ctx.doc, name).textContent,
+      TAB_TEXT_EN[name],
+      name + ' 分頁的按鈕文字應換成 en 字典的 ' + TAB_I18N[name]
+    );
+  });
+  assert.equal(
+    ctx.doc.ids.scamManageLink.textContent,
+    i18n.t('en', 'opScamManageLink'),
+    '「管理警示名單 →」連結同樣走 data-i18n，切語言要跟著換'
+  );
+});
+
+test('管理警示名單連結:options.html 的設定卡內有 a#scamManageLink[href="#flags"]，走 opScamManageLink 文案', () => {
+  const html = readOptionsHtml();
+
+  const anchorIdx = html.search(/<a[^>]*id="scamManageLink"/);
+  assert.notEqual(anchorIdx, -1, '設定卡應有 a#scamManageLink');
+  const anchorEnd = html.indexOf('</a>', anchorIdx);
+  const anchorBlock = html.slice(anchorIdx, anchorEnd === -1 ? anchorIdx : anchorEnd);
+  assert.match(
+    html.slice(anchorIdx, html.indexOf('>', anchorIdx) + 1),
+    /href="#flags"/,
+    '連結指向警示名單分頁的 hash'
+  );
+  assert.ok(
+    anchorBlock.indexOf('data-i18n="opScamManageLink"') !== -1,
+    '連結文案走 data-i18n="opScamManageLink"'
+  );
+
+  // 位置:掛在「LINE 群組引導警示」那一列的設定 row 之內(開關旁邊)，不另起一區。
+  const toggleIdx = html.indexOf('id="scamGuardEnabled"');
+  assert.notEqual(toggleIdx, -1, '前置:設定卡內應有 LINE 群組引導警示總開關');
+  const rowStart = html.lastIndexOf('<label', toggleIdx);
+  const rowEnd = html.indexOf('</label>', toggleIdx);
+  assert.ok(
+    anchorIdx > rowStart && anchorIdx < rowEnd,
+    '「管理警示名單 →」要掛在 LINE 群組引導警示的開關那一列內，不另開區塊'
+  );
+});
+
+test('管理警示名單連結:點下去切到警示名單分頁(原生錨點或 JS 攔截都可)，hash 同步為 #flags', async () => {
+  const ctx = makeTabsCtx({ blocklist: scamBlocklistFixture() });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'overview', '前置:設定卡在總覽分頁');
+
+  clickAnchor(ctx, ctx.doc.ids.scamManageLink);
+  await settle();
+
+  assertActiveTab(ctx, 'flags', '點管理警示名單連結後');
+  assert.equal(ctx.win.location.hash, '#flags', 'hash 應同步為 #flags');
+  assert.deepEqual(ctx.win.navigations, [], '同頁錨點不得造成整頁重載');
+});
+
+// ---- 警示名單分頁:證據列的小字 meta ----
+
+// 同一個作者的多筆證據常是同文異篇(同一段招攬文案貼了好幾篇)，只看片段會
+// 以為畫了重複的兩列。每筆證據在片段前補一行小字「貼文代碼尾 6 碼 ·
+// YYYY-MM-DD」:代碼取自 postUrl 的 /post/ 段，日期取自該筆證據的 at。
+function evidenceMetaText(postUrl, at) {
+  const id = /\/post\/([^/?#]+)/.exec(postUrl)[1];
+  return id.slice(-6) + ' · ' + scamDateOnly(at);
+}
+
+// 一列裡所有節點的文字串接(不加分隔符)。.scam-evidence-meta 改版後不再是
+// 單一文字節點，而是一整條 meta 列(日期 ＋ 連結 ＋ 訊號 chips)，只能以子樹
+// 串接取它的完整文字。
+function metaTextOf(node) {
+  return walkNodes(node, [])
+    .map((n) => n.textContent || '')
+    .join('');
+}
+
+// 【斷言翻轉】原斷言為「.scam-evidence-meta 的 textContent 恰為『代碼尾 6
+// 碼 · 日期』，且只放這兩者，並排在片段之前」。證據改排成 Threads 的貼文樣
+// 式後，日期跟著帳號走在**作者列**上（`a.scam-evidence-date`，文字是相對時
+// 間），絕對日期與代碼尾碼留在它的 title 上；本文之下才是「整串 ↗」與訊號
+// 的 meta 列。因此改為「作者列的日期連結帶得出絕對日期與代碼尾碼」，順序要
+// 求也翻成「作者列在片段之前」。主卡只畫最新一筆，逐筆要開「命中 N 篇」對
+// 話框才看得到。
+test('警示名單卡:每筆證據的作者列仍帶得出貼文代碼尾 6 碼與日期，同文異篇不會看起來重複', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  const list = openScamHits(ctx, rowA);
+
+  const links = evidenceDateLinks(list);
+  assert.equal(links.length, 2, '每筆證據各一條日期連結，數量等於 evidence 筆數');
+
+  const expected = [
+    evidenceMetaText(SCAM_URL_A1, SCAM_NOW - SCAM_HOUR),
+    evidenceMetaText(SCAM_URL_A2, SCAM_NOW - 2 * SCAM_HOUR),
+  ];
+  assert.notEqual(expected[0], expected[1], '前置:兩筆證據的尾碼須不同，才測得出去重複的效果');
+  links.forEach((link, i) => {
+    const parts = expected[i].split(' · ');
+    const title = scamAttrOf(link, 'title');
+    assert.ok(title.includes(parts[0]), '第 ' + (i + 1) + ' 筆的代碼尾 6 碼(' + parts[0] + ')應在日期連結的 title 上');
+    assert.ok(title.includes(parts[1]), '第 ' + (i + 1) + ' 筆的絕對日期應在 title 上');
+  });
+
+  // 順序:每筆的作者列要排在它那筆的片段之前(walkNodes 是前序走訪，對這種
+  // 淺層結構等同文件順序)。
+  const order = walkNodes(list, []);
+  const heads = findByClass(list, 'scam-evidence-head');
+  const texts = findByClass(list, 'scam-evidence-text');
+  assert.equal(texts.length, 2, '前置:兩筆證據各一段片段');
+  heads.forEach((h, i) => {
+    assert.ok(
+      order.indexOf(h) < order.indexOf(texts[i]),
+      '第 ' + (i + 1) + ' 筆的作者列要排在片段之前'
+    );
+  });
+});
+
+// 【斷言翻轉】同上:代碼尾碼與絕對日期改到作者列的日期連結 title 上。
+// B 只有一筆證據，主卡上就看得到。
+test('警示名單卡:貼文代碼剛好 6 碼時原樣顯示，不補位也不取到別的路徑片段', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  assert.ok(rowB, '前置:應畫出作者 B 那一列');
+  const links = evidenceDateLinks(rowB);
+  assert.equal(links.length, 1, 'B 只有一筆證據');
+  const parts = evidenceMetaText(SCAM_URL_B1, SCAM_NOW - 3 * SCAM_DAY).split(' · ');
+  const title = scamAttrOf(links[0], 'title');
+  assert.ok(title.includes('DeF456'), '代碼剛好 6 碼(DeF456)時原樣顯示');
+  assert.ok(title.includes(parts[1]), '絕對日期照舊留在日期連結的 title 上');
+});
+
+// ---- 既有行為在分頁化之後不變 ----
+
+test('分頁化後既有行為不變:警示名單分頁上 storage.onChanged 照常同步、解除流程照常走完', async () => {
+  const ctx = makeTabsCtx({ hash: '#flags' });
+  await initTabsPage(ctx);
+  assertActiveTab(ctx, 'flags', '前置:停在警示名單分頁');
+  assert.equal(scamRows(ctx.doc).length, 0, '前置:一開始是空名單');
+
+  ctx.controller.setLocalSettings({
+    scamBlocklist: { newValue: scamBlocklistFixture(), oldValue: undefined },
+  });
+  await settle();
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '別處寫入的新名單即時畫進警示名單分頁'
+  );
+  assertActiveTab(ctx, 'flags', 'onChanged 重畫後仍停在警示名單分頁');
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const removeBtn = actBtn(rowA, 'remove');
+  assert.ok(removeBtn, '前置:應有解除鈕');
+  removeBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
+    '解除流程在分頁內照常送出'
+  );
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_B],
+    '回 ok 後該列消失'
+  );
+  assertActiveTab(ctx, 'flags', '解除完成後不得被彈回總覽');
+});
+
+test('分頁化後既有行為不變:貼文分頁上紀錄卡照常渲染，切回總覽時統計磚數值仍在', async () => {
+  const ctx = makeTabsCtx({
+    hash: '#posts',
+    history: [
+      { url: URL_A, kind: 'share', at: SCAM_NOW - SCAM_HOUR },
+      { url: URL_B, kind: 'strip', at: SCAM_NOW - 2 * SCAM_HOUR },
+    ],
+  });
+  await initTabsPage(ctx);
+
+  assertActiveTab(ctx, 'posts', '前置:停在貼文分頁');
+  assert.equal(ctx.doc.ids.rows.children.length, 2, '紀錄卡片牆照常畫出兩張卡');
+  assert.equal(ctx.doc.ids.statTotal.textContent, '2', '統計磚照常聚合(面板 hidden 不影響渲染)');
+
+  tabByName(ctx.doc, 'overview').fire('click');
+  await settle();
+  assertActiveTab(ctx, 'overview', '切回總覽');
+  assert.equal(ctx.doc.ids.statTotal.textContent, '2', '切回總覽後統計磚數值仍在');
+});
+
+// ============================================================
+// 警示名單卡改版:證據卡片(buildScamRow)
+//
+// 【為什麼改】舊版一列只有「名字 · @帳號 / 加入於 X / 證據:一串被截到 40 字
+// 的片段連結」。實際用起來的三個問題:
+//   1. 片段被砍到 40 字，招攬句的後半(帳號、群組引導)整段看不到，使用者無
+//      從判斷這筆標記合不合理。
+//   2. 證據連結一律指向「使用者當時開的那一頁」，錨點卻幾乎都在末篇，點進去
+//      看不到當初被標記的那句話。
+//   3. 三筆證據平鋪直敘，同一段招攬文案貼了好幾篇時看起來像畫重複了。
+//
+// 【版面】(使用者看過預覽後兩輪收斂的結果，下方多處【斷言翻轉】就是這兩輪)
+//   標題列 .scam-name-row，左起:
+//     a.scam-name-link(連作者頁，新分頁)包顯示名＋@handle
+//     a.scam-posted「貼文 YYYY-MM-DD」——貼文發布時間(postedAt，缺席退回
+//       at)，日期本身就是最新那筆證據貼文的連結
+//     span.scam-added「加入於 YYYY-MM-DD」小字
+//     span/button.scam-hit-count「命中 N 篇」——N ≥ 2 時是可點的 button
+//   證據 div.scam-evidence:只放最新一筆(不摺疊、不分頁)
+//   右上角 .scam-actions:button.scam-menu-btn(⋯,#i-more)開 .menu.scam-menu，
+//     選單只有一項「解除」(danger，走既有二次確認)
+//   全部證據:點「命中 N 篇」開 #scamHitsOverlay 對話框(可捲動)，逐筆列出
+//
+// 【每筆證據】主卡那筆與對話框每一筆走同一個 buildScamEvidenceItem，
+// 結構與 class 完全相同:
+//   meta 列 .scam-evidence-meta ＝ a.scam-evidence-date(貼文日期即連結，
+//     href=anchorPostUrl||postUrl，title 放代碼尾 6 碼) ＋(threadUrl 存在
+//     且不等於證據貼文時)a.scam-evidence-thread ＋ 訊號 chips
+//     span.scam-signal[data-signal]
+//   片段 p.scam-evidence-text:完整 snippet 不截斷，anchorMatch 以
+//     mark.scam-anchor 包住
+//
+// 【紀律】全部 createElement/textContent，零 innerHTML——displayName 與
+// snippet 都是他人貼文帶進來的字串。
+// ============================================================
+
+// 作者 A:三筆證據，錨點篇各不相同，串頭是 DxSyNtH0000。
+const EVC_THREAD_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0000';
+const EVC_ANCHOR_1 = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+// 【bug 2 的實際形狀】第二筆證據的錨點篇。舊版對第二、三筆證據畫不出 <a>,
+// 這個網址是回報現場用的那一組，原樣留在測試裡。
+const EVC_ANCHOR_2 = 'https://www.threads.com/@example_author/post/DxSyNtH0002';
+const EVC_ANCHOR_3 = 'https://www.threads.com/@example_author/post/DxSyNtH0003';
+// 使用者當時開的那一頁(三筆都是從串頭進來的)。
+const EVC_PAGE_URL = EVC_THREAD_URL;
+
+const EVC_ANCHOR_TEXT = 'LINE：ab12cd';
+// 100 字的完整片段(儲存上限是 120)。舊版把連結文字砍到 40 字，招攬句的後半
+// 整段看不到——這裡的斷言要求 100 字全數落進 p.scam-evidence-text。
+const EVC_SNIPPET_FULL =
+  '如果你平常也有在研究台股，想多一個地方交流，可以加 LINE：ab12cd，傳訊息給我，我把你拉進群組一起聊，群裡不報明牌也不收費，只是分享每天看盤的筆記與心得，歡迎自由進出、隨時想退出也都不會強迫。';
+
+// 作者 A 的加入時間比貼文發布時間晚好幾天，標題列的兩個日期才分得出來。
+const EVC_ADDED_AT = SCAM_NOW - 3 * SCAM_DAY;
+const EVC_AT_1 = SCAM_NOW - SCAM_HOUR;
+const EVC_AT_2 = SCAM_NOW - 2 * SCAM_HOUR;
+const EVC_AT_3 = SCAM_NOW - 26 * SCAM_HOUR;
+// 貼文發布時間(postedAt)與掃到的時間(at)刻意錯開:卡片上的日期取的是前
+// 者，取錯會直接顯示成使用者滑到那一頁的日子。
+const EVC_POSTED_1 = SCAM_NOW - 9 * SCAM_DAY;
+const EVC_POSTED_2 = SCAM_NOW - 11 * SCAM_DAY;
+const EVC_POSTED_3 = SCAM_NOW - 13 * SCAM_DAY;
+
+function evcEvidence(anchorPostUrl, at, patch) {
+  return Object.assign(
+    {
+      postUrl: EVC_PAGE_URL,
+      snippet: EVC_SNIPPET_FULL,
+      at: at,
+      anchorPostUrl: anchorPostUrl,
+      threadUrl: EVC_THREAD_URL,
+      anchorMatch: EVC_ANCHOR_TEXT,
+      signals: ['line', 'group'],
+    },
+    patch || {}
+  );
+}
+
+// A:新形狀三筆證據;B:舊形狀單筆證據(只有 postUrl/snippet/at)，用來釘向後
+// 相容——舊證據不得因為缺新欄位就畫不出來或畫出空連結。
+function scamCardFixture(patch) {
+  const list = {
+    version: 1,
+    entries: {
+      [SCAM_ID_A]: {
+        handle: 'example_author',
+        displayName: 'Example Author',
+        evidence: [
+          evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { postedAt: EVC_POSTED_1 }),
+          evcEvidence(EVC_ANCHOR_2, EVC_AT_2, {
+            snippet: '第二篇的招攬句：加 LINE：ab12cd 拉你進群組。',
+            postedAt: EVC_POSTED_2,
+          }),
+          evcEvidence(EVC_ANCHOR_3, EVC_AT_3, {
+            snippet: '第三篇的招攬句：想進群的私訊我 LINE：ab12cd。',
+            postedAt: EVC_POSTED_3,
+          }),
+        ],
+        addedAt: EVC_ADDED_AT,
+        source: 'auto',
+      },
+      [SCAM_ID_B]: {
+        handle: 'user.b',
+        evidence: [{ postUrl: SCAM_URL_B1, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 5 * SCAM_DAY }],
+        addedAt: SCAM_NOW - 5 * SCAM_DAY,
+        source: 'auto',
+      },
+    },
+    handleIndex: { example_author: SCAM_ID_A, 'user.b': SCAM_ID_B },
+    allowlist: {},
+  };
+  return Object.assign(list, patch || {});
+}
+
+// makeScamCtx 綁死 langPref:'zh';文案的 zh／en 兩面都要釘，這裡另開一顆可選
+// 語言的 ctx(其餘接線與 makeScamCtx 相同)。
+function makeScamCardCtx(opts) {
+  const o = opts || {};
+  const storage = createChromeStorage(
+    { langPref: o.lang || 'zh' },
+    { history: [], scamBlocklist: o.blocklist === undefined ? scamCardFixture() : o.blocklist }
+  );
+  const doc = makeDocumentStub();
+  SCAM_STUB_IDS.forEach((id) => doc.getElementById(id));
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => DEV_SIGNED_OUT_STATE,
+    'scam.blocklist.remove': () => ({ ok: true }),
+    'scam.blocklist.restore': () => ({ ok: true }),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => SCAM_NOW,
+    runtime,
+  });
+  return { storage, doc, runtime, controller, lang: o.lang || 'zh' };
+}
+
+// 節點子樹的文字串接(不加分隔符)。joinedText 以空白相隔，驗「完整片段有沒
+// 有被切斷」時空白會混進斷言;片段被拆成「前段 / mark / 後段」三個文字節點
+// 時，只有零分隔的串接才還原得回原文。
+function scamTextOf(node) {
+  return walkNodes(node, [])
+    .map((n) => n.textContent || '')
+    .join('');
+}
+function firstByClass(root, cls) {
+  return findByClass(root, cls)[0] || null;
+}
+function isInside(container, node) {
+  return !!container && walkNodes(container, []).indexOf(node) !== -1;
+}
+// 某筆證據的片段節點(.scam-evidence-text)，依文件序。
+function evidenceTexts(row) {
+  return findByClass(row, 'scam-evidence-text');
+}
+// 主卡只露最新一筆證據;全部證據在「命中 N 篇」pill 開的對話框裡。
+// 回傳對話框的證據列容器，供逐筆斷言。
+function openScamHits(ctx, row) {
+  const pill = firstByClass(row, 'scam-hit-count');
+  assert.ok(pill, '前置:應有「命中 N 篇」pill');
+  assert.equal(pill.tag, 'button', '前置:N ≥ 2 時 pill 才可點');
+  pill.fire('click');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, '前置:證據對話框應開啟');
+  return ctx.doc.ids.scamHitsList;
+}
+// 證據貼文連結＝日期本身（比照 Threads：卡上的時間就是那篇的永久連結）。
+function evidenceDateLinks(row) {
+  return findByClass(row, 'scam-evidence-date');
+}
+// data-signal 在 stub 裡可能落在 dataset(直接設屬性)或 attrs(setAttribute),
+// 兩種寫法都合法，不綁實作風格(比照 scamAttrOf)。
+function signalOf(node) {
+  if (node.dataset && typeof node.dataset.signal === 'string' && node.dataset.signal !== '') {
+    return node.dataset.signal;
+  }
+  const attr = node.getAttribute('data-signal');
+  return typeof attr === 'string' ? attr : '';
+}
+
+// ---- 文案字典 ----
+
+test('證據卡文案:新增的 i18n 鍵 zh／en 都要備齊', () => {
+  const expected = {
+    opScamHitCount: ['命中 {n} 篇', '{n} hits'],
+    // 標題列的貼文日期(可點，連到最新那篇證據貼文)。
+    opScamPostedAt: ['貼文 {date}', 'Posted {date}'],
+    opScamSignalLink: ['連結', 'Link'],
+    opScamSignalLine: ['LINE', 'LINE'],
+    opScamSignalGroup: ['群組', 'Group'],
+    opScamSignalJoin: ['加入', 'Join'],
+    opScamSignalPitch: ['話術', 'Pitch'],
+  };
+  Object.keys(expected).forEach((key) => {
+    assert.equal(i18n.t('zh', key), expected[key][0], key + ' 的 zh 文案');
+    assert.equal(i18n.t('en', key), expected[key][1], key + ' 的 en 文案');
+  });
+
+  // 【斷言翻轉】原本這裡還釘 opScamShowMore（details 摺疊區的 summary）、
+  // opScamLastHit（副標的「最近命中」）與 opScamSameText（同文異篇合併的
+  // 「出現在 N 篇」）。三者的 UI 在這一輪改版裡都沒了:摺疊區換成對話框、
+  // 副標整列撤掉、證據改為逐筆呈現不再合併。opScamLastHit 依 PM 指示留在
+  // 字典但不再有人用，不在此釘。
+  //
+  // 這兩鍵的英文由實作定稿，只釘「鍵要存在且兩語不同於鍵名」——i18n.t 查無
+  // 鍵時會退回鍵名本身，退回就代表字典沒補。
+  ['opScamEvidencePost', 'opScamEvidenceThread'].forEach((key) => {
+    ['zh', 'en'].forEach((locale) => {
+      assert.notEqual(i18n.t(locale, key), key, key + ' 的 ' + locale + ' 文案尚未進字典');
+    });
+  });
+  // 日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去哪)。
+  assert.ok(i18n.t('zh', 'opScamEvidencePost').includes('證據貼文'), 'opScamEvidencePost 的 zh 文案為「證據貼文」');
+  assert.ok(i18n.t('zh', 'opScamEvidenceThread').includes('整串'), 'opScamEvidenceThread 的 zh 文案為「整串」');
+});
+
+// ---- 卡頭:名稱連結、日期、命中數 ----
+
+// 【斷言翻轉】原斷言為「每一列左側有首字母圓 span.scam-avatar」。名單不對外
+// 抓頭像(那會讓選項頁替每一列向 Threads 發一次請求)，首字母色塊本身也沒有
+// 辨識價值，使用者看過預覽後決定整個撤掉，標題列直接從顯示名開始。
+test('證據卡:不畫首字母圓——標題列直接從顯示名開始，整列不得出現 .scam-avatar', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  [SCAM_ID_A, SCAM_ID_B].forEach((id) => {
+    const row = scamRowById(ctx.doc, id);
+    assert.ok(row, '前置:應畫出作者 ' + id + ' 那一列');
+    assert.equal(findByClass(row, 'scam-avatar').length, 0, '不得再畫首字母圓');
+  });
+
+  // 列的第一個子節點是文字區，頭像撤掉後沒有別的東西擠在它前面。
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(
+    classListOf(rowA.children[0]).indexOf('scam-text') !== -1,
+    '列的第一個子節點應是 .scam-text'
+  );
+});
+
+test('證據卡:標題列的 a.scam-name-link 連到作者頁，新分頁開啟且 rel 齊備，內含顯示名與 @handle', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const link = firstByClass(rowA, 'scam-name-link');
+  assert.ok(link, '標題列應有 a.scam-name-link');
+  assert.equal(link.tag, 'a', 'scam-name-link 必須是 <a>');
+  assert.equal(
+    scamAttrOf(link, 'href'),
+    'https://www.threads.com/@example_author',
+    '名稱連結指向作者頁'
+  );
+  assert.equal(scamAttrOf(link, 'target'), '_blank', '作者頁開新分頁');
+  assert.equal(scamAttrOf(link, 'rel'), 'noopener noreferrer', 'rel 為 noopener noreferrer');
+  const text = joinedText(link);
+  assert.ok(text.includes('Example Author'), '連結內含顯示名');
+  assert.ok(text.includes('@example_author'), '連結內含 @handle');
+
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  assert.equal(
+    scamAttrOf(firstByClass(rowB, 'scam-name-link'), 'href'),
+    'https://www.threads.com/@user.b',
+    '沒有顯示名時連結照樣指向作者頁'
+  );
+});
+
+test('證據卡:handle 帶路徑／query／hash 字元時整段逐字編碼，不得拼出別的路徑', async () => {
+  // 名單裡的 handle 只過 sanitizeDisplayName(摺空白、截長)，字元集沒有收
+  // 斂——storage 是使用者可編輯、也可能被他處寫髒的地方。直接串進網址的話
+  // 「evil/../x?a=1#b」會被瀏覽器解析成另一個路徑加 query，連結點下去去的
+  // 不是那個作者的頁面。
+  const DIRTY = 'evil/../x?a=1#b';
+  const list = scamCardFixture();
+  list.entries[SCAM_ID_A].handle = DIRTY;
+  list.handleIndex = {};
+  const ctx = makeScamCardCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:髒 handle 不得讓整列畫不出來');
+  assert.equal(
+    scamAttrOf(firstByClass(rowA, 'scam-name-link'), 'href'),
+    'https://www.threads.com/@' + encodeURIComponent(DIRTY),
+    'handle 整段走 encodeURIComponent——拿掉它這條斷言必紅'
+  );
+});
+
+// 【斷言翻轉】命中數的落點改了兩輪：原本是標題列右側的 pill（一筆時也
+// 畫），上一輪搬到本文下方的 div.scam-foot 小字列，這一輪搬回列的右上角、
+// 與 ⋯ 鈕同在 .scam-actions 裡（.scam-foot 整個移除）。「N ≥ 2 才畫」不
+// 變。刻意不放進 buildScamPostItem：那支是「一筆證據」的定義，主卡與對話框
+// 共用，而篇數講的是整位作者，對話框裡逐筆重複一次毫無意義。
+test('證據卡:「命中 N 篇」在列右上角、緊貼 ⋯ 鈕左邊，只有一筆時不畫', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.equal(findByClass(rowA, 'scam-foot').length, 0, '本文下方的小字列已移除');
+
+  const actions = firstByClass(rowA, 'scam-actions');
+  assert.ok(actions, '前置:列右側應有 .scam-actions');
+  const countA = firstByClass(actions, 'scam-hit-count');
+  assert.ok(countA, '命中數應與 ⋯ 鈕同在 .scam-actions 裡');
+  assert.equal(countA.tag, 'button', '兩筆以上時可點，開證據對話框');
+  assert.equal(countA.textContent, i18n.fmt('zh', 'opScamHitCount', { n: 3 }), 'A 有三筆證據');
+  assert.equal(countA.textContent, '命中 3 篇', 'zh 文案');
+
+  // 順序：命中數在 ⋯ 鈕左邊。
+  const order = walkNodes(actions, []);
+  assert.ok(
+    order.indexOf(countA) < order.indexOf(firstByClass(actions, 'scam-menu-btn')),
+    '命中數要排在 ⋯ 鈕之前'
+  );
+  // 整塊在文字區之後，也就是列的右緣。
+  const rowOrder = walkNodes(rowA, []);
+  assert.ok(
+    rowOrder.indexOf(firstByClass(rowA, 'scam-text')) < rowOrder.indexOf(actions),
+    '.scam-actions 排在 .scam-text 之後(列的右緣)'
+  );
+
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  assert.equal(findByClass(rowB, 'scam-hit-count').length, 0, 'B 只有一筆證據，不畫命中數');
+});
+
+test('證據卡:對話框裡的每一筆不重複顯示命中數(那是整位作者的數字，不是單筆證據的)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const list = openScamHits(ctx, rowA);
+  assert.equal(findByClass(list, 'scam-hit-count').length, 0, '對話框的證據列裡不得出現命中數');
+  assert.ok(
+    ctx.doc.ids.scamHitsTitle.textContent.includes(i18n.fmt('zh', 'opScamHitCount', { n: 3 })),
+    '篇數只出現在對話框標題上'
+  );
+});
+
+// 【斷言翻轉】此測試原本釘「副標 .scam-sub 是『加入於 X · 最近命中 Y』」，
+// 上一輪改成「標題列左側 a.scam-posted『貼文 YYYY-MM-DD』、右側 .scam-added
+// 『加入於 YYYY-MM-DD』」。使用者定案後兩者都沒了：
+//   - 標題列不再另畫貼文日期——主卡只放最新一筆證據，而證據作者列上的日期連
+//     結講的就是同一篇同一天，擺兩次只是重複。
+//   - 「加入於／標記於」不顯示（addedAt 照存不動，只是不畫）。
+// 卡片改排成 Threads 的貼文樣子：作者列＝顯示名、@handle、那篇的時間連結
+// （相對時間），接著才是本文。
+test('證據卡:作者列為「顯示名 @handle 時間連結」，不再另畫貼文日期、加入於與最近命中', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.equal(findByClass(rowA, 'scam-sub').length, 0, '副標列已撤掉');
+  assert.equal(findByClass(rowA, 'scam-posted').length, 0, '標題列不再另畫一段貼文日期');
+  assert.equal(findByClass(rowA, 'scam-added').length, 0, '「加入於／標記於」不顯示');
+
+  const head = firstByClass(rowA, 'scam-evidence-head');
+  assert.ok(head, '應有作者列 .scam-evidence-head');
+  const nameLink = firstByClass(head, 'scam-name-link');
+  const date = firstByClass(head, 'scam-evidence-date');
+  assert.ok(nameLink && date, '作者列上要有名字塊與時間連結');
+  assert.equal(date.tag, 'a', '時間本身就是那篇的永久連結');
+  assert.equal(
+    date.textContent,
+    scamRelDate(EVC_POSTED_1),
+    '時間取最新那筆的 postedAt(貼文發布時間)，不是 at'
+  );
+  assert.notEqual(
+    scamRelDate(EVC_POSTED_1),
+    scamRelDate(EVC_AT_1),
+    '前置:發布時間與掃到的時間必須差得出來，才測得出取錯欄位'
+  );
+  assert.equal(scamAttrOf(date, 'href'), EVC_ANCHOR_1, '連到最新那筆的錨點篇');
+
+  // 順序：名字塊 → 時間，同一條作者列上；作者列整條排在本文之前。
+  const order = walkNodes(rowA, []);
+  assert.ok(order.indexOf(nameLink) < order.indexOf(date), '時間緊接在帳號之後');
+  assert.ok(order.indexOf(head) < order.indexOf(evidenceTexts(rowA)[0]), '作者列排在本文之前');
+
+  const text = joinedText(rowA);
+  assert.ok(!text.includes('最近命中'), '「最近命中」不得出現在卡片上');
+  assert.ok(!text.includes('加入於'), '「加入於」不得出現在卡片上');
+  assert.ok(!text.includes('標記於'), '「標記於」不得出現在卡片上');
+});
+
+// 【斷言翻轉】「貼文日期」從標題列的 .scam-posted 搬到作者列的日期連結；
+// postedAt 缺席退回 at 的規則不變。
+test('證據卡:舊證據沒有 postedAt 時，作者列的時間退回 at(掃到的時間)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  // 作者 B 是舊形狀證據，只有 postUrl/snippet/at。
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  const date = firstByClass(rowB, 'scam-evidence-date');
+  assert.ok(date, '舊證據照樣畫得出時間');
+  assert.equal(
+    date.textContent,
+    scamRelDate(SCAM_NOW - 5 * SCAM_DAY),
+    '缺 postedAt 時退回 at——有個時間比整欄空著好'
+  );
+  assert.equal(scamAttrOf(date, 'href'), SCAM_URL_B1, '缺 anchorPostUrl 時退回 postUrl');
+});
+
+test('證據卡:作者列的時間格式照 Threads——四段相對時間，滿七天改絕對日期', async () => {
+  const MIN = 60000;
+  const cases = [
+    [SCAM_NOW - 30 * 1000, '剛剛', '未滿一分鐘'],
+    [SCAM_NOW - 38 * MIN, '38分鐘', '未滿一小時取分鐘，數字與單位間不留空白、不帶「前」'],
+    [SCAM_NOW - 3 * SCAM_HOUR, '3小時', '未滿一天取小時'],
+    [SCAM_NOW - 5 * SCAM_DAY, '5天', '未滿七天取天'],
+    [SCAM_NOW - 7 * SCAM_DAY, scamDateOnly(SCAM_NOW - 7 * SCAM_DAY), '滿七天改絕對日期(邊界含等於)'],
+    [SCAM_NOW - 400 * SCAM_DAY, scamDateOnly(SCAM_NOW - 400 * SCAM_DAY), '很久以前一樣是絕對日期——「400天」對使用者沒有意義'],
+  ];
+
+  for (const testCase of cases) {
+    const list = scamCardFixture();
+    list.entries[SCAM_ID_A].evidence = [
+      evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { postedAt: testCase[0] }),
+    ];
+    const ctx = makeScamCardCtx({ blocklist: list });
+    await initScamPage(ctx);
+
+    const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+    const date = firstByClass(rowA, 'scam-evidence-date');
+    assert.equal(date.textContent, testCase[1], testCase[2]);
+    assert.equal(
+      scamAttrOf(date, 'title').indexOf(scamDateOnly(testCase[0])),
+      0,
+      'title 一律以絕對日期開頭——相對時間看不出是哪一天'
+    );
+  }
+});
+
+test('證據卡:作者列尾端有標記 pill，文案與貼文上那顆相同(scamTagLabel)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const head = firstByClass(rowA, 'scam-evidence-head');
+  const tag = firstByClass(head, 'scam-post-tag');
+  assert.ok(tag, '作者列應有 span.scam-post-tag');
+  assert.equal(tag.tag, 'span');
+  assert.equal(tag.textContent, i18n.t('zh', 'scamTagLabel'), '文案與內容腳本掛在貼文上那顆相同');
+  assert.equal(tag.textContent, 'LINE 群組引導', 'zh 文案');
+  assert.equal(
+    scamAttrOf(tag, 'title'),
+    i18n.t('zh', 'scamTagTooltip'),
+    'title 同樣沿用貼文上那顆的說明'
+  );
+
+  // 排在時間之後（作者列的最尾端）。
+  const order = walkNodes(head, []);
+  assert.ok(
+    order.indexOf(firstByClass(head, 'scam-evidence-date')) < order.indexOf(tag),
+    'pill 接在時間之後'
+  );
+
+  // 對話框裡每一筆也有（同一組件）。
+  const list = openScamHits(ctx, rowA);
+  assert.equal(findByClass(list, 'scam-post-tag').length, 3, '對話框三筆各有一顆');
+});
+
+// ---- 證據列表:主卡只有最新一筆，全部證據在對話框裡 ----
+
+// 【斷言翻轉】原斷言為「第二筆以後收進 details.scam-evidence-more，summary
+// 為『顯示另外 N 筆』」。使用者看過預覽後改版:主卡只放最新一筆，不再掛摺
+// 疊區(一張卡上同時擺三段長片段仍然太重);全部證據改由可點的「命中 N 篇」
+// pill 開對話框呈現。
+test('證據卡:主卡恰一筆證據(最新那筆)，不畫 details 摺疊區', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const wrap = firstByClass(rowA, 'scam-evidence');
+  assert.ok(wrap, '證據區塊 .scam-evidence 應在');
+
+  assert.equal(
+    findByClass(rowA, 'scam-evidence-more').length,
+    0,
+    '不得再畫 details 摺疊區'
+  );
+  assert.equal(
+    walkNodes(rowA, []).filter((n) => n.tag === 'details' || n.tag === 'summary').length,
+    0,
+    '主卡上不得有任何 <details>／<summary>'
+  );
+
+  const texts = evidenceTexts(rowA);
+  assert.equal(texts.length, 1, '主卡恰一筆證據');
+  assert.equal(scamTextOf(texts[0]), EVC_SNIPPET_FULL, '露出來的是 at 最大那一筆(最新)的片段');
+  assert.equal(evidenceDateLinks(rowA).length, 1, '主卡只畫那一筆的日期連結');
+});
+
+// ---- 「命中 N 篇」pill 與證據對話框 ----
+
+test('證據卡:N ≥ 2 時「命中 N 篇」是可點的 button，點開對話框列出全部證據', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '前置:對話框預設關著');
+
+  const list = openScamHits(ctx, rowA);
+
+  assert.equal(
+    ctx.doc.ids.scamHitsTitle.textContent,
+    'Example Author @example_author · ' + i18n.fmt('zh', 'opScamHitCount', { n: 3 }),
+    '對話框標題為「顯示名 @handle · 命中 N 篇」'
+  );
+  assert.equal(evidenceTexts(list).length, 3, '對話框列出全部三筆證據');
+  assert.equal(evidenceDateLinks(list).length, 3, '每筆各一條日期連結');
+  assert.deepEqual(
+    evidenceDateLinks(list).map((a) => scamAttrOf(a, 'href')),
+    [EVC_ANCHOR_1, EVC_ANCHOR_2, EVC_ANCHOR_3],
+    '依 at 降冪，每筆各自指向自己的錨點篇'
+  );
+  assert.deepEqual(
+    evidenceDateLinks(list).map((a) => a.textContent),
+    [EVC_POSTED_1, EVC_POSTED_2, EVC_POSTED_3].map(scamDateOnly),
+    '連結文字是各篇自己的貼文發布日期'
+  );
+  assert.equal(
+    scamTextOf(evidenceTexts(list)[0]),
+    EVC_SNIPPET_FULL,
+    '片段完整呈現，對話框不另外截斷'
+  );
+  assert.ok(
+    firstByClass(evidenceTexts(list)[0], 'scam-anchor'),
+    '對話框裡照樣有錨點高亮'
+  );
+});
+
+test('證據卡:主卡那筆的節點結構與對話框第一筆完全一致(同一個建構函式，不是兩套渲染)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const cardItem = firstByClass(rowA, 'scam-evidence-item');
+  assert.ok(cardItem, '前置:主卡應有一筆 .scam-evidence-item');
+  const cardShape = walkNodes(cardItem, []).map((n) => n.tag + '.' + classListOf(n).join('.'));
+
+  const list = openScamHits(ctx, rowA);
+  const dialogItem = firstByClass(list, 'scam-evidence-item');
+  assert.ok(dialogItem, '對話框第一筆也是 .scam-evidence-item');
+  const dialogShape = walkNodes(dialogItem, []).map((n) => n.tag + '.' + classListOf(n).join('.'));
+
+  assert.deepEqual(
+    dialogShape,
+    cardShape,
+    '兩邊的標籤與 class 集合必須逐一相同——同一個 buildScamEvidenceItem 建的'
+  );
+});
+
+// 【斷言翻轉】原斷言為「只有一筆時『命中 1 篇』維持靜態 span」。使用者定案
+// 為整行不畫:那行字沒帶任何卡上看不到的資訊，卡片乾淨一點。
+test('證據卡:只有一筆證據時整行小字不畫，主卡照樣畫那一筆', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  assert.equal(findByClass(rowB, 'scam-hit-count').length, 0, '不得畫出「命中 1 篇」');
+  assert.equal(evidenceTexts(rowB).length, 1, '主卡照樣畫那一筆');
+});
+
+test('證據卡:證據對話框可由 ✕、遮罩與 Esc 關閉，焦點回到 pill', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const pill = firstByClass(rowA, 'scam-hit-count');
+
+  // ✕ 關閉
+  openScamHits(ctx, rowA);
+  ctx.doc.ids.scamHitsClose.fire('click');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '✕ 應關閉對話框');
+  assert.equal(ctx.doc.activeElement, pill, '關閉後焦點回到開啟它的 pill');
+
+  // 點遮罩關閉(點 modal 內部不關)
+  openScamHits(ctx, rowA);
+  ctx.doc.ids.scamHitsOverlay.fire('click', { target: ctx.doc.ids.scamHitsList });
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, '點內容區不得關閉');
+  ctx.doc.ids.scamHitsOverlay.fire('click', { target: ctx.doc.ids.scamHitsOverlay });
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '點遮罩本身才關閉');
+
+  // Esc 關閉
+  openScamHits(ctx, rowA);
+  ctx.doc.fire('keydown', { key: 'Escape' });
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, 'Esc 應關閉對話框');
+});
+
+test('證據卡:證據對話框納入中央 Tab focus trap——開著時 Tab 不會跳出對話框', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  // 真實 options.html 裡每個 overlay 都帶 hidden；DOM stub 的節點是按需建出
+  // 來的，hidden 預設 false，這裡補齊前置，topmostOverlayId 的優先序才測得
+  // 準（證據對話框排在 confirmOverlay 之後）。
+  ['timelineOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'].forEach((id) => {
+    ctx.doc.getElementById(id).hidden = true;
+  });
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  openScamHits(ctx, rowA);
+
+  // focus trap 靠 overlay.querySelectorAll 取可聚焦元素，stub 預設回空陣列
+  // （整段 no-op），餵兩顆進去才驗得到循環。
+  const overlay = ctx.doc.ids.scamHitsOverlay;
+  const first = ctx.doc.createElement('button');
+  const last = ctx.doc.createElement('a');
+  overlay.querySelectorAll = () => [first, last];
+  overlay.contains = (node) => node === overlay || node === first || node === last;
+
+  last.focus();
+  assert.equal(ctx.doc.activeElement, last, '前置：焦點停在對話框最後一個可聚焦元素');
+
+  let prevented = false;
+  ctx.doc.fire('keydown', {
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+
+  assert.equal(prevented, true, '走到最後一顆時 Tab 的預設行為要攔下來');
+  assert.equal(
+    ctx.doc.activeElement,
+    first,
+    '焦點循環回對話框第一個可聚焦元素——沒把 scamHitsOverlay 納入 topmostOverlayId 的話，焦點會跑到對話框背後的頁面上'
+  );
+});
+
+// ---- ⋯ 選單 ----
+
+test('證據卡:右上角是 ⋯ 選項鈕(#i-more)，選單只放「解除」;不再有 ⊖ 快捷鈕', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const menuBtn = firstByClass(rowA, 'scam-menu-btn');
+  assert.ok(menuBtn, '每一列右上角應有 button.scam-menu-btn');
+  assert.equal(menuBtn.tag, 'button');
+  assert.equal(scamAttrOf(menuBtn, 'aria-haspopup'), 'menu', 'aria-haspopup 應為 menu');
+  assert.equal(scamAttrOf(menuBtn, 'aria-expanded'), 'false', '預設收合');
+  assert.deepEqual(useHrefs(menuBtn), ['#i-more'], '圖示沿用紀錄卡的三點 #i-more');
+
+  const menu = firstByClass(rowA, 'scam-menu');
+  assert.ok(menu, '應有 .menu.scam-menu');
+  assert.equal(scamAttrOf(menu, 'role'), 'menu');
+  assert.equal(menu.hidden, true, '選單預設關著');
+  assert.ok(classListOf(menu).indexOf('menu') !== -1, '沿用既有 .menu 樣式');
+
+  menuBtn.fire('click');
+  assert.equal(menu.hidden, false, '點 ⋯ 應開選單');
+  assert.equal(scamAttrOf(menuBtn, 'aria-expanded'), 'true', '開啟時 aria-expanded 為 true');
+
+  const items = findByClass(menu, 'menu-item');
+  assert.equal(items.length, 1, '選單只放一項:解除');
+  assert.equal(items[0].dataset.act, 'remove');
+  assert.ok(classListOf(items[0]).indexOf('danger') !== -1, '解除是破壞性動作，走 danger 色');
+
+  // 舊的 ⊖ 快捷鈕已撤掉，解除只剩選單這一條路。
+  assert.equal(findByClass(rowA, 'scam-quick-btn').length, 0, '不得再畫 ⊖ 快捷鈕');
+});
+
+// 【斷言翻轉】原斷言為「證據區上方有 .scam-evidence-title 小標(opScamEvidence)」。
+// 卡片只剩一筆證據時，「證據」兩個字佔一整行卻不帶任何資訊，使用者看過預覽
+// 後決定拿掉。
+test('證據卡:證據區不再畫「證據」小標', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  [SCAM_ID_A, SCAM_ID_B].forEach((id) => {
+    const row = scamRowById(ctx.doc, id);
+    assert.equal(findByClass(row, 'scam-evidence-title').length, 0, '不得再畫證據小標');
+    assert.ok(
+      !joinedText(row).includes(i18n.t('zh', 'opScamEvidence')),
+      '「證據」小標文字不得出現在卡片上'
+    );
+  });
+});
+
+// ---- 每筆證據:作者列的日期連結 ----
+
+// 【斷言翻轉】這條測試隨版面收了三輪:原本釘「meta 列上有
+// a.scam-evidence-post，連結文字為 opScamEvidencePost(「證據貼文 ↗」)」，
+// 接著改成「meta 列上的日期即連結」，再改成「日期跟著帳號走到作者列、meta
+// 列只剩整串連結與訊號 chips」。這一輪**整條 meta 列都不畫**:
+//   - 「整串 ↗」拿掉——證據貼文連的就是錨點那一篇，回串頭是 Threads 自己的
+//     事，卡上多一條連結只是把兩個去處擺在一起讓人猶豫。
+//   - 訊號 chips 拿掉——那是判定的內部分類，使用者看片段本身就知道為什麼被
+//     標記。
+// threadUrl 與 signals 照存不動（由 tcl-core／background 那批測試釘），只是
+// 不畫。一筆證據因此就兩列:作者列與本文。
+test('證據卡:作者列的日期連結(href=anchorPostUrl)，一筆證據就作者列與本文兩列', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const list = openScamHits(ctx, rowA);
+  const items = findByClass(list, 'scam-evidence-item');
+  assert.equal(items.length, 3, '每筆證據各一則貼文樣式的區塊');
+
+  const first = items[0];
+  const postLink = firstByClass(firstByClass(first, 'scam-evidence-head'), 'scam-evidence-date');
+  assert.ok(postLink, '作者列應有 a.scam-evidence-date');
+  assert.equal(postLink.tag, 'a', '日期本身就是連結');
+  assert.equal(postLink.textContent, scamRelDate(EVC_POSTED_1), '連結文字是相對時間');
+  assert.equal(
+    scamAttrOf(postLink, 'title').indexOf(scamDateOnly(EVC_POSTED_1)),
+    0,
+    'title 以絕對日期開頭'
+  );
+  assert.equal(
+    scamAttrOf(postLink, 'href'),
+    EVC_ANCHOR_1,
+    '連到 anchorPostUrl——錨點篇才是使用者要看的那一篇'
+  );
+  assert.equal(scamAttrOf(postLink, 'target'), '_blank');
+  assert.equal(scamAttrOf(postLink, 'rel'), 'noopener noreferrer');
+  const ariaLabel = scamAttrOf(postLink, 'aria-label');
+  assert.ok(
+    ariaLabel.indexOf(i18n.t('zh', 'opScamEvidencePost')) !== -1,
+    '無障礙名稱走 opScamEvidencePost(連結文字只有一個時間，讀屏讀不出它連去哪)'
+  );
+  assert.ok(
+    ariaLabel.indexOf('tH0001') !== -1,
+    '無障礙名稱一併帶貼文代碼尾碼——同文異篇時三條連結的名稱不得長得一模一樣'
+  );
+
+  // 一筆證據就兩列:作者列與本文，本文下方不再有 meta 列。
+  assert.deepEqual(
+    first.children.map((n) => classListOf(n)[0]),
+    ['scam-evidence-head', 'scam-evidence-text'],
+    '證據區塊的直屬子節點恰為作者列與本文兩列'
+  );
+  assert.equal(findByClass(first, 'scam-evidence-meta').length, 0, '不再畫 meta 列');
+  assert.equal(
+    findByClass(list, 'scam-evidence-thread').length,
+    0,
+    '「整串 ↗」不再輸出——threadUrl 照存，只是不畫'
+  );
+  assert.equal(
+    findByClass(list, 'scam-signal').length,
+    0,
+    '訊號 chips 不再輸出——signals 照存，只是不畫'
+  );
+
+  // 前置：這批證據確實帶著 threadUrl 與 signals，才測得出「有資料但不畫」。
+  const stored = ctx.storage.localSnapshot().scamBlocklist.entries[SCAM_ID_A].evidence[0];
+  assert.equal(stored.threadUrl, EVC_THREAD_URL, 'storage 裡 threadUrl 照舊');
+  assert.deepEqual(Array.from(stored.signals), ['line', 'group'], 'storage 裡 signals 照舊');
+});
+
+// 【斷言翻轉】原斷言為「threadUrl 等於證據貼文時不畫整串連結」（言下之意是
+// 不同篇時要畫）。現在一律不畫，因此把 fixture 換成「threadUrl 與證據貼文是
+// 不同篇」——那才是原本會畫的情況，測得出來的才叫翻轉。
+test('證據卡:threadUrl 與證據貼文不同篇時也不畫「整串」連結', async () => {
+  const list = scamCardFixture();
+  list.entries[SCAM_ID_A].evidence = [evcEvidence(EVC_ANCHOR_1, EVC_AT_1)];
+  const ctx = makeScamCardCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.notEqual(EVC_THREAD_URL, EVC_ANCHOR_1, '前置:串頭與證據貼文必須是不同篇');
+  assert.equal(findByClass(rowA, 'scam-evidence-date').length, 1, '日期連結照畫');
+  assert.equal(
+    findByClass(rowA, 'scam-evidence-thread').length,
+    0,
+    '不同篇也不畫——回串頭是 Threads 自己的事'
+  );
+});
+
+test('證據卡:舊證據(只有 postUrl/snippet/at)退回以 postUrl 當證據貼文，照樣只有作者列與本文', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  const postLink = firstByClass(rowB, 'scam-evidence-date');
+  assert.ok(postLink, '舊證據照樣要有日期連結');
+  assert.equal(scamAttrOf(postLink, 'href'), SCAM_URL_B1, '缺 anchorPostUrl 時退回 postUrl');
+  assert.equal(findByClass(rowB, 'scam-evidence-thread').length, 0, '缺 threadUrl 就不畫整串');
+  assert.equal(findByClass(rowB, 'scam-signal').length, 0, '缺 signals 就不畫 chips');
+  assert.equal(
+    scamTextOf(firstByClass(rowB, 'scam-evidence-text')),
+    SCAM_SNIPPET_SHORT,
+    '舊證據的片段照樣完整畫出'
+  );
+});
+
+test('證據卡:貼文代碼尾 6 碼保留在日期連結的 title 裡(同文異篇仍分得出各篇)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const links = evidenceDateLinks(openScamHits(ctx, rowA));
+  assert.equal(links.length, 3, '前置:三筆證據各一條日期連結');
+
+  const tails = ['DxSyNtH0001', 'DxSyNtH0002', 'DxSyNtH0003'].map((code) => code.slice(-6));
+  links.forEach((link, i) => {
+    const blob = link.textContent + ' ' + scamAttrOf(link, 'title');
+    assert.ok(
+      blob.includes(tails[i]),
+      '第 ' + (i + 1) + ' 筆的代碼尾 6 碼(' + tails[i] + ')應留在連結文字或 title 裡'
+    );
+  });
+});
+
+// ---- bug 2:第二、三筆證據沒變連結 ----
+
+test('證據卡:三筆證據全部都是 <a>,href 各自指向自己的錨點篇(bug:第二、三筆沒變連結)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const links = evidenceDateLinks(openScamHits(ctx, rowA));
+  assert.equal(links.length, 3, '三筆證據都要有各自的日期連結');
+  links.forEach((link, i) => {
+    assert.equal(link.tag, 'a', '第 ' + (i + 1) + ' 筆證據必須渲染成 <a>');
+    assert.notEqual(scamAttrOf(link, 'href'), '', '第 ' + (i + 1) + ' 筆證據的 href 不得為空');
+  });
+  assert.deepEqual(
+    links.map((a) => scamAttrOf(a, 'href')),
+    [EVC_ANCHOR_1, EVC_ANCHOR_2, EVC_ANCHOR_3],
+    '三筆的 href 依序指向各自的錨點篇(第二筆即回報現場的 DxSyNtH0002)'
+  );
+});
+
+// ---- bug 1:片段被砍到 40 字 ----
+
+test('證據卡:片段完整不截斷——100 字的 snippet 全數出現在 p.scam-evidence-text，不補刪節號', async () => {
+  assert.equal(EVC_SNIPPET_FULL.length, 100, '前置:片段為 100 字(遠超舊版的 40 字截斷門檻)');
+
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const text = evidenceTexts(rowA)[0];
+  assert.ok(text, '應有片段節點 p.scam-evidence-text');
+  assert.equal(text.tag, 'p', '片段是 <p>');
+  assert.equal(
+    scamTextOf(text),
+    EVC_SNIPPET_FULL,
+    '完整片段逐字畫出(儲存端已保證 ≤120 字，顯示端不再截斷)'
+  );
+  assert.ok(!scamTextOf(text).includes('…'), '不得補刪節號');
+});
+
+// ---- 錨點高亮 ----
+
+test('證據卡:anchorMatch 在片段中出現時以 mark.scam-anchor 包住，三段文字合起來仍是完整片段', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const text = evidenceTexts(rowA)[0];
+  const mark = firstByClass(text, 'scam-anchor');
+  assert.ok(mark, '片段內應有 mark.scam-anchor');
+  assert.equal(mark.tag, 'mark', '高亮用語意標籤 <mark>');
+  assert.equal(mark.textContent, EVC_ANCHOR_TEXT, 'mark 包住的就是 anchorMatch 本體');
+  assert.equal(
+    scamTextOf(text),
+    EVC_SNIPPET_FULL,
+    '前段 + mark + 後段三段串起來必須等於原片段(indexOf 切三段，零 innerHTML)'
+  );
+  assert.ok(text.children.length >= 2, '片段被切成多個節點，不是整段塞成一串文字');
+});
+
+test('證據卡:沒有 anchorMatch 或片段裡找不到它時，片段以純文字呈現、不畫 mark', async () => {
+  const list = scamCardFixture();
+  list.entries[SCAM_ID_A].evidence = [
+    evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { anchorMatch: undefined }),
+    evcEvidence(EVC_ANCHOR_2, EVC_AT_2, { anchorMatch: '賴：nowhere99' }),
+  ];
+  const ctx = makeScamCardCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const dialog = openScamHits(ctx, rowA);
+  const texts = evidenceTexts(dialog);
+  assert.equal(texts.length, 2, '前置:兩筆證據的片段都要畫出來');
+  assert.equal(findByClass(dialog, 'scam-anchor').length, 0, '缺 anchorMatch／對不上時一律不畫 mark');
+  texts.forEach((node) => {
+    assert.equal(scamTextOf(node), EVC_SNIPPET_FULL, '片段照樣完整呈現');
+  });
+});
+
+test('證據卡:片段含 <b> 時逐字呈現(createElement/textContent，不得走 innerHTML)', async () => {
+  const RAW = '招攬句 <b>加 LINE：ab12cd</b> 拉你進群組';
+  const list = scamCardFixture();
+  list.entries[SCAM_ID_A].evidence = [evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { snippet: RAW })];
+  const ctx = makeScamCardCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.equal(
+    scamTextOf(evidenceTexts(rowA)[0]),
+    RAW,
+    '角括號必須逐字出現在文字節點裡——走 innerHTML 的話 <b> 會被解析掉'
+  );
+});
+
+// ---- 同文異篇:逐筆呈現，不合併 ----
+
+// 【斷言翻轉】原斷言為「片段逐字相同的多筆併成一組，片段只畫一次並標示
+// 『出現在 N 篇』」。證據改由對話框逐筆列出(主卡那筆與對話框每一筆走同一
+// 個 buildScamEvidenceItem，不另寫第二套渲染)，合併邏輯連帶撤掉:一位作者
+// 最多三筆證據，在可捲動的對話框裡各自成列不會擁擠，而合併會讓「每筆一個
+// 節點」這條共用結構破例。opScamSameText 依 PM 指示留在字典但不再有人用。
+test('證據卡:片段逐字相同的多筆證據在對話框裡各自成列，不合併', async () => {
+  const SAME = '加 LINE：ab12cd，我把你拉進群組一起聊，群裡不報明牌也不收費。';
+  const list = scamCardFixture();
+  list.entries[SCAM_ID_A].evidence = [
+    evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { snippet: SAME, postedAt: EVC_POSTED_1 }),
+    evcEvidence(EVC_ANCHOR_2, EVC_AT_2, { snippet: SAME, postedAt: EVC_POSTED_2 }),
+    evcEvidence(EVC_ANCHOR_3, EVC_AT_3, {
+      snippet: '這一篇的文案不一樣：想進群的私訊我。',
+      postedAt: EVC_POSTED_3,
+    }),
+  ];
+  const ctx = makeScamCardCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const dialog = openScamHits(ctx, rowA);
+  const texts = evidenceTexts(dialog);
+  assert.equal(texts.length, 3, '三筆證據各自成列，同文的兩筆不得被併成一段');
+  assert.equal(scamTextOf(texts[0]), SAME);
+  assert.equal(scamTextOf(texts[1]), SAME, '同文那兩筆各畫各的片段');
+
+  const links = evidenceDateLinks(dialog);
+  assert.equal(links.length, 3, '三篇各自的連結都要留著');
+  assert.deepEqual(
+    links.map((a) => scamAttrOf(a, 'href')),
+    [EVC_ANCHOR_1, EVC_ANCHOR_2, EVC_ANCHOR_3],
+    '每筆各自指向自己的錨點篇'
+  );
+  assert.deepEqual(
+    links.map((a) => a.textContent),
+    [EVC_POSTED_1, EVC_POSTED_2, EVC_POSTED_3].map(scamDateOnly),
+    '同文異篇靠各自的貼文日期與連結分辨，不必再標示「出現在 N 篇」'
+  );
+});
+
+// ---- en 文案 ----
+
+// 【斷言翻轉】這條也收了三輪:原本包含副標的「Last hit …」與摺疊區 summary
+// 的「Show 2 more」，接著改成標題列的 Posted／Added，再改成作者列的相對時
+// 間、標記 pill 與訊號 chip。這一輪訊號 chips 整個不畫，那一段跟著刪掉。
+test('證據卡:langPref 為 en 時，命中數／相對時間／標記 pill／對話框標題全走英文', async () => {
+  const ctx = makeScamCardCtx({ lang: 'en' });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.equal(firstByClass(rowA, 'scam-hit-count').textContent, '3 hits', 'opScamHitCount 的 en');
+  assert.equal(
+    firstByClass(rowA, 'scam-post-tag').textContent,
+    i18n.t('en', 'scamTagLabel'),
+    '標記 pill 的 en'
+  );
+  // EVC_POSTED_1 是九天前，滿七天走絕對日期，兩種語言相同;相對時間那四段
+  // 的 en 由下一條斷言釘。
+  assert.equal(
+    firstByClass(rowA, 'scam-evidence-date').textContent,
+    scamDateOnly(EVC_POSTED_1),
+    '滿七天一律絕對日期'
+  );
+
+  const recent = scamCardFixture();
+  recent.entries[SCAM_ID_A].evidence = [
+    evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { postedAt: SCAM_NOW - 3 * SCAM_HOUR }),
+  ];
+  const ctxRecent = makeScamCardCtx({ lang: 'en', blocklist: recent });
+  await initScamPage(ctxRecent);
+  assert.equal(
+    firstByClass(scamRowById(ctxRecent.doc, SCAM_ID_A), 'scam-evidence-date').textContent,
+    '3h',
+    'opRelHours 的 en（數字與單位之間不留空白）'
+  );
+
+  const dialog = openScamHits(ctx, rowA);
+  assert.equal(
+    ctx.doc.ids.scamHitsTitle.textContent,
+    'Example Author @example_author · 3 hits',
+    '對話框標題的 en'
+  );
+  assert.equal(findByClass(dialog, 'scam-signal').length, 0, '訊號 chips 不再輸出');
+});
+
+// ---- 卡頭資訊鈕與「這個功能怎麼運作」說明視窗 ----
+//
+// 這是一份對真人帳號的負面標記，使用者有權知道它憑什麼下判斷、資料落在哪、
+// 以及它會誤判。五段條列因此逐段釘住文案，不只釘「有開出來」。
+
+// 每段條列的完整文字（粗體開頭句 ＋ 說明），把字典裡的 '|' 分隔符還原成實
+// 際畫面上的一個空白。
+function scamInfoText(locale, key) {
+  const raw = i18n.t(locale, key);
+  const at = raw.indexOf('|');
+  return at === -1 ? raw : raw.slice(0, at) + ' ' + raw.slice(at + 1);
+}
+
+test('警示名單卡:卡頭標題右邊有資訊鈕(#i-info)，點下去開說明視窗', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  // 按鈕與它的圖示是 options.html 裡的靜態節點（DOM stub 不解析 HTML，因此
+  // 圖示、aria 屬性與 overlay 的 hidden 由下面的 options.html 測試釘），這
+  // 裡只驗接線。stub 的節點是按需建出、hidden 預設 false，先補齊前置。
+  const btn = ctx.doc.ids.scamInfoBtn;
+  assert.ok(btn, '卡頭應有 #scamInfoBtn');
+  ctx.doc.ids.scamInfoOverlay.hidden = true;
+
+  btn.fire('click');
+  assert.equal(ctx.doc.ids.scamInfoOverlay.hidden, false, '點資訊鈕應開啟說明視窗');
+  assert.equal(
+    ctx.doc.ids.scamInfoTitle.textContent,
+    i18n.t('zh', 'opScamInfoTitle'),
+    '標題走 opScamInfoTitle'
+  );
+  assert.equal(ctx.doc.ids.scamInfoTitle.textContent, '這個功能怎麼運作', 'zh 文案');
+});
+
+test('警示名單卡:說明視窗是五段 ol > li，逐段文案與字典相符(zh)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+  ctx.doc.ids.scamInfoBtn.fire('click');
+
+  const list = ctx.doc.ids.scamInfoList;
+  assert.equal(list.children.length, 5, '五段');
+  list.children.forEach((li, i) => {
+    assert.equal(li.tag, 'li', '每段是 <li>');
+    assert.equal(
+      scamTextOf(li),
+      scamInfoText('zh', 'opScamInfo' + (i + 1)),
+      '第 ' + (i + 1) + ' 段的 zh 文案'
+    );
+    const lead = firstByClass(li, 'scam-info-lead');
+    assert.ok(lead, '第 ' + (i + 1) + ' 段應有粗體開頭句 .scam-info-lead');
+    assert.ok(lead.textContent.endsWith('。'), '開頭句自己就是一句完整的話');
+  });
+
+  // 逐段的開頭句照定稿釘住:這五句就是這個功能對使用者的承諾。
+  assert.deepEqual(
+    list.children.map((li) => firstByClass(li, 'scam-info-lead').textContent),
+    [
+      '只在你點進貼文時掃描。',
+      '命中就掛標記並記下作者。',
+      '河道只查表不掃文。',
+      '資料只在這台裝置。',
+      '判定是規則比對，可能誤判。',
+    ],
+    '五段開頭句'
+  );
+  // 全程 createElement/textContent:條列裡除了 li、粗體 span 與文字節點之
+  // 外不該有別的東西（走 innerHTML 的話文案裡的字元可能被當成標記解析）。
+  const inside = walkNodes(list, []).slice(1);
+  assert.deepEqual(
+    Array.from(new Set(inside.map((n) => n.tag))).sort(),
+    ['#text', 'li', 'span'],
+    '條列內只有 li、粗體 span 與文字節點'
+  );
+});
+
+test('警示名單卡:說明視窗的五段文案在 en 也備齊', async () => {
+  const ctx = makeScamCardCtx({ lang: 'en' });
+  await initScamPage(ctx);
+  ctx.doc.ids.scamInfoBtn.fire('click');
+
+  assert.equal(ctx.doc.ids.scamInfoTitle.textContent, 'How this works', 'opScamInfoTitle 的 en');
+  const list = ctx.doc.ids.scamInfoList;
+  assert.equal(list.children.length, 5, '五段');
+  list.children.forEach((li, i) => {
+    const key = 'opScamInfo' + (i + 1);
+    assert.notEqual(i18n.t('en', key), key, key + ' 的 en 文案尚未進字典');
+    assert.equal(scamTextOf(li), scamInfoText('en', key), '第 ' + (i + 1) + ' 段的 en 文案');
+  });
+});
+
+test('警示名單卡:說明視窗可由 ✕、遮罩與 Esc 關閉，焦點回到資訊鈕', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+  const btn = ctx.doc.ids.scamInfoBtn;
+  const overlay = ctx.doc.ids.scamInfoOverlay;
+
+  ctx.doc.ids.scamInfoOverlay.hidden = true;
+  btn.fire('click');
+  ctx.doc.ids.scamInfoClose.fire('click');
+  assert.equal(overlay.hidden, true, '✕ 應關閉');
+  assert.equal(ctx.doc.activeElement, btn, '關閉後焦點回到資訊鈕');
+
+  btn.fire('click');
+  overlay.fire('click', { target: ctx.doc.ids.scamInfoList });
+  assert.equal(overlay.hidden, false, '點內容區不得關閉');
+  overlay.fire('click', { target: overlay });
+  assert.equal(overlay.hidden, true, '點遮罩本身才關閉');
+
+  btn.fire('click');
+  ctx.doc.fire('keydown', { key: 'Escape' });
+  assert.equal(overlay.hidden, true, 'Esc 應關閉');
+});
+
+test('警示名單卡:說明視窗納入中央 Tab focus trap', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  // 真實 options.html 裡每個 overlay 都帶 hidden；DOM stub 的節點按需建出、
+  // hidden 預設 false，補齊前置才測得準 topmostOverlayId 的優先序。
+  ['timelineOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'].forEach((id) => {
+    ctx.doc.getElementById(id).hidden = true;
+  });
+  ctx.doc.ids.scamInfoBtn.fire('click');
+
+  const overlay = ctx.doc.ids.scamInfoOverlay;
+  const first = ctx.doc.createElement('button');
+  const last = ctx.doc.createElement('a');
+  overlay.querySelectorAll = () => [first, last];
+  overlay.contains = (node) => node === overlay || node === first || node === last;
+
+  last.focus();
+  let prevented = false;
+  ctx.doc.fire('keydown', {
+    key: 'Tab',
+    shiftKey: false,
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, true, 'Tab 走到最後一顆時要攔下預設行為');
+  assert.equal(
+    ctx.doc.activeElement,
+    first,
+    '焦點循環回說明視窗內——沒納入 topmostOverlayId 的話會跑到視窗背後的頁面上'
+  );
+});
+
+// ---- 版面樣式 ----
+
+// 【斷言翻轉】清單隨版面收斂了兩輪:先移除 .scam-avatar／
+// .scam-evidence-more，這一輪再移除 .scam-posted／.scam-added(兩段都不畫
+// 了)，換成作者列 .scam-evidence-head、日期連結 .scam-evidence-date、標記
+// pill .scam-post-tag;.scam-foot 那一輪又被收掉，命中數回到 .scam-actions;
+// 這一輪整條 meta 列不畫，.scam-signal 與 .scam-evidence-thread 一併從清單
+// 移除。
+test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結、標記 pill、命中數、⋯ 鈕、錨點高亮、片段、對話框)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  [
+    '.scam-name-link',
+    '.scam-evidence-head',
+    '.scam-evidence-date',
+    '.scam-post-tag',
+    '.scam-hit-count',
+    '.scam-menu-btn',
+    '.scam-anchor',
+    '.scam-evidence-text',
+    '.scam-hits-list',
+  ].forEach(
+    (selector) => {
+      assert.ok(
+        html.includes(selector),
+        'options.html 應有 ' + selector + ' 的樣式規則(mark 不設樣式會吃到瀏覽器預設的螢光黃)'
+      );
+    }
+  );
+  assert.ok(
+    /\.scam-hits-list\s*\{[^}]*overflow\s*:\s*auto/.test(html),
+    '對話框的證據列容器必須可捲動——三筆完整片段疊起來輕易超過一個螢幕'
+  );
+  assert.ok(
+    /\.scam-hits-list\s*\{[^}]*max-height/.test(html),
+    '捲動容器要有 max-height，否則 overflow 不會生效'
+  );
+  assert.ok(
+    /id="scamHitsOverlay"/.test(html) && /id="scamHitsList"/.test(html),
+    'options.html 應備妥證據對話框的落點'
+  );
+});
+
+test('警示名單卡:options.html 備妥資訊鈕與說明視窗(靜態節點與 #i-info symbol)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+  assert.ok(/<symbol id="i-info"/.test(html), '頁面 SVG symbol 集合應有 #i-info（Lucide info）');
+
+  const btn = /<button[^>]*id="scamInfoBtn"[^>]*>[\s\S]*?<\/button>/.exec(html);
+  assert.ok(btn, '卡頭應有 button#scamInfoBtn');
+  assert.ok(/class="[^"]*\bscam-info-btn\b/.test(btn[0]), '資訊鈕的 class 為 scam-info-btn');
+  assert.ok(/type="button"/.test(btn[0]), '明寫 type=button，免得在表單內變成送出鈕');
+  assert.ok(/aria-haspopup="dialog"/.test(btn[0]), 'aria-haspopup 應為 dialog');
+  assert.ok(
+    /data-i18n-aria="opScamInfoTitle"/.test(btn[0]),
+    '無障礙名稱走 opScamInfoTitle（鈕內只有圖示，沒有文字）'
+  );
+  assert.ok(/href="#i-info"/.test(btn[0]), '圖示為 #i-info');
+  // 卡頭的順序:標題 → 資訊鈕 → 計數。
+  const head = /<div class="card-head">[\s\S]*?<\/div>/.exec(
+    html.slice(html.indexOf('class="card scam-blocklist"'))
+  );
+  assert.ok(head, '前置:應找得到警示名單卡的卡頭');
+  assert.ok(
+    head[0].indexOf('opScamListTitle') < head[0].indexOf('scamInfoBtn') &&
+      head[0].indexOf('scamInfoBtn') < head[0].indexOf('scamCount'),
+    '資訊鈕排在標題之後、計數之前'
+  );
+
+  const overlay = /<div class="overlay" id="scamInfoOverlay"[^>]*>/.exec(html);
+  assert.ok(overlay, 'options.html 應有 #scamInfoOverlay');
+  assert.ok(/\bhidden\b/.test(overlay[0]), '說明視窗預設收起——沒有 hidden 會在載入時就蓋住整頁');
+  assert.ok(
+    /id="scamInfoOverlay"[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"[\s\S]*?aria-labelledby="scamInfoTitle"/.test(
+      html
+    ),
+    '沿用既有 modal 的 dialog 語意'
+  );
+  assert.ok(/id="scamInfoClose"/.test(html), '應有 ✕ 關閉鈕');
+  assert.ok(/<ol class="scam-info-list" id="scamInfoList">/.test(html), '五段條列的落點是 <ol>');
+  assert.ok(html.includes('.scam-info-btn'), 'options.html 應有 .scam-info-btn 的樣式規則');
+  assert.ok(html.includes('.scam-info-lead'), 'options.html 應有 .scam-info-lead 的樣式規則');
+  assert.ok(
+    /\.scam-info-list\s*\{[^}]*overflow\s*:\s*auto/.test(html) &&
+      /\.scam-info-list\s*\{[^}]*max-height/.test(html),
+    '五段說明疊起來可能超過一個螢幕，容器要能捲'
+  );
+});
