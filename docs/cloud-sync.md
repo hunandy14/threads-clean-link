@@ -169,7 +169,7 @@ chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production b
 
 新模組檔名 `sync.js`（SW 內 `importScripts`，與 `tcl-core.js` 同風格 IIFE，掛 `TCLSync`）。此模組是同步引擎與 UI 之間唯一的協議邊界，打包白名單（`tools/build-release.ps1` 的檔案陣列）需加入此檔。
 
-### 5.1 runtime message（options／popup → background）
+### 5.1 runtime message（options → background）
 
 | type | 用途 |
 |---|---|
@@ -212,7 +212,9 @@ state 不新增裝置相關欄位：裝置台數與清單一律由 `sync.devices
 
 ### 5.3 廣播
 
-background 在 state 變化時廣播 `{type:"sync.stateChanged", state}`，options／popup 監聽此訊息即時更新 UI，不需輪詢 `sync.getState`。
+background 在 state 變化時廣播 `{type:"sync.stateChanged", state}`，options 頁監聽此訊息即時更新 UI，不需輪詢 `sync.getState`。
+
+popup 不顯示同步狀態（健康或錯誤狀態都不顯示），狀態只在設定頁帳號區；popup 因此不監聽此廣播，也不呼叫 `sync.getState`。
 
 ## 6. 已知限制（插件側）
 
