@@ -33,11 +33,11 @@
       opSub: '脆連結清潔工 · 設定與紀錄',
       opThemeTitle: '切換主題',
       opLangTitle: '語言 / Language',
-      // 頁首下方的分頁列:總覽(統計磚＋圖表＋設定)／貼文(紀錄卡)／黑名單
-      // (黑名單卡)。
+      // 頁首下方的分頁列:總覽(統計磚＋圖表＋設定)／貼文(紀錄卡)／警示名單
+      // (警示名單卡)。
       opTabOverview: '總覽',
       opTabPosts: '貼文',
-      opTabFlags: '黑名單',
+      opTabFlags: '警示名單',
       // 統計磚區塊的 aria-label(走 i18n，見 applyI18nDom 的 data-i18n-aria
       // 通道)。
       opStatsAria: '統計摘要',
@@ -144,7 +144,7 @@
       opRelYesterday: '昨天',
       opRelDays: '{n} 天前',
       // 極短版相對時間，格式照 Threads 自己的貼文時間:數字與單位之間不留空
-      // 白、不帶「前」字。黑名單卡的作者列用這一組(時間緊貼帳號，完整語
+      // 白、不帶「前」字。警示名單卡的作者列用這一組(時間緊貼帳號，完整語
       // 氣的「N 分鐘前」會把那一行撐長)。刻意與上面那組分開:上面那組是紀錄
       // 卡在用的，共用一份會讓改其中一邊悄悄動到另一邊。
       opRelNow: '剛剛',
@@ -247,25 +247,25 @@
       // (post-icon.js 的失敗 toast 使用)。
       favContextLost: '擴充功能已更新，請重新整理頁面',
 
-      // ---- scam-guard:LINE 群組引導黑名單 ----
+      // ---- scam-guard:LINE 群組引導警示 ----
       // 詳情頁與河道共用的 .tcl-scam-tag:標籤文字與原生 tooltip(title)。
       scamTagLabel: 'LINE 群組引導',
       scamTagTooltip:
         '這串貼文含引導加入 LINE 或群組的字句，常見於投資招攬。請自行判斷，勿輕易加好友或提供個資。',
-      // 某作者首次被判定命中、自動加入本機黑名單時的提示。
-      scamFirstHitToast: '已把這個帳號加入本機黑名單，可在設定頁管理。',
-      // 作者已在黑名單中(非本次命中)時，標籤顯示的理由。
-      scamBlockedByList: '這個帳號曾發過引導加入 LINE 的串文，已在你的本機黑名單中。',
+      // 某作者首次被判定命中、自動加入本機警示名單時的提示。
+      scamFirstHitToast: '已把這個帳號加入本機警示名單，可在設定頁管理。',
+      // 作者已在警示名單中(非本次命中)時，標籤顯示的理由。
+      scamBlockedByList: '這個帳號曾發過引導加入 LINE 的串文，已在你的本機警示名單中。',
       // 選項頁設定卡的總開關 #scamGuardEnabled。功能名沿用貼文上那顆 pill
-      // 的說法(scamTagLabel「LINE 群組引導」)，清單本身則一律叫黑名單。
-      opScamGuardName: 'LINE 群組引導黑名單',
+      // 的說法(scamTagLabel「LINE 群組引導」)，清單本身則一律叫警示名單。
+      opScamGuardName: 'LINE 群組引導警示',
       opScamGuardDesc:
-        '偵測引導加入 LINE 群組的串文，並把作者加入本機黑名單；名單只存在這台裝置，不上雲。',
-      // 設定卡內指向黑名單分頁的同頁錨點(a#scamManageLink[href="#flags"])。
-      opScamManageLink: '管理黑名單 →',
+        '偵測引導加入 LINE 群組的串文並把作者加入本機警示名單；名單只存在這台裝置，不上雲。',
+      // 設定卡內指向警示名單分頁的同頁錨點(a#scamManageLink[href="#flags"])。
+      opScamManageLink: '管理警示名單 →',
 
-      // ---- 選項頁:黑名單卡(黑名單分頁) ----
-      opScamListTitle: '黑名單',
+      // ---- 選項頁:警示名單卡(警示名單分頁) ----
+      opScamListTitle: '警示名單',
       opScamListCount: '{n} 位作者',
       // 標題列右側的小字:這位作者是什麼時候被標記的(條目的 addedAt)。
       // 「加入」聽起來像使用者主動加的，實際上是偵測命中後自動標記。
@@ -302,12 +302,12 @@
       opScamSignalJoin: '加入',
       opScamSignalPitch: '話術',
       opScamRemove: '解除',
-      opScamRemoveTitle: '解除「{name}」的黑名單？',
+      opScamRemoveTitle: '解除「{name}」的警示？',
       // 講清楚解除是永久的:該作者進 allowlist，日後再命中也不會自動加回。
-      opScamRemoveDesc: '解除後不會再自動加入黑名單；貼文上的標記會消失。',
+      opScamRemoveDesc: '解除後不會再自動加入警示名單；貼文上的標記會消失。',
       opScamRemoveFailed: '解除失敗，請稍後再試',
-      opScamEmpty: '黑名單目前沒有作者',
-      // 「已解除」小節:列出 allowlist，可一鍵復原回黑名單。
+      opScamEmpty: '警示名單目前沒有作者',
+      // 「已解除」小節:列出 allowlist，可一鍵復原回警示名單。
       opScamAllowlistTitle: '已解除',
       opScamRestore: '復原',
       opScamRestoreFailed: '復原失敗，請稍後再試',
@@ -332,7 +332,7 @@
       opLangTitle: 'Language / 語言',
       opTabOverview: 'Overview',
       opTabPosts: 'Posts',
-      opTabFlags: 'Blocklist',
+      opTabFlags: 'Warning list',
       opStatsAria: 'Statistics',
       opTileTotal: 'Total records',
       opSince: 'Since {d}',
@@ -491,15 +491,15 @@
       scamTagLabel: 'LINE group funnel',
       scamTagTooltip:
         'This thread nudges readers to add a LINE contact or join a group, a pattern common in investment pitches. Use your own judgment and avoid sharing personal details.',
-      scamFirstHitToast: 'Added this account to your local blocklist. Manage it in Settings.',
+      scamFirstHitToast: 'Added this account to your local warning list. Manage it in Settings.',
       scamBlockedByList:
-        'This account has posted threads that funnel readers to LINE. It is on your local blocklist.',
-      opScamGuardName: 'LINE group funnel blocklist',
+        'This account has posted threads that funnel readers to LINE. It is on your local warning list.',
+      opScamGuardName: 'LINE group funnel warnings',
       opScamGuardDesc:
-        'Detects threads that funnel readers into LINE groups and adds the author to your local blocklist. The list stays on this device only.',
-      opScamManageLink: 'Manage blocklist →',
+        'Detects threads that funnel readers into LINE groups and adds the author to your local warning list. The list stays on this device only.',
+      opScamManageLink: 'Manage warning list →',
 
-      opScamListTitle: 'Blocklist',
+      opScamListTitle: 'Warning list',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
       opScamListCount: '{n} author(s)',
       opScamAddedAt: 'Flagged {date}',
@@ -518,11 +518,11 @@
       opScamSignalJoin: 'Join',
       opScamSignalPitch: 'Pitch',
       opScamRemove: 'Remove',
-      opScamRemoveTitle: 'Remove “{name}” from the blocklist?',
+      opScamRemoveTitle: 'Remove “{name}” from the warning list?',
       opScamRemoveDesc:
-        'They will not be added to the blocklist again automatically; the badge on their posts disappears.',
+        'They will not be added to the warning list again automatically; the badge on their posts disappears.',
       opScamRemoveFailed: 'Remove failed. Please try again later.',
-      opScamEmpty: 'Blocklist is empty',
+      opScamEmpty: 'Warning list is empty',
       opScamAllowlistTitle: 'Removed',
       opScamRestore: 'Undo',
       opScamRestoreFailed: 'Undo failed. Please try again later.',
