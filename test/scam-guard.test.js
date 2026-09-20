@@ -246,6 +246,24 @@ function el(tag, attributes, children) {
       }
       return newNode;
     },
+    // 四種位置與真實 DOM 同義：beforebegin／afterend 動的是父層（沒有父
+    // 層時回傳 null、不丟例外），afterbegin／beforeend 動的是自己的子節
+    // 點。回傳插入的節點。
+    insertAdjacentElement(position, element) {
+      const parent = node.parentElement;
+      switch (String(position).toLowerCase()) {
+        case 'beforebegin':
+          return parent ? parent.insertBefore(element, node) : null;
+        case 'afterend':
+          return parent ? parent.insertBefore(element, node.nextSibling) : null;
+        case 'afterbegin':
+          return node.insertBefore(element, node.childNodes[0] || null);
+        case 'beforeend':
+          return node.appendChild(element);
+        default:
+          throw new Error(`假 DOM 不支援的 insertAdjacentElement 位置：${position}`);
+      }
+    },
     removeChild(child) {
       const index = node.childNodes.indexOf(child);
       if (index !== -1) node.childNodes.splice(index, 1);
@@ -347,6 +365,19 @@ function el(tag, attributes, children) {
       return parent.childNodes[parent.childNodes.indexOf(node) + 1] || null;
     },
   });
+  // nextElementSibling：跳過文字節點，只看元素兄弟；沒有下一個元素時為
+  // null，與真實 DOM 一致。
+  Object.defineProperty(node, 'nextElementSibling', {
+    get() {
+      const parent = node.parentElement;
+      if (!parent) return null;
+      const siblings = parent.childNodes;
+      for (let i = siblings.indexOf(node) + 1; i < siblings.length; i += 1) {
+        if (siblings[i].nodeType === 1) return siblings[i];
+      }
+      return null;
+    },
+  });
 
   (children || []).forEach((child) => node.appendChild(child));
   return node;
@@ -396,32 +427,57 @@ function createPlayerRow() {
   );
 }
 
-// 一個貼文容器：作者連結（不帶 /post/）、permalink 連結（時間戳記）、
-// 本文 span，可選的原生互動列，外加可選的巢狀子節點（引用貼文）。
+// 一個貼文容器：作者列（作者連結＋permalink 時間連結同一列）、本文
+// span，可選的原生互動列，外加可選的巢狀子節點（引用貼文）。
+//
+// 作者列在實機是一個 flex row，把作者名 `a[href="/@handle"]` 與時間
+// `a[href="/@handle/post/CODE"] > time` 排在同一行；警示 tag 的落點就在時
+// 間連結右邊，因此假件也把這兩個連結包進同一個 div（標
+// `data-tcl-fake-author-row` 供測試取用，實作不看這顆屬性）。
 //
 // options.body 可為字串（單一 span）或字串陣列（多個各自獨立的葉
-// [dir="auto"] span，對應實機把一篇貼文拆成多段的版面）。傳字串時的結構
-// 與擴充前逐字相同。
+// [dir="auto"] span，對應實機把一篇貼文拆成多段的版面）。
 // options.actionRowCounts：互動列各按鈕的計數字串。
 // options.dirAutoTimestamp：時間戳記改用 [dir="auto"] span（實測版面），
-//   而非 <time> 元素。
+//   而非 <time> 元素——容器內因此一顆 <time> 都沒有。
+// options.foreignTimeLink：{ handle, code } 另外補一塊「別篇貼文的時間連
+//   結」（轉發標頭那種），排在作者列之後，讓本卡 permalink 仍是文件序第
+//   一個 /post/ 連結（readContainerPermalink 的判準不受影響），單獨考驗
+//   「<time> 的連結必須與本卡 permalink 同 code」。
 function createPostContainer(options) {
   const lines = Array.isArray(options.body) ? options.body : [options.body];
   const children = [
-    el('a', { href: `/@${options.handle}` }, [
-      el('span', { dir: 'auto' }, [text(options.handle)]),
+    el('div', { 'data-tcl-fake-author-row': 'true' }, [
+      el('a', { href: `/@${options.handle}` }, [
+        el('span', { dir: 'auto' }, [text(options.handle)]),
+      ]),
+      el('a', { href: `/@${options.handle}/post/${options.code}` }, [
+        options.dirAutoTimestamp
+          ? el('span', { dir: 'auto' }, [text(options.timestamp || '2 小時')])
+          : el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
+      ]),
     ]),
-    el('a', { href: `/@${options.handle}/post/${options.code}` }, [
-      options.dirAutoTimestamp
-        ? el('span', { dir: 'auto' }, [text(options.timestamp || '2 小時')])
-        : el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
-    ]),
+  ];
+  if (options.foreignTimeLink) {
+    children.push(
+      el('div', { 'data-tcl-fake-repost-header': 'true' }, [
+        el(
+          'a',
+          {
+            href: `/@${options.foreignTimeLink.handle}/post/${options.foreignTimeLink.code}`,
+          },
+          [el('time', { datetime: '2026-09-18T10:00:00Z' }, [text('1 天')])]
+        ),
+      ])
+    );
+  }
+  children.push(
     el(
       'div',
       {},
       lines.map((line) => el('span', { dir: 'auto' }, [text(line)]))
-    ),
-  ];
+    )
+  );
   if (options.actionRow) children.push(createActionRow({ counts: options.actionRowCounts }));
   (options.extraChildren || []).forEach((child) => children.push(child));
   return el('div', { 'data-pressable-container': 'true' }, children);
@@ -2183,16 +2239,22 @@ function buildBlocklist(options) {
 // code 當冪等鍵時互相覆蓋。
 let feedCardSeq = 0;
 
-function createFeedCard(handle, body) {
+// overrides：覆寫容器設定（例如把時間戳記換回 <time> 元素）。
+function createFeedCard(handle, body, overrides) {
   feedCardSeq += 1;
-  return createPostContainer({
-    handle,
-    code: 'DfEeD' + String(feedCardSeq).padStart(6, '0'),
-    body: body || '河道上的一則貼文，內容與投資話術無關。',
-    actionRow: true,
-    actionRowCounts: F1_COUNTS,
-    dirAutoTimestamp: true,
-  });
+  return createPostContainer(
+    Object.assign(
+      {
+        handle,
+        code: 'DfEeD' + String(feedCardSeq).padStart(6, '0'),
+        body: body || '河道上的一則貼文，內容與投資話術無關。',
+        actionRow: true,
+        actionRowCounts: F1_COUNTS,
+        dirAutoTimestamp: true,
+      },
+      overrides || {}
+    )
+  );
 }
 
 function createFeedRoot(handles) {
@@ -3445,5 +3507,217 @@ test('過期回呼：回應落地前整輪已經重掃，舊回呼不得補掛�
     env.tags()[0].closest(CONTAINER_SELECTOR),
     detailRoot.children[0],
     'tag 要落在主文卡上'
+  );
+});
+
+// ============================================================
+// 【第五波：警示 tag 改掛作者列】（車道 feat/scam-tag-authorrow）
+//
+// 使用者裁決：tag 從貼文卡的「互動列上方」移到「作者列時間右邊」——詳情頁
+// 掃描那顆與河道查表那顆同一個落點。找不到可用的時間連結才退回互動列上
+// 方。
+//
+// 【與實作的契約】
+//   1. insertTag 先取 container.querySelector('time') → closest('a')，且這
+//      個 <a> 的 closest(CONTAINER_SELECTOR) 必須是本容器、href 的 code 與
+//      本卡 permalink 相同；成立就把 tag 插在這個 <a> 之後，與作者名、時
+//      間同一列。tag 改用 <span>（inline），class、role="note"、title 與
+//      textContent 都不變。
+//   2. 取不到 <time>，或它的連結不屬於本卡（引用卡、轉發標頭那種指向別篇
+//      的時間）→ 退回既有邏輯：互動列上方的 <div>；互動列也找不到才掛容
+//      器末端。
+//   3. 河道查表（scamBlockedByList）與詳情頁掃描共用這一套落點。
+//   4. 冪等不變，補回路徑（掃描的冪等短路、查表的 taggedContainers）補回
+//      來的落點與第一次一致。
+//   5. 樣式改為作者列上的緊湊 pill（字級 12px），配色不變。
+// ============================================================
+
+function authorRowOf(card) {
+  return card.querySelectorAll('div[data-tcl-fake-author-row]')[0] || null;
+}
+
+// 容器內文件序第一顆 <time> 所在的 <a>。
+function timeAnchorOf(card) {
+  const time = card.querySelector('time');
+  return time ? time.closest('a') : null;
+}
+
+// 「互動列上方」那個落點上的 tag：與互動列同一層、文件序排在它之前。
+function tagsAboveActionRow(card) {
+  const row = card.querySelectorAll('div[data-tcl-fake-action-row]')[0];
+  if (!row || !row.parentElement) return [];
+  const siblings = row.parentElement.childNodes;
+  return siblings
+    .slice(0, siblings.indexOf(row))
+    .filter(
+      (node) => node.nodeType === 1 && node.classList && node.classList.contains(TAG_CLASS)
+    );
+}
+
+// 「tag 就在時間右邊」：時間連結的下一個兄弟節點就是它，且與作者名同一列。
+function assertTagAfterTime(card, tag, label) {
+  const row = authorRowOf(card);
+  const anchor = timeAnchorOf(card);
+  assert.ok(row && anchor, `${label}：前提——這張卡有作者列與自己的時間連結`);
+  assert.equal(anchor.closest(CONTAINER_SELECTOR), card, `${label}：前提——時間連結屬於本卡`);
+  assert.equal(anchor.nextSibling, tag, `${label}：tag 應是時間連結的下一個兄弟節點`);
+  assert.equal(tag.tagName, 'SPAN', `${label}：作者列上的 tag 是 inline 的 <span>`);
+  assert.equal(tag.parentElement, row, `${label}：tag 與作者名、時間同一列`);
+  assert.equal(tagsAboveActionRow(card).length, 0, `${label}：互動列上方不得再留一顆`);
+}
+
+test('作者列 1：詳情頁掃描命中時，tag 插在主文卡作者列的時間連結右邊', async () => {
+  const env = loadEnv();
+  await env.waitFor(() => env.tags().length === 1, { label: '掃描掛上的 tag' });
+
+  const tag = env.tags()[0];
+  const mainCard = env.document.querySelectorAll(CONTAINER_SELECTOR)[0];
+  assert.equal(tag.closest(CONTAINER_SELECTOR), mainCard, 'tag 應落在 position 1 的主文卡');
+  assertTagAfterTime(mainCard, tag, '掃描 tag');
+
+  assert.equal(tag.getAttribute('role'), 'note', '換了元素與落點，無障礙語意不變');
+  assert.equal(tag.textContent, TAG_LABEL, '文案不變');
+  assert.equal(tag.getAttribute('title'), TAG_TOOLTIP, 'title 不變');
+});
+
+test('作者列 2：河道查表的 tag 落在同一個位置（作者列時間右邊）', async () => {
+  const hitCard = createFeedCard(BLOCKED_HANDLE, null, { dirAutoTimestamp: false });
+  const root = el('div', { id: 'feed-root' }, [
+    hitCard,
+    createFeedCard(NEUTRAL_HANDLE, null, { dirAutoTimestamp: false }),
+  ]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+  await env.waitFor(() => env.tags().length === 1, { label: '查表掛上的 tag' });
+
+  const tag = env.tags()[0];
+  assert.equal(tag.closest(CONTAINER_SELECTOR), hitCard, 'tag 要掛在命中的那張卡內');
+  assert.equal(
+    tag.getAttribute('title'),
+    BLOCKED_BY_LIST_TITLE,
+    '河道那顆說的仍是「這個帳號在你的黑名單中」'
+  );
+  assertTagAfterTime(hitCard, tag, '查表 tag');
+});
+
+test('作者列 3：外層卡與引用卡都有 <time> 時，只認外層卡自己那一顆', async () => {
+  const quote = createPostContainer({
+    handle: 'quoted.person',
+    code: 'DqUoTeD001',
+    body: '被引用的原文，時間戳記同樣是 <time>。',
+  });
+  const env = loadEnv({
+    page: createDecoratedPage(MAIN_POSTS, (index) =>
+      index === 0 ? { dirAutoTimestamp: false, extraChildren: [quote] } : null
+    ),
+  });
+  await env.waitFor(() => env.tags().length === 1, { label: '掃描掛上的 tag' });
+
+  const mainCard = env.document.querySelectorAll(CONTAINER_SELECTOR)[0];
+  assert.ok(quote.querySelector('time'), '前提：引用卡自己也有 <time>');
+  assert.equal(
+    mainCard.querySelectorAll('time').length,
+    2,
+    '前提：外層卡的後代裡有兩顆 <time>（自己的＋引用卡的）'
+  );
+
+  const tag = env.tags()[0];
+  assertTagAfterTime(mainCard, tag, '引用卡外層的掃描 tag');
+  assert.equal(quote.querySelectorAll('.' + TAG_CLASS).length, 0, 'tag 不得掉進引用卡裡');
+});
+
+test('作者列 4：容器沒有 <time>（廣告卡形狀）時，退回互動列上方的 <div>', async () => {
+  const env = loadEnv({ page: createDecoratedPage(MAIN_POSTS) });
+  await env.waitFor(() => env.tags().length === 1, { label: '掃描掛上的 tag' });
+
+  const mainCard = env.document.querySelectorAll(CONTAINER_SELECTOR)[0];
+  assert.equal(
+    mainCard.querySelectorAll('time').length,
+    0,
+    '前提：時間戳記是 [dir="auto"] span，整張卡沒有 <time>'
+  );
+
+  const tag = env.tags()[0];
+  assert.equal(tag.tagName, 'DIV', '退回路徑維持原本的區塊級 <div>');
+  assert.deepEqual(tagsAboveActionRow(mainCard), [tag], 'tag 回到互動列上方、與互動列同一層');
+
+  const row = mainCard.querySelectorAll('div[data-tcl-fake-action-row]')[0];
+  const order = documentOrder(mainCard);
+  assert.ok(
+    order.indexOf(tag) < order.indexOf(row),
+    'tag 的文件序仍早於互動列（既有「插在互動列上方」的語意在退回路徑上保留）'
+  );
+  assert.equal(tag.closest('div[data-tcl-fake-action-row]'), null, 'tag 不得塞進互動列內部');
+});
+
+test('作者列 5：<time> 的連結指向別篇（轉發標頭）時不採用，退回互動列上方', async () => {
+  const env = loadEnv({
+    page: createDecoratedPage(MAIN_POSTS, (index) =>
+      index === 0 ? { foreignTimeLink: { handle: 'repost.origin', code: 'DxOtHeR001' } } : null
+    ),
+  });
+  await env.waitFor(() => env.tags().length === 1, { label: '掃描掛上的 tag' });
+
+  const mainCard = env.document.querySelectorAll(CONTAINER_SELECTOR)[0];
+  const anchor = timeAnchorOf(mainCard);
+  assert.equal(
+    anchor.getAttribute('href'),
+    '/@repost.origin/post/DxOtHeR001',
+    '前提：容器內唯一的 <time> 掛在指向別篇的連結上'
+  );
+
+  const tag = env.tags()[0];
+  assert.equal(
+    anchor.parentElement.querySelectorAll('.' + TAG_CLASS).length,
+    0,
+    '別篇的時間右邊不得掛上本卡的警示'
+  );
+  assert.equal(tag.tagName, 'DIV', '退回路徑維持原本的區塊級 <div>');
+  assert.deepEqual(tagsAboveActionRow(mainCard), [tag], 'tag 應退回互動列上方');
+});
+
+test('作者列 6：掃描的 tag 被外力沖掉後，補回的落點仍在時間連結右邊', async () => {
+  const env = loadEnv();
+  await env.waitFor(() => env.tags().length === 1, { label: '第一輪的 tag' });
+
+  const mainCard = env.document.querySelectorAll(CONTAINER_SELECTOR)[0];
+  const first = env.tags()[0];
+  first.parentNode.removeChild(first);
+  assert.equal(env.tags().length, 0, '前提：tag 已被外力移除');
+
+  env.triggerObserver();
+  await env.waitFor(() => env.tags().length === 1, { label: '補回來的 tag' });
+
+  assertTagAfterTime(mainCard, env.tags()[0], '補回的掃描 tag');
+  assert.equal(env.hits().length, 1, '補 tag 不得對 background 重送 scam.hit');
+});
+
+test('作者列 7：查表的 tag 被外力沖掉後，補回的落點仍在時間連結右邊', async () => {
+  const hitCard = createFeedCard(BLOCKED_HANDLE, null, { dirAutoTimestamp: false });
+  const root = el('div', { id: 'feed-root' }, [hitCard]);
+  const env = loadFeedEnv({ page: [root], local: { scamBlocklist: buildBlocklist() } });
+  await env.waitFor(() => env.tags().length === 1, { label: '第一輪的查表 tag' });
+
+  const first = env.tags()[0];
+  first.parentNode.removeChild(first);
+  assert.equal(env.tags().length, 0, '前提：tag 已被外力移除');
+
+  env.triggerObserver();
+  await env.waitFor(() => env.tags().length === 1, { label: '補回來的查表 tag' });
+
+  assertTagAfterTime(hitCard, env.tags()[0], '補回的查表 tag');
+  assert.deepEqual(env.sent, [], '查表補回照樣不得送訊息');
+});
+
+test('作者列 8：.tcl-scam-tag 改為作者列上的緊湊 pill（字級 12px）', async () => {
+  const env = loadEnv();
+  await env.waitFor(() => env.tags().length === 1, { label: '掃描掛上的 tag' });
+
+  const style = env.document.getElementById(STYLE_ID);
+  assert.ok(style, '命中時應注入樣式節點');
+  const css = style.textContent;
+  assert.ok(css.indexOf('.' + TAG_CLASS + '{') !== -1, '樣式應含 .tcl-scam-tag 規則');
+  assert.ok(
+    css.indexOf('font-size:12px') !== -1,
+    '作者列那一行容不下 13px 的 tag，字級要收到 12px'
   );
 });
