@@ -6037,7 +6037,12 @@ function scamAttrOf(node, name) {
   return typeof viaAttr === 'string' ? viaAttr : '';
 }
 
-test('標記名單卡:options.html 有 section.card.scam-blocklist，位置在設定卡之後、紀錄卡之前，卡內備齊四個落點', () => {
+// 【斷言翻轉】原斷言為「標記名單卡在設定卡之後、紀錄卡之前」。選項頁改成
+// 總覽／貼文／標記三分頁後，卡片順序由分頁順序決定:設定卡在 overview、紀錄
+// 卡在 posts、標記名單卡在 flags，三者在原始碼裡的先後跟著翻成
+// 設定 → 紀錄 → 標記名單。卡內四個落點(#scamCount／#scamList／#scamEmpty／
+// #scamAllowlist)與 .card 外觀不變。
+test('標記名單卡:options.html 有 section.card.scam-blocklist，位置在設定卡與紀錄卡之後(標記分頁排最後)，卡內備齊四個落點', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
 
   const settingsIdx = html.indexOf('id="scamGuardEnabled"');
@@ -6047,10 +6052,11 @@ test('標記名單卡:options.html 有 section.card.scam-blocklist，位置在�
   const historyIdx = html.search(/<section[^>]*class="card history"/);
   assert.notEqual(historyIdx, -1, '前置:應找得到紀錄卡');
 
-  assert.ok(settingsIdx < cardIdx, '標記名單卡應排在設定卡之後');
-  assert.ok(cardIdx < historyIdx, '標記名單卡應排在紀錄卡之前');
+  assert.ok(settingsIdx < historyIdx, '設定卡(總覽分頁)應排在紀錄卡(貼文分頁)之前');
+  assert.ok(historyIdx < cardIdx, '標記名單卡(標記分頁)應排在紀錄卡之後');
 
-  const card = html.slice(cardIdx, historyIdx);
+  const footerIdx = html.indexOf('<footer');
+  const card = html.slice(cardIdx, footerIdx === -1 ? html.length : footerIdx);
   assert.ok(
     /<section[^>]*class="[^"]*\bcard\b[^"]*"/.test(card.slice(0, 200)),
     '標記名單卡應沿用 .card 外觀(class 同時含 card 與 scam-blocklist)'
