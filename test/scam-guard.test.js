@@ -430,10 +430,11 @@ function createPlayerRow() {
 // 一個貼文容器：作者列（作者連結＋permalink 時間連結同一列）、本文
 // span，可選的原生互動列，外加可選的巢狀子節點（引用貼文）。
 //
-// 作者列在實機是一個 flex row，把作者名 `a[href="/@handle"]` 與時間
-// `a[href="/@handle/post/CODE"] > time` 排在同一行；警示 tag 的落點就在時
-// 間連結右邊，因此假件也把這兩個連結包進同一個 div（標
-// `data-tcl-fake-author-row` 供測試取用，實作不看這顆屬性）。
+// 作者列在實機是一個 flex row（`align-items:center; gap:6px`），把作者名
+// `a[href="/@handle"]` 與時間排在同一行；時間連結外面還多包一層純 block
+// `<span>`，實機結構是 row > span > a > time，警示 tag 的落點是那顆
+// `<span>` 之後——成為 row 自己的 flex item，不進時間的行盒。假件照這個層
+// 級搭（row 標 `data-tcl-fake-author-row` 供測試取用，實作不看這顆屬性）。
 //
 // options.body 可為字串（單一 span）或字串陣列（多個各自獨立的葉
 // [dir="auto"] span，對應實機把一篇貼文拆成多段的版面）。
@@ -444,18 +445,21 @@ function createPlayerRow() {
 //   結」（轉發標頭那種），排在作者列之後，讓本卡 permalink 仍是文件序第
 //   一個 /post/ 連結（readContainerPermalink 的判準不受影響），單獨考驗
 //   「<time> 的連結必須與本卡 permalink 同 code」。
+// options.bareTimeLink：時間連結直接掛在作者列下，不包那層 block
+//   `<span>`（版面變體），考驗「沒有包裹層時退回插在 <a> 之後」。
 function createPostContainer(options) {
   const lines = Array.isArray(options.body) ? options.body : [options.body];
+  const timeLink = el('a', { href: `/@${options.handle}/post/${options.code}` }, [
+    options.dirAutoTimestamp
+      ? el('span', { dir: 'auto' }, [text(options.timestamp || '2 小時')])
+      : el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
+  ]);
   const children = [
     el('div', { 'data-tcl-fake-author-row': 'true' }, [
       el('a', { href: `/@${options.handle}` }, [
         el('span', { dir: 'auto' }, [text(options.handle)]),
       ]),
-      el('a', { href: `/@${options.handle}/post/${options.code}` }, [
-        options.dirAutoTimestamp
-          ? el('span', { dir: 'auto' }, [text(options.timestamp || '2 小時')])
-          : el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
-      ]),
+      options.bareTimeLink ? timeLink : el('span', {}, [timeLink]),
     ]),
   ];
   if (options.foreignTimeLink) {
@@ -3523,18 +3527,20 @@ test('過期回呼：回應落地前整輪已經重掃，舊回呼不得補掛�
 // 方。
 //
 // 【與實作的契約】
-//   1. insertTag 先取 container.querySelector('time') → closest('a')，且這
-//      個 <a> 的 closest(CONTAINER_SELECTOR) 必須是本容器、href 的 code 與
-//      本卡 permalink 相同；成立就把 tag 插在這個 <a> 之後，與作者名、時
-//      間同一列。tag 改用 <span>（inline），class、role="note"、title 與
-//      textContent 都不變。
+//   1. insertTag 先取容器內的 <time> → closest('a')，且這個 <a> 的
+//      closest(CONTAINER_SELECTOR) 必須是本容器、href 的 code 與本卡
+//      permalink 相同；成立就把 tag 插在這個 <a> 的包裹層 <span> 之後，成
+//      為作者列 flex row 自己的 item（不進時間的行盒）；沒有包裹層時才退
+//      而求其次插在 <a> 之後。tag 改用 <span>（inline），class、
+//      role="note"、title 與 textContent 都不變。
 //   2. 取不到 <time>，或它的連結不屬於本卡（引用卡、轉發標頭那種指向別篇
 //      的時間）→ 退回既有邏輯：互動列上方的 <div>；互動列也找不到才掛容
 //      器末端。
 //   3. 河道查表（scamBlockedByList）與詳情頁掃描共用這一套落點。
 //   4. 冪等不變，補回路徑（掃描的冪等短路、查表的 taggedContainers）補回
 //      來的落點與第一次一致。
-//   5. 樣式改為作者列上的緊湊 pill（字級 12px），配色不變。
+//   5. 作者列 row 是 overflow:hidden、高 21px，pill 因此收到 12px；退回路
+//      徑的 <div> 用更具體的選擇器維持原本的 13px 與上下間距，配色不變。
 // ============================================================
 
 function authorRowOf(card) {
@@ -3559,13 +3565,20 @@ function tagsAboveActionRow(card) {
     );
 }
 
-// 「tag 就在時間右邊」：時間連結的下一個兄弟節點就是它，且與作者名同一列。
+// 「tag 就在時間右邊」：tag 是時間連結那層 block `<span>` 的下一個元素兄
+// 弟，因此與作者名、時間同為作者列 flex row 的 item，不落進時間的行盒。
 function assertTagAfterTime(card, tag, label) {
   const row = authorRowOf(card);
   const anchor = timeAnchorOf(card);
   assert.ok(row && anchor, `${label}：前提——這張卡有作者列與自己的時間連結`);
   assert.equal(anchor.closest(CONTAINER_SELECTOR), card, `${label}：前提——時間連結屬於本卡`);
-  assert.equal(anchor.nextSibling, tag, `${label}：tag 應是時間連結的下一個兄弟節點`);
+  assert.equal(anchor.parentElement, anchor.parentNode, `${label}：前提——包裹層是元素節點`);
+  assert.notEqual(anchor.parentElement, row, `${label}：前提——時間連結外面包著一層 <span>`);
+  assert.equal(
+    anchor.parentNode.nextElementSibling,
+    tag,
+    `${label}：tag 應是時間連結包裹層的下一個元素兄弟`
+  );
   assert.equal(tag.tagName, 'SPAN', `${label}：作者列上的 tag 是 inline 的 <span>`);
   assert.equal(tag.parentElement, row, `${label}：tag 與作者名、時間同一列`);
   assert.equal(tagsAboveActionRow(card).length, 0, `${label}：互動列上方不得再留一顆`);
@@ -3713,7 +3726,7 @@ test('作者列 7：查表的 tag 被外力沖掉後，補回的落點仍在時�
   assert.deepEqual(env.sent, [], '查表補回照樣不得送訊息');
 });
 
-test('作者列 8：.tcl-scam-tag 改為作者列上的緊湊 pill（字級 12px）', async () => {
+test('作者列 8：.tcl-scam-tag 收進作者列 21px 的行高（字級 12px），退回路徑維持原尺寸', async () => {
   const env = loadEnv();
   await env.waitFor(() => env.tags().length === 1, { label: '掃描掛上的 tag' });
 
@@ -3723,6 +3736,37 @@ test('作者列 8：.tcl-scam-tag 改為作者列上的緊湊 pill（字級 12px
   assert.ok(css.indexOf('.' + TAG_CLASS + '{') !== -1, '樣式應含 .tcl-scam-tag 規則');
   assert.ok(
     css.indexOf('font-size:12px') !== -1,
-    '作者列那一行容不下 13px 的 tag，字級要收到 12px'
+    '作者列 row 是 overflow:hidden、高 21px，pill 的字級要收到 12px 才不被切掉'
   );
+  assert.ok(
+    css.indexOf('div.' + TAG_CLASS + '{') !== -1 && css.indexOf('font-size:13px') !== -1,
+    '退回路徑的區塊級 tag 用更具體的選擇器維持原本的 13px'
+  );
+  assert.ok(
+    css.indexOf('var(--tcl-warn-fg') !== -1 && css.indexOf('var(--tcl-warn-bg') !== -1,
+    '配色仍走 --tcl-warn-* 變數'
+  );
+});
+
+test('作者列 9：時間連結沒有包裹層時，tag 退回插在 <a> 之後', async () => {
+  const env = loadEnv({
+    page: createDecoratedPage(MAIN_POSTS, (index) =>
+      index === 0 ? { bareTimeLink: true, dirAutoTimestamp: false } : null
+    ),
+  });
+  await env.waitFor(() => env.tags().length === 1, { label: '掃描掛上的 tag' });
+
+  const mainCard = env.document.querySelectorAll(CONTAINER_SELECTOR)[0];
+  const anchor = timeAnchorOf(mainCard);
+  assert.equal(
+    anchor.parentElement,
+    authorRowOf(mainCard),
+    '前提：這個版面變體把時間連結直接掛在作者列下'
+  );
+
+  const tag = env.tags()[0];
+  assert.equal(tag.tagName, 'SPAN', '仍是作者列上的 inline <span>');
+  assert.equal(tag.parentElement, authorRowOf(mainCard), 'tag 仍落在作者列上');
+  assert.equal(anchor.nextSibling, tag, '沒有包裹層可跟，tag 只能接在 <a> 之後');
+  assert.equal(tagsAboveActionRow(mainCard).length, 0, '不得退到互動列上方');
 });
