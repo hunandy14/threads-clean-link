@@ -1592,7 +1592,10 @@ test('掃描流程：交給 detectScamPitch 的是 buildThreadText 串好的六�
   );
 });
 
-test('掃描流程：命中後在主文卡互動列「上方」插一顆 .tcl-scam-tag', async () => {
+// 落點的細節由「作者列 1」那一筆釘（時間連結右邊）；本筆只保留與落點無
+// 關、兩條路徑都成立的不變量：整頁一顆、掛在主文卡、不在互動列內部、文件
+// 序早於互動列。
+test('掃描流程：命中後在主文卡插一顆 .tcl-scam-tag，且不在互動列內部', async () => {
   const env = loadEnv();
   await env.flush();
 
@@ -1619,7 +1622,7 @@ test('掃描流程：命中後在主文卡互動列「上方」插一顆 .tcl-sc
   const order = documentOrder(mainCard);
   assert.ok(
     order.indexOf(tag) !== -1 && order.indexOf(tag) < order.indexOf(row),
-    'tag 的文件序必須早於互動列（插在互動列上方）'
+    'tag 的文件序必須早於互動列（作者列與退回落點都在互動列之前）'
   );
 });
 
@@ -2062,7 +2065,9 @@ test('S1：同一頁同一組容器重複觸發時，不再重讀 SSR script', a
 // ---- S2 互動列消歧 ----
 
 // 本文刻意用單段（MAIN_POSTS），讓紅燈只反映「挑錯互動列」這一件事，不
-// 與 F1 的多行本文互相遮蔽。
+// 與 F1 的多行本文互相遮蔽。buildThreadContainers 的時間戳記是
+// [dir="auto"] span，容器內沒有 <time>，落點因此落在退回路徑上——互動列消
+// 歧正是退回路徑要解的題。
 test('S2：容器內有播放器工具列排在互動列之後時，tag 仍插在互動列上方', async () => {
   const env = loadEnv({
     page: createDecoratedPage(MAIN_POSTS, (index) =>
