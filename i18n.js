@@ -257,8 +257,25 @@
       opScamListCount: '{n} 位作者',
       // 列第二行的加入日期(YYYY-MM-DD，比照裝置列的「新增於」)。
       opScamAddedOn: '加入於 {d}',
+      // 副標後半:最近一次命中的日期。加入於是首見時間，兩者常差好幾天。
+      opScamLastHit: '最近命中 {date}',
+      // 標題列右側的 pill:這位作者留下幾筆證據。
+      opScamHitCount: '命中 {n} 篇',
       // 證據連結區的小標:底下每筆 evidence 一條連結。
       opScamEvidence: '證據',
+      // 證據摺疊區的 summary:預設只露最新一組，其餘收進 <details>。
+      opScamShowMore: '顯示另外 {n} 筆',
+      // 證據 meta 列的兩條外開連結:帶錨點那一篇與整串的串頭。
+      opScamEvidencePost: '證據貼文 ↗',
+      opScamEvidenceThread: '整串 ↗',
+      // 同一段招攬文案貼了好幾篇時，片段只畫一次並標示涵蓋幾篇。
+      opScamSameText: '出現在 {n} 篇',
+      // 訊號 chip:對應 detectScamPitch 的 signals 白名單。
+      opScamSignalLink: '連結',
+      opScamSignalLine: 'LINE',
+      opScamSignalGroup: '群組',
+      opScamSignalJoin: '加入',
+      opScamSignalPitch: '話術',
       opScamRemove: '解除',
       opScamRemoveTitle: '解除「{name}」的標記？',
       // 講清楚解除是永久的:該作者進 allowlist，日後再命中也不會自動標記。
@@ -457,7 +474,19 @@
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
       opScamListCount: '{n} author(s)',
       opScamAddedOn: 'Added {d}',
+      opScamLastHit: 'Last hit {date}',
+      // 篇數是 1 的機率很高，用不吃單複數的寫法(比照 opScamListCount)。
+      opScamHitCount: '{n} hits',
       opScamEvidence: 'Evidence',
+      opScamShowMore: 'Show {n} more',
+      opScamEvidencePost: 'Evidence post ↗',
+      opScamEvidenceThread: 'Full thread ↗',
+      opScamSameText: 'Seen in {n} posts',
+      opScamSignalLink: 'Link',
+      opScamSignalLine: 'LINE',
+      opScamSignalGroup: 'Group',
+      opScamSignalJoin: 'Join',
+      opScamSignalPitch: 'Pitch',
       opScamRemove: 'Remove',
       opScamRemoveTitle: 'Unflag “{name}”?',
       opScamRemoveDesc:
