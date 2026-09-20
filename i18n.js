@@ -33,6 +33,11 @@
       opSub: '脆連結清潔工 · 設定與紀錄',
       opThemeTitle: '切換主題',
       opLangTitle: '語言 / Language',
+      // 頁首下方的分頁列:總覽(統計磚＋圖表＋設定)／貼文(紀錄卡)／標記
+      // (標記名單卡)。
+      opTabOverview: '總覽',
+      opTabPosts: '貼文',
+      opTabFlags: '標記',
       // 統計磚區塊的 aria-label(走 i18n，見 applyI18nDom 的 data-i18n-aria
       // 通道)。
       opStatsAria: '統計摘要',
@@ -244,8 +249,10 @@
       // 選項頁設定卡的總開關 #scamGuardEnabled。
       opScamGuardName: 'LINE 群組引導標記',
       opScamGuardDesc: '偵測引導加入 LINE 群組的串文並標記作者；名單只存在這台裝置，不上雲。',
+      // 設定卡內指向標記分頁的同頁錨點(a#scamManageLink[href="#flags"])。
+      opScamManageLink: '管理名單 →',
 
-      // ---- 選項頁:標記名單卡(設定卡後、紀錄卡前) ----
+      // ---- 選項頁:標記名單卡(標記分頁) ----
       opScamListTitle: '標記名單',
       opScamListCount: '{n} 位作者',
       // 列第二行的加入日期(YYYY-MM-DD，比照裝置列的「新增於」)。
@@ -281,6 +288,9 @@
       opSub: 'Threads Clean Link · Settings & history',
       opThemeTitle: 'Toggle theme',
       opLangTitle: 'Language / 語言',
+      opTabOverview: 'Overview',
+      opTabPosts: 'Posts',
+      opTabFlags: 'Flags',
       opStatsAria: 'Statistics',
       opTileTotal: 'Total records',
       opSince: 'Since {d}',
@@ -441,6 +451,7 @@
       opScamGuardName: 'LINE group funnel flags',
       opScamGuardDesc:
         'Detects threads that funnel readers into LINE groups and flags the author. The list stays on this device only.',
+      opScamManageLink: 'Manage list →',
 
       opScamListTitle: 'Flagged accounts',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。

@@ -600,6 +600,11 @@
     // chrome.permissions.request 只能在使用者手勢中呼叫——service worker 自行
     // 發起一律失敗，所以「求權限」這一半只能落在登入按鈕的 click handler 裡。
     var permissionsApi = deps.permissions || null;
+    // 分頁路由要碰的瀏覽器物件。本檔刻意不碰全域(見檔頭註解)，window 與
+    // location 一律由呼叫端注入;兩者缺席時 bindTabs 靜默停用，其餘功能不受
+    // 影響(舊測試的 DOM stub 沒有分頁列也走這條)。
+    var win = deps.window || null;
+    var loc = deps.location || (win ? win.location : null);
 
     var entries = [];
     var locale = 'zh';
@@ -2353,6 +2358,27 @@
       return name === null ? scamHandleLabel(entry && entry.handle) : name;
     }
 
+    // 片段上方的小字「貼文代碼尾 6 碼 · 日期」。同一位作者的多筆證據常是同
+    // 文異篇(同一段招攬文案貼了好幾篇)，只看片段會以為畫了重複的兩列。代碼
+    // 走 TCLCore.extractPostId(嚴格樣式)，抽不出來時(分享短碼等)只留日期;
+    // 日期比照「加入於」用 formatDateOnly，不顯示時分。
+    function scamEvidenceMetaText(evidence) {
+      var postId = TCLCore.extractPostId(evidence.postUrl);
+      var code = postId === null ? '' : postId.slice(-6);
+      var at = typeof evidence.at === 'number' && isFinite(evidence.at) ? evidence.at : null;
+      var date = at === null ? '' : formatDateOnly(at);
+      if (code === '') return date;
+      if (date === '') return code;
+      return code + ' · ' + date;
+    }
+
+    function buildScamEvidenceMeta(evidence) {
+      var meta = document.createElement('span');
+      meta.className = 'scam-evidence-meta';
+      meta.textContent = scamEvidenceMetaText(evidence);
+      return meta;
+    }
+
     // 每筆證據一條外開連結:顯示文字裁到 SCAM_SNIPPET_DISPLAY 字並補刪節號，
     // 未超長則原樣顯示;完整片段留在 title。
     function buildScamEvidenceLink(evidence) {
@@ -2410,6 +2436,7 @@
         evidenceTitle.textContent = tt('opScamEvidence');
         evidenceWrap.appendChild(evidenceTitle);
         entry.evidence.forEach(function (evidence) {
+          evidenceWrap.appendChild(buildScamEvidenceMeta(evidence));
           evidenceWrap.appendChild(buildScamEvidenceLink(evidence));
         });
         textWrap.appendChild(evidenceWrap);
@@ -3386,6 +3413,63 @@
       });
     }
 
+    // ---- 分頁列(總覽／貼文／標記) ----
+
+    // 分頁狀態的唯一權威是 location.hash:#overview／#posts／#flags，缺席或
+    // 未知一律退回 overview。切分頁只改寫 hash(不走 location.assign／
+    // replace／reload——那會重載整頁)，外部改 hash(上一頁、手打網址、設定卡
+    // 的「管理名單 →」錨點)則由 hashchange 同步回畫面。
+    var TAB_NAMES = ['overview', 'posts', 'flags'];
+    var TAB_DEFAULT = 'overview';
+
+    function queryAll(selector) {
+      if (typeof document.querySelectorAll !== 'function') return [];
+      return Array.prototype.slice.call(document.querySelectorAll(selector) || []);
+    }
+
+    function tabFromHash(hash) {
+      var name = typeof hash === 'string' ? hash.replace(/^#/, '') : '';
+      return TAB_NAMES.indexOf(name) !== -1 ? name : TAB_DEFAULT;
+    }
+
+    // 冪等:同一個分頁套第二次不留痕跡。真實瀏覽器裡「點 tab 改 hash」會再
+    // 發一次 hashchange，這個函式因此每次切換都會跑兩遍。
+    function applyTab(name) {
+      var target = TAB_NAMES.indexOf(name) !== -1 ? name : TAB_DEFAULT;
+      queryAll('[role="tab"]').forEach(function (btn) {
+        // 未選中的分頁顯式寫 "false" 而非移除屬性:讀螢幕器要靠它判定整列
+        // 的選中狀態。
+        btn.setAttribute(
+          'aria-selected',
+          btn.getAttribute('data-tab') === target ? 'true' : 'false'
+        );
+      });
+      queryAll('[data-panel]').forEach(function (panel) {
+        panel.hidden = panel.getAttribute('data-panel') !== target;
+      });
+    }
+
+    function bindTabs() {
+      var tabs = queryAll('[role="tab"]');
+      if (tabs.length === 0) return;
+      tabs.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var name = btn.getAttribute('data-tab');
+          if (TAB_NAMES.indexOf(name) === -1) return;
+          if (loc) loc.hash = '#' + name;
+          applyTab(name);
+        });
+      });
+      if (win && typeof win.addEventListener === 'function') {
+        win.addEventListener('hashchange', function () {
+          applyTab(tabFromHash(loc ? loc.hash : ''));
+        });
+      }
+      // 載入時讀一次 hash，重新整理才停得住原分頁。hash 缺席時不補寫
+      // '#overview'，網址維持乾淨。
+      applyTab(tabFromHash(loc ? loc.hash : ''));
+    }
+
     function bindTopbar() {
       on('langBtn', 'click', function () {
         langPref = locale === 'zh' ? 'en' : 'zh';
@@ -3440,6 +3524,7 @@
         bindChartTooltip();
         bindAccount();
         bindDevices();
+        bindTabs();
         renderAll();
 
         // 雲端同步狀態非同步取得，先以 DEFAULT_SYNC_CARD_STATE(未登入)完成首次
