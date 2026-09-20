@@ -12,6 +12,10 @@ document.addEventListener('DOMContentLoaded', function () {
     syncStorage: chrome.storage.sync,
     localStorage: chrome.storage.local,
     i18n: TCLI18N,
+    // 分頁路由(總覽／貼文／標記)要讀寫 location.hash 並聽 hashchange;
+    // options.js 不碰全域，兩者由這裡注入。
+    window: window,
+    location: window.location,
     now: function () {
       return Date.now();
     },

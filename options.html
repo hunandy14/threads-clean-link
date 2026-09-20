@@ -194,6 +194,42 @@
   .ghost-btn:hover { color: var(--ink-1); border-color: var(--baseline); }
   .lang-btn { width: auto; padding: 0 10px; font-size: 12px; font-weight: 600; }
 
+  /* ---- 分頁列 ----
+     文字 ＋ 底線指示，選中態走 --accent。左內距 16px 讓第一顆分頁的文字與
+     卡片內容(.card-head 同為 16px)切齊;與下方卡片的間距比照 .stats／.duo
+     的 12px。 */
+  .tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    padding-left: 16px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  /* 分頁鈕的下邊框就是指示線，負 margin 讓它壓在 .tabs 的底線上而不是疊在
+     它下面，選中與未選中兩態的文字基線才不會差一像素。 */
+  .tabs button[role="tab"] {
+    appearance: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    background: transparent;
+    color: var(--ink-3);
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    padding: 8px 12px 9px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .tabs button[role="tab"]:hover { color: var(--ink-1); }
+  .tabs button[role="tab"][aria-selected="true"] {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  /* 未選中的面板不得佔位:section 的預設 display 會蓋掉 UA 的 [hidden]。 */
+  [role="tabpanel"][hidden] { display: none; }
+
   /* ---- 統計磚 ---- */
   .stats {
     display: grid;
@@ -415,6 +451,16 @@
   .setting-row .txt { min-width: 0; }
   .setting-row .name { font-size: 13px; font-weight: 550; }
   .setting-row .desc { font-size: 12px; color: var(--ink-3); }
+  /* 設定列內的同頁導覽連結(目前只有「管理名單 →」)，另起一行接在說明之下。 */
+  .setting-link {
+    display: inline-block;
+    margin-top: 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .setting-link:hover { text-decoration: underline; }
   .switch {
     appearance: none;
     -webkit-appearance: none;
@@ -1054,7 +1100,7 @@
   }
   .device-empty .icon { width: 26px; height: 26px; }
 
-  /* ---- 標記名單卡 ----
+  /* ---- 警示名單卡 ----
      列的骨架與互動語彙沿用裝置列(.device-row):列高、分隔線、右側 ghost
      圖示鈕的浮現規則一致，只有證據連結區是本卡獨有。 */
   /* 與下一張卡的間距比照 .duo 的 12px。 */
@@ -1067,28 +1113,93 @@
     padding: 10px 0; border-bottom: 1px solid var(--grid);
   }
   .scam-row:last-child { border-bottom: none; }
-  .scam-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .scam-name-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex-wrap: wrap; }
+  .scam-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  /* 一筆證據排成一則貼文的樣子:作者列、本文、本文下方的整串與訊號。 */
+  .scam-evidence-head {
+    display: flex; align-items: baseline; gap: 6px; min-width: 0; flex-wrap: wrap;
+  }
+  /* 顯示名與 @handle 整塊是作者頁連結:底線收掉，hover 才以主色強調。 */
+  .scam-name-link {
+    display: inline-flex; align-items: baseline; gap: 6px; min-width: 0;
+    text-decoration: none; color: inherit;
+  }
+  .scam-name-link:hover .scam-name { color: var(--accent); text-decoration: underline; }
   .scam-name {
     font-size: 13.5px; font-weight: 650; color: var(--ink-1);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
   }
   .scam-handle { font-size: 12.5px; color: var(--ink-3); }
-  .scam-sub { font-size: 12px; color: var(--ink-3); }
-  .scam-evidence { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .scam-evidence-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
-  /* 證據片段可能很長，單行省略;完整片段留在 title 提示。 */
-  .scam-evidence-link {
-    font-size: 12px; color: var(--ink-2); text-decoration: none;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  /* 命中篇數:純文字小字鈕(不是 pill)，點下去開證據對話框。與 ⋯ 鈕同在
+     .scam-actions 裡，一起靠在列的右緣、與作者列同一條水平線。 */
+  .scam-hit-count {
+    appearance: none; border: none; background: none; padding: 0;
+    font: inherit; font-size: 11px; color: var(--ink-3); white-space: nowrap;
+    cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
   }
-  .scam-evidence-link:hover { color: var(--accent); text-decoration: underline; }
-  .scam-actions { display: flex; gap: 4px; flex-shrink: 0; }
-  .scam-quick-btn {
+  .scam-hit-count:hover { color: var(--accent); }
+  .scam-evidence { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .scam-evidence-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  /* 作者列的時間:緊接帳號之後的小字灰，本身就是那篇的永久連結(比照
+     Threads)。絕對日期與貼文代碼尾碼留在 title 上。 */
+  .scam-evidence-date { font-size: 12px; color: var(--ink-3); text-decoration: none; white-space: nowrap; }
+  /* 作者列尾端的標記 pill:尺寸與形狀照內容腳本掛在貼文上那一顆(13px、
+     padding 1px 8px、圓角 9999px、600 字重)，使用者在 Threads 上看到的是同
+     一顆。配色改走選項頁自己的警示色票(--warn／--warn-soft)，跟著主題走。 */
+  .scam-post-tag {
+    display: inline-flex; align-items: center; white-space: nowrap;
+    padding: 1px 8px; border-radius: 9999px;
+    font-size: 13px; line-height: 1.3; font-weight: 600;
+    color: var(--warn); background: var(--warn-soft);
+  }
+  a.scam-evidence-date:hover { color: var(--accent); text-decoration: underline; }
+  /* 證據片段完整呈現(儲存端已裁到 120 字)，可換行、行高放寬才讀得下去。 */
+  .scam-evidence-text {
+    margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-2);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  /* 錨點高亮:<mark> 的瀏覽器預設是螢光黃底黑字，深色主題下刺眼且文字色不跟
+     著主題走;改用暖色淡底並繼承文字色。 */
+  mark.scam-anchor {
+    background: var(--accent-soft); color: inherit;
+    border-radius: 3px; padding: 0 2px;
+  }
+  /* 列右上角的「命中 N 篇」與 ⋯ 選項鈕。.scam-actions 同時是 .menu-wrap
+     (選單靠它定位);.scam-row 是 align-items:flex-start，這一塊因此與作者
+     列對齊在同一條水平線上。 */
+  .scam-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .scam-menu-btn {
     appearance: none; border: none; background: transparent; color: var(--ink-3); width: 28px; height: 28px;
     border-radius: 8px; display: grid; place-items: center; cursor: pointer;
   }
-  .scam-quick-btn:hover { background: var(--danger-soft); color: var(--danger); }
+  .scam-menu-btn:hover { background: var(--plane); color: var(--ink-1); }
+  .scam-menu { min-width: 140px; }
+  /* 卡頭標題右邊的資訊鈕:尺寸與標題文字對齊，平時灰、hover 才強調。
+     margin-right:auto 讓它緊貼標題，右側的計數 hint 照舊推到最右
+     (.card-head 是 justify-content:space-between)。 */
+  .scam-info-btn {
+    appearance: none; border: none; background: none; padding: 0;
+    margin-right: auto; display: inline-flex; align-items: center;
+    color: var(--ink-3); cursor: pointer;
+  }
+  .scam-info-btn .icon { width: 15px; height: 15px; }
+  .scam-info-btn:hover { color: var(--accent); }
+  /* 說明視窗的五段條列。 */
+  .scam-info-list {
+    margin: 12px 0 0; padding-left: 22px;
+    display: flex; flex-direction: column; gap: 12px;
+    max-height: 70vh; overflow: auto;
+    font-size: 13px; line-height: 1.6; color: var(--ink-2);
+  }
+  .scam-info-list li::marker { color: var(--ink-3); font-weight: 650; }
+  /* 每段的開頭句:斷句本身就是重點，粗體讓人掃得動。 */
+  .scam-info-lead { font-weight: 650; color: var(--ink-1); }
+  /* 證據對話框的列表:三筆完整片段疊起來輕易超過一個螢幕，容器自己捲。 */
+  .scam-hits-list {
+    display: flex; flex-direction: column; gap: 14px;
+    max-height: 70vh; overflow: auto;
+    margin-top: 12px;
+  }
+  .scam-hits-list .scam-evidence-item { gap: 4px; }
   /* 空狀態語彙比照紀錄卡的 .empty(同 class)，這裡只補圖示與文字的排版。 */
   .scam-empty {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
@@ -1179,6 +1290,9 @@
   }
   @media (max-width: 460px) {
     .page { padding: 16px 12px 40px; }
+    /* 手機寬仍要三顆分頁並排:收窄左右內距，文字本身不換行。 */
+    .tabs { padding-left: 12px; }
+    .tabs button[role="tab"] { padding: 8px 9px 9px; }
   }
 </style>
 </head>
@@ -1192,6 +1306,7 @@
     <symbol id="i-scissors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></symbol>
     <symbol id="i-mouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4.1 12 6"/><path d="m5.1 8-2.9-.8"/><path d="m6 12-1.9 2"/><path d="M7.2 2.2 8 5.1"/><path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
     <symbol id="i-shield-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
     <symbol id="i-circle-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
@@ -1336,170 +1451,196 @@
     </div>
   </header>
 
-  <!-- 統計磚:數值由 options.js 從紀錄本地聚合，不另存統計資料。 -->
-  <section class="stats" data-i18n-aria="opStatsAria" aria-label="統計摘要">
-    <div class="tile">
-      <div class="label"><svg class="icon"><use href="#i-sparkles"/></svg><span data-i18n="opTileTotal">累計紀錄</span></div>
-      <div class="value" id="statTotal">0</div>
-      <div class="meta" id="statTotalMeta"></div>
-    </div>
-    <div class="tile">
-      <div class="label"><svg class="icon"><use href="#i-calendar"/></svg><span data-i18n="opTileWeek">本週</span></div>
-      <div class="value" id="statWeek">0</div>
-      <div class="meta" id="statWeekMeta"></div>
-    </div>
-    <div class="tile">
-      <div class="label"><svg class="icon"><use href="#i-link"/></svg><span data-i18n="opTileShare">短碼解析</span></div>
-      <div class="value" id="statShare">0</div>
-      <div class="meta" id="statShareMeta"></div>
-    </div>
-    <div class="tile">
-      <div class="label"><svg class="icon"><use href="#i-scissors"/></svg><span data-i18n="opTileStrip">剪除追蹤參數</span></div>
-      <div class="value" id="statStrip">0</div>
-      <div class="meta" id="statStripMeta"></div>
-    </div>
-    <!-- 貼文互動列複製 icon(post-icon.js)的統計磚:標籤直接沿用篩選 chip
-         已有的 opKindIcon key(「貼文按鈕」)，不另造新 key。 -->
-    <div class="tile">
-      <div class="label"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="opKindIcon">貼文按鈕</span></div>
-      <div class="value" id="statIcon">0</div>
-      <div class="meta" id="statIconMeta"></div>
-    </div>
-  </section>
+  <!-- 分頁列:總覽／貼文／標記。哪一頁在前景由 location.hash 決定
+       (#overview／#posts／#flags，缺席或未知退回 overview)，點分頁只改寫
+       hash、不重載整頁;靜態初值停在 overview，JS 接手前後一致。 -->
+  <nav class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="overview" aria-selected="true" data-i18n="opTabOverview">總覽</button>
+    <button type="button" role="tab" data-tab="posts" aria-selected="false" data-i18n="opTabPosts">貼文</button>
+    <button type="button" role="tab" data-tab="flags" aria-selected="false" data-i18n="opTabFlags">標記</button>
+  </nav>
 
-  <!-- 圖表 + 設定 -->
-  <section class="duo">
-    <div class="card chart-card">
-      <div class="card-head">
-        <h2 data-i18n="opChartTitle">近 14 天活動</h2>
-        <span class="hint" data-i18n="opChartUnit">單位:次</span>
+  <!-- 總覽分頁:統計磚 ＋ 近 14 天圖表 ＋ 設定卡。 -->
+  <section role="tabpanel" data-panel="overview">
+    <!-- 統計磚:數值由 options.js 從紀錄本地聚合，不另存統計資料。 -->
+    <section class="stats" data-i18n-aria="opStatsAria" aria-label="統計摘要">
+      <div class="tile">
+        <div class="label"><svg class="icon"><use href="#i-sparkles"/></svg><span data-i18n="opTileTotal">累計紀錄</span></div>
+        <div class="value" id="statTotal">0</div>
+        <div class="meta" id="statTotalMeta"></div>
       </div>
-      <div class="chart-wrap" id="chartWrap">
-        <svg id="chart" viewBox="0 0 560 230" role="img" aria-labelledby="chartDesc"></svg>
-        <div class="tooltip" id="chartTip"></div>
-        <span id="chartDesc" class="sr-only" data-i18n="opChartDesc">近 14 天每日活動次數</span>
+      <div class="tile">
+        <div class="label"><svg class="icon"><use href="#i-calendar"/></svg><span data-i18n="opTileWeek">本週</span></div>
+        <div class="value" id="statWeek">0</div>
+        <div class="meta" id="statWeekMeta"></div>
       </div>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h2 data-i18n="opSettingsTitle">設定</h2></div>
-      <div class="settings-body">
-        <label class="setting-row" for="autoClean">
-          <span class="txt">
-            <span class="name" data-i18n="opAutoCleanName">自動淨化分享按鈕</span>
-            <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址；關閉仍照常寫入紀錄。</div>
-          </span>
-          <input type="checkbox" id="autoClean" class="switch" />
-        </label>
-        <!-- 與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關說明
-             (popup 只留精簡標籤)。 -->
-        <label class="setting-row" for="postCopyEnabled">
-          <span class="txt">
-            <span class="name" data-i18n="opPostCopyName">貼文複製按鈕</span>
-            <div class="desc" data-i18n="opPostCopyDesc">在貼文互動列顯示複製連結按鈕</div>
-          </span>
-          <input type="checkbox" id="postCopyEnabled" class="switch" />
-        </label>
-        <label class="setting-row" for="saveHistory">
-          <span class="txt">
-            <span class="name" data-i18n="opSaveName">保存紀錄</span>
-            <div class="desc" data-i18n="opSaveDesc">僅存於本機</div>
-          </span>
-          <input type="checkbox" id="saveHistory" class="switch" />
-        </label>
-        <!-- LINE 群組引導標記的總開關。純本機功能，值存 chrome.storage.local，
-             不跟著帳號跨裝置同步，也不鏡像到 popup(見 options.js 的
-             LOCAL_SETTING_IDS)。 -->
-        <label class="setting-row" for="scamGuardEnabled">
-          <span class="txt">
-            <span class="name" data-i18n="opScamGuardName">LINE 群組引導標記</span>
-            <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文並標記作者；名單只存在這台裝置，不上雲。</div>
-          </span>
-          <input type="checkbox" id="scamGuardEnabled" class="switch" />
-        </label>
+      <div class="tile">
+        <div class="label"><svg class="icon"><use href="#i-link"/></svg><span data-i18n="opTileShare">短碼解析</span></div>
+        <div class="value" id="statShare">0</div>
+        <div class="meta" id="statShareMeta"></div>
       </div>
-    </div>
-  </section>
+      <div class="tile">
+        <div class="label"><svg class="icon"><use href="#i-scissors"/></svg><span data-i18n="opTileStrip">剪除追蹤參數</span></div>
+        <div class="value" id="statStrip">0</div>
+        <div class="meta" id="statStripMeta"></div>
+      </div>
+      <!-- 貼文互動列複製 icon(post-icon.js)的統計磚:標籤直接沿用篩選 chip
+           已有的 opKindIcon key(「貼文按鈕」)，不另造新 key。 -->
+      <div class="tile">
+        <div class="label"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="opKindIcon">貼文按鈕</span></div>
+        <div class="value" id="statIcon">0</div>
+        <div class="meta" id="statIconMeta"></div>
+      </div>
+    </section>
 
-  <!-- 標記名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
-       不進 syncState。名單列、證據連結與「已解除」小節都由 options.js 逐一
-       createElement 產生——displayName 與證據片段是他人貼文帶進來的字串，一律
-       走 textContent，不得 innerHTML。寫入端只有 background，本頁讀 storage
-       ＋監聽 onChanged，解除/復原經 runtime 訊息請 background 代寫。 -->
-  <section class="card scam-blocklist">
-    <div class="card-head">
-      <h2 data-i18n="opScamListTitle">標記名單</h2>
-      <span class="hint" id="scamCount"></span>
-    </div>
-    <div class="scam-list" id="scamList"></div>
-    <div class="empty scam-empty" id="scamEmpty" hidden></div>
-    <div class="scam-allow" id="scamAllowlist" hidden></div>
-  </section>
-
-  <!-- 紀錄清單為卡片牆，單一 view 直接顯示，不分頁 tab。 -->
-  <section class="card history">
-    <div class="card-head">
-      <!-- opHistoryTitle 文字包在自己的 span 裡,不直接掛在 h2 上——
-           applyI18nDom 對 data-i18n 節點做 node.textContent = ...,若掛在
-           h2 本身，語言切換會把巢狀的 envBadgeHistory 一併清空(比照頁首
-           .sub 的 opSub span 同一套避雷寫法)。 -->
-      <h2><span data-i18n="opHistoryTitle">紀錄</span><span id="envBadgeHistory" class="env-badge env-badge-sm" hidden></span></h2>
-      <div class="menu-wrap">
-        <span class="page-size" id="pageSizeSel"><span data-i18n="opPerPageA">每頁</span>
-          <button class="ps on" data-n="20">20</button>
-          <button class="ps" data-n="50">50</button>
-          <button class="ps" data-n="100">100</button>
-        <span data-i18n="opPerPageB">筆</span></span>
-        <button class="ghost-btn" id="moreBtn" data-i18n-title="opMoreTitle" title="更多動作" aria-haspopup="menu" aria-expanded="false">
-          <svg class="icon"><use href="#i-more"/></svg>
-        </button>
-        <div class="menu" id="moreMenu" hidden role="menu">
-          <button class="menu-item" id="exportBtn" role="menuitem">
-            <svg class="icon"><use href="#i-download"/></svg><span data-i18n="opExportJson">匯出 JSON</span>
-          </button>
-          <button class="menu-item" id="importBtn" role="menuitem">
-            <svg class="icon"><use href="#i-upload"/></svg><span data-i18n="opImportJson">匯入 JSON</span>
-          </button>
-          <hr class="menu-sep" />
-          <button class="menu-item danger" id="clearBtn" role="menuitem">
-            <svg class="icon"><use href="#i-trash"/></svg><span data-i18n="opClearAll">清除全部紀錄</span>
-          </button>
+    <!-- 圖表 + 設定 -->
+    <section class="duo">
+      <div class="card chart-card">
+        <div class="card-head">
+          <h2 data-i18n="opChartTitle">近 14 天活動</h2>
+          <span class="hint" data-i18n="opChartUnit">單位:次</span>
+        </div>
+        <div class="chart-wrap" id="chartWrap">
+          <svg id="chart" viewBox="0 0 560 230" role="img" aria-labelledby="chartDesc"></svg>
+          <div class="tooltip" id="chartTip"></div>
+          <span id="chartDesc" class="sr-only" data-i18n="opChartDesc">近 14 天每日活動次數</span>
         </div>
       </div>
-    </div>
-    <div class="history-tools">
-      <div class="search">
-        <svg class="icon"><use href="#i-search"/></svg>
-        <input type="search" id="searchInput" data-i18n-ph="opSearchPh" placeholder="搜尋帳號或網址…" />
+
+      <div class="card">
+        <div class="card-head"><h2 data-i18n="opSettingsTitle">設定</h2></div>
+        <div class="settings-body">
+          <label class="setting-row" for="autoClean">
+            <span class="txt">
+              <span class="name" data-i18n="opAutoCleanName">自動淨化分享按鈕</span>
+              <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址；關閉仍照常寫入紀錄。</div>
+            </span>
+            <input type="checkbox" id="autoClean" class="switch" />
+          </label>
+          <!-- 與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關說明
+               (popup 只留精簡標籤)。 -->
+          <label class="setting-row" for="postCopyEnabled">
+            <span class="txt">
+              <span class="name" data-i18n="opPostCopyName">貼文複製按鈕</span>
+              <div class="desc" data-i18n="opPostCopyDesc">在貼文互動列顯示複製連結按鈕</div>
+            </span>
+            <input type="checkbox" id="postCopyEnabled" class="switch" />
+          </label>
+          <label class="setting-row" for="saveHistory">
+            <span class="txt">
+              <span class="name" data-i18n="opSaveName">保存紀錄</span>
+              <div class="desc" data-i18n="opSaveDesc">僅存於本機</div>
+            </span>
+            <input type="checkbox" id="saveHistory" class="switch" />
+          </label>
+          <!-- LINE 群組引導警示的總開關。純本機功能，值存 chrome.storage.local，
+               不跟著帳號跨裝置同步，也不鏡像到 popup(見 options.js 的
+               LOCAL_SETTING_IDS)。 -->
+          <label class="setting-row" for="scamGuardEnabled">
+            <span class="txt">
+              <span class="name" data-i18n="opScamGuardName">LINE 群組引導警示</span>
+              <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文並標記作者；名單只存在這台裝置，不上雲。</div>
+              <!-- 名單本體搬到警示名單分頁，設定卡只留這條同頁錨點。原生 <a
+                   href="#flags"> 改 hash 後由 hashchange 接手切分頁，不需另外
+                   攔截 click;錨點是 interactive content，點它不會連帶觸發外層
+                   label 的開關切換。 -->
+              <a class="setting-link" id="scamManageLink" href="#flags" data-i18n="opScamManageLink">管理名單 →</a>
+            </span>
+            <input type="checkbox" id="scamGuardEnabled" class="switch" />
+          </label>
+        </div>
       </div>
-      <div class="menu-wrap">
-        <button class="ghost-btn" id="filterBtn" data-i18n-title="opFilterTitle" title="依來源篩選" aria-expanded="false" aria-controls="chipsRow">
-          <svg class="icon"><use href="#i-filter"/></svg>
-        </button>
-        <div class="menu chips-menu" id="chipsRow" hidden>
-          <div class="chips" id="chips">
-            <button class="chip on" data-kind="all" data-i18n="opChipAll">全部</button>
-            <button class="chip" data-kind="share" data-i18n="opKindShare">短碼解析</button>
-            <button class="chip" data-kind="strip" data-i18n="opKindStrip">剪除參數</button>
-            <button class="chip" data-kind="menu" data-i18n="opKindMenu">右鍵還原</button>
-            <button class="chip" data-kind="icon" data-i18n="opKindIcon">貼文按鈕</button>
+    </section>
+  </section>
+
+  <!-- 貼文分頁:紀錄卡(搜尋／篩選／每頁筆數／匯出匯入)。 -->
+  <section role="tabpanel" data-panel="posts" hidden>
+    <!-- 紀錄清單為卡片牆，單一 view 直接顯示，不分頁 tab。 -->
+    <section class="card history">
+      <div class="card-head">
+        <!-- opHistoryTitle 文字包在自己的 span 裡,不直接掛在 h2 上——
+             applyI18nDom 對 data-i18n 節點做 node.textContent = ...,若掛在
+             h2 本身，語言切換會把巢狀的 envBadgeHistory 一併清空(比照頁首
+             .sub 的 opSub span 同一套避雷寫法)。 -->
+        <h2><span data-i18n="opHistoryTitle">紀錄</span><span id="envBadgeHistory" class="env-badge env-badge-sm" hidden></span></h2>
+        <div class="menu-wrap">
+          <span class="page-size" id="pageSizeSel"><span data-i18n="opPerPageA">每頁</span>
+            <button class="ps on" data-n="20">20</button>
+            <button class="ps" data-n="50">50</button>
+            <button class="ps" data-n="100">100</button>
+          <span data-i18n="opPerPageB">筆</span></span>
+          <button class="ghost-btn" id="moreBtn" data-i18n-title="opMoreTitle" title="更多動作" aria-haspopup="menu" aria-expanded="false">
+            <svg class="icon"><use href="#i-more"/></svg>
+          </button>
+          <div class="menu" id="moreMenu" hidden role="menu">
+            <button class="menu-item" id="exportBtn" role="menuitem">
+              <svg class="icon"><use href="#i-download"/></svg><span data-i18n="opExportJson">匯出 JSON</span>
+            </button>
+            <button class="menu-item" id="importBtn" role="menuitem">
+              <svg class="icon"><use href="#i-upload"/></svg><span data-i18n="opImportJson">匯入 JSON</span>
+            </button>
+            <hr class="menu-sep" />
+            <button class="menu-item danger" id="clearBtn" role="menuitem">
+              <svg class="icon"><use href="#i-trash"/></svg><span data-i18n="opClearAll">清除全部紀錄</span>
+            </button>
           </div>
         </div>
       </div>
-    </div>
-    <div class="entry-grid" id="rows"></div>
-    <div class="empty" id="empty" hidden>
-      <svg class="icon"><use href="#i-history"/></svg>
-      <div data-i18n="opEmpty">沒有符合條件的紀錄</div>
-    </div>
-    <div class="list-foot">
-      <span id="countHint"></span>
-      <!-- 雲端同步狀態切換這一列的文案(options.js 的 renderSyncCard):未
-           登入維持既有「僅保存於這台裝置」承諾，已登入換成「已同步至你的
-           Google 帳號」。data-i18n 提供未登入態的初值，已登入態由 JS
-           顯式覆寫(比照 confirmTitleText 等既有做法)。 -->
-      <span id="deviceNote" data-i18n="opDeviceNote">紀錄僅保存於這台裝置</span>
-    </div>
+      <div class="history-tools">
+        <div class="search">
+          <svg class="icon"><use href="#i-search"/></svg>
+          <input type="search" id="searchInput" data-i18n-ph="opSearchPh" placeholder="搜尋帳號或網址…" />
+        </div>
+        <div class="menu-wrap">
+          <button class="ghost-btn" id="filterBtn" data-i18n-title="opFilterTitle" title="依來源篩選" aria-expanded="false" aria-controls="chipsRow">
+            <svg class="icon"><use href="#i-filter"/></svg>
+          </button>
+          <div class="menu chips-menu" id="chipsRow" hidden>
+            <div class="chips" id="chips">
+              <button class="chip on" data-kind="all" data-i18n="opChipAll">全部</button>
+              <button class="chip" data-kind="share" data-i18n="opKindShare">短碼解析</button>
+              <button class="chip" data-kind="strip" data-i18n="opKindStrip">剪除參數</button>
+              <button class="chip" data-kind="menu" data-i18n="opKindMenu">右鍵還原</button>
+              <button class="chip" data-kind="icon" data-i18n="opKindIcon">貼文按鈕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="entry-grid" id="rows"></div>
+      <div class="empty" id="empty" hidden>
+        <svg class="icon"><use href="#i-history"/></svg>
+        <div data-i18n="opEmpty">沒有符合條件的紀錄</div>
+      </div>
+      <div class="list-foot">
+        <span id="countHint"></span>
+        <!-- 雲端同步狀態切換這一列的文案(options.js 的 renderSyncCard):未
+             登入維持既有「僅保存於這台裝置」承諾，已登入換成「已同步至你的
+             Google 帳號」。data-i18n 提供未登入態的初值，已登入態由 JS
+             顯式覆寫(比照 confirmTitleText 等既有做法)。 -->
+        <span id="deviceNote" data-i18n="opDeviceNote">紀錄僅保存於這台裝置</span>
+      </div>
+    </section>
+  </section>
+
+  <!-- 警示名單分頁:警示名單卡(名單 ＋ 已解除)。 -->
+  <section role="tabpanel" data-panel="flags" hidden>
+    <!-- 警示名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
+         不進 syncState。名單列、證據連結與「已解除」小節都由 options.js 逐一
+         createElement 產生——displayName 與證據片段是他人貼文帶進來的字串，一律
+         走 textContent，不得 innerHTML。寫入端只有 background，本頁讀 storage
+         ＋監聽 onChanged，解除/復原經 runtime 訊息請 background 代寫。 -->
+    <section class="card scam-blocklist">
+      <div class="card-head">
+        <h2 data-i18n="opScamListTitle">警示名單</h2>
+        <button class="scam-info-btn" id="scamInfoBtn" type="button" data-i18n-aria="opScamInfoTitle" data-i18n-title="opScamInfoTitle" aria-label="這個功能怎麼運作" title="這個功能怎麼運作" aria-haspopup="dialog">
+          <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
+        </button>
+        <span class="hint" id="scamCount"></span>
+      </div>
+      <div class="scam-list" id="scamList"></div>
+      <div class="empty scam-empty" id="scamEmpty" hidden></div>
+      <div class="scam-allow" id="scamAllowlist" hidden></div>
+    </section>
   </section>
 
   <footer class="about">
@@ -1563,6 +1704,28 @@
         <span data-i18n="opAccountSyncNow">立即同步</span>
       </button>
     </div>
+  </div>
+</div>
+
+<!-- 警示名單的「命中 N 篇」證據對話框:主卡只放最新一筆，全部證據在這裡逐筆
+     列出。外框沿用裝置對話框那一組 overlay/modal 樣式;內容由 options.js 的
+     renderScamHits 填。 -->
+<div class="overlay" id="scamHitsOverlay" hidden>
+  <div class="modal modal-detail modal-scam-hits" role="dialog" aria-modal="true" aria-labelledby="scamHitsTitle">
+    <button class="detail-close" id="scamHitsClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+    <h3 id="scamHitsTitle"></h3>
+    <div class="scam-hits-list" id="scamHitsList"></div>
+  </div>
+</div>
+
+<!-- 警示名單卡的「這個功能怎麼運作」說明視窗:五段條列，全部由 options.js
+     以 textContent 寫入(文案走 i18n，不在 HTML 裡寫死)。外框沿用裝置／證據
+     對話框那一組 overlay/modal 樣式。 -->
+<div class="overlay" id="scamInfoOverlay" hidden>
+  <div class="modal modal-detail modal-scam-info" role="dialog" aria-modal="true" aria-labelledby="scamInfoTitle">
+    <button class="detail-close" id="scamInfoClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+    <h3 id="scamInfoTitle" data-i18n="opScamInfoTitle">這個功能怎麼運作</h3>
+    <ol class="scam-info-list" id="scamInfoList"></ol>
   </div>
 </div>
 

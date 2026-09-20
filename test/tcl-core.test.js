@@ -1745,3 +1745,537 @@ test.describe('詐騙偵測:normalizeScamBlocklist 的鍵形狀', () => {
     assert.deepEqual(out.allowlist['456'], { at: 2, handle: 'example_author' }, '合格鍵的值照舊正規化');
   });
 });
+
+// ============================================================
+// 詐騙偵測:證據結構補強(anchorPostUrl／threadUrl／anchorMatch／signals)
+//
+// 【為什麼要補】舊證據只有 { postUrl, snippet, at } 三欄，而 postUrl 存的是
+// 「使用者當時開的那一頁」。招攬串的錨點幾乎都落在末篇，點進證據連結看到的
+// 卻是第一篇的長篇鋪陳，使用者無從一眼確認當初為何被標記。四個新欄位把「哪
+// 一篇帶錨點」「整串從哪裡開始」「錨點本體是什麼」「踩到哪幾類訊號」一併留
+// 下，證據卡才講得清楚。
+//
+// 【欄位契約】
+//   anchorPostUrl 含錨點那一篇的永久連結(走 normalizePostUrl)
+//   threadUrl     串頭(第一篇)的永久連結(走 normalizePostUrl)
+//   anchorMatch   錨點本體，剝控制字元後硬裁 40 字
+//   signals       字串陣列，白名單 link|line|group|join|pitch，其餘剝除
+//   postUrl       維持原義:使用者當時開的那一頁(必要欄位，不合法整筆丟)
+//
+// 【向後相容】四欄皆為選填。舊證據缺欄時輸出就不帶該鍵(不是補 null 也不是
+// 補空字串)——選項頁靠「鍵在不在」決定要不要畫那一行，補空值會讓舊證據畫出
+// 一排空連結。
+//
+// 【不合法剝欄不剝筆】新欄位形狀不對時只剝掉那一欄，整筆證據照留:它們是加
+// 值資訊，不是證據成立的必要條件，為了一個壞掉的 threadUrl 丟掉整筆等於把使
+// 用者真的命中過的紀錄一起抹掉。postUrl 與 at 仍是必要欄位，維持原行為。
+// ============================================================
+
+// 同一位作者的三篇:0001 是使用者開的那一頁(也是串頭),0002 是帶錨點的末
+// 篇。合成資料沿用 example_author／DxSyNtH000x。
+const EV_PAGE_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const EV_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0002';
+const EV_THREAD_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const EV_OTHER_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0003';
+const EV_ANCHOR_TEXT = 'LINE：ab12cd';
+const EV_SIGNALS = ['line', 'group'];
+const EV_SNIPPET = '想多一個地方交流可以加 LINE：ab12cd，我把你拉進群組';
+
+// 條目序列化後的實際 UTF-8 位元組，供位元組估算的差額比對。
+const evUtf8 = (value) => Buffer.byteLength(value, 'utf8');
+
+// 帶滿四個新欄位的一筆證據(raw 形狀，尚未正規化)。
+function richEvidence(patch) {
+  return Object.assign(
+    {
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS.slice(),
+    },
+    patch || {}
+  );
+}
+
+test.describe('詐騙偵測:normalizeScamEvidence 的新欄位', () => {
+  test('normalizeScamEvidence:掛在 TCLCore 匯出(選項頁與 background 都要能單獨驗一筆證據)', () => {
+    assert.equal(
+      typeof C.normalizeScamEvidence,
+      'function',
+      'normalizeScamEvidence 應掛在 TCLCore 匯出'
+    );
+  });
+
+  test('normalizeScamEvidence:四個新欄位原樣留下，三個網址都走 normalizePostUrl', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence(richEvidence());
+    assert.deepEqual(out, {
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS,
+    });
+  });
+
+  test('normalizeScamEvidence:三個網址的容尾變體(尾斜線／query／hash)一律正規化成乾淨網址', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence(
+      richEvidence({
+        postUrl: EV_PAGE_URL + '/?xmt=AQGzabcdef',
+        anchorPostUrl: EV_ANCHOR_URL + '?xmt=AQGzabcdef',
+        threadUrl: EV_THREAD_URL + '#comments',
+      })
+    );
+    assert.equal(out.postUrl, EV_PAGE_URL, 'postUrl 去 query/尾斜線');
+    assert.equal(out.anchorPostUrl, EV_ANCHOR_URL, 'anchorPostUrl 同樣走 normalizePostUrl');
+    assert.equal(out.threadUrl, EV_THREAD_URL, 'threadUrl 同樣走 normalizePostUrl');
+  });
+
+  test('normalizeScamEvidence:不合法的 anchorPostUrl／threadUrl 只剝該欄，整筆證據照留', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const bads = [
+      'https://evil.example/@example_author/post/DxSyNtH0002',
+      'https://www.threads.com/@example_author',
+      'javascript:alert(1)',
+      '',
+      42,
+      null,
+      {},
+    ];
+    for (const bad of bads) {
+      const label = JSON.stringify(String(bad));
+
+      const a = C.normalizeScamEvidence(richEvidence({ anchorPostUrl: bad }));
+      assert.ok(a, 'anchorPostUrl=' + label + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(a, 'anchorPostUrl'),
+        false,
+        'anchorPostUrl=' + label + ' 應整欄剝除(不是補 null/空字串)'
+      );
+      assert.equal(a.postUrl, EV_PAGE_URL, '剝欄不得波及 postUrl');
+      assert.equal(a.threadUrl, EV_THREAD_URL, '剝欄不得波及同筆的其他新欄位');
+
+      const t = C.normalizeScamEvidence(richEvidence({ threadUrl: bad }));
+      assert.ok(t, 'threadUrl=' + label + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(t, 'threadUrl'),
+        false,
+        'threadUrl=' + label + ' 應整欄剝除'
+      );
+      assert.equal(t.anchorPostUrl, EV_ANCHOR_URL, '剝欄不得波及同筆的其他新欄位');
+    }
+  });
+
+  test('normalizeScamEvidence:postUrl 與 at 仍是必要欄位，不合法整筆回 null(行為不變)', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ postUrl: 'https://evil.example/x' })),
+      null,
+      'postUrl 不合法時整筆丟棄——新欄位再齊全也救不回一筆來源不明的證據'
+    );
+    assert.equal(C.normalizeScamEvidence(richEvidence({ at: 'now' })), null, 'at 非數字整筆丟棄');
+    assert.equal(C.normalizeScamEvidence(null), null);
+    assert.equal(C.normalizeScamEvidence('nope'), null);
+  });
+
+  test('normalizeScamEvidence:signals 只留白名單值，順序照 link|line|group|join|pitch 且去重', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence(
+      richEvidence({ signals: ['link', 'evil', 'line', 42, null, 'group', '', 'PITCH', 'join', 'pitch'] })
+    );
+    assert.deepEqual(
+      out.signals,
+      ['link', 'line', 'group', 'join', 'pitch'],
+      'signals 逐項過白名單(link|line|group|join|pitch)，其餘剝除;大小寫不放寬'
+    );
+  });
+
+  test('normalizeScamEvidence:signals 非陣列或全被剝光時整欄剝除，不留空陣列', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    for (const bad of ['line', 42, null, {}, ['evil', 'nope']]) {
+      const out = C.normalizeScamEvidence(richEvidence({ signals: bad }));
+      assert.ok(out, 'signals=' + JSON.stringify(String(bad)) + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out, 'signals'),
+        false,
+        'signals=' + JSON.stringify(String(bad)) + ' 應整欄剝除;留一個空陣列會讓證據卡畫出一排沒有 chip 的空白'
+      );
+    }
+  });
+
+  test('normalizeScamEvidence:anchorMatch 剝控制字元、硬裁 40 字;非字串整欄剝除', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    // 控制/bidi 字元用碼位組出，原始碼保持全 ASCII(見檔頭紀律)。
+    const dirty = 'LINE' + cp(0x202e) + '：ab12cd' + cp(0x0007);
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ anchorMatch: dirty })).anchorMatch,
+      EV_ANCHOR_TEXT,
+      'anchorMatch 會進選項頁 DOM，控制/bidi 字元一律剝掉'
+    );
+
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ anchorMatch: 'L'.repeat(80) })).anchorMatch.length,
+      40,
+      'anchorMatch 硬裁 40 字(儲存端保證，選項頁不必再截)'
+    );
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ anchorMatch: 'L'.repeat(40) })).anchorMatch.length,
+      40,
+      '恰 40 字不得誤裁'
+    );
+
+    for (const bad of [42, null, {}, []]) {
+      const out = C.normalizeScamEvidence(richEvidence({ anchorMatch: bad }));
+      assert.ok(out, 'anchorMatch=' + JSON.stringify(String(bad)) + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out, 'anchorMatch'),
+        false,
+        'anchorMatch 非字串應整欄剝除'
+      );
+    }
+  });
+
+  test('normalizeScamEvidence:舊形狀(只有 postUrl/snippet/at)原樣通過，不補出新欄位的空殼', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence({ postUrl: EV_PAGE_URL, snippet: '賴：ex01abc', at: 5 });
+    assert.deepEqual(
+      out,
+      { postUrl: EV_PAGE_URL, snippet: '賴：ex01abc', at: 5 },
+      '舊證據照舊只有三欄——選項頁靠「鍵在不在」決定畫不畫，補空殼會畫出空連結'
+    );
+  });
+
+  test('normalizeScamBlocklist:條目內的舊證據與新證據可以並存，各自保留自己有的欄位', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      entries: {
+        '10000000001': {
+          handle: 'example_author',
+          evidence: [richEvidence(), { postUrl: EV_OTHER_ANCHOR_URL, snippet: 'old', at: 1 }],
+          addedAt: 1,
+        },
+      },
+    });
+    const kept = out.entries['10000000001'].evidence;
+    assert.equal(kept.length, 2, '新舊證據並存，兩筆都要留');
+    assert.equal(kept[0].anchorPostUrl, EV_ANCHOR_URL, '新證據保留 anchorPostUrl');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(kept[1], 'anchorPostUrl'),
+      false,
+      '舊證據不得被補出新欄位'
+    );
+  });
+});
+
+test.describe('詐騙偵測:證據去重鍵改為 anchorPostUrl || postUrl', () => {
+  // 同一串被重掃(使用者從不同篇進入詳情頁)時，postUrl 會是不同的一頁，但錨
+  // 點篇永遠是同一篇。去重鍵若還綁 postUrl，同一次招攬會被記成好幾筆證據，
+  // 三筆額度一下就被同一串吃光。
+  test('mergeBlocklistEvidence:anchorPostUrl 相同時視為同一篇，即使 postUrl 不同也不重複入列', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'example_author',
+      evidence: [richEvidence({ postUrl: EV_PAGE_URL, at: 100 })],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(
+      entry,
+      richEvidence({ postUrl: EV_ANCHOR_URL, at: 900 })
+    );
+    assert.equal(
+      merged.evidence.length,
+      1,
+      '去重鍵是 anchorPostUrl:同一篇錨點只算一筆證據，不因使用者從哪一篇進來而分裂'
+    );
+    assert.equal(entry.evidence.length, 1, '純函式:不得就地改寫傳入的條目');
+  });
+
+  test('mergeBlocklistEvidence:anchorPostUrl 不同時各記一筆，即使 postUrl 相同', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'example_author',
+      evidence: [richEvidence({ at: 100 })],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(
+      entry,
+      richEvidence({ anchorPostUrl: EV_OTHER_ANCHOR_URL, at: 900 })
+    );
+    assert.equal(merged.evidence.length, 2, '兩篇不同的錨點篇是兩筆證據');
+    assert.deepEqual(
+      merged.evidence.map((e) => e.at),
+      [900, 100],
+      '依 at 降冪'
+    );
+  });
+
+  test('mergeBlocklistEvidence:缺 anchorPostUrl 的一側退回 postUrl 當鍵(新舊證據互相認得出同一篇)', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    // 舊證據只有 postUrl = 錨點篇;新證據帶 anchorPostUrl 指向同一篇。
+    const entry = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_ANCHOR_URL, snippet: 'old', at: 100 }],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(
+      entry,
+      richEvidence({ postUrl: EV_PAGE_URL, anchorPostUrl: EV_ANCHOR_URL, at: 900 })
+    );
+    assert.equal(
+      merged.evidence.length,
+      1,
+      '舊證據的 postUrl 與新證據的 anchorPostUrl 指向同一篇，不得記成兩筆'
+    );
+  });
+
+  test('mergeBlocklistEvidence:併入的新證據四個欄位一併落盤', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_OTHER_ANCHOR_URL, snippet: 'old', at: 100 }],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const added = C.mergeBlocklistEvidence(entry, richEvidence({ at: 900 })).evidence[0];
+    assert.equal(added.anchorPostUrl, EV_ANCHOR_URL);
+    assert.equal(added.threadUrl, EV_THREAD_URL);
+    assert.equal(added.anchorMatch, EV_ANCHOR_TEXT);
+    assert.deepEqual(added.signals, EV_SIGNALS);
+  });
+});
+
+test.describe('詐騙偵測:capScamEvidence／scamEntryBytes 與新欄位', () => {
+  test('capScamEvidence:掛在 TCLCore 匯出', () => {
+    assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
+  });
+
+  test('capScamEvidence:留最新三筆且四個新欄位原樣帶過，snippet 仍硬裁 120', () => {
+    assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
+    const list = [1, 2, 3, 4].map((i) =>
+      richEvidence({
+        postUrl: 'https://www.threads.com/@example_author/post/DxSyNtH000' + i,
+        anchorPostUrl: 'https://www.threads.com/@example_author/post/DxSyNtA000' + i,
+        snippet: 'S'.repeat(300),
+        at: i * 100,
+      })
+    );
+    const kept = C.capScamEvidence(list);
+    assert.equal(kept.length, 3, '每位作者仍只留三筆證據');
+    assert.deepEqual(
+      kept.map((e) => e.at),
+      [400, 300, 200],
+      '保留最新三筆且依 at 降冪'
+    );
+    kept.forEach((e) => {
+      assert.equal(e.snippet.length, 120, 'snippet 仍硬裁 120 字');
+      assert.equal(
+        e.anchorPostUrl,
+        'https://www.threads.com/@example_author/post/DxSyNtA000' + e.at / 100,
+        'anchorPostUrl 不得在裁切時被丟掉'
+      );
+      assert.equal(e.threadUrl, EV_THREAD_URL, 'threadUrl 不得在裁切時被丟掉');
+      assert.equal(e.anchorMatch, EV_ANCHOR_TEXT, 'anchorMatch 不得在裁切時被丟掉');
+      assert.deepEqual(e.signals, EV_SIGNALS, 'signals 不得在裁切時被丟掉');
+    });
+  });
+
+  test('capScamEvidence:舊形狀證據裁切後仍只有三欄，不得補出新欄位', () => {
+    assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
+    const kept = C.capScamEvidence([{ postUrl: EV_PAGE_URL, snippet: 'old', at: 7 }]);
+    assert.deepEqual(kept, [{ postUrl: EV_PAGE_URL, snippet: 'old', at: 7 }]);
+  });
+
+  test('capScamBlocklist:整包裁切走完一輪後，新欄位仍在(正規化與裁切都不得吃掉它們)', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.capScamBlocklist({
+      entries: {
+        '10000000001': {
+          handle: 'example_author',
+          displayName: 'Example Author',
+          evidence: [richEvidence()],
+          addedAt: 1700000100000,
+          source: 'auto',
+        },
+      },
+    });
+    const ev = out.entries['10000000001'].evidence[0];
+    assert.equal(ev.anchorPostUrl, EV_ANCHOR_URL);
+    assert.equal(ev.threadUrl, EV_THREAD_URL);
+    assert.equal(ev.anchorMatch, EV_ANCHOR_TEXT);
+    assert.deepEqual(ev.signals, EV_SIGNALS);
+  });
+
+  test('scamEntryBytes:掛在 TCLCore 匯出，且估算把新欄位一起算進去', () => {
+    assert.equal(typeof C.scamEntryBytes, 'function', 'scamEntryBytes 應掛在 TCLCore 匯出');
+    const lean = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_PAGE_URL, snippet: 'x', at: 1 }],
+      addedAt: 1,
+      source: 'auto',
+    };
+    const rich = {
+      handle: 'example_author',
+      evidence: [richEvidence({ snippet: 'x', at: 1 })],
+      addedAt: 1,
+      source: 'auto',
+    };
+    const leanBytes = C.scamEntryBytes('10000000001', lean);
+    const richBytes = C.scamEntryBytes('10000000001', rich);
+    assert.equal(typeof leanBytes, 'number');
+    assert.ok(
+      richBytes > leanBytes,
+      '新欄位佔的位元組必須計入，否則 2MB 軟預算會低估、先爆的是 storage 配額而不是預算'
+    );
+    // 四個新欄位的序列化長度是可算的下界:估算不得只多算一點意思意思。
+    const delta = evUtf8(JSON.stringify(rich)) - evUtf8(JSON.stringify(lean));
+    assert.equal(
+      richBytes - leanBytes,
+      delta,
+      '兩者的差額應等於條目序列化後的實際 UTF-8 位元組差(估算以 JSON.stringify 全量計)'
+    );
+  });
+});
+
+test.describe('詐騙偵測:makeBlocklistEntry 帶新欄位', () => {
+  test('makeBlocklistEntry:一次命中的四個新欄位要寫進 evidence[0]', () => {
+    assert.equal(typeof C.makeBlocklistEntry, 'function', 'makeBlocklistEntry 應掛在 TCLCore 匯出');
+    const entry = C.makeBlocklistEntry({
+      handle: 'example_author',
+      displayName: 'Example Author',
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS.slice(),
+      source: 'auto',
+    });
+    assert.equal(entry.evidence.length, 1);
+    assert.deepEqual(entry.evidence[0], {
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS,
+    });
+  });
+
+  test('makeBlocklistEntry:命中沒帶新欄位時 evidence[0] 維持舊三欄形狀', () => {
+    assert.equal(typeof C.makeBlocklistEntry, 'function', 'makeBlocklistEntry 應掛在 TCLCore 匯出');
+    const entry = C.makeBlocklistEntry({
+      handle: 'example_author',
+      postUrl: EV_PAGE_URL,
+      snippet: 'x',
+      at: 5,
+      source: 'auto',
+    });
+    assert.deepEqual(entry.evidence[0], { postUrl: EV_PAGE_URL, snippet: 'x', at: 5 });
+  });
+});
+
+// ============================================================
+// 詐騙偵測:證據的 postedAt(貼文發布時間)
+//
+// 【為什麼要】證據原本只有 at＝「掃到的時間」。使用者在證據卡上想知道的是
+// 「這篇招攬貼文是什麼時候發的」——同一位作者去年貼的跟上週貼的，判斷份量
+// 完全不同，而掃描時間只反映使用者什麼時候剛好滑到那一頁。
+//
+// 【契約】選填、有限數字才留，其餘整欄剝除(比照另外四欄:剝欄不剝筆)。
+// 缺席時不補鍵——選項頁靠「鍵在不在」決定要不要退回 at。
+// ============================================================
+
+const EV_POSTED_AT = 1789700000000;
+
+test.describe('詐騙偵測:normalizeScamEvidence 的 postedAt', () => {
+  test('normalizeScamEvidence:postedAt 為有限數字時原樣留下', () => {
+    const out = C.normalizeScamEvidence(richEvidence({ postedAt: EV_POSTED_AT }));
+    assert.equal(out.postedAt, EV_POSTED_AT, '貼文發布時間原樣落盤');
+    assert.equal(out.at, 1700000100000, 'at(掃到的時間)是另一欄，兩者不得互相取代');
+  });
+
+  test('normalizeScamEvidence:postedAt 非有限數字時整欄剝除，整筆證據照留', () => {
+    for (const bad of ['2026-09-18', NaN, Infinity, null, {}, [], true]) {
+      const out = C.normalizeScamEvidence(richEvidence({ postedAt: bad }));
+      assert.ok(out, 'postedAt=' + JSON.stringify(String(bad)) + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out, 'postedAt'),
+        false,
+        'postedAt 非有限數字應整欄剝除(不是補 null/0)'
+      );
+      assert.equal(out.at, 1700000100000, '剝欄不得波及 at');
+    }
+  });
+
+  test('normalizeScamEvidence:沒帶 postedAt 的證據不得被補出這一欄', () => {
+    const out = C.normalizeScamEvidence({ postUrl: EV_PAGE_URL, snippet: 'x', at: 5 });
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out, 'postedAt'),
+      false,
+      '缺席就不補鍵——選項頁靠「鍵在不在」決定要不要退回 at'
+    );
+  });
+
+  test('capScamEvidence:裁切時 postedAt 一併帶過', () => {
+    const kept = C.capScamEvidence([
+      richEvidence({ snippet: 'S'.repeat(300), at: 100, postedAt: EV_POSTED_AT }),
+    ]);
+    assert.equal(kept[0].postedAt, EV_POSTED_AT, 'postedAt 不得在裁切時被丟掉');
+    assert.equal(kept[0].snippet.length, 120, '前置:snippet 仍硬裁 120');
+  });
+
+  test('makeBlocklistEntry:一次命中的 postedAt 要寫進 evidence[0]', () => {
+    const entry = C.makeBlocklistEntry({
+      handle: 'example_author',
+      postUrl: EV_PAGE_URL,
+      snippet: 'x',
+      at: 5,
+      postedAt: EV_POSTED_AT,
+      source: 'auto',
+    });
+    assert.equal(entry.evidence[0].postedAt, EV_POSTED_AT);
+  });
+
+  test('mergeBlocklistEvidence:併入的新證據帶著自己的 postedAt', () => {
+    const entry = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_OTHER_ANCHOR_URL, snippet: 'old', at: 100 }],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const added = C.mergeBlocklistEvidence(entry, richEvidence({ at: 900, postedAt: EV_POSTED_AT }))
+      .evidence[0];
+    assert.equal(added.postedAt, EV_POSTED_AT);
+  });
+
+  test('scamEntryBytes:postedAt 佔的位元組要計入', () => {
+    const lean = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_PAGE_URL, snippet: 'x', at: 1 }],
+      addedAt: 1,
+      source: 'auto',
+    };
+    const withPosted = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_PAGE_URL, snippet: 'x', at: 1, postedAt: EV_POSTED_AT }],
+      addedAt: 1,
+      source: 'auto',
+    };
+    assert.equal(
+      C.scamEntryBytes('10000000001', withPosted) - C.scamEntryBytes('10000000001', lean),
+      evUtf8(JSON.stringify(withPosted)) - evUtf8(JSON.stringify(lean)),
+      '差額應等於條目序列化後的實際 UTF-8 位元組差'
+    );
+  });
+});

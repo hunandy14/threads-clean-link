@@ -687,6 +687,11 @@ function isScamContentScriptSender(sender) {
 // scam.hit 的 payload 驗證。不合格一律回 null（呼叫端轉成 bad_request）：
 // 黑名單是使用者資料，形狀可疑的回報寧可整筆不收。userId 允許缺席（null）
 // ——那是登入態 SSR JSON 讀不到 id 的情形，由匿名 GET 備援補。
+//
+// 證據補強的四欄（anchorPostUrl／threadUrl／anchorMatch／signals）一律可缺
+// 席——舊版 content script 送來的三欄 payload 照常受理——但**有帶就驗形
+// 狀，不合格整筆回 bad_request**：payload 是自家 content script 送的，形狀
+// 不對代表兩端版本對不上，默默剝掉會讓錯誤晚好幾週才被發現。
 function validateScamHit(message) {
   if (!message) return null;
   if (typeof message.handle !== 'string' || !SCAM_HANDLE_PATTERN.test(message.handle)) return null;
@@ -701,6 +706,43 @@ function validateScamHit(message) {
     userId = message.userId;
   }
 
+  let anchorPostUrl;
+  if (message.anchorPostUrl !== null && message.anchorPostUrl !== undefined) {
+    anchorPostUrl = TCLCore.normalizePostUrl(message.anchorPostUrl);
+    if (anchorPostUrl === null) return null;
+  }
+
+  let threadUrl;
+  if (message.threadUrl !== null && message.threadUrl !== undefined) {
+    threadUrl = TCLCore.normalizePostUrl(message.threadUrl);
+    if (threadUrl === null) return null;
+  }
+
+  let anchorMatch;
+  if (message.anchorMatch !== null && message.anchorMatch !== undefined) {
+    if (typeof message.anchorMatch !== 'string' || message.anchorMatch.length > TCLCore.SCAM_ANCHOR_MATCH_MAX) {
+      return null;
+    }
+    anchorMatch = message.anchorMatch;
+  }
+
+  let signals;
+  if (message.signals !== null && message.signals !== undefined) {
+    if (!Array.isArray(message.signals)) return null;
+    for (let i = 0; i < message.signals.length; i++) {
+      if (TCLCore.SCAM_SIGNALS.indexOf(message.signals[i]) === -1) return null;
+    }
+    signals = message.signals;
+  }
+
+  // postedAt 是貼文發布時間（at 是掃到的時間）。同一條規則：缺席通過，有帶
+  // 就必須是有限數字。
+  let postedAt;
+  if (message.postedAt !== null && message.postedAt !== undefined) {
+    if (typeof message.postedAt !== 'number' || !isFinite(message.postedAt)) return null;
+    postedAt = message.postedAt;
+  }
+
   return {
     userId,
     handle: message.handle,
@@ -708,6 +750,11 @@ function validateScamHit(message) {
     postUrl,
     snippet: message.snippet,
     at: message.at,
+    anchorPostUrl,
+    threadUrl,
+    anchorMatch,
+    signals,
+    postedAt,
   };
 }
 
@@ -965,9 +1012,23 @@ async function handleScamHit(message) {
           postUrl: hit.postUrl,
           snippet: hit.snippet,
           at: hit.at,
+          anchorPostUrl: hit.anchorPostUrl,
+          threadUrl: hit.threadUrl,
+          anchorMatch: hit.anchorMatch,
+          signals: hit.signals,
+          postedAt: hit.postedAt,
           source: 'auto',
         })
-      : TCLCore.mergeBlocklistEvidence(existing, { postUrl: hit.postUrl, snippet: hit.snippet, at: hit.at });
+      : TCLCore.mergeBlocklistEvidence(existing, {
+          postUrl: hit.postUrl,
+          snippet: hit.snippet,
+          at: hit.at,
+          anchorPostUrl: hit.anchorPostUrl,
+          threadUrl: hit.threadUrl,
+          anchorMatch: hit.anchorMatch,
+          signals: hit.signals,
+          postedAt: hit.postedAt,
+        });
 
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
     // entries 重建，孤兒鍵沒有任何機會留下。
