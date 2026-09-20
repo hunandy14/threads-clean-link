@@ -625,8 +625,20 @@ const SCAM_AUTHOR_ID_PATTERN = /"post_author_id":"(\d{1,20})"/g;
 // 備援回應的掃描上限。**刻意不與 og 擷取的 OG_SCAN_LIMIT 共用**：og:meta 必
 // 在 <head>，64KB 綽綽有餘；這裡要的 RelayPrefetchedStreamCache 是 SSR 的
 // JSON 酬載，真實貼文頁常把它推到文件中後段，用 64KB 切會把 post_author_id
-// 切在範圍外，備援等於長期失效。仍保留上限，不對超大回應做無界正則掃描。
-const SCAM_SCAN_LIMIT = 524288;
+// 切在範圍外，備援等於長期失效。登出態的永久連結回應實測約 581KB，0.5MB 的
+// 上限同樣會把 route props 整段切掉，因此放到 1MB。仍保留上限，不對超大回應
+// 做無界正則掃描。
+const SCAM_SCAN_LIMIT = 1048576;
+
+// 文件身分的 meta 屬性名：兩者的 content 都是本篇貼文的永久連結，任一個對得
+// 上請求的網址，就足以確認「拿回來的這份 HTML 就是我要的那一篇」。
+const SCAM_DOC_IDENTITY_PROPERTIES = ['og:url', 'al:android:url'];
+
+// <meta> 標籤與其屬性。屬性順序（property 在前或 content 在前）與引號種類
+// （雙引號、單引號、無引號）在真實 HTML 都不固定，逐標籤拆屬性而非把單一形
+// 狀寫死進正則。
+const SCAM_META_TAG_PATTERN = /<meta\b([^>]*)>/gi;
+const SCAM_META_ATTR_PATTERN = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
 
 // 交叉驗證的比對視窗（以命中的 post_author_id 位置為中心，前後各這麼多字）。
 // 整份文字比對太寬：頁面任何角落出現過本人的 username，就會替一個不相干的
@@ -718,27 +730,76 @@ function scamThrottleArea() {
   return hasStorageLocal() ? chrome.storage.local : null;
 }
 
-// 匿名 GET 取作者數字 id。比照 resolveFinalUrl 用 OG_FETCH_HEADERS：**不得
-// 帶 User-Agent**，帶了 Threads 只回 SPA 殼，撈不到任何 SSR 欄位。
-// credentials:'omit' 不帶使用者 cookie（不以使用者身分發非觸發請求）；
-// redirect:'error' 讓轉址直接算失敗，不跟著跳到登入／驗證頁；signal 讓慢回應
-// 在 SCAM_FETCH_TIMEOUT_MS 後中斷。
-//
-// 【交叉驗證】回應裡的 post_author_id 未必就是 handle 那個人：轉址到別篇貼
-// 文、頁面嵌了他人的引用貼文、或 content script 被頁面腳本餵了假 handle，都
-// 會讓不相干的帳號被寫進黑名單。逐個 post_author_id 候選試，每個只在它前後
-// SCAM_AUTHOR_ID_WINDOW 字的切片內找對應的 username（Threads 的 handle 不分
-// 大小寫，比對亦不分；handle 先正則逸出，句點不得當萬用字元），全部落空回
-// null——本篇作者的 id 與 username 必然相鄰，隔著幾千字的那一組不是同一筆。
-async function fetchScamAuthorId(postUrl, handle) {
-  const response = await fetch(postUrl, {
-    method: 'GET',
-    credentials: 'omit',
-    headers: OG_FETCH_HEADERS,
-    redirect: 'error',
-    signal: AbortSignal.timeout(SCAM_FETCH_TIMEOUT_MS),
-  });
-  const scanText = (await response.text()).slice(0, SCAM_SCAN_LIMIT);
+// 身分鍵的網域歸一：threads.net 與 threads.com 是同一個站的兩個網域，`www.`
+// 也可有可無，一律寫成 `https://www.threads.com/`。使用者可能停在 threads.net
+// 的分頁上，回應的 og:url 卻一律是 www.threads.com，不歸一就會判成兩篇不同的
+// 貼文，備援在 .net 分頁上全面失效。
+const SCAM_IDENTITY_HOST_PATTERN = /^https:\/\/(?:www\.)?threads\.(?:com|net)\//;
+const SCAM_IDENTITY_HOST = 'https://www.threads.com/';
+
+// 貼文網址的身分鍵：正規化後把網域歸一、handle 段轉小寫，供兩個網址比「是不
+// 是同一篇」。Threads 的 handle 不分大小寫（/@Example/post/X 與 /@example/post/X
+// 是同一篇），post 識別碼則分大小寫，只壓前半段、`/post/` 之後原樣保留。比對
+// 兩側（請求的 postUrl 與回應宣告的身分網址）都走這支，歸一規則必然一致。不
+// 是貼文永久連結（正規化失敗）回 null——無從比對，不算身分宣告。
+function scamPostIdentityKey(url) {
+  const normalized = TCLCore.normalizePostUrl(url);
+  if (normalized === null) return null;
+  const at = normalized.lastIndexOf('/post/');
+  const head = normalized.slice(0, at).toLowerCase().replace(SCAM_IDENTITY_HOST_PATTERN, SCAM_IDENTITY_HOST);
+  return head + normalized.slice(at);
+}
+
+// 逐個 <meta> 拆屬性，取出文件身分 meta（og:url／al:android:url）的 content，
+// entity 還原後回傳。真機回應的 content 是
+// `https://www.threads.com/&#064;<handle>/post/<code>`，`@` 以 entity 形式出
+// 現，不還原永遠對不上。property 與 name 兩種屬性名都認。
+function scamDocIdentityUrls(scanText) {
+  const urls = [];
+  // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
+  SCAM_META_TAG_PATTERN.lastIndex = 0;
+  let tag = SCAM_META_TAG_PATTERN.exec(scanText);
+  while (tag !== null) {
+    let property = '';
+    let content = null;
+    SCAM_META_ATTR_PATTERN.lastIndex = 0;
+    let attr = SCAM_META_ATTR_PATTERN.exec(tag[1]);
+    while (attr !== null) {
+      const name = attr[1].toLowerCase();
+      const value = attr[2] !== undefined ? attr[2] : attr[3] !== undefined ? attr[3] : attr[4];
+      if (name === 'property' || name === 'name') property = value.toLowerCase();
+      else if (name === 'content') content = value;
+      attr = SCAM_META_ATTR_PATTERN.exec(tag[1]);
+    }
+    if (content !== null && SCAM_DOC_IDENTITY_PROPERTIES.indexOf(property) !== -1) {
+      urls.push(decodeHtmlEntities(content));
+    }
+    tag = SCAM_META_TAG_PATTERN.exec(scanText);
+  }
+  return urls;
+}
+
+// 文件身分過關後的取值：回應裡的 post_author_id 候選必須全部同值才採信。這
+// 份 HTML 已確認是本篇貼文，但仍可能嵌著引用貼文或推薦貼文的作者 id，兩個以
+// 上不同值時哪一個是本篇作者無從判定，一律回 null。
+function scamSoleAuthorId(scanText) {
+  let sole = null;
+  // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
+  SCAM_AUTHOR_ID_PATTERN.lastIndex = 0;
+  let match = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
+  while (match !== null) {
+    if (sole !== null && match[1] !== sole) return null;
+    sole = match[1];
+    match = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
+  }
+  return sole;
+}
+
+// 替代錨點：逐個 post_author_id 候選試，每個只在它前後 SCAM_AUTHOR_ID_WINDOW
+// 字的切片內找對應的 username（Threads 的 handle 不分大小寫，比對亦不分；
+// handle 先正則逸出，句點不得當萬用字元），全部落空回 null——本篇作者的 id
+// 與 username 必然相鄰，隔著幾千字的那一組不是同一筆。
+function scamAuthorIdNearUsername(scanText, handle) {
   const usernamePattern = new RegExp('"username":"' + escapeRegExp(handle) + '"', 'i');
 
   // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
@@ -750,6 +811,45 @@ async function fetchScamAuthorId(postUrl, handle) {
     match = SCAM_AUTHOR_ID_PATTERN.exec(scanText);
   }
   return null;
+}
+
+// 匿名 GET 取作者數字 id。比照 resolveFinalUrl 用 OG_FETCH_HEADERS：**不得
+// 帶 User-Agent**，帶了 Threads 只回 SPA 殼，撈不到任何 SSR 欄位。
+// credentials:'omit' 不帶使用者 cookie（不以使用者身分發非觸發請求）；
+// redirect:'error' 讓轉址直接算失敗，不跟著跳到登入／驗證頁；signal 讓慢回應
+// 在 SCAM_FETCH_TIMEOUT_MS 後中斷。非 2xx 直接回 null：錯誤頁的內容不是貼文
+// 本身，不得拿來背書任何 id。
+//
+// 【交叉驗證】回應裡的 post_author_id 未必就是 handle 那個人：轉址到別篇貼
+// 文、頁面嵌了他人的引用貼文、或 content script 被頁面腳本餵了假 handle，都
+// 會讓不相干的帳號被寫進黑名單。主判準是**文件身分**：og:url／al:android:url
+// 的 content 正規化後必須等於請求的 postUrl，確認這份 HTML 就是我要的那一
+// 篇，才採信其中的 post_author_id（且候選必須全部同值）。有身分 meta 指向另
+// 一篇時一律回 null，這道否決優先於 username 視窗——登出態的回應整份沒有
+// `"username":"`，視窗判準對真機貼文永遠落空，只剩文件身分認得出這一篇。
+// 沒有任何可比對的身分 meta（登入態或舊形狀的回應）才退回 username 視窗。
+async function fetchScamAuthorId(postUrl, handle) {
+  const response = await fetch(postUrl, {
+    method: 'GET',
+    credentials: 'omit',
+    headers: OG_FETCH_HEADERS,
+    redirect: 'error',
+    signal: AbortSignal.timeout(SCAM_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) return null;
+  const scanText = (await response.text()).slice(0, SCAM_SCAN_LIMIT);
+
+  // 身分 meta 只掃前 OG_SCAN_LIMIT 字，post_author_id 才吃整份 1MB 切片：og
+  // meta 必在 <head>，離文件開頭很近。兩個理由——正則的最壞成本回到既有
+  // extractOgMeta 同級（<meta> 標籤掃描不對 1MB 正文做無界比對）；正文區的未
+  // 逸出字串（貼文內文可以原樣寫出一段 <meta property="og:url" …>）不會被當
+  // 成這份文件的身分宣告，身分只認 head 裡站方自己產的那幾個標籤。
+  const wanted = scamPostIdentityKey(postUrl);
+  const claimed = scamDocIdentityUrls(scanText.slice(0, OG_SCAN_LIMIT)).map(scamPostIdentityKey);
+  if (claimed.some((key) => key !== null && key !== wanted)) return null;
+  if (claimed.some((key) => key !== null && key === wanted)) return scamSoleAuthorId(scanText);
+
+  return scamAuthorIdNearUsername(scanText, handle);
 }
 
 // 節流表淘汰：先剔除已過期（早就不再有節流作用）的鍵，補上本次這一篇，再以

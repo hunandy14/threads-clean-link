@@ -7,6 +7,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+// background.js 模組層的 const 只存在於 vm context 的全域詞法環境，不會變成
+// sandbox 物件的屬性;要斷言常數值（例如掃描上限）只能在同一個 context 內求值。
+const vm = require('node:vm');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
 
 // background.js 依賴共用 i18n 與 tcl-core 模組(真實環境靠 importScripts
@@ -5103,8 +5106,9 @@ test('L4 審查:節流表筆數上限 500——第 501 筆淘汰最舊的一筆'
 // 【R3 翻轉，PM 授權】掃描上限原本沿用 og 擷取的 OG_SCAN_LIMIT（65536）。
 // 兩者要的東西不同：og meta 必在 <head>，SSR 的 RelayPrefetchedStreamCache
 // 卻常被推到文件中後段，64KB 會把真實貼文頁的 post_author_id 切在範圍外，
-// 備援等於長期失效。改用 SCAM_SCAN_LIMIT（524288，0.5MB），仍保留上限以免
-// 對超大回應做無界正則掃描。
+// 備援等於長期失效。改用 SCAM_SCAN_LIMIT，仍保留上限以免對超大回應做無界
+// 正則掃描。上限值本身在下方「掃描上限：512KB → 1MB」一節釘死（1048576）
+// ——真機的登出態回應約 581KB，0.5MB 擋不住。
 test('L4 覆審:備援掃描上限改 SCAM_SCAN_LIMIT——id 在 100000 字處仍取得到', async () => {
   const within =
     '<html><body>' + 'x'.repeat(100000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
@@ -5123,9 +5127,9 @@ test('L4 覆審:備援掃描上限改 SCAM_SCAN_LIMIT——id 在 100000 字處�
   assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
 });
 
-test('L4 覆審:備援掃描上限仍有天花板——id 在 600000 字處擷取不到', async () => {
+test('L4 覆審:備援掃描上限仍有天花板——id 在 1100000 字處擷取不到', async () => {
   const beyond =
-    '<html><body>' + 'x'.repeat(600000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
+    '<html><body>' + 'x'.repeat(1100000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
   const fetchStub = makeScamFetch({ [SCAM_POST_URL]: beyond });
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
@@ -5138,7 +5142,7 @@ test('L4 覆審:備援掃描上限仍有天花板——id 在 600000 字處擷�
   assert.deepEqual(
     deep(res.response),
     { ok: false, code: 'no_user_id' },
-    '超過 SCAM_SCAN_LIMIT（524288）的部分不掃，不得整份掃到底'
+    '超過 SCAM_SCAN_LIMIT（1048576）的部分不掃，不得整份掃到底'
   );
   assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
   assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
@@ -5351,4 +5355,380 @@ test('L4 覆審:交叉驗證視窗對照組——username 在 id 之前 1000 字
   const response = deep(res.response);
   assert.equal(response && response.ok, true, '視窗是前後各 2000 字，username 在前也算');
   assert.ok(scamEntry(bg));
+});
+
+// ============================================================
+// L4 匿名備援的文件身分交叉驗證（og:url／al:android:url）
+// ============================================================
+//
+// staging 真機診斷：登出態永久連結的匿名 GET 回應（HTTP 200、無轉址、約
+// 581KB 完整 HTML）**整份沒有 `"username":"`**。handle 只以 HTML entity 的
+// 形式出現在 meta——og:url／al:android:url 的 content 是
+// `https://www.threads.com/&#064;<handle>/post/<code>`（`&#064;` 即 `@`）。
+// post_author_id 則躺在 route props 內、偏移約 180KB，同一值出現兩處。
+//
+// 既有的 `"username":"<handle>"` ±2000 字視窗判準因此對所有貼文永遠落空，
+// 備援一律回 null → no_user_id → 掛得了 tag 卻進不了名單。新契約改以
+// **文件身分**當主錨點：meta 的 og:url（或 al:android:url）還原 entity、經
+// TCLCore.normalizePostUrl 正規化後必須等於請求的 postUrl（handle 不分大小
+// 寫），確認「這份 HTML 就是我要的那一篇」之後，才採信其中的
+// post_author_id，而且候選必須全部同值。username 視窗降級為替代錨點，只在
+// og:url 缺席時仍可通過（登入態或舊形狀的回應）。
+// 另：真機回應 581KB 已超過舊的 SCAM_SCAN_LIMIT（512KB），上限提高到 1MB。
+
+// meta 標籤產生器。屬性順序與引號在真實 HTML 裡都不固定，解析不得寫死成
+// 「property 在前、雙引號」的單一形狀。
+function scamOgMeta(property, content, opts) {
+  const o = opts || {};
+  const q = o.singleQuote ? "'" : '"';
+  const attrs = o.contentFirst
+    ? 'content=' + q + content + q + ' property=' + q + property + q
+    : 'property=' + q + property + q + ' content=' + q + content + q;
+  return '<meta ' + attrs + ' />';
+}
+
+// meta content 裡的永久連結。`@` 在真機回應是 entity，預設沿用真機的 &#064;。
+function scamEntityUrl(handle, code, atEntity) {
+  return 'https://www.threads.com/' + (atEntity === undefined ? '&#064;' : atEntity) + handle + '/post/' + code;
+}
+
+// 小份的真機形狀：og meta 在 <head>，post_author_id 同值兩處，整份不含
+// `"username":"`。填充只用 'x'，不會夾帶別的錨點。
+function scamOgAuthorHtml(meta, userId) {
+  return (
+    '<html><head>' +
+    meta +
+    '</head><body>' +
+    '{"post_id":"x","post_author_id":"' +
+    userId +
+    '"}' +
+    'x'.repeat(4000) +
+    '{"post_id":"y","post_author_id":"' +
+    userId +
+    '"}' +
+    '</body></html>'
+  );
+}
+
+// 真機份量的形狀：兩處 post_author_id 都落在舊的 512KB 掃描上限之外，整份
+// 約 600KB。舊上限下兩個 id 都看不到，新的 1MB 上限才掃得到。
+function scamDeepOgAuthorHtml(meta, userId) {
+  return (
+    '<html><head>' +
+    meta +
+    '</head><body>' +
+    'x'.repeat(550000) +
+    '{"post_id":"x","post_author_id":"' +
+    userId +
+    '"}' +
+    'x'.repeat(30000) +
+    '{"post_id":"y","post_author_id":"' +
+    userId +
+    '"}' +
+    'x'.repeat(20000) +
+    '</body></html>'
+  );
+}
+
+// 讀 background 模組層的 const。vm 的 top-level const 落在 context 的全域詞
+// 法環境，不是 sandbox 物件的屬性，只能在同一個 context 內求值取得。
+function scamConst(bg, name) {
+  return vm.runInContext(name, bg.sandbox);
+}
+
+// ---- 正例：og:url 認得出文件身分 ----
+
+test('L4 文件身分:真機形狀——整份沒有 username 錨點，靠 og:url 認身分，id 在 550000 字處仍取得到', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  const html = scamDeepOgAuthorHtml(meta, SCAM_USER_ID);
+  assert.equal(html.includes('"username":"'), false, '前提：真機回應整份沒有 "username":" 這個舊錨點');
+  assert.ok(html.length > 524288, '前提：真機回應大於舊的 512KB 掃描上限');
+
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(1000);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'og:url 對得上請求的貼文，就該採信其中的 post_author_id');
+  assert.equal(response.added, true, 'userId 由備援補回後照常建條目');
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+  assert.equal(scamEntry(bg, SCAM_USER_ID).handle, SCAM_HANDLE, '以 og:url 背書的 post_author_id 當 entries 的鍵');
+});
+
+test('L4 文件身分:meta 屬性順序顛倒、單引號、&#x40; 變體一樣要認得', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001', '&#x40;'), {
+    contentFirst: true,
+    singleQuote: true,
+  });
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'HTML 的屬性順序與引號都不固定，解析不得寫死單一形狀');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+test('L4 文件身分:og:url 缺席但 al:android:url 在，一樣認得出文件身分', async () => {
+  const meta = scamOgMeta('al:android:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  const html = scamOgAuthorHtml(meta, SCAM_USER_ID);
+  assert.equal(html.includes('og:url'), false, '前提：這份回應沒有 og:url，只有 al:android:url');
+
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'al:android:url 帶的是同一條永久連結，同樣算文件身分');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+test('L4 文件身分:og:url 的 handle 大小寫與請求不同仍算同一篇（Threads handle 不分大小寫）', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl('Example_Author', 'DxSyNtH0001'));
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '大小寫差異不得判成兩篇不同的貼文');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+// threads.net 與 threads.com 是同一個站的兩個網域，www 前綴也可有可無。使用者
+// 可能停在 threads.net 的分頁上，回應的 og:url 卻一律是 www.threads.com——兩
+// 側都歸一到同一種寫法再比，否則備援在 .net 分頁上全面失效。
+test('L4 文件身分:請求走 threads.net 而 og:url 回 www.threads.com 時仍算同一篇（網域歸一）', async () => {
+  const netPostUrl = 'https://threads.net/@example_author/post/DxSyNtH0001';
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  assert.ok(meta.indexOf('https://www.threads.com/') !== -1, '前提：回應宣告的是 www.threads.com');
+
+  const fetchStub = makeScamFetch({ [netPostUrl]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null, postUrl: netPostUrl }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'threads.net 與 www.threads.com 指的是同一篇貼文');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+// ---- 負例：文件身分對不上、或 id 不唯一 ----
+
+test('L4 文件身分:og:url 的 handle 與請求不同（轉址到別人的貼文）回 no_user_id 且不寫', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl('other_author', 'DxSyNtH0001'));
+  // 刻意讓舊錨點成立（id 與 username 相鄰）：文件身分否決優先於 username 視窗。
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '拿回來的不是請求的那一篇，裡面的 post_author_id 不足採信'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '對不上文件身分的 id 不得寫進黑名單');
+});
+
+test('L4 文件身分:og:url 的 post code 與請求不同回 no_user_id 且不寫', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0009'));
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' }, '同一位作者的另一篇貼文也不算同一篇');
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+// 兩道判準的先後順序：og:url 說「是本篇」、al:android:url 說「是別篇」，先問
+// 「有沒有指向別篇的」才問「有沒有指向本篇的」。順序對調就變成一張對得上的
+// 身分標籤足以蓋過另一張對不上的，攻擊者只要多塞一個指向本篇的 meta 就能讓
+// 任意 id 過關——否決必須是最優先的那一關。
+test('L4 文件身分:一份文件同時宣告本篇與別篇時，否決優先於採信', async () => {
+  const meta =
+    scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001')) +
+    scamOgMeta('al:android:url', scamEntityUrl('other_author', 'DxSyNtH0009'));
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '身分標籤彼此矛盾時整份不足採信，對得上的那一張不得蓋過對不上的那一張'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+test('L4 文件身分:文件身分過關但 post_author_id 出現兩個不同值時回 no_user_id 且不寫', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  // 其中一個 id 旁邊就是 username（舊判準會採信它）；文件身分路徑要求候選
+  // 全部同值，兩個以上不同值一律不採信，username 視窗不得當救生索。
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    'x'.repeat(4000) +
+    '{"post_author_id":"20000000002"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '同一份文件出現兩個不同的 post_author_id，哪一個是本篇作者無從判定'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+test('L4 文件身分:非 2xx 回應一律否決——404 頁面帶對得上的 og:url 也不採信', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({
+    [SCAM_POST_URL]: (url) => ({ ok: false, status: 404, url, text: async () => html }),
+  });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '錯誤頁的內容不是貼文本身，不得拿來背書任何 id'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+});
+
+// ---- username 視窗降級為替代錨點：既有形狀不得被新判準擋掉 ----
+
+test('L4 文件身分:og:url 缺席時 username 相鄰的舊形狀仍通過（替代錨點）', async () => {
+  const html = authorIdHtml(SCAM_USER_ID);
+  assert.equal(html.includes('og:url'), false, '前提：這是舊形狀，沒有任何 og meta');
+
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '登入態／舊形狀的回應只有 username 錨點，不得被新判準擋掉');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+test('L4 文件身分:og:url 缺席且 username 隔 3000 字時仍回 no_user_id（替代錨點的視窗照舊）', async () => {
+  const html =
+    '<html><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '"}' +
+    'x'.repeat(3000) +
+    '{"username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '沒有文件身分可依靠時，±2000 字的視窗判準原封不動'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+// ---- 掃描上限：512KB → 1MB ----
+//
+// 【契約變更，PM 授權】真機的登出態回應約 581KB，舊的 SCAM_SCAN_LIMIT
+// （524288）會把 route props 裡的 post_author_id 整段切在掃描範圍外，備援對
+// 所有貼文永久失效。上限提高到 1MB（1048576），仍保留天花板以免對超大回應
+// 做無界正則掃描。
+
+test('L4 文件身分:SCAM_SCAN_LIMIT 為 1048576（1MB）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+  assert.equal(scamConst(bg, 'SCAM_SCAN_LIMIT'), 1048576, '真機回應約 581KB，512KB 的上限會把 SSR 欄位整段切掉');
 });
