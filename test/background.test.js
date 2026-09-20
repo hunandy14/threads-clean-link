@@ -5732,3 +5732,161 @@ test('L4 文件身分:SCAM_SCAN_LIMIT 為 1048576（1MB）', async () => {
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
   assert.equal(scamConst(bg, 'SCAM_SCAN_LIMIT'), 1048576, '真機回應約 581KB，512KB 的上限會把 SSR 欄位整段切掉');
 });
+
+// ============================================================
+// §14 scam.hit：證據結構補強（anchorPostUrl／threadUrl／anchorMatch／signals）
+//
+// content script 另外送「錨點落在哪一篇」「整串從哪裡開始」「錨點本體」與
+// 「踩到哪幾類訊號」，讓選項頁的證據卡指得到真正出事的那一篇。
+//
+// 【驗證契約】四欄皆可缺席（舊版 content script 相容）；有帶就驗形狀：
+//   anchorPostUrl／threadUrl 走 TCLCore.normalizePostUrl 白名單，不合法回
+//     bad_request——不是默默剝掉：payload 是自家 content script 送的，形狀不
+//     對代表兩端版本對不上，默默吞掉會讓錯誤晚好幾週才被發現。
+//   anchorMatch 字串且不超過 40 字。
+//   signals 陣列且每一項都在 link|line|group|join|pitch 白名單內。
+// 通過驗證的四欄要一路寫進 entry.evidence[0]。
+//
+// 【去重鍵】證據的去重鍵改為 anchorPostUrl || postUrl：同一串被從不同篇重新
+// 打開時 postUrl 不同，錨點篇卻是同一篇，綁 postUrl 會讓同一次招攬吃掉三筆
+// 證據額度。
+// ============================================================
+
+const SCAM_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0002';
+const SCAM_THREAD_URL = SCAM_POST_URL;
+const SCAM_ANCHOR_TEXT = '賴：ex01abc';
+const SCAM_SIGNALS = ['line', 'group', 'pitch'];
+
+function scamHitRich(overrides) {
+  return scamHit(
+    Object.assign(
+      {
+        anchorPostUrl: SCAM_ANCHOR_URL,
+        threadUrl: SCAM_THREAD_URL,
+        anchorMatch: SCAM_ANCHOR_TEXT,
+        signals: SCAM_SIGNALS.slice(),
+      },
+      overrides || {}
+    )
+  );
+}
+
+test('L4 scam.hit:四個新欄位合法時通過驗證，並原樣寫進 entry.evidence[0]', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '帶新欄位的合法命中必須受理');
+
+  const evidence = scamEntry(bg).evidence[0];
+  assert.equal(evidence.postUrl, SCAM_POST_URL, 'postUrl 維持原義：使用者當時開的那一頁');
+  assert.equal(evidence.anchorPostUrl, SCAM_ANCHOR_URL, 'anchorPostUrl 要落盤');
+  assert.equal(evidence.threadUrl, SCAM_THREAD_URL, 'threadUrl 要落盤');
+  assert.equal(evidence.anchorMatch, SCAM_ANCHOR_TEXT, 'anchorMatch 要落盤（選項頁靠它做片段高亮）');
+  assert.deepEqual(evidence.signals, SCAM_SIGNALS, 'signals 要落盤（證據卡的訊號 chip）');
+});
+
+test('L4 scam.hit:新欄位一律可缺席——舊版 content script 送來的三欄 payload 照常受理', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(
+    scamHit({
+      anchorMatch: undefined,
+      pitchMatches: undefined,
+      anchorPostUrl: undefined,
+      threadUrl: undefined,
+      signals: undefined,
+    }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '缺新欄位不得被擋下');
+  const evidence = scamEntry(bg).evidence[0];
+  assert.deepEqual(
+    Object.keys(evidence).sort(),
+    ['at', 'postUrl', 'snippet'],
+    '沒帶新欄位時證據維持舊三欄形狀，不得補出空殼'
+  );
+});
+
+const SCAM_BAD_EVIDENCE_PAYLOADS = [
+  ['anchorPostUrl 非 threads 貼文網址', { anchorPostUrl: 'https://example.com/@example_author/post/DxSyNtH0002' }],
+  ['anchorPostUrl 只是個人頁不是貼文', { anchorPostUrl: 'https://www.threads.com/@example_author' }],
+  ['anchorPostUrl 非字串', { anchorPostUrl: 42 }],
+  ['threadUrl 非 threads 貼文網址', { threadUrl: 'https://evil.example/x' }],
+  ['threadUrl 非字串', { threadUrl: ['https://www.threads.com/@example_author/post/DxSyNtH0001'] }],
+  ['anchorMatch 超過 40 字', { anchorMatch: '賴'.repeat(41) }],
+  ['anchorMatch 非字串', { anchorMatch: 42 }],
+  ['signals 非陣列', { signals: 'line' }],
+  ['signals 含白名單外的值', { signals: ['line', 'evil'] }],
+  ['signals 元素非字串', { signals: ['line', 7] }],
+];
+
+test('L4 scam.hit:新欄位形狀不對一律回 bad_request 且不寫', async () => {
+  for (const testCase of SCAM_BAD_EVIDENCE_PAYLOADS) {
+    const label = testCase[0];
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const res = await bg.send(scamHitRich(testCase[1]), SCAM_TAB_SENDER);
+    await settle(300);
+
+    assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' }, label + ' 應回 bad_request');
+    assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, label + ' 不得寫入 scamBlocklist');
+  }
+});
+
+test('L4 scam.hit:對照組——anchorMatch 恰 40 字、signals 為白名單全集，皆照常受理', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const anchorMatch = '賴'.repeat(40);
+  const signals = ['link', 'line', 'group', 'join', 'pitch'];
+  const res = await bg.send(scamHitRich({ anchorMatch, signals }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '上限是 40，恰為 40 不得誤殺');
+  const evidence = scamEntry(bg).evidence[0];
+  assert.equal(evidence.anchorMatch, anchorMatch);
+  assert.deepEqual(evidence.signals, signals, '白名單全集都要留得住');
+});
+
+test('L4 scam.hit:去重鍵是 anchorPostUrl——同一串從不同篇重新打開只算一筆證據', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHitRich(), SCAM_TAB_SENDER);
+  await settle(400);
+  // 使用者改從錨點篇進來：postUrl 換了一篇，錨點篇仍是同一篇。
+  const second = await bg.send(
+    scamHitRich({ postUrl: SCAM_ANCHOR_URL, at: SCAM_AT + 60000 }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  assert.equal(deep(second.response).added, false, '既有作者只補證據');
+  assert.equal(
+    scamEntry(bg).evidence.length,
+    1,
+    '同一篇錨點只算一筆證據——綁 postUrl 的話同一次招攬會吃掉三筆額度'
+  );
+});
+
+test('L4 scam.hit:錨點篇不同時照樣各記一筆，新欄位逐筆保留', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHitRich(), SCAM_TAB_SENDER);
+  await settle(400);
+  await bg.send(
+    scamHitRich({ anchorPostUrl: SCAM_POST_URL_3, at: SCAM_AT + 60000 }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.evidence.length, 2, '兩篇不同的錨點篇各算一筆');
+  assert.deepEqual(
+    entry.evidence.map((item) => item.anchorPostUrl),
+    [SCAM_POST_URL_3, SCAM_ANCHOR_URL],
+    '證據依 at 降冪，且每一筆各自帶著自己的 anchorPostUrl'
+  );
+});
