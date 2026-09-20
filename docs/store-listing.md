@@ -52,7 +52,7 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 • 貼文互動列新增「複製原始連結」按鈕:在 Threads 每篇貼文的互動列(分享按鈕旁)多一顆鏈節圖示，點一下就把該貼文的乾淨網址複製到剪貼簿——不含追蹤參數、也不是短碼。外觀比照原生按鈕(顏色自動跟隨、hover 提示採原生 tooltip)，文字支援中英文並跟隨介面語言設定。
 
-【LINE 群組引導警示】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的招攬串文(判準是加 LINE 錨點＋投資話術詞同時出現)，命中就在貼文上掛一枚標記，並把該作者記進警示名單，之後在首頁時間軸上再遇到同一位作者也會標記。警示名單可在「紀錄與設定」頁管理(附證據連結、可解除，解除後不再自動標記)，只存在你這台裝置、不會上傳，也不與其他使用者共享;不想用可以用總開關整個關掉。
+【LINE 群組引導警示】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的招攬串文。命中有三條路:(1)貼文裡出現 LINE 加好友／加群組的深連結(line.me、lin.ee、linktr.ee)即成立;(2)出現 LINE 帳號或「加 LINE」這類字句，且同時有群組或加入的行動呼籲(例如拉你進群、加入、私訊我);(3)出現 LINE 帳號並搭配投資話術詞(黑馬股、報明牌、代操等)。命中就在貼文上掛一枚標記，並把該作者記進警示名單，之後在首頁時間軸上再遇到同一位作者也會標記。判定為規則比對，正當的社團或商家招攬也可能被標記，使用者可一鍵解除，解除後不再自動標記。頁面本身沒帶作者識別碼時，會對同一篇貼文發一次不帶登入的請求補查。警示名單可在「紀錄與設定」頁管理(附證據連結)，只存在你這台裝置、不會上傳，也不與其他使用者共享;不想用可以用總開關整個關掉。
 
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
@@ -80,7 +80,7 @@ THREE FEATURES
 • "Copy original link" button on every post: A link icon is added to each Threads post's action row (next to the share button). One click copies that post's clean URL — no tracking parameters, no short code — to your clipboard. It matches the native buttons in appearance (color follows the page, native hover tooltip), and its label follows your interface language.
 
 LINE GROUP FUNNEL FLAGS
-When you open a Threads post, the extension checks on-device whether the thread follows the "long investment story, then add me on LINE" solicitation pattern (it requires both a LINE hand-off and investment pitch wording). On a match it flags the post and adds that author to your flagged list, so the same author is flagged on your feed too. The flagged list lives in the History & Settings page (with evidence links and a one-click unflag that is never undone automatically). It stays on this device only, is never uploaded, and is never shared with other users; a single switch turns the whole feature off.
+When you open a Threads post, the extension checks on-device whether the thread follows the "long investment story, then add me on LINE" solicitation pattern. A post is flagged on any one of three paths: (1) it carries a LINE add-friend or add-group deep link (line.me, lin.ee, linktr.ee); (2) it shows a LINE account or an "add me on LINE" phrase together with a group-or-join call to action (for example "I'll pull you into the group", "join", "DM me"); (3) it shows a LINE account alongside investment pitch wording (hot stock tips, paid stock picks, managed trading and the like). On a match it flags the post and adds that author to your flagged list, so the same author is flagged on your feed too. The check is plain rule matching, so a legitimate club, study group or shop solicitation can be flagged too — one click unflags it, and it is never flagged automatically again. When the page itself does not carry the author's identifier, one logged-out request is sent for that same post to look it up. The flagged list lives in the History & Settings page (with evidence links). It stays on this device only, is never uploaded, and is never shared with other users; a single switch turns the whole feature off.
 
 POPUP SETTINGS
 Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting).
@@ -197,7 +197,7 @@ Used to schedule the periodic execution of Cloud Sync (a recurring alarm that wa
 **English:**
 ```
 Host permissions are limited to these two Threads domains and used for exactly three purposes:
-(1) The background service worker sends one anonymous GET request (credentials: 'omit', no cookies) to a Threads URL (a share short link, or the post permalink for the LINE group funnel check fallback) to follow its redirect and read the resolved destination — equivalent to Threads recording one anonymous click, with no user identity attached.
+(1) The background service worker sends one anonymous GET request (credentials: 'omit', no cookies) to a Threads URL, with no user identity attached. For a share short link it follows the redirect and reads the resolved destination — equivalent to Threads recording one anonymous click. For the LINE group funnel check fallback it requests that post's own permalink and does not follow redirects (redirect: 'error'); it only reads the author identifier out of the response.
 (2) A content script is injected only on these two domains to intercept the site's own navigator.clipboard.writeText()/write() calls, so tracking parameters or share short codes can be stripped or resolved before the content reaches the clipboard. The content script does not read pre-existing clipboard contents and does not run on, or send data to, any other website.
 (3) The same content script also runs the on-device LINE group funnel check on a post detail page the user opens: it reads that page's own public post text locally to decide whether to show a flag badge. Nothing is transmitted — the result and a 120-character evidence snippet are stored only in chrome.storage.local. When the page itself does not carry the author's numeric id, the background service worker sends one additional anonymous GET (credentials: 'omit', no cookies) to that same post's permalink to read it, at most once per post per 24 hours, subject to a global rate limit, and never when the feature's master switch is off.
 ```
@@ -205,7 +205,7 @@ Host permissions are limited to these two Threads domains and used for exactly t
 **繁中對照:**
 ```
 host permissions 限定在這兩個 Threads 網域，只用於三件事:
-①背景 service worker 對 Threads 網址(分享短連結，或 LINE 群組引導警示備援時的貼文永久連結)發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
+①背景 service worker 對 Threads 網址發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，不會關聯到使用者身分:分享短連結會跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊;LINE 群組引導警示的備援請求則是對該篇貼文的永久連結本身發出，不跟隨轉址(redirect: 'error')，只讀取回應中的作者識別碼。
 ②content script 只注入這兩個網域的頁面，攔截網站自己呼叫的 navigator.clipboard.writeText()/write()，在追蹤參數或分享短碼進入剪貼簿前先行剪除或解析。這個 content script 不會讀取剪貼簿裡原本的內容，也不會在其他任何網站上執行或傳送資料。
 ③同一支 content script 也會在使用者開啟的貼文詳情頁上執行本機 LINE 群組引導判定:只在本機讀取該頁自己的公開貼文內文，決定要不要掛上標記。判定結果與一段 120 字的證據片段只寫入 chrome.storage.local，不對外傳輸。當頁面本身沒有帶出作者的數字識別碼時，背景 service worker 會對同一篇貼文的永久連結額外發出一次不帶 cookie 的匿名 GET(credentials: 'omit')來取得該識別碼，同一篇貼文 24 小時內至多一次，並受全域請求限流約束;功能總開關關閉時完全不發。
 ```
