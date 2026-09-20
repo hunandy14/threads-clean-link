@@ -1113,25 +1113,75 @@
     padding: 10px 0; border-bottom: 1px solid var(--grid);
   }
   .scam-row:last-child { border-bottom: none; }
+  /* 左側首字母圓:名單不對外抓頭像(那會讓選項頁替每一列向 Threads 發一次
+     請求)，改以顯示名首字母的色塊區分各列。 */
+  .scam-avatar {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--plane); border: 1px solid var(--grid);
+    display: grid; place-items: center;
+    font-size: 12.5px; font-weight: 650; color: var(--ink-2);
+  }
   .scam-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .scam-name-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex-wrap: wrap; }
+  /* 顯示名與 @handle 整塊是作者頁連結:底線收掉，hover 才以主色強調。 */
+  .scam-name-link {
+    display: inline-flex; align-items: baseline; gap: 6px; min-width: 0;
+    text-decoration: none; color: inherit;
+  }
+  .scam-name-link:hover .scam-name { color: var(--accent); text-decoration: underline; }
   .scam-name {
     font-size: 13.5px; font-weight: 650; color: var(--ink-1);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
   }
   .scam-handle { font-size: 12.5px; color: var(--ink-3); }
-  .scam-sub { font-size: 12px; color: var(--ink-3); }
-  .scam-evidence { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .scam-evidence-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
-  /* 每筆證據片段之上的小字「貼文代碼尾碼 · 日期」:同一段招攬文案貼了好幾
-     篇時，片段文字一模一樣，靠這行把各篇區分開。 */
-  .scam-evidence-meta { font-size: 11px; color: var(--ink-3); }
-  /* 證據片段可能很長，單行省略;完整片段留在 title 提示。 */
-  .scam-evidence-link {
-    font-size: 12px; color: var(--ink-2); text-decoration: none;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  /* 命中篇數 pill，推到標題列最右(解除鈕另在 .scam-actions)。 */
+  .scam-hit-count {
+    margin-left: auto; flex-shrink: 0;
+    font-size: 11px; line-height: 1.5; color: var(--ink-3);
+    background: var(--plane); border: 1px solid var(--grid);
+    border-radius: 999px; padding: 1px 7px;
   }
-  .scam-evidence-link:hover { color: var(--accent); text-decoration: underline; }
+  .scam-sub { font-size: 12px; color: var(--ink-3); }
+  .scam-evidence { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .scam-evidence-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
+  .scam-evidence-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  /* 每組證據片段之上的 meta 列:日期、證據貼文／整串連結與訊號 chips 同一
+     行，窄寬度下換行。同一段招攬文案貼了好幾篇時，片段文字一模一樣，靠這
+     行把各篇區分開。 */
+  .scam-evidence-meta {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+    font-size: 11px; color: var(--ink-3);
+  }
+  .scam-evidence-post, .scam-evidence-thread {
+    font-size: 11px; color: var(--ink-2); text-decoration: none; white-space: nowrap;
+  }
+  .scam-evidence-post:hover, .scam-evidence-thread:hover { color: var(--accent); text-decoration: underline; }
+  .scam-same-text { font-size: 11px; color: var(--ink-3); }
+  /* 訊號 chip:極小、灰底，只是分類標示，不與連結爭視覺重量。 */
+  .scam-signal {
+    font-size: 10px; line-height: 1.6; color: var(--ink-3);
+    background: var(--plane); border: 1px solid var(--grid);
+    border-radius: 4px; padding: 0 5px; white-space: nowrap;
+  }
+  /* 證據片段完整呈現(儲存端已裁到 120 字)，可換行、行高放寬才讀得下去。 */
+  .scam-evidence-text {
+    margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-2);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  /* 錨點高亮:<mark> 的瀏覽器預設是螢光黃底黑字，深色主題下刺眼且文字色不跟
+     著主題走;改用暖色淡底並繼承文字色。 */
+  mark.scam-anchor {
+    background: var(--accent-soft); color: inherit;
+    border-radius: 3px; padding: 0 2px;
+  }
+  /* 第二組以後的證據收進原生 <details>，開合狀態交給瀏覽器。 */
+  details.scam-evidence-more > summary {
+    font-size: 11px; color: var(--ink-3); cursor: pointer;
+    list-style: none; width: fit-content;
+  }
+  details.scam-evidence-more > summary::-webkit-details-marker { display: none; }
+  details.scam-evidence-more > summary:hover { color: var(--accent); }
+  details.scam-evidence-more > .scam-evidence-item { margin-top: 6px; }
   .scam-actions { display: flex; gap: 4px; flex-shrink: 0; }
   .scam-quick-btn {
     appearance: none; border: none; background: transparent; color: var(--ink-3); width: 28px; height: 28px;
