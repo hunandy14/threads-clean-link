@@ -874,9 +874,11 @@
   // 導。這類句子常同時帶投資詞，光靠 PITCH 二次確認擋不住，錨點本身必須排
   // 除。排除清單只列這五個字——詐騙招攬句「我的賴：ex01abc」前面也是中文，擴
   // 成「前面是中文就不算」會整組漏抓。
+  // 繫詞(是／ID／帳號)可選，負向邊界照舊:實際招攬句常寫「賴是：xxx」「LINE
+  // 帳號：xxx」，不只是「賴：xxx」這種裸冒號寫法。
   var SCAM_ACCOUNT_ANCHOR_RES = [
-    /(?<![信依無仰倚])[賴籟]\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,
-    /(?<![A-Za-z])LINE\s*(?:ID\s*)?[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/i,
+    /(?<![信依無仰倚])[賴籟]\s*(?:是|ID|帳號)?\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,
+    /(?<![A-Za-z])LINE\s*(?:ID|是|帳號)?\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/i,
   ];
 
   // 片語型錨點:「加入我的 LINE」這類明確的加好友祈使句。中文「賴」是姓氏
@@ -910,7 +912,7 @@
   // 狀，不認特定來源，因此同一份判定可以吃本機常數，也可以吃日後由後端下發
   // 的規則包。version 是規則版本，下發時用來比對新舊。
   var SCAM_RULES = {
-    version: 2,
+    version: 3,
     strongWords: SCAM_PITCH_STRONG_WORDS,
     weakWords: SCAM_PITCH_WEAK_WORDS,
     groupWords: SCAM_GROUP_WORDS,
