@@ -143,6 +143,16 @@
       opRelHour: '{n} 小時前',
       opRelYesterday: '昨天',
       opRelDays: '{n} 天前',
+      // 極短版相對時間，格式照 Threads 自己的貼文時間:數字與單位之間不留空
+      // 白、不帶「前」字。標記名單卡的作者列用這一組(時間緊貼帳號，完整語
+      // 氣的「N 分鐘前」會把那一行撐長)。刻意與上面那組分開:上面那組是紀錄
+      // 卡在用的，共用一份會讓改其中一邊悄悄動到另一邊。
+      opRelNow: '剛剛',
+      opRelMinutes: '{n}分鐘',
+      opRelHours: '{n}小時',
+      // 不叫 opRelDays:那顆已被紀錄卡的相對時間佔著（「{n} 天前」），改寫
+      // 它會把紀錄卡的文案一起換掉。
+      opRelDaysShort: '{n}天',
 
       // ---- options:頁首帳號入口(車道 B，消費 docs/cloud-sync.md 第 5
       // 節的 state 形狀;background 尚未實作前，任何無回應/形狀不對的
@@ -255,10 +265,14 @@
       // ---- 選項頁:標記名單卡(標記分頁) ----
       opScamListTitle: '標記名單',
       opScamListCount: '{n} 位作者',
-      // 列第二行的加入日期(YYYY-MM-DD，比照裝置列的「新增於」)。
+      // 標題列右側的小字:這位作者是什麼時候被標記的(條目的 addedAt)。
+      // 「加入」聽起來像使用者主動加的，實際上是偵測命中後自動標記。
+      opScamAddedAt: '標記於 {date}',
+      // 保留鍵:同一個日期的舊文案。改版後標題列走 opScamAddedAt。
       opScamAddedOn: '加入於 {d}',
-      // 標題列的貼文發布日期(postedAt，缺席退回 at)。日期本身就是最新那筆
-      // 證據貼文的連結。
+      // 保留鍵:貼文發布日期。標題列原本另外畫一段「貼文 YYYY-MM-DD」，但主
+      // 卡只放最新一筆證據，證據列上已經有同一個日期連結，兩者重複，改版後
+      // 只留證據列那一個(它只畫純日期，不套這句文案)。
       opScamPostedAt: '貼文 {date}',
       // 保留鍵:最近命中日期。改版後卡片只顯示貼文發布日期，這句已無人使
       // 用，留著以免日後又要重新定稿一次文案。
@@ -395,6 +409,10 @@
       opRelHour: '{n} hr ago',
       opRelYesterday: 'yesterday',
       opRelDays: '{n} days ago',
+      opRelNow: 'now',
+      opRelMinutes: '{n}m',
+      opRelHours: '{n}h',
+      opRelDaysShort: '{n}d',
 
       opAccountSignIn: 'Sign in',
       opAccountMenuLabel: 'Account menu',
@@ -478,6 +496,7 @@
       opScamListTitle: 'Flagged accounts',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
       opScamListCount: '{n} author(s)',
+      opScamAddedAt: 'Flagged {date}',
       opScamAddedOn: 'Added {d}',
       opScamPostedAt: 'Posted {date}',
       opScamLastHit: 'Last hit {date}',
