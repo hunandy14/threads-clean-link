@@ -1,0 +1,64 @@
+{
+  "note": "合成範例，非真實貼文（code／userId／帳號／LINE ID 全為捏造）。形狀比照 scam-thread.json：七篇自回覆，第 1-6 篇約 100-140 字並以刪節號收尾，第 7 篇（招攬篇）是判定靶。與 scam-thread.json 的差別在於招攬篇「不帶任何強話術詞」，只帶 LINE 提及（帳號型「LINE：ab12cd」）＋群組詞（群組、拉進），用來釘住新判準「LINE 提及 ＋（群組詞 或 加入詞）」——舊的「錨點＋強話術詞」判準對這串全文回 hit:false。",
+  "capturedAt": "2026-09-20",
+  "url": "https://www.threads.com/@example_author/post/DxSoFtP0001",
+  "selfThreadLength": 7,
+  "posts": [
+    {
+      "code": "DxSoFtP0001",
+      "userId": "10000000001",
+      "username": "example_author",
+      "position": 1,
+      "selfThreadLength": 7,
+      "captionText": "這是一份合成的軟性招攬串文，只用來測試判定規則。\n主角設定成一個在連鎖書店做了八年的門市主管，習慣把每天的進退貨、補書速度、客人問到的書單都記在同一本筆記裡，久了那本筆記比公司的系統還好用…"
+    },
+    {
+      "code": "DxSoFtP0002",
+      "userId": "10000000001",
+      "username": "example_author",
+      "position": 2,
+      "selfThreadLength": 7,
+      "captionText": "第二篇鋪陳：書店的旺季集中在寒暑假與開學前，那幾週排班排到滿，剩下的月份又閒到發慌。範例主角把閒下來的時間拿去讀商業雜誌，發現自己對「哪家出版社出貨快」的直覺，其實就是在看一家公司的營運體質…"
+    },
+    {
+      "code": "DxSoFtP0003",
+      "userId": "10000000001",
+      "username": "example_author",
+      "position": 3,
+      "selfThreadLength": 7,
+      "captionText": "第三篇是轉折：總公司換了系統之後，門市要填的表格多了一倍，客訴卻沒有變少。範例主角開始把下班時間挪去上線上課程，從財報三表讀起，一邊對照自己手上那本書店筆記…"
+    },
+    {
+      "code": "DxSoFtP0004",
+      "userId": "10000000001",
+      "username": "example_author",
+      "position": 4,
+      "selfThreadLength": 7,
+      "captionText": "第四篇講方法：他把合作過的出版社列成一張表，逐家標上到貨天數、退書處理速度、業務回訊息的時間，再去對公開的營收與毛利。這種做法很慢，但每一格都有來源，不是聽別人說什麼就跟著做…"
+    },
+    {
+      "code": "DxSoFtP0005",
+      "userId": "10000000001",
+      "username": "example_author",
+      "position": 5,
+      "selfThreadLength": 7,
+      "captionText": "第五篇是心得：看久了會發現，門市現場的體感常常比新聞還早三個月。哪套書忽然變得難調、哪家出版社開始縮小首刷量，都是先從倉庫端冒出來的訊號…"
+    },
+    {
+      "code": "DxSoFtP0006",
+      "userId": "10000000001",
+      "username": "example_author",
+      "position": 6,
+      "selfThreadLength": 7,
+      "captionText": "第六篇收尾：現在他還在書店上班，只是下班後多了一份自己整理的觀察筆記。這幾年陸陸續續有同業問他怎麼開始的，問的人多了，一個一個回訊息實在回不完…"
+    },
+    {
+      "code": "DxSoFtP0007",
+      "userId": "10000000001",
+      "username": "example_author",
+      "position": 7,
+      "selfThreadLength": 7,
+      "captionText": "如果你平常也有在研究台股，想多一個地方交流，可以加 LINE：ab12cd，傳「【258】」給我，我把你拉進群組一起聊。"
+    }
+  ]
+}

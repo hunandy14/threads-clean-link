@@ -8,6 +8,8 @@
 //   - F1:sanitizeOriginal(白名單三合法來源全通過、偽造擋下、超長整欄丟棄)
 //   - sanitizeText / sanitizeRemovedParams / sanitizeSeenList
 //   - 常數:LIMITS / KIND_LIST / NOTICE_KIND_LIST / DEFAULT_SETTINGS
+//   - 詐騙串文偵測:detectScamPitch / isPostDetailPath / 黑名單正規化與裁切
+//     (見檔尾「詐騙串文偵測」各區塊的說明)
 //   - 三 context 可載入煙霧測試(SW self / 擴充頁 window / Node this-fallback)
 //
 // 【紀律】測試裡的控制/bidi/零寬字元一律用 cp()(String.fromCodePoint)由碼位
@@ -658,5 +660,1651 @@ test.describe('裝置歸屬:defaultDeviceName 與 randomUuid', () => {
     assert.match(id, UUID_RE);
     assert.equal(id, id.toLowerCase());
     assert.notEqual(C.randomUuid(), id);
+  });
+});
+
+// ---- 詐騙串文偵測(scam guard)的純函式契約 ----
+//
+// 對應內部可行性評估(docs/scam-guard.md)的 v1 實作計畫:詐騙帳號用中文文字引導
+// 到 LINE(「賴：ex01abc」「加我的賴」「lin.ee/」)，domain 規則命中率 0，判定
+// 只能靠「LINE 錨點 + 投資話術」的二次確認。此區塊釘住五支純函式:
+//   - detectScamPitch:錨點/話術/片段的命中契約，**負例是本體**(賴床、賴皮、
+//     信賴、賴清德、無賴不得誤殺)
+//   - isPostDetailPath:詳情頁 pathname 判定(河道不掃全文，只有詳情頁掃)
+//   - normalizeScamBlocklist / capScamBlocklist:storage 形狀與上限裁切
+//   - makeBlocklistEntry / mergeBlocklistEvidence:條目建立與證據合併
+//
+// 【紀律】每個 test 先斷言函式掛上 TCLCore 匯出——未實作時吐可讀的斷言失敗，
+// 而不是 TypeError crash 把整支測試檔打斷。
+
+const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+
+// 招攬篇的句型範例(含前文的三個話術詞)——合成字串，句型比照內部可行性評估。
+const SCAM_POST_TEXT = [
+  '我自己做波段黑馬股很多年，這裡只分享操作心得。',
+  '不報明牌、不收費、不代操，純粹交流。',
+  '有興趣加我 賴：ex01abc，說「yy」我就知道是你',
+].join('\n');
+
+test.describe('詐騙偵測:detectScamPitch', () => {
+  test('detectScamPitch:招攬篇句型——錨點 + 話術命中，回傳四欄形狀', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    const res = C.detectScamPitch(SCAM_POST_TEXT);
+    assert.equal(res.hit, true, '詐騙招攬句型必須命中');
+    assert.equal(typeof res.anchorMatch, 'string', 'anchorMatch 是命中的錨點原文');
+    assert.equal(res.anchorMatch.includes('ex01abc'), true, '錨點應涵蓋帳號本體');
+    assert.equal(Array.isArray(res.pitchMatches), true, 'pitchMatches 是陣列');
+    assert.equal(res.pitchMatches.includes('黑馬股'), true);
+    assert.equal(res.pitchMatches.length >= 1, true, '命中規則要求 PITCH >= 1');
+    assert.equal(typeof res.snippet, 'string');
+  });
+
+  // 錨點的四種形式(賴/籟＋冒號＋帳號、LINE ID、加入我的 LINE、連結)，各配一
+  // 個話術詞。全形/半形冒號、冒號前後空白、大小寫都要吃。
+  test('detectScamPitch:ANCHOR 四種形式 × 話術 → 命中', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    const positives = [
+      '波段黑馬股分享，賴：ex01abc',
+      '想學就找我，賴: abc_123，帶單實績公開',
+      '籟：xyz789 教你抓飆股',
+      'LINE ID：wolf_88 免費教學抓黑馬股',
+      'LINE  ID: wolf88，穩賺不賠',
+      '加入我的LINE，每日獲利分享',
+      '加我的賴，黑馬股消息先給你',
+      '加入賴，我這邊有代操名額',
+      'line id: abc123 報明牌',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  // 連結型錨點是唯一可以單獨成立的:已經是 LINE 加好友連結，不必再等話術詞。
+  test('detectScamPitch:連結型 ANCHOR 單獨成立，不需話術詞', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    const links = [
+      '一起討論 https://line.me/ti/g/AbCdEf01 歡迎',
+      '群組 https://line.me/R/ti/g/AbCdEf01',
+      '點這 https://lin.ee/abc123',
+      '全部連結在 https://linktr.ee/someone',
+      // PM 裁決:ti/p 是一對一加好友深連結，與 ti/g 同屬引導私訊的白名單路徑。
+      '看這篇 https://line.me/R/ti/p/@abc',
+    ];
+    for (const text of links) {
+      const res = C.detectScamPitch(text);
+      assert.equal(res.hit, true, JSON.stringify(text) + ' 連結型錨點應單獨命中');
+      assert.deepEqual(res.pitchMatches, [], '連結型命中時沒有話術詞也成立');
+    }
+  });
+
+  // 【負例是本體】中文「賴」是姓氏也是常用動詞，誤殺成本遠高於漏抓:錨點正則
+  // 要求「賴」後面接冒號＋至少 3 位英數，或是明確的「加入…賴」動詞片語。
+  test('detectScamPitch:賴字負例——信賴／依賴／賴床／賴皮／賴清德／無賴不得誤殺', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    const negatives = [
+      '這個分析我很信賴',
+      '我百分之百信賴他的判斷',
+      '他太依賴技術分析了，成天追飆股',
+      '他每天賴床到中午才起來',
+      '不要賴皮好嗎',
+      '賴清德總統今天發表談話',
+      '這種人根本是無賴',
+      '信賴：這家店開很久了',
+      '加賴床時間也沒用，黑馬股還是抓不到',
+      '加賴皮的人只會害你，代操都是騙局',
+      '加賴帳號的很多都是詐騙，說什麼黑馬股',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤殺');
+    }
+  });
+
+  test('detectScamPitch:只有話術沒錨點、只有錨點沒話術——都不命中', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    // 話術詞全上陣，沒有任何 LINE 錨點:正當的投資討論長文長這樣。
+    const pitchOnly =
+      '黑馬股、報明牌、明牌、代操、帶單、飆股、免費教學、不收費、穩賺、獲利分享、內線，這些字眼都要小心。';
+    assert.equal(C.detectScamPitch(pitchOnly).hit, false, '只有話術不成立');
+    // 錨點有、投資話術零:純交友不是詐騙偵測的範圍。
+    assert.equal(C.detectScamPitch('加我賴 ex01abc 聊天，晚上一起打球').hit, false, '只有錨點不成立');
+    assert.equal(C.detectScamPitch('賴：ex01abc，明天見').hit, false, '只有錨點不成立');
+    assert.equal(C.detectScamPitch('LINE ID：wolf_88，有空聊').hit, false, '只有錨點不成立');
+  });
+
+  // 帳號段至少 3 位英數:「賴：」後面接中文或 1-2 個字元的，是標點誤判不是帳號。
+  test('detectScamPitch:帳號段少於 3 位英數不算錨點', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    assert.equal(C.detectScamPitch('賴：ab 有黑馬股').hit, false);
+    assert.equal(C.detectScamPitch('賴：這檔是黑馬股').hit, false);
+    assert.equal(C.detectScamPitch('賴：abc 有黑馬股').hit, true, '滿 3 位就算');
+  });
+
+  // 連結白名單只收加好友(ti/p)/群組(ti/g)路徑:line.me 的其他路徑(官網首
+  // 頁、分享頁)不是引導私訊的入口，單獨不成立。
+  test('detectScamPitch:非白名單 LINE 路徑不算連結型錨點', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    assert.equal(C.detectScamPitch('官網 https://line.me/').hit, false);
+    assert.equal(C.detectScamPitch('圖在 https://linktree.example/someone').hit, false);
+  });
+
+  test('detectScamPitch:snippet 取錨點前後各 40 字、總長 <= 120', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    const text = '黑馬股' + 'A'.repeat(100) + '賴：ex01abc' + 'B'.repeat(100);
+    const res = C.detectScamPitch(text);
+    assert.equal(res.hit, true);
+    assert.equal(res.snippet.length <= 120, true, 'snippet 總長上限 120，實得 ' + res.snippet.length);
+    assert.equal(res.snippet.includes('ex01abc'), true, 'snippet 必須含錨點本體');
+    assert.equal(res.snippet.includes('A'.repeat(41)), false, '錨點前最多 40 字');
+    assert.equal(res.snippet.includes('B'.repeat(41)), false, '錨點後最多 40 字');
+    assert.equal(res.snippet.includes('黑馬股'), false, '超過 40 字的前文不進 snippet');
+  });
+
+  // snippet 會進 storage 也會進選項頁 DOM:控制/bidi 字元必須在此剝除，不能把
+  // RLO 這類偽裝字元原封帶進黑名單卡片。
+  test('detectScamPitch:snippet 剝除控制字元與 bidi', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    const text = '黑馬股介紹' + NUL1 + '加我 賴' + RLO + '：ex01abc' + C1 + LRM + ' 謝謝';
+    const res = C.detectScamPitch(text);
+    assert.equal(res.hit, true, '控制字元不得讓錨點失效');
+    for (const ch of [NUL1, C1, ALM, LRM, RLM, LRE, PDF, RLO, LRI, PDI]) {
+      assert.equal(res.snippet.includes(ch), false, '控制/bidi 字元應被剝除');
+    }
+  });
+
+  test('detectScamPitch:非字串輸入回 { hit: false }，不拋錯', () => {
+    assert.equal(typeof C.detectScamPitch, 'function', 'detectScamPitch 應掛在 TCLCore 匯出');
+    for (const bad of [null, undefined, 123, {}, [], true, () => {}]) {
+      const res = C.detectScamPitch(bad);
+      assert.equal(res.hit, false, JSON.stringify(String(bad)) + ' 應回 hit:false');
+      assert.equal(!res.snippet, true, '非字串不產 snippet');
+    }
+    assert.equal(C.detectScamPitch('').hit, false, '空字串不命中');
+  });
+});
+
+// ---- 詐騙偵測:LINE 提及 ＋ 群組／加入詞（PM 規則改版）----
+//
+// 【改版理由】原判準是「錨點 ＋ 至少一個強話術詞」，漏掉整類「軟性招攬」:
+// 前六篇寫勵志故事、末篇只留一句「加 LINE：xxx，我把你拉進群組」，一個投資
+// 話術詞都不放。這類串文的共同結構不是話術詞，而是「把人帶去 LINE 群組」。
+//
+// 【新判準】命中 = 連結型錨點單獨成立，或 LINE 提及 ＋（群組詞 或 加入
+// 詞），或既有的 錨點 ＋ 強話術詞。強／弱話術詞仍列入 pitchMatches 當證
+// 據，但不再是門檻。
+//
+// 【LINE 提及】LINE 單字（前後不接英文字母）、LINE：xxx／LINE:xxx、
+// LINE ID：xxx、賴：xxx、籟：xxx（信/依/無/仰/倚 的負向 lookbehind 保
+// 留）、片語「加(入)?(我的)?(賴|籟|LINE)」與「加 LINE」、line.me／lin.ee／
+// linktr.ee 連結。「賴」「籟」單獨出現不算提及。
+// 【群組詞】群組、社群、群裡、進群、拉進、拉你進、小群。
+// 【加入詞】加入、加我、加 LINE／加LINE、私訊我。
+//
+// 【訊號必須各自獨立】群組／加入詞要另外成立，不能就是提及本體的那幾個
+// 字:「加入我的LINE」整句只是一個片語型提及，不得自己拿「加入」再湊成命
+// 中——否則「烘焙免費教學，加入LINE官方帳號領取食譜」這類正當商家貼文會
+// 整批誤報（見本檔「誤報防線」區塊的既有負例）。
+
+// fixture 的末篇＝軟性招攬的判定靶，與 test/scam-guard.test.js 端到端用的
+// 是同一份檔案，規則與端到端不會各自漂移。
+const SOFT_FIXTURE = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'fixtures', 'scam-thread-soft.json'), 'utf8')
+);
+const SOFT_PITCH_TEXT = SOFT_FIXTURE.posts[SOFT_FIXTURE.posts.length - 1].captionText;
+const SOFT_THREAD_TEXT = SOFT_FIXTURE.posts.map((post) => post.captionText).join('\n\n');
+
+test.describe('詐騙偵測:LINE 提及 ＋ 群組／加入詞', () => {
+  // 招攬篇一個話術詞都沒有:命中完全由「LINE 提及 ＋ 群組詞」撐起，
+  // pitchMatches 是空陣列也要 hit。
+  test('detectScamPitch:軟性招攬篇——零話術詞，LINE 提及＋群組詞即命中', () => {
+    const res = C.detectScamPitch(SOFT_PITCH_TEXT);
+    assert.equal(res.hit, true, '軟性招攬句必須命中:' + JSON.stringify(SOFT_PITCH_TEXT));
+    assert.deepEqual(res.pitchMatches, [], '這句沒有任何話術詞，門檻不得再依賴它');
+    assert.equal(res.anchorMatch.includes('LINE：ab12cd'), true, 'anchorMatch 應取 LINE 提及本體');
+    assert.equal(res.snippet.includes('LINE：ab12cd'), true, 'snippet 以 LINE 提及為中心');
+    // 回傳形狀不變:四個欄位照舊（signals 之類的新欄位可加，但不得少欄位）。
+    for (const key of ['hit', 'anchorMatch', 'pitchMatches', 'snippet']) {
+      assert.equal(Object.prototype.hasOwnProperty.call(res, key), true, '回傳應保留 ' + key);
+    }
+    // 整串七篇串起來掃也要命中（端到端送進來的就是這份全文）。
+    assert.equal(C.detectScamPitch(SOFT_THREAD_TEXT).hit, true, '七篇全文照樣命中');
+  });
+
+  test('detectScamPitch:LINE 提及 ＋ 群組詞 → 命中', () => {
+    const positives = [
+      '想進群的加入我們 LINE 群組',
+      '我的 LINE：grp001，晚點拉你進群組',
+      '賴：grp002，直接拉進群裡一起討論',
+      '籟：grp003，小群人不多，聊得比較深',
+      'LINE ID：grp004，社群裡每天都有人分享',
+      '留言 1 我私訊你進群，LINE:grp005',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  test('detectScamPitch:LINE 提及 ＋ 加入詞 → 命中', () => {
+    const positives = [
+      '有興趣私訊我，LINE:xyz123',
+      '私訊我拿資料，賴：join001',
+      'LINE ID：join002，想聽的加入就好',
+      '加我，LINE：join003',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  // 帳號型提及不再需要「ID」兩個字:實際招攬句寫的就是「LINE：帳號」。
+  test('detectScamPitch:LINE：帳號 不必帶 ID 兩字，半形冒號、無空白、全形都算', () => {
+    const forms = [
+      'LINE：form001，我拉你進群組',
+      'LINE:form002，我拉你進群組',
+      'LINE ：form003，我拉你進群組',
+      '想進群組的加LINE',
+      '想進群組的加 LINE：form004',
+      'ＬＩＮＥ：ａｂ１２ｃｄ，我拉你進群組',
+    ];
+    for (const text of forms) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+    // 全形帳號的原文全形要保留，證據卡才看得出對方用了規避字元。
+    const wide = C.detectScamPitch('ＬＩＮＥ：ａｂ１２ｃｄ，我拉你進群組');
+    assert.equal(
+      wide.anchorMatch.includes('ａｂ１２ｃｄ') || wide.snippet.includes('ａｂ１２ｃｄ'),
+      true,
+      '全形帳號不得被正規化成半形寫進證據'
+    );
+  });
+
+  // 帳號型錨點的繫詞(是／ID／帳號)可選:真實招攬句常補上繫詞再接冒號，不只
+  // 是「賴：xxx」這種裸冒號寫法。
+  test('detectScamPitch:帳號型錨點的繫詞(是／ID／帳號)可選，繫詞在前也算', () => {
+    const positives = [
+      '想來的朋友，我的賴是：ab12cd，加入後傳訊「63」，我拉你進群組。',
+      'LINE 帳號：ab12cd，私訊我拉你進群',
+      '賴帳號：ab12cd 加入群組',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+    const withCopula = C.detectScamPitch('想來的朋友，我的賴是：ab12cd，加入後傳訊「63」，我拉你進群組。');
+    assert.equal(withCopula.anchorMatch.includes('賴是：ab12cd'), true, 'anchorMatch 應涵蓋繫詞本體');
+  });
+
+  // 【負例是本體】LINE 是英文詞的常見結尾:ONLINE／deadline／LINEUP 都不是
+  // LINE 提及，前後接英文字母時一律不算。
+  test('detectScamPitch:ONLINE／deadline／LINEUP 不算 LINE 提及', () => {
+    const negatives = [
+      'ONLINE 課程加入群組',
+      'deadline 前加入社群',
+      '先看 LINEUP 再決定要不要加入群組',
+      '我們的 headline 是加入社群一起讀',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤殺');
+    }
+  });
+
+  // 「賴」「籟」單獨出現不算提及:姓氏（賴清德）、動詞（賴床）、既有的
+  // 信/依/無/仰/倚 負向邊界，配上群組詞照樣不得命中。
+  test('detectScamPitch:賴／籟 單獨出現配群組詞仍不命中', () => {
+    const negatives = [
+      '賴清德加入群組',
+      '我信賴：Apple 的產品社群',
+      '加賴床的群組',
+      '這種無賴也想進群裡',
+      '他太依賴社群的風向了',
+      '籟聲很美，歡迎加入社群一起聽',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤殺');
+    }
+  });
+
+  // 兩個訊號缺一不可:只有 LINE 提及（官方帳號公告、客服資訊）或只有群組／
+  // 加入詞（Discord、Telegram、實體社團）都不成立。
+  test('detectScamPitch:只有 LINE 提及、或只有群組／加入詞——都不命中', () => {
+    const lineOnly = [
+      'LINE 官方帳號今天當機了',
+      'LINE 又改版了，訊息列很難用',
+      'LINE：shop001（本店客服，週一到週五）',
+    ];
+    for (const text of lineOnly) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 缺群組／加入詞');
+    }
+    const wordOnly = [
+      '歡迎加入我們的 Discord 群組',
+      '台股群組今天討論飆股',
+      '讀書會還有名額，想加入的留言',
+      '私訊我就好，不用客氣',
+    ];
+    for (const text of wordOnly) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 缺 LINE 提及');
+    }
+  });
+
+  // 群組／加入詞必須獨立於提及本體之外:「加入我的LINE」整句只是一個片語型
+  // 提及，不得自己拿裡面的「加入」湊成命中。這條界線擋的是「加入LINE官方帳
+  // 號」這類正當商家貼文（見「誤報防線」區塊）。
+  test('detectScamPitch:片語型提及不得自己湊出加入詞', () => {
+    assert.equal(C.detectScamPitch('加入我的LINE').hit, false, '提及本體不得同時充當加入詞');
+    assert.equal(C.detectScamPitch('加入LINE官方帳號領取優惠').hit, false, '正當商家貼文不得誤報');
+    assert.equal(C.detectScamPitch('加我賴 ex01abc 聊天，晚上一起打球').hit, false, '純交友不在範圍');
+    // 另有一個獨立的群組詞時才成立。
+    assert.equal(C.detectScamPitch('加入我的LINE，我拉你進群組').hit, true, '多一個群組詞就成立');
+    assert.equal(C.detectScamPitch('加入我的LINE，社群裡有完整筆記').hit, true, '多一個群組詞就成立');
+  });
+
+  // 話術詞降級成純證據:強詞仍會出現在 pitchMatches，但不再是門檻的一部分。
+  // 既有的「錨點 ＋ 強詞」路徑照舊成立（既有正例不得翻紅）。
+  test('detectScamPitch:話術詞仍列入 pitchMatches，且錨點＋強詞路徑保留', () => {
+    const res = C.detectScamPitch('想進群組的加 LINE：ab12cd，帶你找飆股');
+    assert.equal(res.hit, true);
+    assert.equal(res.pitchMatches.includes('飆股'), true, '話術詞仍要當證據列出');
+    assert.equal(C.detectScamPitch(SCAM_POST_TEXT).hit, true, '既有招攬篇正例不得翻紅');
+    assert.equal(C.detectScamPitch('加入我的LINE，每日獲利分享').hit, true, '錨點＋強詞路徑保留');
+    assert.equal(C.detectScamPitch('籟：xyz789 教你抓飆股').hit, true, '錨點＋強詞路徑保留');
+  });
+});
+
+// ---- 詐騙偵測:單字型 LINE 的窄門與裸網址錨點(覆審裁決)----
+//
+// 【單字型要更窄】「LINE 提及 ＋ 群組／加入詞」對單字型提及太寬:公司公告、
+// 社區公告、讀書會、商家會員這些貼文本來就會同時寫到 LINE 與「群組」「加
+// 入」，它們是名詞，不是把人拉走的動作。單字型因此只配**主動招攬詞**(進
+// 群、拉進、拉你進、小群、加我、私訊我);名詞型的群組／社群／群裡／加入只
+// 有在提及本身已經是錨點(連結／帳號／片語)時才算。
+//
+// 【裸網址】招攬串常把深連結寫成沒有 scheme 的 `lin.ee/xxx`,Threads 照樣會
+// 自動連結。連結型錨點因此讓 `https://` 與 `www.` 都可省，改用前置的負向
+// lookbehind 擋住黏在別的網域後面的情形(`xxline.me/ti/g/x`)。
+
+test.describe('詐騙偵測:單字型 LINE 只配主動招攬詞', () => {
+  // 名詞型的群組／社群／加入配單字型 LINE——正當貼文的日常組合，不得命中。
+  test('detectScamPitch:單字型 LINE 配名詞型群組／加入詞不命中', () => {
+    const negatives = [
+      '公司公告改用 LINE 群組發布',
+      '社區公告都發在 LINE，請加入住戶群組',
+      '讀書會的 LINE 群組本週開放加入',
+      '健身房加入會員送體驗課，LINE 有客服可以問',
+      'LINE Pay 加入會員送點數',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤殺');
+    }
+  });
+
+  // 主動招攬詞描述的是「把你帶走」這個動作，單字型配它才成立。
+  test('detectScamPitch:單字型 LINE 配主動招攬詞才命中', () => {
+    const positives = ['想進群的加入我們 LINE 群組', 'LINE 群組名額還有，晚點拉你進群', '有空的話私訊我，LINE 都在'];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  // 錨點型提及(連結／帳號／片語)不受這道窄門影響，照樣吃完整詞表。
+  test('detectScamPitch:錨點型提及仍吃完整群組／加入詞表', () => {
+    const positives = [
+      '可以加 LINE：ab12cd，傳訊息給我，我把你拉進群組',
+      '私訊我 LINE:xyz123',
+      '加line 進群',
+      '加入我的LINE，社群裡有完整筆記',
+      'LINE ID：join002，想聽的加入就好',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  // 「加 LINE／加LINE」本來就被片語型錨點的區間蓋住，留在加入詞表裡只會從
+  // LINEUP／LINEAR 這類英文詞洩漏出來(片語錨點的 lookahead 擋掉了 LINEUP,
+  // 加入詞的純字串比對卻擋不住)。整個移除。
+  test('detectScamPitch:加LINEUP 不得充當加入詞', () => {
+    assert.equal(C.detectScamPitch('LINE 又改版了，記得加LINEUP到行事曆').hit, false, '英文詞片段不得湊成加入詞');
+    assert.equal(C.detectScamPitch('LINE 官方帳號公告，加LINEAR代數課表').hit, false, '英文詞片段不得湊成加入詞');
+  });
+});
+
+test.describe('詐騙偵測:連結型錨點吃裸網址', () => {
+  test('detectScamPitch:lin.ee／line.me 不帶 scheme 也算連結型錨點', () => {
+    const links = ['加我 lin.ee/Ab12Cd', '群組在這 line.me/ti/g/AbCdEf01', '點 www.lin.ee/abc123 就好'];
+    for (const text of links) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 裸網址應單獨命中');
+    }
+    // 帶 scheme 的既有形式不得翻紅。
+    assert.equal(C.detectScamPitch('點這 https://lin.ee/abc123').hit, true, '帶 scheme 的形式維持命中');
+    assert.equal(C.detectScamPitch('看這篇 https://line.me/R/ti/p/@abc').hit, true, '帶 scheme 的形式維持命中');
+  });
+
+  // 網域前面黏著英數/點/@/斜線時是別人的網域(xxline.me、my.lin.ee.evil)，
+  // 不是 LINE 的深連結。
+  test('detectScamPitch:網域前面黏著英數不算連結型錨點', () => {
+    const negatives = ['圖在 xxline.me/ti/g/AbCdEf01', '網址是 9lin.ee/abc123', '看 a.linktr.ee/someone'];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤判為 LINE 深連結');
+    }
+  });
+});
+
+test.describe('詐騙偵測:isPostDetailPath', () => {
+  test('isPostDetailPath:/@handle/post/CODE 為真', () => {
+    assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001'), true);
+    assert.equal(C.isPostDetailPath('/@user_c/post/GhI789'), true);
+    assert.equal(
+      C.isPostDetailPath('/@some.other_reader/post/A-b_C1'),
+      true,
+      'handle 含句點、ID 含連字號都在既有白名單字元類內'
+    );
+  });
+
+  test('isPostDetailPath:河道／個人頁／搜尋頁為偽', () => {
+    assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
+    const negatives = [
+      '/',
+      '',
+      '/@example_author',
+      '/@example_author/',
+      '/@example_author/replies',
+      '/search',
+      '/search/?q=abc',
+      '/activity',
+      '/post/DxSyNtH0001',
+      '/@example_author/post/',
+      '/@example_author/posts/DxSyNtH0001',
+      '/@example_author/post/DxSyNtH0001/extra',
+      '/@bad handle/post/DxSyNtH0001',
+    ];
+    for (const p of negatives) {
+      assert.equal(C.isPostDetailPath(p), false, JSON.stringify(p) + ' 不是詳情頁');
+    }
+    // 中文釣魚字元:沿用 STRICT_POST_URL_PATTERN 的白名單字元類擋下。
+    assert.equal(C.isPostDetailPath('/@u/post/ID' + cp(0x5e10) + 'evil'), false);
+  });
+
+  // 【既有慣例】讀取側(normalizePostUrl / NORMALIZE_POST_URL_PATTERN)容忍尾隨
+  // 斜線與 query/hash;isPostDetailPath 是讀取側判定(判斷「目前這頁是不是詳情
+  // 頁」)，沿用同一套寬鬆慣例，而非寫入側 isCleanPostUrl 的嚴格錨定。
+  test('isPostDetailPath:尾斜線與查詢字串的變體依讀取側慣例容忍', () => {
+    assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001/'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001?xmt=abc'), true);
+    assert.equal(C.isPostDetailPath('/@example_author/post/DxSyNtH0001/?igsh=x#frag'), true);
+  });
+
+  test('isPostDetailPath:非字串一律 false，不拋錯', () => {
+    assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
+    for (const bad of [null, undefined, 123, {}, [], true]) {
+      assert.equal(C.isPostDetailPath(bad), false, JSON.stringify(String(bad)) + ' 應為 false');
+    }
+  });
+});
+
+test.describe('詐騙偵測:normalizeScamBlocklist', () => {
+  const EMPTY_LIST = { version: 1, entries: {}, handleIndex: {}, allowlist: {} };
+
+  test('normalizeScamBlocklist:缺席／非物件一律回空的四欄形狀', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    for (const bad of [undefined, null, 'nope', 42, true, []]) {
+      assert.deepEqual(C.normalizeScamBlocklist(bad), EMPTY_LIST, JSON.stringify(String(bad)) + ' 應回空形狀');
+    }
+  });
+
+  test('normalizeScamBlocklist:髒值逐項剝除不炸，其餘條目保留', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      version: 99,
+      entries: {
+        '111': {
+          handle: 'Example_Author',
+          displayName: 'Example',
+          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：ex01abc', at: 5 }],
+          addedAt: 5,
+          source: 'auto',
+        },
+        '222': 'not-an-object',
+        '333': null,
+        '444': { handle: 'Foo', evidence: 'not-an-array', addedAt: 6 },
+        '555': 12345,
+      },
+      handleIndex: { staleghost: '999' },
+      allowlist: { '777': true },
+      junkField: 'should not survive',
+    });
+    assert.equal(out.version, 1, 'version 固定正規化成 1');
+    assert.deepEqual(Object.keys(out.entries).sort(), ['111', '444'], 'entries 內非物件逐項剝除');
+    assert.deepEqual(out.entries['444'].evidence, [], 'evidence 非陣列退成空陣列，不整筆丟棄');
+    assert.equal(Array.isArray(out.entries['111'].evidence), true);
+    assert.equal(out.entries['111'].evidence.length, 1);
+    assert.equal(Object.prototype.hasOwnProperty.call(out, 'junkField'), false, '未知欄位不留存');
+  });
+
+  test('normalizeScamBlocklist:handleIndex 由 entries 重建且 handle 小寫', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      entries: {
+        '111': { handle: 'Example_Author', evidence: [], addedAt: 1 },
+        '444': { handle: 'Foo', evidence: [], addedAt: 2 },
+        '555': { evidence: [], addedAt: 3 },
+      },
+      handleIndex: { staleghost: '999', example_author: 'wrong-id' },
+    });
+    assert.deepEqual(out.handleIndex, { example_author: '111', foo: '444' }, 'handleIndex 只能由 entries 重建');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out.handleIndex, 'undefined'),
+      false,
+      '缺 handle 的條目不得產生 undefined 鍵'
+    );
+  });
+
+  // entries 與 allowlist 的 handle 走同一把尺（sanitizeDisplayName）：摺疊連續
+  // 空白、去頭尾空白、截長。兩側尺不同時，同一個帳號會在封鎖表與解除表存成兩
+  // 種字串，解除後的比對與 handleIndex 反查都會漏掉。
+  test('normalizeScamBlocklist:entries 與 allowlist 的 handle 清洗結果一致', () => {
+    const dirty = '  Example \t\n  Author  ';
+    const longHandle = 'a'.repeat(120);
+    const out = C.normalizeScamBlocklist({
+      entries: {
+        '111': { handle: dirty, evidence: [], addedAt: 1 },
+        '222': { handle: longHandle, evidence: [], addedAt: 2 },
+      },
+      allowlist: {
+        '111': { at: 7, handle: dirty },
+        '222': { at: 8, handle: longHandle },
+      },
+    });
+    assert.equal(out.entries['111'].handle, 'Example Author', 'entries 的 handle 摺疊連續空白並去頭尾');
+    assert.equal(
+      out.allowlist['111'].handle,
+      out.entries['111'].handle,
+      'entries 與 allowlist 的 handle 清洗結果須一致'
+    );
+    assert.equal(
+      out.allowlist['222'].handle,
+      out.entries['222'].handle,
+      '超長 handle 兩側截到同一長度'
+    );
+    assert.equal(out.handleIndex['example author'], '111', 'handleIndex 由清洗後的 handle 小寫重建');
+  });
+
+  test('normalizeScamBlocklist:allowlist 髒值退成空物件', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    assert.deepEqual(C.normalizeScamBlocklist({ allowlist: 'nope' }).allowlist, {});
+    assert.deepEqual(C.normalizeScamBlocklist({ allowlist: null }).allowlist, {});
+    assert.deepEqual(C.normalizeScamBlocklist({ allowlist: { '777': true } }).allowlist, { '777': { at: 0, handle: '' } });
+  });
+
+  // allowlist 的值是「解除紀錄」：at 為解除時間，handle 為解除當下的帳
+  // 號，選項頁「已解除」小節靠這兩欄排序與顯示。舊版只存 true，讀回來要能
+  // 自動升成新形狀，不得讓使用者已解除的作者被下一次掃描復活。
+  test('normalizeScamBlocklist:allowlist 值為 { at, handle }——舊值 true 相容、髒值剝除', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      allowlist: {
+        '111': { at: 1700000000000, handle: 'Example_Author' },
+        '222': true,
+        '333': { at: 'nope', handle: 42 },
+        '444': { at: 1700000000001 },
+        '555': false,
+        '666': 'yes',
+        '777': null,
+        '888': 0,
+        '999': ['Example_Author'],
+      },
+    });
+
+    assert.deepEqual(
+      out.allowlist['111'],
+      { at: 1700000000000, handle: 'Example_Author' },
+      '合格的 { at, handle } 原樣保留，handle 維持原始大小寫'
+    );
+    assert.deepEqual(out.allowlist['222'], { at: 0, handle: '' }, '舊值 true 升成空解除紀錄 { at:0, handle }');
+    assert.deepEqual(out.allowlist['333'], { at: 0, handle: '' }, '欄位髒值各自退回預設，不整筆丟棄');
+    assert.deepEqual(out.allowlist['444'], { at: 1700000000001, handle: '' }, 'handle 缺席退成空字串');
+    assert.deepEqual(
+      Object.keys(out.allowlist).sort(),
+      ['111', '222', '333', '444'],
+      'true 以外的非物件值（false／字串／null／0／陣列）一律剝除'
+    );
+    assert.equal(Object.getPrototypeOf(out.allowlist['111']), Object.prototype);
+  });
+
+  test('capScamBlocklist:allowlist 透傳正規化後的 { at, handle }', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {},
+      handleIndex: {},
+      allowlist: { '111': { at: 5, handle: 'foo' }, '222': true, '333': 'nope' },
+    });
+    assert.deepEqual(
+      out.allowlist,
+      { '111': { at: 5, handle: 'foo' }, '222': { at: 0, handle: '' } },
+      'capScamBlocklist 不碰 allowlist，只把 normalizeScamBlocklist 的結果原樣帶出來'
+    );
+  });
+});
+
+test.describe('詐騙偵測:capScamBlocklist', () => {
+  // 造一份 n 筆的名單，addedAt 由舊到新(1..n)，userId 為 '<i>'——entries 的鍵
+  // 須是 userId 形狀（純數字字串、1-20 位），normalizeScamBlocklist 會剝掉其餘鍵。
+  function makeList(n, evidencePerEntry, snippetLen) {
+    const entries = {};
+    const handleIndex = {};
+    for (let i = 1; i <= n; i++) {
+      const id = String(i);
+      const evidence = [];
+      for (let e = 0; e < (evidencePerEntry || 1); e++) {
+        evidence.push({
+          postUrl: 'https://www.threads.com/@h' + i + '/post/CODE' + e,
+          snippet: 'S'.repeat(snippetLen || 10),
+          at: i * 1000 + e,
+        });
+      }
+      entries[id] = { handle: 'h' + i, displayName: 'name' + i, evidence: evidence, addedAt: i, source: 'auto' };
+      handleIndex['h' + i] = id;
+    }
+    return { version: 1, entries: entries, handleIndex: handleIndex, allowlist: {} };
+  }
+
+  test('capScamBlocklist:entries 上限 5000，依 addedAt 最舊先淘汰', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.capScamBlocklist(makeList(5050, 1, 10));
+    const ids = Object.keys(out.entries);
+    assert.equal(ids.length, 5000, 'entries 裁到 5000 筆');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '1'), false, '最舊的 addedAt 先淘汰');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '50'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '51'), true, '保留最新 5000 筆');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '5050'), true);
+    // handleIndex 必須跟著裁，不能留下指向已淘汰條目的孤兒鍵。
+    assert.equal(Object.keys(out.handleIndex).length, 5000);
+    assert.equal(Object.prototype.hasOwnProperty.call(out.handleIndex, 'h1'), false);
+    assert.equal(out.handleIndex.h5050, '5050');
+  });
+
+  test('capScamBlocklist:每筆 evidence 上限 3，保留最新(at 最大)', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const list = makeList(1, 1, 10);
+    list.entries['1'].evidence = [
+      { postUrl: SCAM_POST_URL + '1', snippet: 'a', at: 100 },
+      { postUrl: SCAM_POST_URL + '2', snippet: 'b', at: 500 },
+      { postUrl: SCAM_POST_URL + '3', snippet: 'c', at: 300 },
+      { postUrl: SCAM_POST_URL + '4', snippet: 'd', at: 900 },
+      { postUrl: SCAM_POST_URL + '5', snippet: 'e', at: 200 },
+    ];
+    const kept = C.capScamBlocklist(list).entries['1'].evidence;
+    assert.equal(kept.length, 3, 'evidence 裁到 3 筆');
+    assert.deepEqual(
+      kept.map((e) => e.at),
+      [900, 500, 300],
+      '保留最新三筆且依 at 降冪'
+    );
+  });
+
+  test('capScamBlocklist:snippet 裁到 120 字', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const list = makeList(1, 1, 400);
+    const kept = C.capScamBlocklist(list).entries['1'].evidence[0];
+    assert.equal(kept.snippet.length, 120, 'snippet 硬裁 120 字');
+    assert.equal(kept.postUrl.startsWith('https://www.threads.com/'), true, '其餘欄位原樣保留');
+  });
+
+  test('capScamBlocklist:整包 JSON 超過 2MB 軟預算時繼續淘汰最舊', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    // 4000 筆 × 3 證據 × 120 字 snippet 遠超 2MB，筆數上限（5000）攔不住，只能靠軟預算。
+    const out = C.capScamBlocklist(makeList(4000, 3, 120));
+    const ids = Object.keys(out.entries);
+    assert.equal(ids.length < 4000, true, '軟預算應再淘汰，實得 ' + ids.length + ' 筆');
+    assert.equal(ids.length > 0, true, '不得把整份名單清空');
+    assert.equal(JSON.stringify(out).length <= 2 * 1024 * 1024, true, '整包 JSON 不得超過 2MB');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '4000'), true, '最新的一筆永遠留著');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '1'), false, '最舊的先走');
+  });
+
+  test('capScamBlocklist:未超量時原樣回傳；非物件不炸', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const small = makeList(3, 2, 20);
+    const out = C.capScamBlocklist(small);
+    assert.deepEqual(Object.keys(out.entries).sort(), ['1', '2', '3']);
+    assert.equal(out.entries['2'].evidence.length, 2);
+    for (const bad of [undefined, null, 'nope', 42, []]) {
+      assert.deepEqual(
+        C.capScamBlocklist(bad),
+        { version: 1, entries: {}, handleIndex: {}, allowlist: {} },
+        JSON.stringify(String(bad)) + ' 應回空形狀'
+      );
+    }
+  });
+});
+
+test.describe('詐騙偵測:makeBlocklistEntry 與 mergeBlocklistEvidence', () => {
+  test('makeBlocklistEntry:回傳含單筆證據的條目', () => {
+    assert.equal(typeof C.makeBlocklistEntry, 'function', 'makeBlocklistEntry 應掛在 TCLCore 匯出');
+    const entry = C.makeBlocklistEntry({
+      userId: '1234567890',
+      handle: 'Example_Author',
+      displayName: 'Example Author',
+      postUrl: SCAM_POST_URL,
+      snippet: '加我 賴：ex01abc',
+      at: 1700000000000,
+      source: 'auto',
+    });
+    assert.equal(entry.handle, 'Example_Author', 'handle 保留原始大小寫(小寫化是 handleIndex 的事)');
+    assert.equal(entry.displayName, 'Example Author');
+    assert.equal(entry.addedAt, 1700000000000);
+    assert.equal(entry.source, 'auto');
+    assert.equal(Array.isArray(entry.evidence), true);
+    assert.equal(entry.evidence.length, 1);
+    assert.deepEqual(entry.evidence[0], {
+      postUrl: SCAM_POST_URL,
+      snippet: '加我 賴：ex01abc',
+      at: 1700000000000,
+    });
+  });
+
+  test('makeBlocklistEntry:snippet 超長裁到 120 字；髒輸入不拋錯', () => {
+    assert.equal(typeof C.makeBlocklistEntry, 'function', 'makeBlocklistEntry 應掛在 TCLCore 匯出');
+    const entry = C.makeBlocklistEntry({
+      userId: '1',
+      handle: 'h',
+      postUrl: SCAM_POST_URL,
+      snippet: 'S'.repeat(300),
+      at: 1,
+      source: 'auto',
+    });
+    assert.equal(entry.evidence[0].snippet.length, 120);
+    assert.doesNotThrow(() => C.makeBlocklistEntry(null), '缺席引數不得拋錯');
+    assert.doesNotThrow(() => C.makeBlocklistEntry({}), '空物件不得拋錯');
+  });
+
+  test('mergeBlocklistEvidence:同 postUrl 不重複', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'h',
+      displayName: 'n',
+      evidence: [{ postUrl: SCAM_POST_URL, snippet: 'old', at: 100 }],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(entry, { postUrl: SCAM_POST_URL, snippet: 'new', at: 900 });
+    assert.equal(merged.evidence.length, 1, '同一篇貼文只算一筆證據');
+    assert.equal(entry.evidence.length, 1, '純函式:不得就地改寫傳入的條目');
+  });
+
+  test('mergeBlocklistEvidence:新 postUrl 併入且依 at 降冪', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'h',
+      displayName: 'n',
+      evidence: [
+        { postUrl: SCAM_POST_URL + 'A', snippet: 'a', at: 500 },
+        { postUrl: SCAM_POST_URL + 'B', snippet: 'b', at: 100 },
+      ],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(entry, { postUrl: SCAM_POST_URL + 'C', snippet: 'c', at: 300 });
+    assert.deepEqual(
+      merged.evidence.map((e) => e.at),
+      [500, 300, 100],
+      '證據依 at 降冪'
+    );
+    assert.equal(merged.addedAt, 100, 'addedAt 是首見時間，不隨新證據往後跳');
+    assert.equal(entry.evidence.length, 2, '純函式:不得就地改寫傳入的條目');
+  });
+
+  test('mergeBlocklistEvidence:髒證據不入列也不拋錯', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'h',
+      displayName: 'n',
+      evidence: [{ postUrl: SCAM_POST_URL, snippet: 'a', at: 500 }],
+      addedAt: 500,
+      source: 'auto',
+    };
+    for (const bad of [null, undefined, 'nope', 42, {}, { postUrl: 'https://evil.example/x', snippet: 'b', at: 9 }]) {
+      const merged = C.mergeBlocklistEvidence(entry, bad);
+      assert.equal(merged.evidence.length, 1, JSON.stringify(String(bad)) + ' 不得入列');
+    }
+  });
+});
+
+// ---- 詐騙偵測的誤報防線(審查 FAIL 回歸) ----
+//
+// 首版實作讓五類誤報過關:「信賴：」開頭的正常句被當錨點、體育/職場語境的
+// 「內線」被當投資話術、「免費教學／不收費」單詞就足以命中、全形帳號漏抓、
+// 位元組預算用 JS 字元數而非真位元組(中文 snippet 實際佔 3 倍)，外加
+// `__proto__` 鍵與 displayName 換行兩個衛生問題。此區塊逐條釘死。
+
+test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
+  // 「賴」前面接 信/依/無/仰 時整個詞是「信賴/依賴/無賴/仰賴」，後面的冒號
+  // 是正常標點，不是 LINE 帳號引導。這類句子常同時帶投資詞(討論股票時說
+  // 「我信賴某某分析」)，光靠 PITCH 二次確認擋不住，錨點本身必須排除。
+  test('detectScamPitch:信賴／依賴／無賴／仰賴 後接冒號不是錨點', () => {
+    const negatives = [
+      '我信賴：Apple 的品質，這檔是飆股',
+      '感謝大家的信賴：thanks，一起抓飆股',
+      '依賴：technical analysis 的人很容易買到假飆股',
+      '無賴：scammer123 這種人才會報明牌',
+      '仰賴：xyz123 黑馬股',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤報');
+    }
+    // 對照組:排除清單只針對 信/依/無/仰，不得擴成「前面是中文就不算錨點」
+    // ——詐騙招攬句「我的賴：ex01abc」正是這個形狀。
+    assert.equal(C.detectScamPitch('我的賴：ex01abc，專攻波段黑馬股').hit, true, '排除清單不得過寬');
+    assert.equal(C.detectScamPitch('找我聊 賴：ex01abc，有黑馬股').hit, true, '排除清單不得過寬');
+  });
+
+  // 帳號型錨點加了繫詞(是／ID／帳號)可選之後，信賴／依賴的負向邊界不能跟著
+  // 鬆動——「信賴是：」「依賴是：」後面接的仍是正常標點，不是 LINE 帳號引
+  // 導；「賴清德」是姓氏，後面接的是人名不是繫詞或冒號，本來就不成立錨點。
+  test('detectScamPitch:帳號型繫詞加入後，信賴／依賴／賴清德的負向邊界照舊', () => {
+    const negatives = [
+      '我最信賴是：Apple2024 的品質，加入我們的社群討論。',
+      '過度依賴是：problem1 的根源，歡迎加入讀書會群組。',
+      '賴清德的政見群組，加入後可以討論 policy2024 的細節。',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤報');
+    }
+  });
+
+  // 【PM 裁決】話術表回歸規格原文:刪除「內線」。內線在中文是體育(內線傳
+  // 球)、職場(內線消息)、電話分機的日常詞，投資語境的辨識力不足以單獨撐起
+  // PITCH，留著只會把球評與八卦貼文一起掃進黑名單。表定保留:黑馬股／報明牌
+  // ／代操／帶單／飆股／穩賺／獲利分享。
+  test('detectScamPitch:內線不在話術表內', () => {
+    const text = '他的內線很強，禁區沒人擋得住，加入LINE看直播';
+    const res = C.detectScamPitch(text);
+    assert.equal(res.hit, false, '內線不得撐起 PITCH');
+    assert.equal(res.pitchMatches.includes('內線'), false, '內線不得出現在 pitchMatches');
+    // 表定的七個詞逐一確認仍在(各配一個錨點)。
+    const kept = ['黑馬股', '報明牌', '代操', '帶單', '飆股', '穩賺', '獲利分享'];
+    for (const word of kept) {
+      const hitRes = C.detectScamPitch('加入我的LINE，' + word + '都有');
+      assert.equal(hitRes.hit, true, word + ' 應仍是話術詞');
+      assert.equal(hitRes.pitchMatches.includes(word), true, word + ' 應出現在 pitchMatches');
+    }
+  });
+
+  // pitchMatches 會直接進證據卡給使用者看:「明牌」是「報明牌」的子字串，同
+  // 一段文字兩個都列等於同一件事數兩次，也讓「PITCH >= 1」的門檻被子字串灌
+  // 水。被包含的短詞在長詞已命中時不列入。
+  test('detectScamPitch:pitchMatches 去除被包含詞', () => {
+    const res = C.detectScamPitch('加入我的LINE，不報明牌也能賺');
+    assert.equal(res.hit, true);
+    assert.equal(res.pitchMatches.includes('報明牌'), true, '長詞列入');
+    assert.equal(res.pitchMatches.includes('明牌'), false, '被包含的短詞不重複列');
+    assert.equal(new Set(res.pitchMatches).size, res.pitchMatches.length, 'pitchMatches 不得有重複項');
+    // 只出現短詞時，短詞照列。
+    const short = C.detectScamPitch('加入我的LINE，明牌直接給你');
+    assert.equal(short.pitchMatches.includes('明牌'), true);
+  });
+
+  // 「免費教學」「不收費」在補習、餐飲、健身、公益貼文裡是中性詞，辨識力遠
+  // 低於「黑馬股」「代操」。降權成弱詞:只有它們時不足以命中，必須再有一個
+  // 其他投資詞才算 PITCH 成立。
+  test('detectScamPitch:免費教學／不收費是弱詞，單獨不足以命中', () => {
+    assert.equal(C.detectScamPitch('烘焙免費教學，加入LINE官方帳號領取食譜').hit, false, '免費教學單獨不成立');
+    assert.equal(C.detectScamPitch('瑜珈課程不收費，加入我的LINE').hit, false, '不收費單獨不成立');
+    // 弱詞 + 一個強詞 → 成立。
+    assert.equal(C.detectScamPitch('黑馬股免費教學，加入我的LINE').hit, true, '弱詞配強詞應命中');
+    assert.equal(C.detectScamPitch('代操不收費，賴：ex01abc').hit, true, '弱詞配強詞應命中');
+    // 範例第六篇原句:「不報明牌、不收費、不代操」含兩個強詞，降權後仍命中。
+    assert.equal(C.detectScamPitch(SCAM_POST_TEXT).hit, true, '真實詐騙貼文不得因降權漏抓');
+  });
+
+  // 詐騙帳號會用全形英數規避純 ASCII 的帳號樣式。錨點要吃全形，且
+  // anchorMatch／snippet 必須保留原文全形——證據卡要讓使用者一眼看出對方用
+  // 了規避字元，不能偷偷正規化成半形。
+  test('detectScamPitch:全形英數帳號照樣是錨點，原文全形保留', () => {
+    const text = '賴：ｅｘ０１ａｂｃ 有黑馬股';
+    const res = C.detectScamPitch(text);
+    assert.equal(res.hit, true, '全形帳號應命中');
+    assert.equal(
+      res.anchorMatch.includes('ｅｘ０１ａｂｃ') || res.snippet.includes('ｅｘ０１ａｂｃ'),
+      true,
+      'anchorMatch 或 snippet 必須保留原文全形'
+    );
+    // 3 位的門檻對全形一視同仁:2 位仍不算帳號。
+    assert.equal(C.detectScamPitch('賴：ｅｘ 有黑馬股').hit, false, '全形也要滿 3 位');
+  });
+
+  // 2MB 軟預算是 chrome.storage 的位元組配額，不是 JS 字元數。snippet 幾乎必
+  // 然是中文(詐騙話術本體)，UTF-8 每字 3 bytes——用 String#length 當預算會讓
+  // 實際寫入量膨脹到三倍而撞配額。
+  test('capScamBlocklist:2MB 軟預算算的是 UTF-8 真位元組', () => {
+    const entries = {};
+    const handleIndex = {};
+    for (let i = 1; i <= 2000; i++) {
+      const id = String(i);
+      const evidence = [];
+      for (let e = 0; e < 3; e++) {
+        evidence.push({
+          postUrl: 'https://www.threads.com/@h' + i + '/post/CODE' + e,
+          snippet: '詐騙'.repeat(60), // 120 字 / 360 bytes
+          at: i * 1000 + e,
+        });
+      }
+      entries[id] = { handle: 'h' + i, displayName: '帳號' + i, evidence: evidence, addedAt: i, source: 'auto' };
+      handleIndex['h' + i] = id;
+    }
+    const out = C.capScamBlocklist({ version: 1, entries: entries, handleIndex: handleIndex, allowlist: {} });
+    const bytes = new TextEncoder().encode(JSON.stringify(out)).length;
+    assert.equal(bytes <= 2 * 1024 * 1024, true, '真位元組不得超過 2MB，實得 ' + bytes);
+    assert.equal(Object.keys(out.entries).length > 0, true, '不得把整份名單清空');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '2000'), true, '最新的一筆永遠留著');
+  });
+
+  // storage 讀回的 JSON 可能含 `__proto__` 鍵(手工編輯的匯入檔、或他處寫入
+  // 的髒資料)。`out.entries['__proto__'] = entry` 不會建出自有鍵，而是把
+  // entries 的原型整個換掉:Object.keys 看不到它，handleIndex 卻留下指向它的
+  // 孤兒鍵，之後的查表會拿到一筆撈不出來的條目。
+  test('normalizeScamBlocklist:__proto__ 鍵拒收，原型不受污染', () => {
+    const raw = JSON.parse(
+      '{"entries":{"__proto__":{"handle":"evil","displayName":"x","evidence":[],"addedAt":1,"polluted":"yes"},' +
+        '"111":{"handle":"ok","evidence":[],"addedAt":2}}}'
+    );
+    const out = C.normalizeScamBlocklist(raw);
+    assert.deepEqual(Object.keys(out.entries), ['111'], '__proto__ 鍵不得成為條目');
+    assert.equal(Object.prototype.hasOwnProperty.call(out.entries, '__proto__'), false);
+    assert.equal(Object.getPrototypeOf(out.entries), Object.prototype, 'entries 的原型不得被換掉');
+    assert.deepEqual(out.handleIndex, { ok: '111' }, 'handleIndex 不得留下孤兒鍵');
+    assert.equal({}.polluted, undefined, 'Object.prototype 不得被污染');
+    assert.equal(Object.prototype.polluted, undefined, 'Object.prototype 不得被污染');
+
+    const allowOut = C.normalizeScamBlocklist(JSON.parse('{"allowlist":{"__proto__":true,"777":true}}'));
+    assert.deepEqual(Object.keys(allowOut.allowlist), ['777'], 'allowlist 同樣拒收 __proto__');
+    assert.equal(Object.getPrototypeOf(allowOut.allowlist), Object.prototype);
+  });
+
+  // 黑名單卡片是單行版面:displayName 帶換行/tab 會把卡片撐開或截斷。比照
+  // sanitizeDisplayName 的做法把連續空白摺成一個半形空格並去頭尾。
+  test('makeBlocklistEntry:displayName 摺疊空白成單行', () => {
+    const entry = C.makeBlocklistEntry({
+      userId: '1234567890',
+      handle: 'Example_Author',
+      displayName: '  Example\n\tAuthor \n 投資 ',
+      postUrl: SCAM_POST_URL,
+      snippet: '賴：ex01abc',
+      at: 1700000000000,
+      source: 'auto',
+    });
+    assert.equal(entry.displayName, 'Example Author 投資', '連續空白摺成單一半形空格並去頭尾');
+    assert.equal(/[\r\n\t]/.test(entry.displayName), false, 'displayName 不得留下換行或 tab');
+    const dirtyHandle = C.makeBlocklistEntry({
+      userId: '1',
+      handle: 'Example\tAuthor\n',
+      postUrl: SCAM_POST_URL,
+      snippet: 's',
+      at: 1,
+      source: 'auto',
+    });
+    assert.equal(/[\r\n\t]/.test(dirtyHandle.handle), false, 'handle 不得留下換行或 tab');
+  });
+});
+
+// ---- 詐騙偵測:allowlist 的筆數上限（L4 審查建議）----
+//
+// entries 有 MAX_ENTRIES 擋著，allowlist 卻是無上限的：使用者每按一次「解
+// 除」就多一筆，而解除紀錄會永遠留著（它的作用就是不讓下一次掃描把人復
+// 活）。同一份位元組軟預算下，無上限的 allowlist 最終會把 entries 擠光。
+// 上限與 entries 同為 5000 筆，依 at 降冪留最新——舊值升級來的 { at:0 } 排在
+// 最後，本來就是最沒有顯示價值的那一批。
+test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
+  function makeAllowlist(count) {
+    const allowlist = {};
+    for (let i = 0; i < count; i++) {
+      allowlist[String(900000000 + i)] = { at: i + 1, handle: 'h' + i };
+    }
+    return allowlist;
+  }
+
+  test('capScamBlocklist:allowlist 超過 5000 筆時依 at 降冪留最新 5000', () => {
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {},
+      handleIndex: {},
+      allowlist: makeAllowlist(5001),
+    });
+
+    assert.equal(Object.keys(out.allowlist).length, 5000, 'allowlist 上限與 entries 同為 5000 筆');
+    assert.equal(out.allowlist['900000000'], undefined, 'at 最小（最舊）的一筆被淘汰');
+    assert.deepEqual(
+      out.allowlist['900005000'],
+      { at: 5001, handle: 'h5000' },
+      '最新的一筆必須留著，且值的形狀不變'
+    );
+  });
+
+  test('capScamBlocklist:allowlist 恰 5000 筆時一筆都不裁', () => {
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {},
+      handleIndex: {},
+      allowlist: makeAllowlist(5000),
+    });
+
+    assert.equal(Object.keys(out.allowlist).length, 5000, '恰為上限不得誤裁');
+    assert.deepEqual(out.allowlist['900000000'], { at: 1, handle: 'h0' }, '最舊的那一筆在上限內照樣留著');
+  });
+
+  test('capScamBlocklist:allowlist 裁切不得動到 entries', () => {
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: {
+        '111': {
+          handle: 'Example_Author',
+          displayName: 'Example',
+          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：ex01abc', at: 5 }],
+          addedAt: 5,
+          source: 'auto',
+        },
+      },
+      handleIndex: { example_author: '111' },
+      allowlist: makeAllowlist(5001),
+    });
+
+    assert.ok(out.entries['111'], '解除名單爆量不得連帶淘汰黑名單條目');
+    assert.equal(out.handleIndex['example_author'], '111');
+  });
+});
+
+// ============================================================
+// 【整合審查 S7】normalizeScamBlocklist 的 entries／allowlist 鍵必須是
+// userId 形狀（純數字字串，§14）。storage 是使用者可編輯、也可能被他處寫
+// 髒的地方；鍵不驗形狀時，任意字串（handle、路徑、標記字串）都能混進
+// entries 當成一筆「作者」，handleIndex 還會跟著指過去，查表就會拿到一筆
+// 永遠對不上 background 寫入側 userId 的幽靈條目。
+// ============================================================
+
+test.describe('詐騙偵測:normalizeScamBlocklist 的鍵形狀', () => {
+  const SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
+
+  function entryOf(handle) {
+    return { handle: handle, displayName: handle, evidence: [], addedAt: 1, source: 'auto' };
+  }
+
+  test('normalizeScamBlocklist:entries 非數字鍵整筆剝除，handleIndex 不得殘留指向它', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      entries: {
+        abc: entryOf('ghost_author'),
+        '123': entryOf('example_author'),
+        '12a34': entryOf('mixed_author'),
+        '-1': entryOf('negative_author'),
+        '1.5': entryOf('float_author'),
+        '': entryOf('blank_author'),
+        '123456789012345678901': entryOf('overlong_author'),
+      },
+    });
+
+    assert.deepEqual(Object.keys(out.entries), ['123'], 'entries 只留 userId 形狀（純數字、1-20 位）的鍵');
+    Object.keys(out.entries).forEach((id) => {
+      assert.match(id, SCAM_USER_ID_PATTERN, id + ' 應為 userId 形狀');
+    });
+    assert.deepEqual(
+      out.handleIndex,
+      { example_author: '123' },
+      'handleIndex 不得殘留指向被丟棄鍵的項目——那是查不出條目的孤兒鍵'
+    );
+    Object.keys(out.handleIndex).forEach((key) => {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(out.entries, out.handleIndex[key]),
+        'handleIndex[' + key + '] 指向的條目必須還在 entries 裡'
+      );
+    });
+  });
+
+  test('normalizeScamBlocklist:allowlist 同樣只留 userId 形狀的鍵', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      allowlist: {
+        abc: { at: 1, handle: 'ghost_author' },
+        '456': { at: 2, handle: 'example_author' },
+        '4a56': true,
+        '': true,
+      },
+    });
+
+    assert.deepEqual(Object.keys(out.allowlist), ['456'], 'allowlist 只留 userId 形狀的鍵');
+    assert.deepEqual(out.allowlist['456'], { at: 2, handle: 'example_author' }, '合格鍵的值照舊正規化');
+  });
+});
+
+// ============================================================
+// 詐騙偵測:證據結構補強(anchorPostUrl／threadUrl／anchorMatch／signals)
+//
+// 【為什麼要補】舊證據只有 { postUrl, snippet, at } 三欄，而 postUrl 存的是
+// 「使用者當時開的那一頁」。招攬串的錨點幾乎都落在末篇，點進證據連結看到的
+// 卻是第一篇的長篇鋪陳，使用者無從一眼確認當初為何被標記。四個新欄位把「哪
+// 一篇帶錨點」「整串從哪裡開始」「錨點本體是什麼」「踩到哪幾類訊號」一併留
+// 下，證據卡才講得清楚。
+//
+// 【欄位契約】
+//   anchorPostUrl 含錨點那一篇的永久連結(走 normalizePostUrl)
+//   threadUrl     串頭(第一篇)的永久連結(走 normalizePostUrl)
+//   anchorMatch   錨點本體，剝控制字元後硬裁 40 字
+//   signals       字串陣列，白名單 link|line|group|join|pitch，其餘剝除
+//   postUrl       維持原義:使用者當時開的那一頁(必要欄位，不合法整筆丟)
+//
+// 【向後相容】四欄皆為選填。舊證據缺欄時輸出就不帶該鍵(不是補 null 也不是
+// 補空字串)——選項頁靠「鍵在不在」決定要不要畫那一行，補空值會讓舊證據畫出
+// 一排空連結。
+//
+// 【不合法剝欄不剝筆】新欄位形狀不對時只剝掉那一欄，整筆證據照留:它們是加
+// 值資訊，不是證據成立的必要條件，為了一個壞掉的 threadUrl 丟掉整筆等於把使
+// 用者真的命中過的紀錄一起抹掉。postUrl 與 at 仍是必要欄位，維持原行為。
+// ============================================================
+
+// 同一位作者的三篇:0001 是使用者開的那一頁(也是串頭),0002 是帶錨點的末
+// 篇。合成資料沿用 example_author／DxSyNtH000x。
+const EV_PAGE_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const EV_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0002';
+const EV_THREAD_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const EV_OTHER_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0003';
+const EV_ANCHOR_TEXT = 'LINE：ab12cd';
+const EV_SIGNALS = ['line', 'group'];
+const EV_SNIPPET = '想多一個地方交流可以加 LINE：ab12cd，我把你拉進群組';
+
+// 條目序列化後的實際 UTF-8 位元組，供位元組估算的差額比對。
+const evUtf8 = (value) => Buffer.byteLength(value, 'utf8');
+
+// 帶滿四個新欄位的一筆證據(raw 形狀，尚未正規化)。
+function richEvidence(patch) {
+  return Object.assign(
+    {
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS.slice(),
+    },
+    patch || {}
+  );
+}
+
+test.describe('詐騙偵測:normalizeScamEvidence 的新欄位', () => {
+  test('normalizeScamEvidence:掛在 TCLCore 匯出(選項頁與 background 都要能單獨驗一筆證據)', () => {
+    assert.equal(
+      typeof C.normalizeScamEvidence,
+      'function',
+      'normalizeScamEvidence 應掛在 TCLCore 匯出'
+    );
+  });
+
+  test('normalizeScamEvidence:四個新欄位原樣留下，三個網址都走 normalizePostUrl', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence(richEvidence());
+    assert.deepEqual(out, {
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS,
+    });
+  });
+
+  test('normalizeScamEvidence:三個網址的容尾變體(尾斜線／query／hash)一律正規化成乾淨網址', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence(
+      richEvidence({
+        postUrl: EV_PAGE_URL + '/?xmt=AQGzabcdef',
+        anchorPostUrl: EV_ANCHOR_URL + '?xmt=AQGzabcdef',
+        threadUrl: EV_THREAD_URL + '#comments',
+      })
+    );
+    assert.equal(out.postUrl, EV_PAGE_URL, 'postUrl 去 query/尾斜線');
+    assert.equal(out.anchorPostUrl, EV_ANCHOR_URL, 'anchorPostUrl 同樣走 normalizePostUrl');
+    assert.equal(out.threadUrl, EV_THREAD_URL, 'threadUrl 同樣走 normalizePostUrl');
+  });
+
+  test('normalizeScamEvidence:不合法的 anchorPostUrl／threadUrl 只剝該欄，整筆證據照留', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const bads = [
+      'https://evil.example/@example_author/post/DxSyNtH0002',
+      'https://www.threads.com/@example_author',
+      'javascript:alert(1)',
+      '',
+      42,
+      null,
+      {},
+    ];
+    for (const bad of bads) {
+      const label = JSON.stringify(String(bad));
+
+      const a = C.normalizeScamEvidence(richEvidence({ anchorPostUrl: bad }));
+      assert.ok(a, 'anchorPostUrl=' + label + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(a, 'anchorPostUrl'),
+        false,
+        'anchorPostUrl=' + label + ' 應整欄剝除(不是補 null/空字串)'
+      );
+      assert.equal(a.postUrl, EV_PAGE_URL, '剝欄不得波及 postUrl');
+      assert.equal(a.threadUrl, EV_THREAD_URL, '剝欄不得波及同筆的其他新欄位');
+
+      const t = C.normalizeScamEvidence(richEvidence({ threadUrl: bad }));
+      assert.ok(t, 'threadUrl=' + label + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(t, 'threadUrl'),
+        false,
+        'threadUrl=' + label + ' 應整欄剝除'
+      );
+      assert.equal(t.anchorPostUrl, EV_ANCHOR_URL, '剝欄不得波及同筆的其他新欄位');
+    }
+  });
+
+  test('normalizeScamEvidence:postUrl 與 at 仍是必要欄位，不合法整筆回 null(行為不變)', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ postUrl: 'https://evil.example/x' })),
+      null,
+      'postUrl 不合法時整筆丟棄——新欄位再齊全也救不回一筆來源不明的證據'
+    );
+    assert.equal(C.normalizeScamEvidence(richEvidence({ at: 'now' })), null, 'at 非數字整筆丟棄');
+    assert.equal(C.normalizeScamEvidence(null), null);
+    assert.equal(C.normalizeScamEvidence('nope'), null);
+  });
+
+  test('normalizeScamEvidence:signals 只留白名單值，順序照 link|line|group|join|pitch 且去重', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence(
+      richEvidence({ signals: ['link', 'evil', 'line', 42, null, 'group', '', 'PITCH', 'join', 'pitch'] })
+    );
+    assert.deepEqual(
+      out.signals,
+      ['link', 'line', 'group', 'join', 'pitch'],
+      'signals 逐項過白名單(link|line|group|join|pitch)，其餘剝除;大小寫不放寬'
+    );
+  });
+
+  test('normalizeScamEvidence:signals 非陣列或全被剝光時整欄剝除，不留空陣列', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    for (const bad of ['line', 42, null, {}, ['evil', 'nope']]) {
+      const out = C.normalizeScamEvidence(richEvidence({ signals: bad }));
+      assert.ok(out, 'signals=' + JSON.stringify(String(bad)) + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out, 'signals'),
+        false,
+        'signals=' + JSON.stringify(String(bad)) + ' 應整欄剝除;留一個空陣列會讓證據卡畫出一排沒有 chip 的空白'
+      );
+    }
+  });
+
+  test('normalizeScamEvidence:anchorMatch 剝控制字元、硬裁 40 字;非字串整欄剝除', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    // 控制/bidi 字元用碼位組出，原始碼保持全 ASCII(見檔頭紀律)。
+    const dirty = 'LINE' + cp(0x202e) + '：ab12cd' + cp(0x0007);
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ anchorMatch: dirty })).anchorMatch,
+      EV_ANCHOR_TEXT,
+      'anchorMatch 會進選項頁 DOM，控制/bidi 字元一律剝掉'
+    );
+
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ anchorMatch: 'L'.repeat(80) })).anchorMatch.length,
+      40,
+      'anchorMatch 硬裁 40 字(儲存端保證，選項頁不必再截)'
+    );
+    assert.equal(
+      C.normalizeScamEvidence(richEvidence({ anchorMatch: 'L'.repeat(40) })).anchorMatch.length,
+      40,
+      '恰 40 字不得誤裁'
+    );
+
+    for (const bad of [42, null, {}, []]) {
+      const out = C.normalizeScamEvidence(richEvidence({ anchorMatch: bad }));
+      assert.ok(out, 'anchorMatch=' + JSON.stringify(String(bad)) + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out, 'anchorMatch'),
+        false,
+        'anchorMatch 非字串應整欄剝除'
+      );
+    }
+  });
+
+  test('normalizeScamEvidence:舊形狀(只有 postUrl/snippet/at)原樣通過，不補出新欄位的空殼', () => {
+    assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamEvidence({ postUrl: EV_PAGE_URL, snippet: '賴：ex01abc', at: 5 });
+    assert.deepEqual(
+      out,
+      { postUrl: EV_PAGE_URL, snippet: '賴：ex01abc', at: 5 },
+      '舊證據照舊只有三欄——選項頁靠「鍵在不在」決定畫不畫，補空殼會畫出空連結'
+    );
+  });
+
+  test('normalizeScamBlocklist:條目內的舊證據與新證據可以並存，各自保留自己有的欄位', () => {
+    assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.normalizeScamBlocklist({
+      entries: {
+        '10000000001': {
+          handle: 'example_author',
+          evidence: [richEvidence(), { postUrl: EV_OTHER_ANCHOR_URL, snippet: 'old', at: 1 }],
+          addedAt: 1,
+        },
+      },
+    });
+    const kept = out.entries['10000000001'].evidence;
+    assert.equal(kept.length, 2, '新舊證據並存，兩筆都要留');
+    assert.equal(kept[0].anchorPostUrl, EV_ANCHOR_URL, '新證據保留 anchorPostUrl');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(kept[1], 'anchorPostUrl'),
+      false,
+      '舊證據不得被補出新欄位'
+    );
+  });
+});
+
+test.describe('詐騙偵測:證據去重鍵改為 anchorPostUrl || postUrl', () => {
+  // 同一串被重掃(使用者從不同篇進入詳情頁)時，postUrl 會是不同的一頁，但錨
+  // 點篇永遠是同一篇。去重鍵若還綁 postUrl，同一次招攬會被記成好幾筆證據，
+  // 三筆額度一下就被同一串吃光。
+  test('mergeBlocklistEvidence:anchorPostUrl 相同時視為同一篇，即使 postUrl 不同也不重複入列', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'example_author',
+      evidence: [richEvidence({ postUrl: EV_PAGE_URL, at: 100 })],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(
+      entry,
+      richEvidence({ postUrl: EV_ANCHOR_URL, at: 900 })
+    );
+    assert.equal(
+      merged.evidence.length,
+      1,
+      '去重鍵是 anchorPostUrl:同一篇錨點只算一筆證據，不因使用者從哪一篇進來而分裂'
+    );
+    assert.equal(entry.evidence.length, 1, '純函式:不得就地改寫傳入的條目');
+  });
+
+  test('mergeBlocklistEvidence:anchorPostUrl 不同時各記一筆，即使 postUrl 相同', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'example_author',
+      evidence: [richEvidence({ at: 100 })],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(
+      entry,
+      richEvidence({ anchorPostUrl: EV_OTHER_ANCHOR_URL, at: 900 })
+    );
+    assert.equal(merged.evidence.length, 2, '兩篇不同的錨點篇是兩筆證據');
+    assert.deepEqual(
+      merged.evidence.map((e) => e.at),
+      [900, 100],
+      '依 at 降冪'
+    );
+  });
+
+  test('mergeBlocklistEvidence:缺 anchorPostUrl 的一側退回 postUrl 當鍵(新舊證據互相認得出同一篇)', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    // 舊證據只有 postUrl = 錨點篇;新證據帶 anchorPostUrl 指向同一篇。
+    const entry = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_ANCHOR_URL, snippet: 'old', at: 100 }],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const merged = C.mergeBlocklistEvidence(
+      entry,
+      richEvidence({ postUrl: EV_PAGE_URL, anchorPostUrl: EV_ANCHOR_URL, at: 900 })
+    );
+    assert.equal(
+      merged.evidence.length,
+      1,
+      '舊證據的 postUrl 與新證據的 anchorPostUrl 指向同一篇，不得記成兩筆'
+    );
+  });
+
+  test('mergeBlocklistEvidence:併入的新證據四個欄位一併落盤', () => {
+    assert.equal(typeof C.mergeBlocklistEvidence, 'function', 'mergeBlocklistEvidence 應掛在 TCLCore 匯出');
+    const entry = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_OTHER_ANCHOR_URL, snippet: 'old', at: 100 }],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const added = C.mergeBlocklistEvidence(entry, richEvidence({ at: 900 })).evidence[0];
+    assert.equal(added.anchorPostUrl, EV_ANCHOR_URL);
+    assert.equal(added.threadUrl, EV_THREAD_URL);
+    assert.equal(added.anchorMatch, EV_ANCHOR_TEXT);
+    assert.deepEqual(added.signals, EV_SIGNALS);
+  });
+});
+
+test.describe('詐騙偵測:capScamEvidence／scamEntryBytes 與新欄位', () => {
+  test('capScamEvidence:掛在 TCLCore 匯出', () => {
+    assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
+  });
+
+  test('capScamEvidence:留最新三筆且四個新欄位原樣帶過，snippet 仍硬裁 120', () => {
+    assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
+    const list = [1, 2, 3, 4].map((i) =>
+      richEvidence({
+        postUrl: 'https://www.threads.com/@example_author/post/DxSyNtH000' + i,
+        anchorPostUrl: 'https://www.threads.com/@example_author/post/DxSyNtA000' + i,
+        snippet: 'S'.repeat(300),
+        at: i * 100,
+      })
+    );
+    const kept = C.capScamEvidence(list);
+    assert.equal(kept.length, 3, '每位作者仍只留三筆證據');
+    assert.deepEqual(
+      kept.map((e) => e.at),
+      [400, 300, 200],
+      '保留最新三筆且依 at 降冪'
+    );
+    kept.forEach((e) => {
+      assert.equal(e.snippet.length, 120, 'snippet 仍硬裁 120 字');
+      assert.equal(
+        e.anchorPostUrl,
+        'https://www.threads.com/@example_author/post/DxSyNtA000' + e.at / 100,
+        'anchorPostUrl 不得在裁切時被丟掉'
+      );
+      assert.equal(e.threadUrl, EV_THREAD_URL, 'threadUrl 不得在裁切時被丟掉');
+      assert.equal(e.anchorMatch, EV_ANCHOR_TEXT, 'anchorMatch 不得在裁切時被丟掉');
+      assert.deepEqual(e.signals, EV_SIGNALS, 'signals 不得在裁切時被丟掉');
+    });
+  });
+
+  test('capScamEvidence:舊形狀證據裁切後仍只有三欄，不得補出新欄位', () => {
+    assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
+    const kept = C.capScamEvidence([{ postUrl: EV_PAGE_URL, snippet: 'old', at: 7 }]);
+    assert.deepEqual(kept, [{ postUrl: EV_PAGE_URL, snippet: 'old', at: 7 }]);
+  });
+
+  test('capScamBlocklist:整包裁切走完一輪後，新欄位仍在(正規化與裁切都不得吃掉它們)', () => {
+    assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
+    const out = C.capScamBlocklist({
+      entries: {
+        '10000000001': {
+          handle: 'example_author',
+          displayName: 'Example Author',
+          evidence: [richEvidence()],
+          addedAt: 1700000100000,
+          source: 'auto',
+        },
+      },
+    });
+    const ev = out.entries['10000000001'].evidence[0];
+    assert.equal(ev.anchorPostUrl, EV_ANCHOR_URL);
+    assert.equal(ev.threadUrl, EV_THREAD_URL);
+    assert.equal(ev.anchorMatch, EV_ANCHOR_TEXT);
+    assert.deepEqual(ev.signals, EV_SIGNALS);
+  });
+
+  test('scamEntryBytes:掛在 TCLCore 匯出，且估算把新欄位一起算進去', () => {
+    assert.equal(typeof C.scamEntryBytes, 'function', 'scamEntryBytes 應掛在 TCLCore 匯出');
+    const lean = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_PAGE_URL, snippet: 'x', at: 1 }],
+      addedAt: 1,
+      source: 'auto',
+    };
+    const rich = {
+      handle: 'example_author',
+      evidence: [richEvidence({ snippet: 'x', at: 1 })],
+      addedAt: 1,
+      source: 'auto',
+    };
+    const leanBytes = C.scamEntryBytes('10000000001', lean);
+    const richBytes = C.scamEntryBytes('10000000001', rich);
+    assert.equal(typeof leanBytes, 'number');
+    assert.ok(
+      richBytes > leanBytes,
+      '新欄位佔的位元組必須計入，否則 2MB 軟預算會低估、先爆的是 storage 配額而不是預算'
+    );
+    // 四個新欄位的序列化長度是可算的下界:估算不得只多算一點意思意思。
+    const delta = evUtf8(JSON.stringify(rich)) - evUtf8(JSON.stringify(lean));
+    assert.equal(
+      richBytes - leanBytes,
+      delta,
+      '兩者的差額應等於條目序列化後的實際 UTF-8 位元組差(估算以 JSON.stringify 全量計)'
+    );
+  });
+});
+
+test.describe('詐騙偵測:makeBlocklistEntry 帶新欄位', () => {
+  test('makeBlocklistEntry:一次命中的四個新欄位要寫進 evidence[0]', () => {
+    assert.equal(typeof C.makeBlocklistEntry, 'function', 'makeBlocklistEntry 應掛在 TCLCore 匯出');
+    const entry = C.makeBlocklistEntry({
+      handle: 'example_author',
+      displayName: 'Example Author',
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS.slice(),
+      source: 'auto',
+    });
+    assert.equal(entry.evidence.length, 1);
+    assert.deepEqual(entry.evidence[0], {
+      postUrl: EV_PAGE_URL,
+      snippet: EV_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: EV_ANCHOR_URL,
+      threadUrl: EV_THREAD_URL,
+      anchorMatch: EV_ANCHOR_TEXT,
+      signals: EV_SIGNALS,
+    });
+  });
+
+  test('makeBlocklistEntry:命中沒帶新欄位時 evidence[0] 維持舊三欄形狀', () => {
+    assert.equal(typeof C.makeBlocklistEntry, 'function', 'makeBlocklistEntry 應掛在 TCLCore 匯出');
+    const entry = C.makeBlocklistEntry({
+      handle: 'example_author',
+      postUrl: EV_PAGE_URL,
+      snippet: 'x',
+      at: 5,
+      source: 'auto',
+    });
+    assert.deepEqual(entry.evidence[0], { postUrl: EV_PAGE_URL, snippet: 'x', at: 5 });
+  });
+});
+
+// ============================================================
+// 詐騙偵測:證據的 postedAt(貼文發布時間)
+//
+// 【為什麼要】證據原本只有 at＝「掃到的時間」。使用者在證據卡上想知道的是
+// 「這篇招攬貼文是什麼時候發的」——同一位作者去年貼的跟上週貼的，判斷份量
+// 完全不同，而掃描時間只反映使用者什麼時候剛好滑到那一頁。
+//
+// 【契約】選填、有限數字才留，其餘整欄剝除(比照另外四欄:剝欄不剝筆)。
+// 缺席時不補鍵——選項頁靠「鍵在不在」決定要不要退回 at。
+// ============================================================
+
+const EV_POSTED_AT = 1789700000000;
+
+test.describe('詐騙偵測:normalizeScamEvidence 的 postedAt', () => {
+  test('normalizeScamEvidence:postedAt 為有限數字時原樣留下', () => {
+    const out = C.normalizeScamEvidence(richEvidence({ postedAt: EV_POSTED_AT }));
+    assert.equal(out.postedAt, EV_POSTED_AT, '貼文發布時間原樣落盤');
+    assert.equal(out.at, 1700000100000, 'at(掃到的時間)是另一欄，兩者不得互相取代');
+  });
+
+  test('normalizeScamEvidence:postedAt 非有限數字時整欄剝除，整筆證據照留', () => {
+    for (const bad of ['2026-09-18', NaN, Infinity, null, {}, [], true]) {
+      const out = C.normalizeScamEvidence(richEvidence({ postedAt: bad }));
+      assert.ok(out, 'postedAt=' + JSON.stringify(String(bad)) + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(out, 'postedAt'),
+        false,
+        'postedAt 非有限數字應整欄剝除(不是補 null/0)'
+      );
+      assert.equal(out.at, 1700000100000, '剝欄不得波及 at');
+    }
+  });
+
+  test('normalizeScamEvidence:沒帶 postedAt 的證據不得被補出這一欄', () => {
+    const out = C.normalizeScamEvidence({ postUrl: EV_PAGE_URL, snippet: 'x', at: 5 });
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out, 'postedAt'),
+      false,
+      '缺席就不補鍵——選項頁靠「鍵在不在」決定要不要退回 at'
+    );
+  });
+
+  test('capScamEvidence:裁切時 postedAt 一併帶過', () => {
+    const kept = C.capScamEvidence([
+      richEvidence({ snippet: 'S'.repeat(300), at: 100, postedAt: EV_POSTED_AT }),
+    ]);
+    assert.equal(kept[0].postedAt, EV_POSTED_AT, 'postedAt 不得在裁切時被丟掉');
+    assert.equal(kept[0].snippet.length, 120, '前置:snippet 仍硬裁 120');
+  });
+
+  test('makeBlocklistEntry:一次命中的 postedAt 要寫進 evidence[0]', () => {
+    const entry = C.makeBlocklistEntry({
+      handle: 'example_author',
+      postUrl: EV_PAGE_URL,
+      snippet: 'x',
+      at: 5,
+      postedAt: EV_POSTED_AT,
+      source: 'auto',
+    });
+    assert.equal(entry.evidence[0].postedAt, EV_POSTED_AT);
+  });
+
+  test('mergeBlocklistEvidence:併入的新證據帶著自己的 postedAt', () => {
+    const entry = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_OTHER_ANCHOR_URL, snippet: 'old', at: 100 }],
+      addedAt: 100,
+      source: 'auto',
+    };
+    const added = C.mergeBlocklistEvidence(entry, richEvidence({ at: 900, postedAt: EV_POSTED_AT }))
+      .evidence[0];
+    assert.equal(added.postedAt, EV_POSTED_AT);
+  });
+
+  test('scamEntryBytes:postedAt 佔的位元組要計入', () => {
+    const lean = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_PAGE_URL, snippet: 'x', at: 1 }],
+      addedAt: 1,
+      source: 'auto',
+    };
+    const withPosted = {
+      handle: 'example_author',
+      evidence: [{ postUrl: EV_PAGE_URL, snippet: 'x', at: 1, postedAt: EV_POSTED_AT }],
+      addedAt: 1,
+      source: 'auto',
+    };
+    assert.equal(
+      C.scamEntryBytes('10000000001', withPosted) - C.scamEntryBytes('10000000001', lean),
+      evUtf8(JSON.stringify(withPosted)) - evUtf8(JSON.stringify(lean)),
+      '差額應等於條目序列化後的實際 UTF-8 位元組差'
+    );
   });
 });

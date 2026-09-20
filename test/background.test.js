@@ -7,6 +7,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+// background.js 模組層的 const 只存在於 vm context 的全域詞法環境，不會變成
+// sandbox 物件的屬性;要斷言常數值（例如掃描上限）只能在同一個 context 內求值。
+const vm = require('node:vm');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
 
 // background.js 依賴共用 i18n 與 tcl-core 模組(真實環境靠 importScripts
@@ -3341,7 +3344,14 @@ function loadBackgroundForDevices(opts = {}) {
     setTimeout,
     clearTimeout,
     crypto,
+    // Service Worker 原生就有這兩支，背景請求的逾時中斷靠它們。vm sandbox
+    // 預設不含，比照 URL／crypto 明確注入。
+    AbortController,
+    AbortSignal,
   };
+  // opts.globals：逐案覆寫沙箱全域（例如以假的 Date 控制時鐘，驗每分鐘的
+  // 全域限流視窗滾動）。預設不帶，既有測試的沙箱內容一字不變。
+  Object.assign(sandbox, opts.globals || {});
   runInSandbox(SRC, sandbox);
 
   return {
@@ -3374,9 +3384,9 @@ function loadBackgroundForDevices(opts = {}) {
     },
     // 擴充頁 → SW：送一則訊息並等回應，沒人接手時回 responded:false。
     // opts.timeoutMs：判定「沒人接手」的等待上限。預設 200ms 對替身引擎綽綽有
-    // 餘；接真 sync.js 的測試要放寬——真引擎的冷啟（loadContext 讀六個鍵、
-    // resetMirrorFields 走 writeChain、alarms 清理）在慢機器上會超過 200ms，
-    // 那時 sendResponse 還沒回來就被判成無人接手，變成偶發假紅燈。
+    // 餘；接真 sync.js 的測試、以及要走 og fetch 備援＋writeChain 的
+    // scam.hit 都要放寬——那些鏈路在慢機器或全套併跑時會超過 200ms，
+    // sendResponse 還沒回來就被判成無人接手，變成偶發假紅燈。
     send(message, sender, opts = {}) {
       return new Promise((resolve) => {
         let done = false;
@@ -3388,7 +3398,7 @@ function loadBackgroundForDevices(opts = {}) {
         onMessageListeners.slice().forEach((fn) => {
           fn(message, sender || EXT_PAGE_SENDER, (response) => finish({ responded: true, response }));
         });
-        setTimeout(() => finish({ responded: false, response: undefined }), 200);
+        setTimeout(() => finish({ responded: false, response: undefined }), opts.timeoutMs || 200);
       });
     },
   };
@@ -4144,5 +4154,1814 @@ test('B6 遷移:seen 事件帶髒 deviceId（陣列長度不變）經 migrateHis
     Object.prototype.hasOwnProperty.call(event, 'deviceId'),
     false,
     '髒 deviceId 必須被遷移剝除——長度比較的短路讓它整個躲過消毒（審查預警 N3）'
+  );
+});
+
+// ============================================================
+// 車道 L4：詐騙黑名單的 storage 寫入、三個訊息 handler 與匿名 GET 取 id 備援
+// （內部可行性評估 §14 協議、v1 計畫 §4／§6，見 docs/scam-guard.md）
+// ============================================================
+//
+// 沿用上方裝置測試的沙箱（loadBackgroundForDevices）：它的 storage 替身有
+// remove() 與可調延遲，正是併發寫入與清除路徑兩類斷言需要的。fetch 則逐案
+// 注入，匿名 GET 備援要驗的是 init 的三個欄位（credentials／headers／
+// redirect），預設替身側錄不到。
+
+const SCAM_KEY = 'scamBlocklist';
+const SCAM_ENABLED_KEY = 'scamGuardEnabled';
+
+// 範例比照內部可行性評估：@example_author 的六篇自回覆串，末篇留 LINE 帳號。
+const SCAM_USER_ID = '10000000001';
+const SCAM_HANDLE = 'example_author';
+const SCAM_DISPLAY_NAME = 'Example Author';
+const SCAM_POST_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const SCAM_POST_URL_2 = 'https://www.threads.com/@example_author/post/DxSyNtH0007';
+const SCAM_POST_URL_3 = 'https://www.threads.com/@example_author/post/DxSyNtH0008';
+const SCAM_POST_URL_4 = 'https://www.threads.com/@example_author/post/DxSyNtH0009';
+const SCAM_SNIPPET = '不報明牌、不收費、不代操，加我 賴：ex01abc 聊黑馬股';
+const SCAM_AT = 1700000100000;
+
+// content script 送來的 sender：threads 分頁，sender.url 是它所在的網頁網址。
+const SCAM_TAB_SENDER = {
+  id: EXTENSION_ID,
+  tab: { id: 77, url: SCAM_POST_URL },
+  url: SCAM_POST_URL,
+};
+
+// 預期「有人接手」的 scam.hit 一律配這組等待上限。這條鏈路可能要走 og
+// fetch 備援、再經 writeChain 序列化落盤，bg.send 預設的 200ms 在慢機器或全
+// 套併跑時不夠，sendResponse 還沒回來就被判成無人接手，responses[i].response
+// 變成 undefined——是看機器心情的假紅燈，不是實作有問題。
+const SCAM_SEND_OPTS = { timeoutMs: 2000 };
+
+// 同樣是本擴充的 content script，但分頁不在 threads——不得受理。
+const SCAM_OTHER_TAB_SENDER = {
+  id: EXTENSION_ID,
+  tab: { id: 78, url: 'https://example.com/@example_author/post/DxSyNtH0001' },
+  url: 'https://example.com/@example_author/post/DxSyNtH0001',
+};
+
+function scamHit(overrides) {
+  return Object.assign(
+    {
+      type: 'scam.hit',
+      userId: SCAM_USER_ID,
+      handle: SCAM_HANDLE,
+      displayName: SCAM_DISPLAY_NAME,
+      postUrl: SCAM_POST_URL,
+      snippet: SCAM_SNIPPET,
+      anchorMatch: '賴：ex01abc',
+      pitchMatches: ['黑馬股', '報明牌'],
+      at: SCAM_AT,
+    },
+    overrides || {}
+  );
+}
+
+// 已正規化的單筆黑名單（清除路徑的 deepEqual 基準：形狀就是
+// normalizeScamBlocklist 的輸出，任何一條路徑碰過它都會讓比對失敗）。
+function seededBlocklist() {
+  return {
+    version: 1,
+    entries: {
+      [SCAM_USER_ID]: {
+        handle: SCAM_HANDLE,
+        displayName: SCAM_DISPLAY_NAME,
+        evidence: [{ postUrl: SCAM_POST_URL, snippet: SCAM_SNIPPET, at: SCAM_AT }],
+        addedAt: SCAM_AT,
+        source: 'auto',
+      },
+    },
+    handleIndex: { [SCAM_HANDLE]: SCAM_USER_ID },
+    allowlist: {},
+  };
+}
+
+// 只留 allowlist 的黑名單：解除過的作者不得被下一次掃描復活。
+function allowlistedBlocklist() {
+  return { version: 1, entries: {}, handleIndex: {}, allowlist: { [SCAM_USER_ID]: true } };
+}
+
+// 取沙箱裡落地的黑名單。還沒接線時回的是 undefined，先斷言存在，讓紅燈是
+// 一次斷言失敗而不是 TypeError 炸掉整支測試。回傳前先過一次 deep()：落地的
+// 黑名單是沙箱那個 realm 造的物件，直接拿去 deepEqual 比形狀會卡在 prototype
+// 不同而非內容不同（全檔慣例，見 plain()／deep() 的註解）。
+function scamList(bg) {
+  const list = bg.storage.localSnapshot()[SCAM_KEY];
+  assert.ok(
+    list && typeof list === 'object' && list.entries && list.handleIndex,
+    'background 應把 scamBlocklist 以四欄形狀寫進 storage.local'
+  );
+  return deep(list);
+}
+
+function scamEntry(bg, userId) {
+  const list = scamList(bg);
+  const entry = list.entries[userId || SCAM_USER_ID];
+  assert.ok(entry, 'scamBlocklist.entries 應有 userId=' + (userId || SCAM_USER_ID) + ' 的條目');
+  return entry;
+}
+
+// handleIndex 不得留下指向已不存在條目的孤兒鍵。
+function assertNoOrphanIndex(list) {
+  Object.keys(list.handleIndex).forEach((key) => {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(list.entries, list.handleIndex[key]),
+      'handleIndex[' + key + '] 指向不存在的條目（孤兒鍵）'
+    );
+  });
+}
+
+// 沙箱物件（另一個 realm）拿來比形狀前先做一次深層攤平。
+function deep(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+// 側錄 url 與 init 的 fetch 替身。byUrl 決定每個網址回什麼，未命中的網址一
+// 律回無 og 的最小 HTML（沿用既有慣例，避免 og 擷取的容錯分支噴 console）。
+function makeScamFetch(byUrl) {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, init });
+    const hit = byUrl && Object.prototype.hasOwnProperty.call(byUrl, url) ? byUrl[url] : undefined;
+    if (typeof hit === 'function') return hit(url, init);
+    if (typeof hit === 'string') return { ok: true, status: 200, url, text: async () => hit };
+    return fetchResult(url, NO_OG_HTML);
+  };
+  return {
+    impl,
+    calls,
+    countFor(url) {
+      return calls.filter((c) => c.url === url).length;
+    },
+  };
+}
+
+// 匿名 GET 備援要解析的 SSR 片段：貼文永久連結的 HTML 內含 post_author_id
+// 與 username。username 預設就是這組 fixture 的作者帳號——備援取回的 id 必
+// 須與 content script 回報的 handle 屬於同一個人才准建條目（交叉驗證），
+// 少了 username 的回應一律當作撈不到 id。
+function authorIdHtml(userId, username) {
+  return (
+    '<html><body><script type="application/json">' +
+    '{"post_id":"x","post_author_id":"' +
+    userId +
+    '","username":"' +
+    (username === undefined ? SCAM_HANDLE : username) +
+    '","more":1}' +
+    '</script></body></html>'
+  );
+}
+
+// ---- §14 scam.hit：建立與併入 ----
+
+test('L4 scam.hit:合法命中建立條目——handle／displayName／evidence／addedAt／source 與 handleIndex 齊備，回 added:true', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(res.responded, true, 'threads 分頁送來的 scam.hit 必須有人接手');
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'scam.hit 成功時回 ok:true');
+  assert.equal(response.added, true, '首次命中的作者是新建條目，added 為 true');
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.handle, SCAM_HANDLE, 'handle 保留原始大小寫');
+  assert.equal(entry.displayName, SCAM_DISPLAY_NAME);
+  assert.equal(entry.addedAt, SCAM_AT, 'addedAt 取這次命中的 at');
+  assert.equal(entry.source, 'auto', '掃描寫入的來源標記（TCLCore.normalizeBlocklistEntry 只認 auto／manual）');
+  // 【斷言翻轉】原斷言為「證據只有 postUrl／snippet／at 三欄」。scamHit() 的
+  // 預設 payload 本來就帶 anchorMatch（改版前就有這個欄位，只是舊
+  // validateScamHit 不落盤）；證據結構補強後「有帶就驗形狀、通過就落盤」，
+  // 這筆證據跟著多一欄。四欄皆缺席時仍維持三欄形狀，由
+  // 「L4 scam.hit:新欄位一律可缺席……」那支釘住。
+  assert.deepEqual(entry.evidence, [
+    { postUrl: SCAM_POST_URL, snippet: SCAM_SNIPPET, at: SCAM_AT, anchorMatch: '賴：ex01abc' },
+  ]);
+
+  const list = scamList(bg);
+  assert.equal(list.version, 1);
+  assert.equal(list.handleIndex[SCAM_HANDLE.toLowerCase()], SCAM_USER_ID, 'handleIndex 以 handle 小寫為鍵指向 userId');
+  assert.deepEqual(response.entry, deep(entry), '回應的 entry 要與落地的那一筆同形');
+});
+
+test('L4 scam.hit:handle 大小寫混寫時 handleIndex 一律以小寫為鍵', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHit({ handle: 'Example_Author' }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  const list = scamList(bg);
+  assert.equal(list.handleIndex['example_author'], SCAM_USER_ID, '反查表的鍵是小寫 handle');
+  assert.equal(scamEntry(bg).handle, 'Example_Author', '卡片上顯示的 handle 維持原樣大小寫');
+});
+
+test('L4 scam.hit:同作者第二篇只補證據——added:false，evidence 併為兩筆且 addedAt 不往後跳', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(400);
+  const second = await bg.send(
+    scamHit({ postUrl: SCAM_POST_URL_2, snippet: '加我 賴：abc123 帶單', at: SCAM_AT + 60000 }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  const response = deep(second.response);
+  assert.equal(response && response.ok, true);
+  assert.equal(response.added, false, '既有作者只補證據，added 為 false');
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.evidence.length, 2, '兩篇不同貼文各算一筆證據');
+  assert.equal(entry.evidence[0].postUrl, SCAM_POST_URL_2, '證據依 at 降冪，最新的在最前');
+  assert.equal(entry.addedAt, SCAM_AT, 'addedAt 是首見時間，不隨新證據更新');
+  assert.equal(Object.keys(scamList(bg).entries).length, 1, '同一個 userId 不得分裂成兩筆');
+});
+
+test('L4 scam.hit:同一篇貼文重複回報不重複計證據', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(400);
+  await bg.send(scamHit({ at: SCAM_AT + 1000 }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(scamEntry(bg).evidence.length, 1, '同一個 postUrl 只算一筆證據（重新整理頁面不得灌爆證據）');
+});
+
+test('L4 scam.hit:證據上限 3 筆——第四篇擠掉最舊的一筆', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const urls = [SCAM_POST_URL, SCAM_POST_URL_2, SCAM_POST_URL_3, SCAM_POST_URL_4];
+  for (let i = 0; i < urls.length; i++) {
+    await bg.send(scamHit({ postUrl: urls[i], at: SCAM_AT + i * 60000 }), SCAM_TAB_SENDER);
+    await settle(400);
+  }
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.evidence.length, 3, '每位作者最多留 3 筆證據（TCLCore.SCAM_LIMITS.MAX_EVIDENCE）');
+  assert.deepEqual(
+    entry.evidence.map((item) => item.postUrl),
+    [SCAM_POST_URL_4, SCAM_POST_URL_3, SCAM_POST_URL_2],
+    '留最新三筆，最舊的那篇被裁掉'
+  );
+});
+
+test('L4 scam.hit:allowlist 內的作者回 { ok:true, added:false, allowlisted:true } 且完全不寫', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: allowlistedBlocklist() },
+  });
+  const before = bg.storage.localCalls.set.length;
+
+  const res = await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.deepEqual(deep(res.response), { ok: true, added: false, allowlisted: true }, '使用者解除過的作者不再入名單');
+  assert.deepEqual(bg.storage.localSnapshot()[SCAM_KEY], allowlistedBlocklist(), 'allowlist 命中時黑名單原封不動');
+  assert.equal(bg.storage.localCalls.set.length, before, 'allowlist 命中時不得發生任何一次 storage 寫入');
+});
+
+test('L4 scam.hit:總開關關閉時回 { ok:false, code:disabled } 且不寫', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_ENABLED_KEY]: false },
+  });
+
+  const res = await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'disabled' });
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '關閉時不得建出 scamBlocklist');
+});
+
+test('L4 scam.hit:scamGuardEnabled 缺席視為開啟（未設定不等於關閉）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '缺席＝true，首次安裝即生效');
+});
+
+const SCAM_BAD_PAYLOADS = [
+  ['handle 非字串', { handle: 12345 }],
+  ['handle 缺席', { handle: undefined }],
+  ['postUrl 非 threads 貼文網址', { postUrl: 'https://example.com/@example_author/post/DxSyNtH0001' }],
+  ['postUrl 只是個人頁不是貼文', { postUrl: 'https://www.threads.com/@example_author' }],
+  ['snippet 超過 120 字', { snippet: '賴'.repeat(121) }],
+  ['userId 非數字字串', { userId: 'abcdef' }],
+  ['userId 為空字串', { userId: '' }],
+  ['userId 超過 20 位', { userId: '1'.repeat(21) }],
+  ['userId 為數字型別而非字串', { userId: 10000000001 }],
+  ['at 非數字', { at: 'now' }],
+];
+
+test('L4 scam.hit:壞 payload 一律回 bad_request 且不寫', async () => {
+  for (const testCase of SCAM_BAD_PAYLOADS) {
+    const label = testCase[0];
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const res = await bg.send(scamHit(testCase[1]), SCAM_TAB_SENDER);
+    await settle(300);
+
+    assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' }, label + ' 應回 bad_request');
+    assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, label + ' 不得寫入 scamBlocklist');
+  }
+});
+
+test('L4 scam.hit:snippet 恰為 120 字的對照組照常受理', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const snippet = '賴'.repeat(120);
+  const res = await bg.send(scamHit({ snippet }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '上限是 120，恰為 120 不得誤殺');
+  assert.equal(scamEntry(bg).evidence[0].snippet, snippet);
+});
+
+test('L4 scam.hit:非 threads 分頁與擴充頁送來的一律忽略（不回應、不寫）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const other = await bg.send(scamHit(), SCAM_OTHER_TAB_SENDER);
+  const extPage = await bg.send(scamHit(), EXT_PAGE_SENDER);
+  const alien = await bg.send(scamHit(), OTHER_EXTENSION_SENDER);
+  await settle(400);
+
+  assert.equal(other.responded, false, '非 threads 分頁的 content script 不得受理');
+  assert.equal(extPage.responded, false, 'scam.hit 是 content script 的入口，擴充頁不得借道寫黑名單');
+  assert.equal(alien.responded, false, '其他擴充／未知 sender 一律忽略');
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '被忽略的訊息不得留下任何寫入');
+});
+
+// ---- §14 寫入序列化與容量上限 ----
+
+test('L4 scam.hit:併發兩筆經 writeChain 序列化，互不覆蓋（延遲 storage 撐開讀改寫視窗）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, delayMs: 20 });
+
+  const other = { userId: '10000000002', handle: 'otherscammer', postUrl: SCAM_POST_URL_2 };
+  // 這兩則要走 writeChain 序列化、storage 又被刻意延遲，回應比預設的 200ms
+  // 晚是常態（全套併跑時實測會被判成無人接手），等待上限跟著放寬。
+  const both = await Promise.all([
+    bg.send(scamHit(), SCAM_TAB_SENDER, SCAM_SEND_OPTS),
+    bg.send(scamHit(other), SCAM_TAB_SENDER, SCAM_SEND_OPTS),
+  ]);
+  await settle(800);
+
+  assert.equal(both[0].responded && both[1].responded, true, '前提：兩則都有人接手');
+  const list = scamList(bg);
+  assert.deepEqual(
+    Object.keys(list.entries).sort(),
+    [SCAM_USER_ID, other.userId].sort(),
+    '同 tick 併發的兩筆 scam.hit 必須都留下（讀改寫要掛在 writeChain 上）'
+  );
+  assert.equal(list.handleIndex[other.handle], other.userId);
+  assertNoOrphanIndex(list);
+});
+
+test('L4 scam.hit:與 history 寫入併發時兩邊都保住（共用同一條 writeChain）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, delayMs: 20 });
+
+  const pending = bg.send(scamHit(), SCAM_TAB_SENDER);
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  await pending;
+  await settle(800);
+
+  assert.ok(scamEntry(bg), '黑名單那一筆不得被 history 的讀改寫蓋掉');
+  assert.equal(bg.history().length, 1, 'history 那一筆同樣不得被黑名單寫入蓋掉');
+});
+
+test('L4 scam.hit:寫入後經 capScamBlocklist——第 5001 筆入名單時最舊的一筆被裁掉', async () => {
+  const entries = {};
+  const handleIndex = {};
+  for (let i = 0; i < 5000; i++) {
+    const id = String(20000000000 + i);
+    entries[id] = {
+      handle: 'h' + i,
+      displayName: 'n' + i,
+      evidence: [{ postUrl: 'https://www.threads.com/@h' + i + '/post/AAAAAA' + i, snippet: 's', at: i + 1 }],
+      addedAt: i + 1,
+      source: 'auto',
+    };
+    handleIndex['h' + i] = id;
+  }
+  const oldestId = String(20000000000);
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_KEY]: { version: 1, entries, handleIndex, allowlist: {} },
+    },
+  });
+
+  await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const list = scamList(bg);
+  assert.equal(Object.keys(list.entries).length, 5000, '名單上限 5000 筆（TCLCore.SCAM_LIMITS.MAX_ENTRIES）');
+  assert.ok(list.entries[SCAM_USER_ID], '剛命中的最新一筆必須留著');
+  assert.equal(list.entries[oldestId], undefined, 'addedAt 最舊的一筆被淘汰');
+  assert.equal(list.handleIndex['h0'], undefined, '被淘汰條目的反查鍵要一起清掉');
+  assertNoOrphanIndex(list);
+});
+
+// ---- §14 scam.blocklist.remove／restore ----
+
+test('L4 blocklist.remove:條目移除、allowlist 記下該 userId、handleIndex 無孤兒，回 { ok:true }', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
+  });
+
+  const res = await bg.send({ type: 'scam.blocklist.remove', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+  await settle(400);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '解除成功回 ok:true');
+  const list = scamList(bg);
+  assert.equal(list.entries[SCAM_USER_ID], undefined, '條目要從 entries 移除');
+  assert.equal(list.handleIndex[SCAM_HANDLE], undefined, '反查鍵一起清掉，不留孤兒');
+  assertNoOrphanIndex(list);
+  assert.ok(list.allowlist[SCAM_USER_ID], '解除的作者要寫進 allowlist，下次掃到不再入名單');
+});
+
+test('L4 blocklist.remove:解除後同一作者再次命中不得重新入名單', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
+  });
+
+  await bg.send({ type: 'scam.blocklist.remove', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+  await settle(400);
+  const hit = await bg.send(scamHit({ postUrl: SCAM_POST_URL_2 }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.deepEqual(deep(hit.response), { ok: true, added: false, allowlisted: true });
+  assert.equal(scamList(bg).entries[SCAM_USER_ID], undefined, '解除過的作者不得被下一次掃描復活');
+});
+
+test('L4 blocklist.remove:非法 userId 回 bad_request 且不動名單', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
+  });
+
+  const bads = ['nope', '', '1'.repeat(21), 12345, null, undefined];
+  for (const bad of bads) {
+    const res = await bg.send({ type: 'scam.blocklist.remove', userId: bad }, EXT_PAGE_SENDER);
+    assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' }, 'userId=' + String(bad) + ' 應回 bad_request');
+  }
+  await settle(400);
+  assert.deepEqual(bg.storage.localSnapshot()[SCAM_KEY], seededBlocklist(), '不合格的 remove 不得動到名單');
+});
+
+test('L4 blocklist.remove／restore:content script 送來一律忽略（只認擴充自己的頁面）', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
+  });
+
+  const remove = await bg.send({ type: 'scam.blocklist.remove', userId: SCAM_USER_ID }, SCAM_TAB_SENDER);
+  const restore = await bg.send({ type: 'scam.blocklist.restore', userId: SCAM_USER_ID }, SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(remove.responded, false, '網頁端不得借 remove 清掉自己的黑名單條目');
+  assert.equal(restore.responded, false, '網頁端不得借 restore 把自己塞進 allowlist');
+  assert.deepEqual(bg.storage.localSnapshot()[SCAM_KEY], seededBlocklist(), '被忽略的訊息不得留下任何寫入');
+});
+
+test('L4 blocklist.restore:把 userId 從 allowlist 移除，回 { ok:true }', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: allowlistedBlocklist() },
+  });
+
+  const res = await bg.send({ type: 'scam.blocklist.restore', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+  await settle(400);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '復原成功回 ok:true');
+  const list = scamList(bg);
+  assert.equal(list.allowlist[SCAM_USER_ID], undefined, '「已解除」名單要移除這一筆（使用者反悔）');
+  assert.equal(list.entries[SCAM_USER_ID], undefined, 'restore 只動 allowlist，不負責把條目長回來');
+});
+
+test('L4 blocklist.restore:復原後同一作者再次命中重新入名單', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: allowlistedBlocklist() },
+  });
+
+  await bg.send({ type: 'scam.blocklist.restore', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+  await settle(400);
+  const hit = await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  const response = deep(hit.response);
+  assert.equal(response && response.added, true, '不在 allowlist 之後照常入名單');
+  assert.ok(scamEntry(bg));
+});
+
+test('L4 blocklist.restore:非法 userId 回 bad_request', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send({ type: 'scam.blocklist.restore', userId: 'nope' }, EXT_PAGE_SENDER);
+  await settle(300);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' });
+});
+
+// ---- §14 匿名 GET 取作者 id 備援 ----
+//
+// 登入態詳情頁的 SSR JSON 是主路徑；讀不到 user.id 時（content script 送
+// userId:null）由 background 對貼文永久連結發一次匿名 GET，從回應文字撈
+// post_author_id。**不得帶 User-Agent**：帶了站方只回 SPA 殼，撈不到任何
+// SSR 欄位（隱性依賴，見 OG_FETCH_HEADERS 的同款理由）。
+
+test('L4 匿名備援:userId 為 null 時對 postUrl 發匿名 GET——credentials:omit、不帶 User-Agent、redirect:error', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml(SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const call = fetchStub.calls.find((c) => c.url === SCAM_POST_URL);
+  assert.ok(call, 'userId 缺席時要對貼文永久連結發一次備援 GET');
+  const init = call.init || {};
+  assert.equal(init.credentials, 'omit', '備援請求不得帶使用者 cookie');
+  assert.equal(init.redirect, 'error', '轉址即視為失敗，不跟著跳到登入／驗證頁');
+  const headerKeys = Object.keys(init.headers || {});
+  assert.equal(
+    headerKeys.some((key) => key.toLowerCase() === 'user-agent'),
+    false,
+    '帶 User-Agent 會拿到 SPA 殼，撈不到 post_author_id'
+  );
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '撈到 id 就照常入名單');
+  assert.equal(scamEntry(bg).handle, SCAM_HANDLE, '以回應裡的 post_author_id 當 entries 的鍵');
+});
+
+test('L4 匿名備援:回應沒有 post_author_id 時回 { ok:false, code:no_user_id } 且不寫', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: '<html><body>no id here</body></html>' });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' });
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '沒有 id 就不入名單（content script 仍掛 tag）');
+});
+
+test('L4 匿名備援:fetch 拒絕時回 no_user_id，不炸也不寫', async () => {
+  const fetchStub = makeScamFetch({
+    [SCAM_POST_URL]: () => Promise.reject(new Error('network down')),
+  });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' });
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+test('L4 匿名備援:同一 postUrl 24 小時內只打一次（節流表）', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: '<html><body>no id here</body></html>' });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const first = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+  const second = await bg.send(scamHit({ userId: null, at: SCAM_AT + 60000 }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(deep(first.response), { ok: false, code: 'no_user_id' }, '前提：第一次就撈不到 id');
+  assert.deepEqual(deep(second.response), { ok: false, code: 'no_user_id' }, '節流命中時直接回 no_user_id');
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '24 小時內同一篇貼文只准打一次匿名 GET');
+});
+
+test('L4 匿名備援:不同貼文各自節流，不互相影響', async () => {
+  const fetchStub = makeScamFetch({
+    [SCAM_POST_URL]: '<html><body>no id here</body></html>',
+    [SCAM_POST_URL_2]: '<html><body>no id here</body></html>',
+  });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+  await bg.send(scamHit({ userId: null, postUrl: SCAM_POST_URL_2 }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1);
+  assert.equal(fetchStub.countFor(SCAM_POST_URL_2), 1, '節流表以 postUrl 為鍵，另一篇貼文照打');
+});
+
+test('L4 匿名備援:userId 齊備時不發任何備援請求', async () => {
+  const fetchStub = makeScamFetch({});
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  await bg.send(scamHit(), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 0, '主路徑（SSR JSON）已有 id 時零請求');
+});
+
+test('L4 匿名備援:總開關關閉時連備援請求都不發', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml(SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_ENABLED_KEY]: false },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'disabled' });
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 0, '關閉時不得代使用者發出任何網路請求');
+});
+
+// ---- §14 清除路徑：scamBlocklist 只存本機，四條清除路徑都不得碰它 ----
+//
+// 釘法比照上方 B3（syncDevice）：黑名單不上雲、獨立匯出，登出／刪雲端／清
+// 紀錄／匯入都不該連帶清空使用者累積的封鎖名單。
+
+test('L4 清除:signOut 之後 scamBlocklist 原值不變', async () => {
+  const bg = loadBackgroundForDevices({
+    syncApi: REAL_SYNC,
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_KEY]: seededBlocklist(),
+      syncVerifiedAt: Date.now(),
+      history: [],
+    },
+    fetch: async () => deviceJsonResponse({ ok: true }),
+  });
+
+  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  assert.equal(result.responded, true, '前提：sync.signOut 有人接手');
+  await settle(600);
+
+  assert.deepEqual(bg.storage.localSnapshot()[SCAM_KEY], seededBlocklist(), '登出不清黑名單（只存本機、不上雲）');
+});
+
+test('L4 清除:deleteCloud 之後 scamBlocklist 原值不變', async () => {
+  const bg = loadBackgroundForDevices({
+    syncApi: REAL_SYNC,
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_KEY]: seededBlocklist(),
+      syncAuth: { token: 'test-token' },
+      syncVerifiedAt: Date.now(),
+      history: [],
+    },
+    fetch: async () => deviceJsonResponse({ ok: true, clearedAt: Date.now() }),
+  });
+
+  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  assert.equal(result.responded, true, '前提：sync.deleteCloud 有人接手');
+  await settle(800);
+
+  assert.deepEqual(bg.storage.localSnapshot()[SCAM_KEY], seededBlocklist(), '刪雲端只清紀錄，不清黑名單');
+});
+
+test('L4 清除:清除全部紀錄與匯入覆寫 history 之後，scamBlocklist 未被動過', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
+  });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_SHARE, kind: 'share' });
+  await settle(400);
+
+  // 模擬 options.js 的「清除全部紀錄」與「匯入 JSON」：兩者只整包覆寫
+  // history 鍵，不經 background，更不該連帶影響黑名單。
+  await bg.storage.api.local.set({ history: [] });
+  await bg.storage.api.local.set({
+    history: [
+      { url: DEV_POST_ICON, kind: 'icon', at: Date.now() - 1000, seen: [{ at: Date.now() - 1000, kind: 'icon' }] },
+    ],
+  });
+
+  bg.notice({ type: 'cleanedNotice', cleanUrl: DEV_POST_STRIP, kind: 'strip' });
+  await settle(400);
+
+  assert.deepEqual(bg.storage.localSnapshot()[SCAM_KEY], seededBlocklist(), '清空與匯入都不得動到 scamBlocklist');
+});
+
+// ============================================================
+// L4 審查建議：handle 形狀、作者交叉驗證、全域限流、節流表淘汰、掃描上限、
+// sender 前綴繞過、無 storage 的失敗碼
+// ============================================================
+
+// 節流表落地的鍵（background 的 SCAM_FETCH_THROTTLE_KEY），存 session 區。
+const SCAM_THROTTLE_KEY = 'scamAuthorFetchAt';
+const SCAM_DAY_MS = 24 * 60 * 60 * 1000;
+
+// 限流測試用的一批不同貼文。post code 的字元類同 STRICT_POST_URL_PATTERN。
+function scamRatePostUrl(index) {
+  return 'https://www.threads.com/@example_author/post/RateLimit' + index;
+}
+
+// 讀節流表。還沒落地時回 undefined，由呼叫端自行斷言。
+async function scamThrottleTable(bg) {
+  const stored = await bg.storage.api.session.get({ [SCAM_THROTTLE_KEY]: undefined });
+  return stored ? stored[SCAM_THROTTLE_KEY] : undefined;
+}
+
+// 可控時鐘：只換掉 Date.now()，其餘 Date 行為原封不動（background 另有
+// `new Date()` 的使用者，整支換成假物件會連帶壞掉）。
+function makeScamClock(start) {
+  const state = { now: start };
+  class ClockDate extends Date {
+    static now() {
+      return state.now;
+    }
+  }
+  return {
+    Date: ClockDate,
+    advance(ms) {
+      state.now += ms;
+    },
+  };
+}
+
+// ---- handle 形狀 ----
+//
+// handle 會進 handleIndex 當鍵、也會顯示在黑名單卡片上。只驗「非空字串」擋
+// 不住 `@handle`（河道與詳情頁抓到的原始文字常帶 @，一旦入庫，反查表的鍵就
+// 與 post-icon 的查表值對不上，整條河道標記形同失效），更擋不住夾帶控制字元
+// 的假帳號。形狀比照 tcl-core 的 STRICT_POST_URL_PATTERN handle 段。
+
+const SCAM_BAD_HANDLES = [
+  ['@ 前綴', '@example_author'],
+  ['含空白', 'example author'],
+  ['含連字號', 'example-author'],
+  ['含斜線', 'example/author'],
+  ['含控制字元', 'example' + String.fromCodePoint(0x0001) + 'author'],
+  ['非 ASCII', '賴哥投資'],
+  ['超過 80 字', 'a'.repeat(81)],
+];
+
+test('L4 審查:handle 形狀只准 [A-Za-z0-9._]{1,80}——@ 前綴與控制字元一律 bad_request', async () => {
+  for (const testCase of SCAM_BAD_HANDLES) {
+    const label = testCase[0];
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const res = await bg.send(scamHit({ handle: testCase[1] }), SCAM_TAB_SENDER);
+    await settle(300);
+
+    assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' }, 'handle ' + label + ' 應回 bad_request');
+    assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, 'handle ' + label + ' 不得寫入 scamBlocklist');
+  }
+});
+
+test('L4 審查:handle 形狀對照組——底線與句點合法，恰 80 字放行', async () => {
+  for (const good of ['example_author.1', 'a'.repeat(80), 'A1']) {
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const res = await bg.send(scamHit({ handle: good }), SCAM_TAB_SENDER);
+    await settle(400);
+
+    const response = deep(res.response);
+    assert.equal(response && response.ok, true, 'handle「' + good + '」是合法帳號形狀，不得誤殺');
+    assert.equal(scamEntry(bg).handle, good);
+  }
+});
+
+// ---- 匿名備援的作者交叉驗證 ----
+//
+// 備援請求打的是 content script 給的 postUrl，回應裡的 post_author_id 未必
+// 就是那個 handle 的人：轉址到別篇貼文、頁面嵌了他人引用貼文的 SSR、或
+// content script 本身被頁面腳本餵了假 handle，都會讓不相干的帳號被寫進黑名
+// 單。回應必須同時帶得出對應的 username 才准建條目。
+
+test('L4 審查:備援回應有 post_author_id 但 username 對不上時回 no_user_id 且不寫', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml('999', 'someoneelse') });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' }, '作者對不上就不是可信的 id');
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '對不上的 id 不得寫進黑名單');
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+});
+
+test('L4 審查:備援回應完全沒有 username 欄位時回 no_user_id', async () => {
+  const noUsername =
+    '<html><body><script type="application/json">{"post_author_id":"999"}</script></body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: noUsername });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' });
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+test('L4 審查:username 大小寫與 handle 不同仍算同一人（比對不分大小寫）', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml('999', 'Example_Author') });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null, handle: 'example_author' }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'Threads 的 handle 不分大小寫，大小寫差異不得判成兩個人');
+  assert.equal(scamEntry(bg, '999').handle, 'example_author', '以回應的 post_author_id 當 entries 的鍵');
+});
+
+// ---- 匿名備援的全域速率上限 ----
+//
+// 每篇貼文的 24 小時節流只擋得住「同一篇」重複打：河道一次捲動就有幾十位不
+// 同作者，每人各一次備援請求照樣是幾十個匿名請求齊發，對站方看起來就是掃描
+// 行為。全域再加一道每分鐘 SCAM_FETCH_GLOBAL_PER_MINUTE（6）次的閘門，超過
+// 的一律當作撈不到 id（content script 仍掛 tag，只是不入黑名單）。
+
+test('L4 審查:全域限流——同一分鐘內第 7 個不同 postUrl 不發請求，直接回 no_user_id', async () => {
+  const byUrl = {};
+  for (let i = 0; i < 7; i++) byUrl[scamRatePostUrl(i)] = authorIdHtml('9000000' + i);
+  const fetchStub = makeScamFetch(byUrl);
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const responses = [];
+  for (let i = 0; i < 7; i++) {
+    responses.push(
+      await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS)
+    );
+    await settle(400);
+  }
+
+  for (let i = 0; i < 6; i++) {
+    const response = deep(responses[i].response);
+    assert.equal(response && response.ok, true, '前 6 次在額度內，照常取 id（第 ' + (i + 1) + ' 次）');
+    assert.equal(fetchStub.countFor(scamRatePostUrl(i)), 1);
+  }
+  assert.deepEqual(deep(responses[6].response), { ok: false, code: 'no_user_id' }, '超過額度一律當作撈不到 id');
+  assert.equal(fetchStub.countFor(scamRatePostUrl(6)), 0, '第 7 篇連請求都不得發出');
+  assert.equal(fetchStub.calls.length, 6, '整分鐘內的備援請求總數上限為 6');
+});
+
+test('L4 審查:全域限流的視窗會滾動——跨過一分鐘後額度重新可用', async () => {
+  const byUrl = {};
+  for (let i = 0; i < 7; i++) byUrl[scamRatePostUrl(i)] = authorIdHtml('9000000' + i);
+  const fetchStub = makeScamFetch(byUrl);
+  const clock = makeScamClock(1700000000000);
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+    globals: { Date: clock.Date },
+  });
+
+  for (let i = 0; i < 6; i++) {
+    await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+    await settle(400);
+  }
+  assert.equal(fetchStub.calls.length, 6, '前提：額度已用滿');
+
+  clock.advance(61000);
+  const res = await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(6) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '跨過視窗後應重新放行，不是永久封死');
+  assert.equal(fetchStub.countFor(scamRatePostUrl(6)), 1);
+});
+
+// ---- 節流表的淘汰 ----
+//
+// 節流表存 chrome.storage.session，鍵是 postUrl（約 50 bytes）。只寫不刪的
+// 表在重度使用者的一次工作階段裡會無上限成長，撞上 session 區的配額之後連
+// 正常的節流讀寫都會失敗。寫入時順手剔除已經過期（≥24h）的鍵，再以筆數上限
+// 500 收尾。
+
+test('L4 審查:節流表寫入時剔除已過期（≥24h）的舊鍵', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml(SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+  const now = Date.now();
+  const staleUrl = 'https://www.threads.com/@old/post/StaleOne';
+  const freshUrl = 'https://www.threads.com/@fresh/post/FreshOne';
+  await bg.storage.api.session.set({
+    [SCAM_THROTTLE_KEY]: { [staleUrl]: now - SCAM_DAY_MS - 1000, [freshUrl]: now - 1000 },
+  });
+
+  await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const table = await scamThrottleTable(bg);
+  assert.ok(table && typeof table === 'object', '節流表應落地在 storage.session');
+  assert.equal(Object.prototype.hasOwnProperty.call(table, staleUrl), false, '超過 24h 的鍵已無節流作用，寫入時要一併剔除');
+  assert.ok(Object.prototype.hasOwnProperty.call(table, freshUrl), '仍在視窗內的鍵不得被誤刪');
+  assert.ok(Object.prototype.hasOwnProperty.call(table, SCAM_POST_URL), '本次打過的貼文要記進節流表');
+});
+
+test('L4 審查:節流表筆數上限 500——第 501 筆淘汰最舊的一筆', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml(SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+  const now = Date.now();
+  const seeded = {};
+  for (let i = 0; i < 500; i++) {
+    // 全部都在 24h 視窗內（最舊的一筆距今 500 秒），淘汰只能是筆數上限造成的。
+    seeded['https://www.threads.com/@bulk/post/Bulk' + i] = now - (500 - i) * 1000;
+  }
+  await bg.storage.api.session.set({ [SCAM_THROTTLE_KEY]: seeded });
+
+  await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const table = await scamThrottleTable(bg);
+  assert.ok(table && typeof table === 'object', '節流表應落地在 storage.session');
+  assert.equal(Object.keys(table).length, 500, '節流表上限 500 筆');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(table, 'https://www.threads.com/@bulk/post/Bulk0'),
+    false,
+    '最舊的一筆被淘汰'
+  );
+  assert.ok(Object.prototype.hasOwnProperty.call(table, SCAM_POST_URL), '本次打過的貼文必須留著，否則節流當場失效');
+});
+
+// ---- 備援請求的掃描上限與逾時 ----
+
+// 【R3 翻轉，PM 授權】掃描上限原本沿用 og 擷取的 OG_SCAN_LIMIT（65536）。
+// 兩者要的東西不同：og meta 必在 <head>，SSR 的 RelayPrefetchedStreamCache
+// 卻常被推到文件中後段，64KB 會把真實貼文頁的 post_author_id 切在範圍外，
+// 備援等於長期失效。改用 SCAM_SCAN_LIMIT，仍保留上限以免對超大回應做無界
+// 正則掃描。上限值本身在下方「掃描上限：512KB → 1MB」一節釘死（1048576）
+// ——真機的登出態回應約 581KB，0.5MB 擋不住。
+test('L4 覆審:備援掃描上限改 SCAM_SCAN_LIMIT——id 在 100000 字處仍取得到', async () => {
+  const within =
+    '<html><body>' + 'x'.repeat(100000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: within });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'SSR JSON 常落在文件中後段，64KB 會把它切在掃描範圍外');
+  assert.ok(scamEntry(bg));
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+});
+
+test('L4 覆審:備援掃描上限仍有天花板——id 在 1100000 字處擷取不到', async () => {
+  const beyond =
+    '<html><body>' + 'x'.repeat(1100000) + authorIdHtml(SCAM_USER_ID).slice('<html><body>'.length);
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: beyond });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '超過 SCAM_SCAN_LIMIT（1048576）的部分不掃，不得整份掃到底'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+});
+
+test('L4 審查:備援請求帶 signal（逾時可中斷，不讓 SW 掛在慢回應上）', async () => {
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: authorIdHtml(SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const call = fetchStub.calls.find((c) => c.url === SCAM_POST_URL);
+  assert.ok(call, '前提：確實發了一次備援請求');
+  const signal = call.init && call.init.signal;
+  assert.ok(signal, '備援請求要帶 AbortSignal（AbortSignal.timeout 或等價）');
+  assert.equal(typeof signal.aborted, 'boolean', 'signal 應是 AbortSignal 形狀');
+});
+
+// ---- sender 前綴繞過 ----
+//
+// 來源判準若只比「字串前綴」而不比來源本身，兩種老牌網釣網址會直接穿過去：
+// 子網域偽裝（threads.com.evil.example）與 userinfo 偽裝
+// （https://www.threads.com@evil.example/）——後者的實際主機是 evil.example。
+
+const SCAM_LOOKALIKE_URLS = [
+  ['子網域偽裝', 'https://www.threads.com.evil.example/@example_author/post/DxSyNtH0001'],
+  ['userinfo 偽裝', 'https://www.threads.com@evil.example/x'],
+  ['路徑偽裝', 'https://evil.example/https://www.threads.com/@example_author/post/DxSyNtH0001'],
+];
+
+test('L4 審查:仿冒 threads 的 sender 網址一律忽略（不得只比字串前綴）', async () => {
+  for (const testCase of SCAM_LOOKALIKE_URLS) {
+    const label = testCase[0];
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const sender = { id: EXTENSION_ID, tab: { id: 91, url: testCase[1] }, url: testCase[1] };
+
+    const res = await bg.send(scamHit(), sender);
+    await settle(300);
+
+    assert.equal(res.responded, false, label + ' 的 sender 不得受理');
+    assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, label + ' 不得留下任何寫入');
+  }
+});
+
+// ---- 無 storage 時的失敗碼 ----
+//
+// `disabled` 的語意是「使用者把總開關關掉了」，選項頁會據此提示去打開開關。
+// storage 整組不可用是環境故障，重用 disabled 會讓 UI 指向一個根本不存在的
+// 開關狀態，改回 internal_error。
+
+test('L4 審查:remove／restore 在 storage.local 不可用時回 internal_error（不得重用 disabled）', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
+  });
+  bg.sandbox.chrome.storage.local = undefined;
+
+  const remove = await bg.send({ type: 'scam.blocklist.remove', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+  const restore = await bg.send({ type: 'scam.blocklist.restore', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+
+  assert.deepEqual(deep(remove.response), { ok: false, code: 'internal_error' }, '環境故障不是「開關關閉」');
+  assert.deepEqual(deep(restore.response), { ok: false, code: 'internal_error' });
+});
+
+// ============================================================
+// L4 覆審殘留：R1 交叉驗證視窗、R2 併發下的限流
+// ============================================================
+
+// 全域限流的請求時刻表（background 的 SCAM_FETCH_RATE_KEY），與節流表同區。
+const SCAM_RATE_KEY = 'scamAuthorFetchLog';
+
+async function scamRateLog(bg) {
+  const stored = await bg.storage.api.session.get({ [SCAM_RATE_KEY]: undefined });
+  return stored ? stored[SCAM_RATE_KEY] : undefined;
+}
+
+// ---- R2：併發下的全域限流 ----
+//
+// 河道一次捲動就會同時派出幾十則 scam.hit，它們是同一 tick 進來的。限流的
+// 讀改寫若沒有序列化，七則各自讀到「目前 0 次」再各自寫回，閘門等於不存在
+// ——先前那支逐筆 await 的限流測試剛好避開了這個路徑。
+
+test('L4 覆審:同 tick 併發 7 筆 scam.hit 時全域限流仍成立，節流表與限流表無遺失寫入', async () => {
+  const byUrl = {};
+  for (let i = 0; i < 7; i++) byUrl[scamRatePostUrl(i)] = authorIdHtml('9100000' + i);
+  const fetchStub = makeScamFetch(byUrl);
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+    delayMs: 20,
+  });
+
+  const sends = [];
+  for (let i = 0; i < 7; i++) {
+    sends.push(
+      bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS)
+    );
+  }
+  await Promise.all(sends);
+  await settle(1500);
+
+  assert.ok(
+    fetchStub.calls.length <= 6,
+    '同 tick 併發時每分鐘 6 次的閘門照樣要成立，實際發出 ' + fetchStub.calls.length + ' 次'
+  );
+
+  const table = await scamThrottleTable(bg);
+  const log = await scamRateLog(bg);
+  assert.ok(table && typeof table === 'object', '節流表應落地在 storage.session');
+  assert.ok(Array.isArray(log), '限流表應落地在 storage.session');
+
+  const fetched = fetchStub.calls.map((c) => c.url);
+  fetched.forEach((url) => {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(table, url),
+      '打出去的每一篇都要留在節流表裡，否則下一輪會重打：' + url
+    );
+  });
+  assert.equal(
+    Object.keys(table).length,
+    fetched.length,
+    '節流表筆數要等於實際請求數（併發讀改寫互相覆蓋會少於實際數）'
+  );
+  assert.equal(log.length, fetched.length, '限流表筆數要等於實際請求數，否則閘門會被回填成未用滿');
+});
+
+// ---- R1：交叉驗證的比對視窗 ----
+//
+// 整份掃描文字比對 username 太寬：詳情頁的 SSR 內常同時有引用貼文、推薦貼
+// 文與側欄的其他作者，只要頁面任何角落出現過本人的 username，就會替一個不
+// 相干的 post_author_id 背書。比對限縮在該 id 前後 ±2000 字內，而且要逐個
+// post_author_id 試，不是只看第一個。
+
+test('L4 覆審:交叉驗證逐個 id 試並只看 ±2000 字——他人 id 在前時取後面那個有 username 的', async () => {
+  const html =
+    '<html><body>' +
+    '{"post_author_id":"111"}' +
+    'x'.repeat(4000) +
+    '{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    '</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '本篇的 id 與 username 相鄰，應判為同一人');
+  const list = scamList(bg);
+  assert.ok(list.entries[SCAM_USER_ID], '要取與 username 相鄰的那個 id');
+  assert.equal(list.entries['111'], undefined, '前面那個 4000 字外的他人 id 不得被背書');
+});
+
+test('L4 覆審:username 距 id 5000 字之外不算同一人——回 no_user_id 不寫', async () => {
+  const html =
+    '<html><body>' +
+    '{"post_author_id":"111"}' +
+    'x'.repeat(5000) +
+    '{"username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    '</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '頁面別處出現過本人帳號，不足以替 5000 字外的另一個 id 背書'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '對不上的 id 不得寫進黑名單');
+});
+
+test('L4 覆審:交叉驗證視窗對照組——username 在 id 之前 1000 字處同樣算同一人', async () => {
+  const html =
+    '<html><body>' +
+    '{"username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    'x'.repeat(1000) +
+    '{"post_author_id":"' +
+    SCAM_USER_ID +
+    '"}' +
+    '</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '視窗是前後各 2000 字，username 在前也算');
+  assert.ok(scamEntry(bg));
+});
+
+// ============================================================
+// L4 匿名備援的文件身分交叉驗證（og:url／al:android:url）
+// ============================================================
+//
+// staging 真機診斷：登出態永久連結的匿名 GET 回應（HTTP 200、無轉址、約
+// 581KB 完整 HTML）**整份沒有 `"username":"`**。handle 只以 HTML entity 的
+// 形式出現在 meta——og:url／al:android:url 的 content 是
+// `https://www.threads.com/&#064;<handle>/post/<code>`（`&#064;` 即 `@`）。
+// post_author_id 則躺在 route props 內、偏移約 180KB，同一值出現兩處。
+//
+// 既有的 `"username":"<handle>"` ±2000 字視窗判準因此對所有貼文永遠落空，
+// 備援一律回 null → no_user_id → 掛得了 tag 卻進不了名單。新契約改以
+// **文件身分**當主錨點：meta 的 og:url（或 al:android:url）還原 entity、經
+// TCLCore.normalizePostUrl 正規化後必須等於請求的 postUrl（handle 不分大小
+// 寫），確認「這份 HTML 就是我要的那一篇」之後，才採信其中的
+// post_author_id，而且候選必須全部同值。username 視窗降級為替代錨點，只在
+// og:url 缺席時仍可通過（登入態或舊形狀的回應）。
+// 另：真機回應 581KB 已超過舊的 SCAM_SCAN_LIMIT（512KB），上限提高到 1MB。
+
+// meta 標籤產生器。屬性順序與引號在真實 HTML 裡都不固定，解析不得寫死成
+// 「property 在前、雙引號」的單一形狀。
+function scamOgMeta(property, content, opts) {
+  const o = opts || {};
+  const q = o.singleQuote ? "'" : '"';
+  const attrs = o.contentFirst
+    ? 'content=' + q + content + q + ' property=' + q + property + q
+    : 'property=' + q + property + q + ' content=' + q + content + q;
+  return '<meta ' + attrs + ' />';
+}
+
+// meta content 裡的永久連結。`@` 在真機回應是 entity，預設沿用真機的 &#064;。
+function scamEntityUrl(handle, code, atEntity) {
+  return 'https://www.threads.com/' + (atEntity === undefined ? '&#064;' : atEntity) + handle + '/post/' + code;
+}
+
+// 小份的真機形狀：og meta 在 <head>，post_author_id 同值兩處，整份不含
+// `"username":"`。填充只用 'x'，不會夾帶別的錨點。
+function scamOgAuthorHtml(meta, userId) {
+  return (
+    '<html><head>' +
+    meta +
+    '</head><body>' +
+    '{"post_id":"x","post_author_id":"' +
+    userId +
+    '"}' +
+    'x'.repeat(4000) +
+    '{"post_id":"y","post_author_id":"' +
+    userId +
+    '"}' +
+    '</body></html>'
+  );
+}
+
+// 真機份量的形狀：兩處 post_author_id 都落在舊的 512KB 掃描上限之外，整份
+// 約 600KB。舊上限下兩個 id 都看不到，新的 1MB 上限才掃得到。
+function scamDeepOgAuthorHtml(meta, userId) {
+  return (
+    '<html><head>' +
+    meta +
+    '</head><body>' +
+    'x'.repeat(550000) +
+    '{"post_id":"x","post_author_id":"' +
+    userId +
+    '"}' +
+    'x'.repeat(30000) +
+    '{"post_id":"y","post_author_id":"' +
+    userId +
+    '"}' +
+    'x'.repeat(20000) +
+    '</body></html>'
+  );
+}
+
+// 讀 background 模組層的 const。vm 的 top-level const 落在 context 的全域詞
+// 法環境，不是 sandbox 物件的屬性，只能在同一個 context 內求值取得。
+function scamConst(bg, name) {
+  return vm.runInContext(name, bg.sandbox);
+}
+
+// ---- 正例：og:url 認得出文件身分 ----
+
+test('L4 文件身分:真機形狀——整份沒有 username 錨點，靠 og:url 認身分，id 在 550000 字處仍取得到', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  const html = scamDeepOgAuthorHtml(meta, SCAM_USER_ID);
+  assert.equal(html.includes('"username":"'), false, '前提：真機回應整份沒有 "username":" 這個舊錨點');
+  assert.ok(html.length > 524288, '前提：真機回應大於舊的 512KB 掃描上限');
+
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(1000);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'og:url 對得上請求的貼文，就該採信其中的 post_author_id');
+  assert.equal(response.added, true, 'userId 由備援補回後照常建條目');
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+  assert.equal(scamEntry(bg, SCAM_USER_ID).handle, SCAM_HANDLE, '以 og:url 背書的 post_author_id 當 entries 的鍵');
+});
+
+test('L4 文件身分:meta 屬性順序顛倒、單引號、&#x40; 變體一樣要認得', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001', '&#x40;'), {
+    contentFirst: true,
+    singleQuote: true,
+  });
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'HTML 的屬性順序與引號都不固定，解析不得寫死單一形狀');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+test('L4 文件身分:og:url 缺席但 al:android:url 在，一樣認得出文件身分', async () => {
+  const meta = scamOgMeta('al:android:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  const html = scamOgAuthorHtml(meta, SCAM_USER_ID);
+  assert.equal(html.includes('og:url'), false, '前提：這份回應沒有 og:url，只有 al:android:url');
+
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'al:android:url 帶的是同一條永久連結，同樣算文件身分');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+test('L4 文件身分:og:url 的 handle 大小寫與請求不同仍算同一篇（Threads handle 不分大小寫）', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl('Example_Author', 'DxSyNtH0001'));
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '大小寫差異不得判成兩篇不同的貼文');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+// threads.net 與 threads.com 是同一個站的兩個網域，www 前綴也可有可無。使用者
+// 可能停在 threads.net 的分頁上，回應的 og:url 卻一律是 www.threads.com——兩
+// 側都歸一到同一種寫法再比，否則備援在 .net 分頁上全面失效。
+test('L4 文件身分:請求走 threads.net 而 og:url 回 www.threads.com 時仍算同一篇（網域歸一）', async () => {
+  const netPostUrl = 'https://threads.net/@example_author/post/DxSyNtH0001';
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  assert.ok(meta.indexOf('https://www.threads.com/') !== -1, '前提：回應宣告的是 www.threads.com');
+
+  const fetchStub = makeScamFetch({ [netPostUrl]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null, postUrl: netPostUrl }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, 'threads.net 與 www.threads.com 指的是同一篇貼文');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+// ---- 負例：文件身分對不上、或 id 不唯一 ----
+
+test('L4 文件身分:og:url 的 handle 與請求不同（轉址到別人的貼文）回 no_user_id 且不寫', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl('other_author', 'DxSyNtH0001'));
+  // 刻意讓舊錨點成立（id 與 username 相鄰）：文件身分否決優先於 username 視窗。
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '拿回來的不是請求的那一篇，裡面的 post_author_id 不足採信'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '對不上文件身分的 id 不得寫進黑名單');
+});
+
+test('L4 文件身分:og:url 的 post code 與請求不同回 no_user_id 且不寫', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0009'));
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' }, '同一位作者的另一篇貼文也不算同一篇');
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+// 兩道判準的先後順序：og:url 說「是本篇」、al:android:url 說「是別篇」，先問
+// 「有沒有指向別篇的」才問「有沒有指向本篇的」。順序對調就變成一張對得上的
+// 身分標籤足以蓋過另一張對不上的，攻擊者只要多塞一個指向本篇的 meta 就能讓
+// 任意 id 過關——否決必須是最優先的那一關。
+test('L4 文件身分:一份文件同時宣告本篇與別篇時，否決優先於採信', async () => {
+  const meta =
+    scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001')) +
+    scamOgMeta('al:android:url', scamEntityUrl('other_author', 'DxSyNtH0009'));
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: scamOgAuthorHtml(meta, SCAM_USER_ID) });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '身分標籤彼此矛盾時整份不足採信，對得上的那一張不得蓋過對不上的那一張'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+test('L4 文件身分:文件身分過關但 post_author_id 出現兩個不同值時回 no_user_id 且不寫', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  // 其中一個 id 旁邊就是 username（舊判準會採信它）；文件身分路徑要求候選
+  // 全部同值，兩個以上不同值一律不採信，username 視窗不得當救生索。
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}' +
+    'x'.repeat(4000) +
+    '{"post_author_id":"20000000002"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '同一份文件出現兩個不同的 post_author_id，哪一個是本篇作者無從判定'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+test('L4 文件身分:非 2xx 回應一律否決——404 頁面帶對得上的 og:url 也不採信', async () => {
+  const meta = scamOgMeta('og:url', scamEntityUrl(SCAM_HANDLE, 'DxSyNtH0001'));
+  const html =
+    '<html><head>' +
+    meta +
+    '</head><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '","username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({
+    [SCAM_POST_URL]: (url) => ({ ok: false, status: 404, url, text: async () => html }),
+  });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '錯誤頁的內容不是貼文本身，不得拿來背書任何 id'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+  assert.equal(fetchStub.countFor(SCAM_POST_URL), 1, '前提：確實發了一次備援請求');
+});
+
+// ---- username 視窗降級為替代錨點：既有形狀不得被新判準擋掉 ----
+
+test('L4 文件身分:og:url 缺席時 username 相鄰的舊形狀仍通過（替代錨點）', async () => {
+  const html = authorIdHtml(SCAM_USER_ID);
+  assert.equal(html.includes('og:url'), false, '前提：這是舊形狀，沒有任何 og meta');
+
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '登入態／舊形狀的回應只有 username 錨點，不得被新判準擋掉');
+  assert.ok(scamEntry(bg, SCAM_USER_ID));
+});
+
+test('L4 文件身分:og:url 缺席且 username 隔 3000 字時仍回 no_user_id（替代錨點的視窗照舊）', async () => {
+  const html =
+    '<html><body>{"post_author_id":"' +
+    SCAM_USER_ID +
+    '"}' +
+    'x'.repeat(3000) +
+    '{"username":"' +
+    SCAM_HANDLE +
+    '"}</body></html>';
+  const fetchStub = makeScamFetch({ [SCAM_POST_URL]: html });
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE },
+    fetch: fetchStub.impl,
+  });
+
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(600);
+
+  assert.deepEqual(
+    deep(res.response),
+    { ok: false, code: 'no_user_id' },
+    '沒有文件身分可依靠時，±2000 字的視窗判準原封不動'
+  );
+  assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined);
+});
+
+// ---- 掃描上限：512KB → 1MB ----
+//
+// 【契約變更，PM 授權】真機的登出態回應約 581KB，舊的 SCAM_SCAN_LIMIT
+// （524288）會把 route props 裡的 post_author_id 整段切在掃描範圍外，備援對
+// 所有貼文永久失效。上限提高到 1MB（1048576），仍保留天花板以免對超大回應
+// 做無界正則掃描。
+
+test('L4 文件身分:SCAM_SCAN_LIMIT 為 1048576（1MB）', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+  assert.equal(scamConst(bg, 'SCAM_SCAN_LIMIT'), 1048576, '真機回應約 581KB，512KB 的上限會把 SSR 欄位整段切掉');
+});
+
+// ============================================================
+// §14 scam.hit：證據結構補強（anchorPostUrl／threadUrl／anchorMatch／signals）
+//
+// content script 另外送「錨點落在哪一篇」「整串從哪裡開始」「錨點本體」與
+// 「踩到哪幾類訊號」，讓選項頁的證據卡指得到真正出事的那一篇。
+//
+// 【驗證契約】四欄皆可缺席（舊版 content script 相容）；有帶就驗形狀：
+//   anchorPostUrl／threadUrl 走 TCLCore.normalizePostUrl 白名單，不合法回
+//     bad_request——不是默默剝掉：payload 是自家 content script 送的，形狀不
+//     對代表兩端版本對不上，默默吞掉會讓錯誤晚好幾週才被發現。
+//   anchorMatch 字串且不超過 40 字。
+//   signals 陣列且每一項都在 link|line|group|join|pitch 白名單內。
+// 通過驗證的四欄要一路寫進 entry.evidence[0]。
+//
+// 【去重鍵】證據的去重鍵改為 anchorPostUrl || postUrl：同一串被從不同篇重新
+// 打開時 postUrl 不同，錨點篇卻是同一篇，綁 postUrl 會讓同一次招攬吃掉三筆
+// 證據額度。
+// ============================================================
+
+const SCAM_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0002';
+const SCAM_THREAD_URL = SCAM_POST_URL;
+const SCAM_ANCHOR_TEXT = '賴：ex01abc';
+const SCAM_SIGNALS = ['line', 'group', 'pitch'];
+
+function scamHitRich(overrides) {
+  return scamHit(
+    Object.assign(
+      {
+        anchorPostUrl: SCAM_ANCHOR_URL,
+        threadUrl: SCAM_THREAD_URL,
+        anchorMatch: SCAM_ANCHOR_TEXT,
+        signals: SCAM_SIGNALS.slice(),
+      },
+      overrides || {}
+    )
+  );
+}
+
+test('L4 scam.hit:四個新欄位合法時通過驗證，並原樣寫進 entry.evidence[0]', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  const response = deep(res.response);
+  assert.equal(response && response.ok, true, '帶新欄位的合法命中必須受理');
+
+  const evidence = scamEntry(bg).evidence[0];
+  assert.equal(evidence.postUrl, SCAM_POST_URL, 'postUrl 維持原義：使用者當時開的那一頁');
+  assert.equal(evidence.anchorPostUrl, SCAM_ANCHOR_URL, 'anchorPostUrl 要落盤');
+  assert.equal(evidence.threadUrl, SCAM_THREAD_URL, 'threadUrl 要落盤');
+  assert.equal(evidence.anchorMatch, SCAM_ANCHOR_TEXT, 'anchorMatch 要落盤（選項頁靠它做片段高亮）');
+  assert.deepEqual(evidence.signals, SCAM_SIGNALS, 'signals 要落盤（證據卡的訊號 chip）');
+});
+
+test('L4 scam.hit:新欄位一律可缺席——舊版 content script 送來的三欄 payload 照常受理', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(
+    scamHit({
+      anchorMatch: undefined,
+      pitchMatches: undefined,
+      anchorPostUrl: undefined,
+      threadUrl: undefined,
+      signals: undefined,
+    }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '缺新欄位不得被擋下');
+  const evidence = scamEntry(bg).evidence[0];
+  assert.deepEqual(
+    Object.keys(evidence).sort(),
+    ['at', 'postUrl', 'snippet'],
+    '沒帶新欄位時證據維持舊三欄形狀，不得補出空殼'
+  );
+});
+
+const SCAM_BAD_EVIDENCE_PAYLOADS = [
+  ['anchorPostUrl 非 threads 貼文網址', { anchorPostUrl: 'https://example.com/@example_author/post/DxSyNtH0002' }],
+  ['anchorPostUrl 只是個人頁不是貼文', { anchorPostUrl: 'https://www.threads.com/@example_author' }],
+  ['anchorPostUrl 非字串', { anchorPostUrl: 42 }],
+  ['threadUrl 非 threads 貼文網址', { threadUrl: 'https://evil.example/x' }],
+  ['threadUrl 非字串', { threadUrl: ['https://www.threads.com/@example_author/post/DxSyNtH0001'] }],
+  ['anchorMatch 超過 40 字', { anchorMatch: '賴'.repeat(41) }],
+  ['anchorMatch 非字串', { anchorMatch: 42 }],
+  ['signals 非陣列', { signals: 'line' }],
+  ['signals 含白名單外的值', { signals: ['line', 'evil'] }],
+  ['signals 元素非字串', { signals: ['line', 7] }],
+];
+
+test('L4 scam.hit:新欄位形狀不對一律回 bad_request 且不寫', async () => {
+  for (const testCase of SCAM_BAD_EVIDENCE_PAYLOADS) {
+    const label = testCase[0];
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const res = await bg.send(scamHitRich(testCase[1]), SCAM_TAB_SENDER);
+    await settle(300);
+
+    assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' }, label + ' 應回 bad_request');
+    assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, label + ' 不得寫入 scamBlocklist');
+  }
+});
+
+test('L4 scam.hit:對照組——anchorMatch 恰 40 字、signals 為白名單全集，皆照常受理', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const anchorMatch = '賴'.repeat(40);
+  const signals = ['link', 'line', 'group', 'join', 'pitch'];
+  const res = await bg.send(scamHitRich({ anchorMatch, signals }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '上限是 40，恰為 40 不得誤殺');
+  const evidence = scamEntry(bg).evidence[0];
+  assert.equal(evidence.anchorMatch, anchorMatch);
+  assert.deepEqual(evidence.signals, signals, '白名單全集都要留得住');
+});
+
+test('L4 scam.hit:去重鍵是 anchorPostUrl——同一串從不同篇重新打開只算一筆證據', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHitRich(), SCAM_TAB_SENDER);
+  await settle(400);
+  // 使用者改從錨點篇進來：postUrl 換了一篇，錨點篇仍是同一篇。
+  const second = await bg.send(
+    scamHitRich({ postUrl: SCAM_ANCHOR_URL, at: SCAM_AT + 60000 }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  assert.equal(deep(second.response).added, false, '既有作者只補證據');
+  assert.equal(
+    scamEntry(bg).evidence.length,
+    1,
+    '同一篇錨點只算一筆證據——綁 postUrl 的話同一次招攬會吃掉三筆額度'
+  );
+});
+
+test('L4 scam.hit:錨點篇不同時照樣各記一筆，新欄位逐筆保留', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHitRich(), SCAM_TAB_SENDER);
+  await settle(400);
+  await bg.send(
+    scamHitRich({ anchorPostUrl: SCAM_POST_URL_3, at: SCAM_AT + 60000 }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.evidence.length, 2, '兩篇不同的錨點篇各算一筆');
+  assert.deepEqual(
+    entry.evidence.map((item) => item.anchorPostUrl),
+    [SCAM_POST_URL_3, SCAM_ANCHOR_URL],
+    '證據依 at 降冪，且每一筆各自帶著自己的 anchorPostUrl'
+  );
+});
+
+// ============================================================
+// §14 scam.hit：postedAt（貼文發布時間）
+//
+// 與另外四個新欄位同一條規則：缺席通過（舊版 content script 相容），有帶就
+// 驗形狀——必須是有限數字，否則 bad_request。通過就一路寫進 evidence[0]。
+// ============================================================
+
+const SCAM_POSTED_AT = Date.parse('2026-09-18T10:00:00.000Z');
+
+test('L4 scam.hit:postedAt 為有限數字時通過驗證並落盤，與 at 各記各的', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich({ postedAt: SCAM_POSTED_AT }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '帶 postedAt 的合法命中必須受理');
+  const evidence = scamEntry(bg).evidence[0];
+  assert.equal(evidence.postedAt, SCAM_POSTED_AT, 'postedAt 要落盤（證據卡上的貼文日期）');
+  assert.equal(evidence.at, SCAM_AT, 'at（掃到的時間）照舊，兩者不得互相取代');
+});
+
+test('L4 scam.hit:postedAt 缺席照常受理，且不得補出這一欄', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich({ postedAt: undefined }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '缺 postedAt 不得被擋下');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(scamEntry(bg).evidence[0], 'postedAt'),
+    false,
+    '缺席就不補鍵'
+  );
+});
+
+test('L4 scam.hit:postedAt 不是有限數字一律回 bad_request 且不寫', async () => {
+  // null 不在此列：四個新欄位一律把 null 當「沒帶」（見「缺席通過」那支），
+  // postedAt 沿用同一條規則，不另立一套。
+  for (const bad of ['2026-09-18T10:00:00.000Z', NaN, Infinity, -Infinity, {}, [], true]) {
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const res = await bg.send(scamHitRich({ postedAt: bad }), SCAM_TAB_SENDER);
+    await settle(300);
+
+    const label = 'postedAt=' + JSON.stringify(String(bad));
+    assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' }, label + ' 應回 bad_request');
+    assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, label + ' 不得寫入 scamBlocklist');
+  }
+});
+
+test('L4 scam.hit:第二筆證據帶著自己的 postedAt，不共用第一筆的', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHitRich({ postedAt: SCAM_POSTED_AT }), SCAM_TAB_SENDER);
+  await settle(400);
+  const second = SCAM_POSTED_AT + 3 * 86400000;
+  await bg.send(
+    scamHitRich({ anchorPostUrl: SCAM_POST_URL_3, at: SCAM_AT + 60000, postedAt: second }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  assert.deepEqual(
+    scamEntry(bg).evidence.map((item) => item.postedAt),
+    [second, SCAM_POSTED_AT],
+    '證據依 at 降冪，每一筆各自帶著自己的貼文發布時間'
   );
 });

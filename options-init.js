@@ -12,6 +12,10 @@ document.addEventListener('DOMContentLoaded', function () {
     syncStorage: chrome.storage.sync,
     localStorage: chrome.storage.local,
     i18n: TCLI18N,
+    // 分頁路由(總覽／貼文／標記)要讀寫 location.hash 並聽 hashchange;
+    // options.js 不碰全域，兩者由這裡注入。
+    window: window,
+    location: window.location,
     now: function () {
       return Date.now();
     },
@@ -102,14 +106,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // 常開頁面的即時性:
   //   - local 區:background 在頁面開著時寫入新紀錄 → 即時刷新卡片牆與
-  //     統計(既有接線)。
+  //     統計(既有接線);純本機開關(詐騙警示總開關)在別處被改動 → 本頁
+  //     的 checkbox 同步反映。
   //   - sync 區:popup 或另一個開著的 options 分頁改了設定(開關/語言/
   //     主題)→ 本頁同步反映，不留過期狀態。
   if (chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener(function (changes, areaName) {
       if (!changes) return;
-      if (areaName === 'local' && changes.history) {
-        controller.setHistory(changes.history.newValue || []);
+      if (areaName === 'local') {
+        if (changes.history) controller.setHistory(changes.history.newValue || []);
+        controller.setLocalSettings(changes);
       } else if (areaName === 'sync') {
         controller.setSyncSettings(changes);
       }
