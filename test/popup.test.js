@@ -280,11 +280,12 @@ test('導航列:nav-chev 為 Lucide arrow-up-right inline SVG(↗ 開新分頁�
 });
 
 // ============================================================
-// 雲端同步狀態列(車道 E，消費 docs/cloud-sync.md 第 5 節的 state
-// 形狀)。popup 只讀狀態、不放登入按鈕(登入在 options 頁的雲端同步卡片
-// 做)，點擊導向 options.html#cloud-sync。background 的同步引擎(車道 D)
-// 尚未實作，這裡驗證的是「runtime 缺席/回應非法都優雅退回未登入態」
-// 這條 UI 契約，不測真的同步行為。
+// popup 不顯示同步狀態(使用者裁決:同步狀態列整個移除)。
+//
+// 健康或錯誤狀態都不在 popup 呈現，帳號與同步狀態只在設定頁的帳號區。
+// popup 因此不再跟 background 要同步狀態(syncState／syncAuth)、不監聽
+// sync.stateChanged，也不再有帶 #cloud-sync 錨點的專屬導向;「紀錄與設定」
+// 這一列(openOptionsPage)與兩顆開關完全不受影響。
 // ============================================================
 
 function makeFakeRuntime(handlers) {
@@ -300,280 +301,97 @@ function makeFakeRuntime(handlers) {
   };
 }
 
-const SYNC_IDS = [...IDS, 'openOptions', 'syncStatusRow', 'syncStatusText'];
-
-test('雲端同步狀態列:popup.html 有 id=syncStatusRow 的 button(不是 checkbox)', () => {
-  const html = readPopupHtml();
-  assert.ok(
-    /<button\b[^>]*\bid\s*=\s*["']syncStatusRow["']/i.test(html),
-    'popup.html 應有 id=syncStatusRow 的 button'
-  );
-});
-
-test('雲端同步卡片狀態:normalizeSyncCardState/DEFAULT_SYNC_CARD_STATE 命名不撞 TCLCore.normalizeSyncState(帳號同步狀態，形狀不同)；popup 不渲染 displayName/avatarUrl，但形狀仍與 options.js 的卡片狀態對齊', () => {
-  const popup = loadPopup();
-  assert.equal(popup.DEFAULT_SYNC_CARD_STATE.displayName, null);
-  assert.equal(popup.DEFAULT_SYNC_CARD_STATE.avatarUrl, null);
-  const normalized = popup.normalizeSyncCardState({
-    status: 'signed_in',
-    email: 'a@b.com',
-    displayName: 'Ada',
-    avatarUrl: 'https://lh3.googleusercontent.com/a/x',
-    lastSyncedAt: 123,
-    pendingCount: 4,
-    lastError: null,
-    apiBase: 'https://api.example/',
-  });
-  assert.equal(normalized.displayName, 'Ada');
-  assert.equal(normalized.avatarUrl, 'https://lh3.googleusercontent.com/a/x');
-  // 型別不對時個別欄位退回 null，不整包丟棄(比照既有欄位的容錯慣例，
-  // 見 options.js 的 normalizeSyncCardState)。
-  const badFields = popup.normalizeSyncCardState({ status: 'signed_in', displayName: 123, avatarUrl: {} });
-  assert.equal(badFields.displayName, null);
-  assert.equal(badFields.avatarUrl, null);
-});
-
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
-test('雲端同步狀態列:未注入 runtime 時顯示「未啟用」文案', async () => {
-  const popup = loadPopup();
-  const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  const controller = popup.createPopupController({ document: doc, storage: storage.sync, i18n });
+test('無同步狀態列:popup.html 不得再有 syncStatusRow／syncStatusText 節點', () => {
+  const html = readPopupHtml();
 
-  await controller.init();
-  await settle();
-
-  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
+  assert.equal(/\bid\s*=\s*["']syncStatusRow["']/i.test(html), false, '同步狀態列節點應整個移除');
+  assert.equal(/\bid\s*=\s*["']syncStatusText["']/i.test(html), false, '狀態列文字節點應整個移除');
+  assert.equal(/cloud-sync/.test(html), false, 'popup 不再導向 options.html#cloud-sync');
 });
 
-test('雲端同步狀態列:background 無回應(sendMessage reject)時，退回未啟用文案', async () => {
+test('無同步狀態列:popup.html 不含同步狀態文案，樣式也不留同步列專屬規則', () => {
+  const html = readPopupHtml();
+
+  assert.equal(/已同步|雲端同步/.test(html), false, 'popup 不顯示任何同步狀態文案');
+  assert.equal(/sync/i.test(readPopupStyle()), false, '同步狀態列的專屬樣式應一併移除');
+});
+
+test('無同步狀態列:導航列只剩「紀錄與設定」一列', () => {
+  const html = readPopupHtml();
+
+  const navRows = html.match(/<button\b[^>]*class="[^"]*\bnav-row\b[^"]*"[^>]*>/gi) || [];
+  assert.equal(navRows.length, 1, '移除同步狀態列後只剩紀錄與設定一列');
+  assert.ok(/\bid\s*=\s*["']openOptions["']/i.test(navRows[0]), '留下的那一列是 openOptions');
+});
+
+test('popup 不讀同步狀態:init() 不向 background 送任何 sync.* 訊息', async () => {
   const popup = loadPopup();
   const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  const runtime = makeFakeRuntime({
-    'sync.getState': () => Promise.reject(new Error('Could not establish connection.')),
-  });
+  const doc = createCheckboxDocument([...IDS, 'openOptions']);
+  const runtime = makeFakeRuntime({});
   const controller = popup.createPopupController({ document: doc, storage: storage.sync, i18n, runtime });
 
   await controller.init();
   await settle();
 
-  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
+  assert.deepEqual(runtime.calls, [], 'popup 不再跟 background 要 syncState／syncAuth');
 });
 
-test('雲端同步狀態列:已登入時顯示「已同步 · 相對時間」', async () => {
+test('popup 不讀同步狀態:storage 只讀兩顆開關與語言偏好', async () => {
   const popup = loadPopup();
   const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  const NOW = 1000000;
-  const runtime = makeFakeRuntime({
-    'sync.getState': () => ({
-      status: 'signed_in',
-      email: 'user@example.com',
-      lastSyncedAt: NOW - 2 * 60 * 1000, // 2 分鐘前
-      pendingCount: 0,
-      lastError: null,
-      apiBase: '',
-    }),
-  });
-  const controller = popup.createPopupController({
-    document: doc,
-    storage: storage.sync,
-    i18n,
-    runtime,
-    now: () => NOW,
-  });
+  const doc = createCheckboxDocument([...IDS, 'openOptions']);
+  const controller = popup.createPopupController({ document: doc, storage: storage.sync, i18n });
 
   await controller.init();
   await settle();
 
-  assert.equal(
-    doc.elements.syncStatusText.textContent,
-    i18n.fmt('zh', 'ppSyncActive', { t: i18n.fmt('zh', 'opRelMin', { n: 2 }) })
-  );
-});
-
-test('雲端同步狀態列:點擊呼叫 openCloudSyncSection(帶 #cloud-sync 錨點的導向)，不呼叫一般 openOptionsPage', async () => {
-  const popup = loadPopup();
-  const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  let cloudOpened = 0;
-  let optionsOpened = 0;
-  const controller = popup.createPopupController({
-    document: doc,
-    storage: storage.sync,
-    i18n,
-    openOptionsPage: () => {
-      optionsOpened++;
-    },
-    openCloudSyncSection: () => {
-      cloudOpened++;
-    },
-  });
-
-  await controller.init();
-  await settle();
-
-  doc.elements.syncStatusRow.fire('click');
-  assert.equal(cloudOpened, 1, '應呼叫專屬的雲端同步導向函式');
-  assert.equal(optionsOpened, 0, '不應誤呼叫一般 openOptionsPage(兩者是不同 dep)');
-});
-
-test('雲端同步狀態列:未注入 openCloudSyncSection 時，退回一般 openOptionsPage(至少能到 options 頁)', async () => {
-  const popup = loadPopup();
-  const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  let optionsOpened = 0;
-  const controller = popup.createPopupController({
-    document: doc,
-    storage: storage.sync,
-    i18n,
-    openOptionsPage: () => {
-      optionsOpened++;
-    },
-  });
-
-  await controller.init();
-  await settle();
-
-  doc.elements.syncStatusRow.fire('click');
-  assert.equal(optionsOpened, 1);
-});
-
-test('雲端同步狀態列:setSyncState(接線層轉呼叫 background 的 sync.stateChanged 廣播)即時更新文案', async () => {
-  const popup = loadPopup();
-  const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  const controller = popup.createPopupController({ document: doc, storage: storage.sync, i18n, now: () => 1000000 });
-
-  await controller.init();
-  await settle();
-  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'), '前置:未注入 runtime，預設未登入');
-
-  controller.setSyncState({
-    status: 'signed_in',
-    email: 'broadcast@example.com',
-    lastSyncedAt: null,
-    pendingCount: 0,
-    lastError: null,
-    apiBase: '',
-  });
-
-  assert.equal(
-    doc.elements.syncStatusText.textContent,
-    i18n.fmt('zh', 'ppSyncActive', { t: i18n.t('zh', 'opSyncNever') })
-  );
-
-  // 廣播非法形狀時應退回未啟用文案，不因 background 傳壞資料而炸掉畫面。
-  controller.setSyncState({ status: 'nonsense' });
-  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
-});
-
-// ============================================================================
-// L8 — 沒有帳號資訊就是「未啟用」，不論 status
-// ============================================================================
-//
-// 調查報告的最後一格:登入失敗後引擎送來 status='error'(舊行為)，popup 的
-// 狀態列只認 'signed_out'，於是走到「已同步 · …」那條分支，對一個根本沒登入
-// 的使用者顯示「已同步」。判準改成看有沒有帳號:沒有 email 也沒有 displayName
-// 就沒有帳號可同步，這比 status 更難被上游的形狀走樣騙過(縱深)。
-
-const PP_NOW = 1000000;
-
-function makeSyncRowCtx() {
-  const popup = loadPopup();
-  const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  const controller = popup.createPopupController({
-    document: doc,
-    storage: storage.sync,
-    i18n,
-    now: () => PP_NOW,
-  });
-  return { popup, doc, controller };
-}
-
-test('L8 雲端同步狀態列:沒有 email／displayName 時一律顯示未啟用，不論 status', async () => {
-  const ctx = makeSyncRowCtx();
-  await ctx.controller.init();
-  await settle();
-
-  for (const status of ['signed_in', 'syncing', 'error', 'signed_out']) {
-    ctx.controller.setSyncState({
-      status,
-      email: null,
-      displayName: null,
-      avatarUrl: null,
-      // 上一位使用者留下的時間戳:沒有帳號時它不代表任何東西，更不該被
-      // 拿去組「已同步 · 2 分鐘前」。
-      lastSyncedAt: PP_NOW - 2 * 60 * 1000,
-      pendingCount: 0,
-      lastError: status === 'error' ? 'sign_in_failed' : null,
-      apiBase: '',
-    });
-
-    assert.equal(
-      ctx.doc.elements.syncStatusText.textContent,
-      i18n.t('zh', 'ppSyncInactive'),
-      `status=${status} 但沒有帳號資訊，不得顯示「已同步」`
-    );
+  const requested = [];
+  for (const keys of storage.calls.get) {
+    if (keys && typeof keys === 'object' && !Array.isArray(keys)) requested.push(...Object.keys(keys));
+    else if (keys) requested.push(...[].concat(keys));
   }
+  assert.deepEqual(
+    requested.sort(),
+    ['autoClean', 'langPref', 'postCopyEnabled'],
+    'popup 的 storage 讀取不得含 syncState／syncAuth'
+  );
 });
 
-test('L8 雲端同步狀態列:登入失敗(sync.getState 回 error 且無帳號)時顯示未啟用', async () => {
+test('popup 不讀同步狀態:模組不再匯出同步列的狀態契約，controller 不再有 setSyncState', async () => {
   const popup = loadPopup();
-  const storage = createChromeStorage({ langPref: 'zh' });
-  const doc = createCheckboxDocument(SYNC_IDS);
-  const runtime = makeFakeRuntime({
-    'sync.getState': () => ({
-      status: 'error',
-      email: null,
-      displayName: null,
-      lastSyncedAt: PP_NOW - 60 * 1000,
-      pendingCount: 0,
-      lastError: 'sign_in_failed',
-      apiBase: '',
-    }),
-  });
-  const controller = popup.createPopupController({
-    document: doc,
-    storage: storage.sync,
-    i18n,
-    runtime,
-    now: () => PP_NOW,
-  });
 
+  assert.equal('DEFAULT_SYNC_CARD_STATE' in popup, false, '同步卡片狀態的預設值應隨狀態列一起移除');
+  assert.equal('normalizeSyncCardState' in popup, false, '同步卡片狀態的正規化應隨狀態列一起移除');
+
+  const storage = createChromeStorage({});
+  const doc = createCheckboxDocument([...IDS, 'openOptions']);
+  const controller = popup.createPopupController({ document: doc, storage: storage.sync });
   await controller.init();
   await settle();
 
-  assert.equal(doc.elements.syncStatusText.textContent, i18n.t('zh', 'ppSyncInactive'));
+  assert.equal(typeof controller.setSyncState, 'undefined', '不再有同步狀態廣播的入口');
 });
 
-test('L8 雲端同步狀態列:有帳號時仍照常顯示「已同步 · 相對時間」(不得誤殺)', async () => {
-  const ctx = makeSyncRowCtx();
-  await ctx.controller.init();
-  await settle();
+test('無同步狀態列:popup-init.js 不再接同步導向、runtime 與 stateChanged 監聽', () => {
+  const fs = require('node:fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'popup-init.js'), 'utf8');
 
-  // displayName 單獨存在也算有帳號(後端沒回 email 的邊角情況)。
-  for (const identity of [{ email: 'user@example.com', displayName: null }, { email: null, displayName: 'Hong' }]) {
-    ctx.controller.setSyncState(
-      Object.assign(
-        {
-          status: 'signed_in',
-          avatarUrl: null,
-          lastSyncedAt: PP_NOW - 2 * 60 * 1000,
-          pendingCount: 0,
-          lastError: null,
-          apiBase: '',
-        },
-        identity
-      )
-    );
+  assert.equal(/openCloudSyncSection/.test(src), false, '#cloud-sync 專屬導向應移除');
+  assert.equal(
+    /sync\.getState|sync\.stateChanged|setSyncState/.test(src),
+    false,
+    'popup 不再跟 background 交換同步狀態'
+  );
+  assert.ok(/openOptionsPage/.test(src), '「紀錄與設定」入口不受影響');
+});
 
-    assert.equal(
-      ctx.doc.elements.syncStatusText.textContent,
-      i18n.fmt('zh', 'ppSyncActive', { t: i18n.fmt('zh', 'opRelMin', { n: 2 }) })
-    );
+test('無同步狀態列:i18n 不再有 popup 同步列專用的 ppSync* 文案', () => {
+  for (const locale of ['zh', 'en']) {
+    const dict = i18n.STRINGS[locale];
+    assert.equal('ppSyncInactive' in dict, false, `${locale} 不應再有 ppSyncInactive`);
+    assert.equal('ppSyncActive' in dict, false, `${locale} 不應再有 ppSyncActive`);
   }
 });
