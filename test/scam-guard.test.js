@@ -466,7 +466,9 @@ function createPostContainer(options) {
   const timeLink = el('a', { href: `/@${options.handle}/post/${options.code}` }, [
     options.dirAutoTimestamp
       ? el('span', { dir: 'auto' }, [text(options.timestamp || '2 小時')])
-      : el('time', { datetime: '2026-09-19T10:00:00Z' }, [text('2 小時')]),
+      : // datetime 是貼文發布時間的來源（見 postedAt 那批測試）；逐篇可覆
+        // 寫，才測得出「payload 取的是錨點篇那一顆，不是隨便哪一顆」。
+        el('time', { datetime: options.postedAtIso || '2026-09-19T10:00:00Z' }, [text('2 小時')]),
   ]);
   const timeBranch = options.bareTimeLink
     ? timeLink
@@ -1236,6 +1238,7 @@ function createScanDom(posts) {
           ? post.captionText
           : withBadge(post.captionText, post.position, total),
       actionRow: true,
+      postedAtIso: post.postedAtIso,
     })
   );
   containers.push(
@@ -3988,4 +3991,127 @@ test('證據結構：新欄位不得取代 postUrl——三個網址各有各的
   assert.equal(payload.postUrl, SOFT_ANCHOR_URL, 'postUrl 跟著使用者實際開的那一頁走');
   assert.equal(payload.anchorPostUrl, SOFT_ANCHOR_URL, '這次錨點篇剛好就是使用者開的那一篇');
   assert.equal(payload.threadUrl, SOFT_THREAD_URL, 'threadUrl 永遠是串頭，不隨進入點改變');
+});
+
+// ============================================================
+// 證據結構補強:postedAt(貼文發布時間)
+//
+// 證據原本只有 at＝「掃到的時間」，那只反映使用者什麼時候剛好滑到那一頁。
+// 使用者在證據卡上要看的是「這篇招攬貼文什麼時候發的」，資料只有卡片自己的
+// <time datetime> 帶得出來。
+//
+// 【契約】extractThreadFromDom 每篇讀「屬於本卡 permalink 的那顆 <time>」
+// (判準與掛 tag 用的 findAuthorRowAnchor 相同:time 的 closest('a') 未跨出
+// 本容器，且 href 的 code 等於本卡 code)，Date.parse 解析成毫秒;解析不出
+// 就不帶這一欄。scan() 的 payload 取**含錨點那一篇**的值。
+// ============================================================
+
+const POSTED_ANCHOR_ISO = '2026-09-18T10:00:00.000Z';
+const POSTED_ANCHOR_MS = Date.parse(POSTED_ANCHOR_ISO);
+
+test('證據結構:extractThreadFromDom 逐篇帶出 postedAt，取自屬於該篇 permalink 的 <time datetime>', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  const items = extractThreadFromDom(createThreadDom(), AUTHOR);
+  assert.ok(items.length > 0, '前置:應取得自回覆串各篇');
+  items.forEach((item, i) => {
+    assert.equal(
+      item.postedAt,
+      Date.parse('2026-09-19T10:00:00Z'),
+      '第 ' + (i + 1) + ' 篇的 postedAt 取自本卡 <time datetime>'
+    );
+  });
+});
+
+test('證據結構:postedAt 只認屬於本卡 permalink 的 <time>，轉發標頭那顆別篇的時間不算', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  // foreignTimeLink 會在容器內多掛一顆指向「別篇」的 <time datetime>
+  // (2026-09-18)，本卡自己那顆是 2026-09-19;判準與掛 tag 用的
+  // findAuthorRowAnchor 相同:href 的 code 必須等於本卡 code。
+  const root = el('div', {}, [
+    createPostContainer({
+      handle: AUTHOR,
+      code: POSTS[0].code,
+      body: POSTS[0].captionText,
+      actionRow: true,
+      foreignTimeLink: { handle: 'some.other_reader', code: 'DxReplY001A' },
+    }),
+  ]);
+  const items = extractThreadFromDom(root, AUTHOR);
+  assert.equal(items.length, 1, '前置:應取到那一篇');
+  assert.equal(
+    items[0].postedAt,
+    Date.parse('2026-09-19T10:00:00Z'),
+    '取的是本卡那顆，不是轉發標頭裡指向別篇的那顆'
+  );
+});
+
+test('證據結構:<time datetime> 解析不出來時該篇不帶 postedAt(不補 0、不丟整篇)', () => {
+  const extractThreadFromDom = loadFn('extractThreadFromDom');
+  const root = el('div', {}, [
+    createPostContainer({
+      handle: AUTHOR,
+      code: POSTS[0].code,
+      body: POSTS[0].captionText,
+      actionRow: true,
+      postedAtIso: '不是時間',
+    }),
+  ]);
+  const items = extractThreadFromDom(root, AUTHOR);
+  assert.equal(items.length, 1, '解析不出時間不得讓整篇被丟掉');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(items[0], 'postedAt'),
+    false,
+    '解析失敗就不帶這一欄'
+  );
+});
+
+test('證據結構:payload 的 postedAt 取含錨點那一篇的發布時間，不是串頭那篇', async () => {
+  // 串頭與錨點篇各給不同的 datetime，才分得出取的是哪一顆。
+  const posts = SOFT_POSTS.map((post, i) =>
+    Object.assign({}, post, {
+      postedAtIso: i === SOFT_POSTS.length - 1 ? POSTED_ANCHOR_ISO : '2026-09-01T00:00:00.000Z',
+    })
+  );
+  const env = loadEnv({
+    pathname: SOFT_PATH,
+    page: [createSsrScript(posts[0]), createScanDom(posts)],
+  });
+  await env.flush();
+
+  const payload = env.hits()[0];
+  assert.ok(payload, '前置:軟性招攬串應送出一則 scam.hit');
+  assert.equal(payload.anchorPostUrl, SOFT_ANCHOR_URL, '前置:錨點落在末篇');
+  assert.equal(
+    payload.postedAt,
+    POSTED_ANCHOR_MS,
+    'postedAt 是錨點篇的發布時間——證據卡上那個日期講的就是那一篇'
+  );
+  assert.notEqual(
+    payload.postedAt,
+    Date.parse('2026-09-01T00:00:00.000Z'),
+    '不得取成串頭那篇的時間'
+  );
+  assert.equal(typeof payload.at, 'number', 'at(掃到的時間)照舊');
+  assert.notEqual(payload.postedAt, payload.at, '兩者語意不同，不得互相取代');
+});
+
+test('證據結構:錨點篇的 <time> 解析不出來時 payload 不帶 postedAt', async () => {
+  const posts = SOFT_POSTS.map((post, i) =>
+    Object.assign({}, post, {
+      postedAtIso: i === SOFT_POSTS.length - 1 ? '不是時間' : '2026-09-01T00:00:00.000Z',
+    })
+  );
+  const env = loadEnv({
+    pathname: SOFT_PATH,
+    page: [createSsrScript(posts[0]), createScanDom(posts)],
+  });
+  await env.flush();
+
+  const payload = env.hits()[0];
+  assert.ok(payload, '前置:照樣命中');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(payload, 'postedAt'),
+    false,
+    '取不到就整欄不帶——background 對這一欄的規則是「缺席通過」'
+  );
 });

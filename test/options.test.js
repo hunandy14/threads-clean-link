@@ -5964,6 +5964,11 @@ const SCAM_STUB_IDS = [
   'scamCount',
   'scamEmpty',
   'scamAllowlist',
+  // 「命中 N 篇」pill 開的證據對話框（沿用既有 overlay/modal 那一套）。
+  'scamHitsOverlay',
+  'scamHitsTitle',
+  'scamHitsList',
+  'scamHitsClose',
   'confirmOverlay',
   'confirmTitleText',
   'confirmDesc',
@@ -6083,7 +6088,9 @@ test('標記名單卡:storage 沒有 scamBlocklist 時顯示空狀態、計數 0
   );
 });
 
-test('標記名單卡:兩位作者依 addedAt 降冪各畫一列，第一行 displayName ＋ @handle、第二行加入日期', async () => {
+// 【斷言翻轉】只翻標題與訊息的措辭:「加入於 <日期>」從第二行(副標)搬到標
+// 題列右側的小字，仍然要畫得出來，斷言本身不變。
+test('標記名單卡:兩位作者依 addedAt 降冪各畫一列，標題列有 displayName ＋ @handle ＋ 加入日期', async () => {
   const ctx = makeScamCtx();
   await initScamPage(ctx);
 
@@ -6102,11 +6109,11 @@ test('標記名單卡:兩位作者依 addedAt 降冪各畫一列，第一行 dis
   );
 
   const textA = joinedText(rows[0]);
-  assert.ok(textA.includes('Example Author'), '有顯示名時第一行應顯示 displayName');
-  assert.ok(textA.includes('@example_author'), '第一行同時顯示 @handle');
+  assert.ok(textA.includes('Example Author'), '有顯示名時標題列應顯示 displayName');
+  assert.ok(textA.includes('@example_author'), '標題列同時顯示 @handle');
   assert.ok(
     textA.includes(i18n.fmt('zh', 'opScamAddedOn', { d: scamDateOnly(SCAM_NOW - SCAM_HOUR) })),
-    '第二行應是「加入於 <日期>」(opScamAddedOn)'
+    '標題列右側應有「加入於 <日期>」(opScamAddedOn)'
   );
 
   const textB = joinedText(rows[1]);
@@ -6117,26 +6124,29 @@ test('標記名單卡:兩位作者依 addedAt 降冪各畫一列，第一行 dis
 // 【斷言翻轉】原斷言為「每筆證據一個 <a>，連結文字＝片段截到 40 字加刪節
 // 號、完整片段留在 title」。證據卡改版後片段不再充當連結文字:
 //   - 片段獨立成 p.scam-evidence-text，完整呈現不截斷(40 字截斷本身是
-//     bug，PM 裁決移除,因此不保留任何等價的截斷斷言)。
-//   - 連結改為 a.scam-evidence-post「證據貼文」，href 取 anchorPostUrl，
-//     缺席(舊證據)時退回 postUrl。
-// target/rel 的要求不變，仍在此逐一斷言。片段完整性與新欄位的 href 由
-// 「證據卡:…」那批測試釘。
-test('標記名單卡:證據連結是「證據貼文」而非片段本身，href 退回 postUrl 時 target/rel 照舊', async () => {
+//     bug，PM 裁決移除，因此不保留任何等價的截斷斷言)。
+//   - 連結改為 a.scam-evidence-date：日期本身就是那篇的永久連結(比照
+//     Threads)，href 取 anchorPostUrl，缺席(舊證據)時退回 postUrl。
+//   - 主卡只畫最新一筆，其餘要開「命中 N 篇」對話框才看得到。
+// target/rel 的要求不變，仍在此逐一斷言。
+test('標記名單卡:證據連結是日期本身而非片段，href 退回 postUrl 時 target/rel 照舊', async () => {
   const ctx = makeScamCtx();
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
   assert.ok(rowA, '前置:應畫出作者 A 那一列');
-  const links = findByClass(rowA, 'scam-evidence-post');
-  assert.equal(links.length, 2, '證據貼文連結數應等於 evidence 筆數');
+  assert.equal(evidenceDateLinks(rowA).length, 1, '主卡只畫最新那一筆');
+
+  const list = openScamHits(ctx, rowA);
+  const links = evidenceDateLinks(list);
+  assert.equal(links.length, 2, '對話框裡的連結數應等於 evidence 筆數');
   assert.deepEqual(
     links.map((a) => scamAttrOf(a, 'href')).sort(),
     [SCAM_URL_A1, SCAM_URL_A2].sort(),
     '舊證據沒有 anchorPostUrl，href 退回該筆的 postUrl'
   );
   links.forEach((a) => {
-    assert.equal(a.tag, 'a', '證據貼文必須是 <a>');
+    assert.equal(a.tag, 'a', '證據日期必須是 <a>');
     assert.equal(scamAttrOf(a, 'target'), '_blank', '證據連結應開新分頁');
     assert.equal(
       scamAttrOf(a, 'rel'),
@@ -6145,11 +6155,11 @@ test('標記名單卡:證據連結是「證據貼文」而非片段本身，href
     );
     assert.ok(
       !a.textContent.includes(SCAM_SNIPPET_SHORT),
-      '連結文字是「證據貼文」，片段已經搬進 p.scam-evidence-text'
+      '連結文字是日期，片段已經搬進 p.scam-evidence-text'
     );
   });
 
-  const texts = findByClass(rowA, 'scam-evidence-text');
+  const texts = findByClass(list, 'scam-evidence-text');
   assert.equal(texts.length, 2, '每筆證據各一段片段');
   assert.deepEqual(
     texts.map((n) => walkNodes(n, []).map((x) => x.textContent || '').join('')).sort(),
@@ -7038,19 +7048,20 @@ function metaTextOf(node) {
 }
 
 // 【斷言翻轉】原斷言為「.scam-evidence-meta 的 textContent 恰為『代碼尾 6
-// 碼 · 日期』，且只放這兩者」。證據卡改版把代碼與日期併進一整條 meta 列,
-// 同一條列上還有「證據貼文」「整串」連結與訊號 chips，因此改為「這條列上
-// 找得到代碼尾碼與日期」而非整串相等;代碼尾碼可以落在連結文字或 title
-// 裡(見「證據卡:貼文代碼尾 6 碼…」)。「meta 排在片段之前」的順序要求不
-// 變。
+// 碼 · 日期』，且只放這兩者」。證據卡改版把代碼與日期併進一整條 meta 列，
+// 同一條列上還有日期連結、「整串」連結與訊號 chips，因此改為「這條列上找得
+// 到代碼尾碼與日期」而非整串相等;代碼尾碼落在日期連結的 title 裡。主卡只
+// 畫最新一筆，逐筆的 meta 列要開「命中 N 篇」對話框才看得到。「meta 排在片
+// 段之前」的順序要求不變。
 test('標記名單卡:每筆證據的 meta 列仍帶得出貼文代碼尾 6 碼與日期，同文異篇不會看起來重複', async () => {
   const ctx = makeScamCtx();
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
   assert.ok(rowA, '前置:應畫出作者 A 那一列');
+  const list = openScamHits(ctx, rowA);
 
-  const metas = findByClass(rowA, 'scam-evidence-meta');
+  const metas = findByClass(list, 'scam-evidence-meta');
   assert.equal(metas.length, 2, '每筆證據各一條 meta 列，數量等於 evidence 筆數');
 
   const expected = [
@@ -7060,7 +7071,7 @@ test('標記名單卡:每筆證據的 meta 列仍帶得出貼文代碼尾 6 碼�
   assert.notEqual(expected[0], expected[1], '前置:兩筆證據的尾碼須不同，才測得出去重複的效果');
   metas.forEach((meta, i) => {
     const parts = expected[i].split(' · ');
-    const blob = metaTextOf(meta) + ' ' + findByClass(meta, 'scam-evidence-post')
+    const blob = metaTextOf(meta) + ' ' + findByClass(meta, 'scam-evidence-date')
       .map((a) => scamAttrOf(a, 'title'))
       .join(' ');
     assert.ok(blob.includes(parts[0]), '第 ' + (i + 1) + ' 筆的代碼尾 6 碼(' + parts[0] + ')應在 meta 列上');
@@ -7069,8 +7080,8 @@ test('標記名單卡:每筆證據的 meta 列仍帶得出貼文代碼尾 6 碼�
 
   // 順序:每筆 meta 要排在它那筆的片段之前(walkNodes 是前序走訪，對這種淺
   // 層結構等同文件順序)。
-  const order = walkNodes(rowA, []);
-  const texts = findByClass(rowA, 'scam-evidence-text');
+  const order = walkNodes(list, []);
+  const texts = findByClass(list, 'scam-evidence-text');
   assert.equal(texts.length, 2, '前置:兩筆證據各一段片段');
   metas.forEach((m, i) => {
     assert.ok(
@@ -7080,7 +7091,8 @@ test('標記名單卡:每筆證據的 meta 列仍帶得出貼文代碼尾 6 碼�
   });
 });
 
-// 【斷言翻轉】同上:改為「代碼尾碼與日期在 meta 列上找得到」而非整串相等。
+// 【斷言翻轉】同上:改為「代碼尾碼與日期在 meta 列上找得到」而非整串相等;
+// 代碼尾碼落在日期連結的 title 裡。B 只有一筆證據，主卡上就看得到。
 test('標記名單卡:貼文代碼剛好 6 碼時原樣顯示，不補位也不取到別的路徑片段', async () => {
   const ctx = makeScamCtx();
   await initScamPage(ctx);
@@ -7090,7 +7102,7 @@ test('標記名單卡:貼文代碼剛好 6 碼時原樣顯示，不補位也不�
   const metas = findByClass(rowB, 'scam-evidence-meta');
   assert.equal(metas.length, 1, 'B 只有一筆證據');
   const parts = evidenceMetaText(SCAM_URL_B1, SCAM_NOW - 3 * SCAM_DAY).split(' · ');
-  const blob = metaTextOf(metas[0]) + ' ' + findByClass(metas[0], 'scam-evidence-post')
+  const blob = metaTextOf(metas[0]) + ' ' + findByClass(metas[0], 'scam-evidence-date')
     .map((a) => scamAttrOf(a, 'title'))
     .join(' ');
   assert.ok(blob.includes('DeF456'), '代碼剛好 6 碼(DeF456)時原樣顯示');
@@ -7162,49 +7174,63 @@ test('分頁化後既有行為不變:貼文分頁上紀錄卡照常渲染，切�
 //
 // 【為什麼改】舊版一列只有「名字 · @帳號 / 加入於 X / 證據:一串被截到 40 字
 // 的片段連結」。實際用起來的三個問題:
-//   1. 片段被砍到 40 字,招攬句的後半(帳號、群組引導)整段看不到,使用者無
+//   1. 片段被砍到 40 字，招攬句的後半(帳號、群組引導)整段看不到，使用者無
 //      從判斷這筆標記合不合理。
-//   2. 證據連結一律指向「使用者當時開的那一頁」,錨點卻幾乎都在末篇,點進去
+//   2. 證據連結一律指向「使用者當時開的那一頁」，錨點卻幾乎都在末篇，點進去
 //      看不到當初被標記的那句話。
-//   3. 三筆證據平鋪直敘,同一段招攬文案貼了好幾篇時看起來像畫重複了。
+//   3. 三筆證據平鋪直敘，同一段招攬文案貼了好幾篇時看起來像畫重複了。
 //
-// 【新版版面】
-//   左:首字母圓形 span.scam-avatar
-//   標題列:a.scam-name-link(連到作者頁,新分頁)包顯示名＋@handle;右側
-//     span.scam-hit-count「命中 N 篇」＋既有解除鈕
-//   副標:「加入於 YYYY-MM-DD · 最近命中 YYYY-MM-DD」
-//   證據 div.scam-evidence:預設只露最新一筆,其餘收進 details.scam-evidence-more
-//   每筆證據:meta 列(.scam-evidence-meta)＝日期 ＋ a.scam-evidence-post
-//     (href=anchorPostUrl||postUrl) ＋(threadUrl 存在且不等於證據貼文時)
-//     a.scam-evidence-thread ＋ 訊號 chips span.scam-signal[data-signal]
-//   片段 p.scam-evidence-text:完整 snippet 不截斷,anchorMatch 以
+// 【版面】(使用者看過預覽後兩輪收斂的結果，下方多處【斷言翻轉】就是這兩輪)
+//   標題列 .scam-name-row，左起:
+//     a.scam-name-link(連作者頁，新分頁)包顯示名＋@handle
+//     a.scam-posted「貼文 YYYY-MM-DD」——貼文發布時間(postedAt，缺席退回
+//       at)，日期本身就是最新那筆證據貼文的連結
+//     span.scam-added「加入於 YYYY-MM-DD」小字
+//     span/button.scam-hit-count「命中 N 篇」——N ≥ 2 時是可點的 button
+//   證據 div.scam-evidence:只放最新一筆(不摺疊、不分頁)
+//   右上角 .scam-actions:button.scam-menu-btn(⋯,#i-more)開 .menu.scam-menu，
+//     選單只有一項「解除」(danger，走既有二次確認)
+//   全部證據:點「命中 N 篇」開 #scamHitsOverlay 對話框(可捲動)，逐筆列出
+//
+// 【每筆證據】主卡那筆與對話框每一筆走同一個 buildScamEvidenceItem，
+// 結構與 class 完全相同:
+//   meta 列 .scam-evidence-meta ＝ a.scam-evidence-date(貼文日期即連結，
+//     href=anchorPostUrl||postUrl，title 放代碼尾 6 碼) ＋(threadUrl 存在
+//     且不等於證據貼文時)a.scam-evidence-thread ＋ 訊號 chips
+//     span.scam-signal[data-signal]
+//   片段 p.scam-evidence-text:完整 snippet 不截斷，anchorMatch 以
 //     mark.scam-anchor 包住
 //
-// 【紀律】全部 createElement/textContent,零 innerHTML——displayName 與
+// 【紀律】全部 createElement/textContent，零 innerHTML——displayName 與
 // snippet 都是他人貼文帶進來的字串。
 // ============================================================
 
-// 作者 A:三筆證據,錨點篇各不相同,串頭是 DxSyNtH0000。
+// 作者 A:三筆證據，錨點篇各不相同，串頭是 DxSyNtH0000。
 const EVC_THREAD_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0000';
 const EVC_ANCHOR_1 = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
 // 【bug 2 的實際形狀】第二筆證據的錨點篇。舊版對第二、三筆證據畫不出 <a>,
-// 這個網址是回報現場用的那一組,原樣留在測試裡。
+// 這個網址是回報現場用的那一組，原樣留在測試裡。
 const EVC_ANCHOR_2 = 'https://www.threads.com/@example_author/post/DxSyNtH0002';
 const EVC_ANCHOR_3 = 'https://www.threads.com/@example_author/post/DxSyNtH0003';
 // 使用者當時開的那一頁(三筆都是從串頭進來的)。
 const EVC_PAGE_URL = EVC_THREAD_URL;
 
 const EVC_ANCHOR_TEXT = 'LINE：ab12cd';
-// 100 字的完整片段(儲存上限是 120)。舊版把連結文字砍到 40 字,招攬句的後半
+// 100 字的完整片段(儲存上限是 120)。舊版把連結文字砍到 40 字，招攬句的後半
 // 整段看不到——這裡的斷言要求 100 字全數落進 p.scam-evidence-text。
 const EVC_SNIPPET_FULL =
   '如果你平常也有在研究台股，想多一個地方交流，可以加 LINE：ab12cd，傳訊息給我，我把你拉進群組一起聊，群裡不報明牌也不收費，只是分享每天看盤的筆記與心得，歡迎自由進出、隨時想退出也都不會強迫。';
 
-// 作者 A 的加入時間比最近一次命中早三天,副標的兩個日期才分得出來。
+// 作者 A 的加入時間比貼文發布時間晚好幾天，標題列的兩個日期才分得出來。
 const EVC_ADDED_AT = SCAM_NOW - 3 * SCAM_DAY;
 const EVC_AT_1 = SCAM_NOW - SCAM_HOUR;
 const EVC_AT_2 = SCAM_NOW - 2 * SCAM_HOUR;
 const EVC_AT_3 = SCAM_NOW - 26 * SCAM_HOUR;
+// 貼文發布時間(postedAt)與掃到的時間(at)刻意錯開:卡片上的日期取的是前
+// 者，取錯會直接顯示成使用者滑到那一頁的日子。
+const EVC_POSTED_1 = SCAM_NOW - 9 * SCAM_DAY;
+const EVC_POSTED_2 = SCAM_NOW - 11 * SCAM_DAY;
+const EVC_POSTED_3 = SCAM_NOW - 13 * SCAM_DAY;
 
 function evcEvidence(anchorPostUrl, at, patch) {
   return Object.assign(
@@ -7221,7 +7247,7 @@ function evcEvidence(anchorPostUrl, at, patch) {
   );
 }
 
-// A:新形狀三筆證據;B:舊形狀單筆證據(只有 postUrl/snippet/at),用來釘向後
+// A:新形狀三筆證據;B:舊形狀單筆證據(只有 postUrl/snippet/at)，用來釘向後
 // 相容——舊證據不得因為缺新欄位就畫不出來或畫出空連結。
 function scamCardFixture(patch) {
   const list = {
@@ -7231,9 +7257,15 @@ function scamCardFixture(patch) {
         handle: 'example_author',
         displayName: 'Example Author',
         evidence: [
-          evcEvidence(EVC_ANCHOR_1, EVC_AT_1),
-          evcEvidence(EVC_ANCHOR_2, EVC_AT_2, { snippet: '第二篇的招攬句：加 LINE：ab12cd 拉你進群組。' }),
-          evcEvidence(EVC_ANCHOR_3, EVC_AT_3, { snippet: '第三篇的招攬句：想進群的私訊我 LINE：ab12cd。' }),
+          evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { postedAt: EVC_POSTED_1 }),
+          evcEvidence(EVC_ANCHOR_2, EVC_AT_2, {
+            snippet: '第二篇的招攬句：加 LINE：ab12cd 拉你進群組。',
+            postedAt: EVC_POSTED_2,
+          }),
+          evcEvidence(EVC_ANCHOR_3, EVC_AT_3, {
+            snippet: '第三篇的招攬句：想進群的私訊我 LINE：ab12cd。',
+            postedAt: EVC_POSTED_3,
+          }),
         ],
         addedAt: EVC_ADDED_AT,
         source: 'auto',
@@ -7251,7 +7283,7 @@ function scamCardFixture(patch) {
   return Object.assign(list, patch || {});
 }
 
-// makeScamCtx 綁死 langPref:'zh';文案的 zh／en 兩面都要釘,這裡另開一顆可選
+// makeScamCtx 綁死 langPref:'zh';文案的 zh／en 兩面都要釘，這裡另開一顆可選
 // 語言的 ctx(其餘接線與 makeScamCtx 相同)。
 function makeScamCardCtx(opts) {
   const o = opts || {};
@@ -7277,9 +7309,9 @@ function makeScamCardCtx(opts) {
   return { storage, doc, runtime, controller, lang: o.lang || 'zh' };
 }
 
-// 節點子樹的文字串接(不加分隔符)。joinedText 以空白相隔,驗「完整片段有沒
+// 節點子樹的文字串接(不加分隔符)。joinedText 以空白相隔，驗「完整片段有沒
 // 有被切斷」時空白會混進斷言;片段被拆成「前段 / mark / 後段」三個文字節點
-// 時,只有零分隔的串接才還原得回原文。
+// 時，只有零分隔的串接才還原得回原文。
 function scamTextOf(node) {
   return walkNodes(node, [])
     .map((n) => n.textContent || '')
@@ -7291,15 +7323,26 @@ function firstByClass(root, cls) {
 function isInside(container, node) {
   return !!container && walkNodes(container, []).indexOf(node) !== -1;
 }
-// 某筆證據的片段節點(.scam-evidence-text),依文件序。
+// 某筆證據的片段節點(.scam-evidence-text)，依文件序。
 function evidenceTexts(row) {
   return findByClass(row, 'scam-evidence-text');
 }
-function evidencePostLinks(row) {
-  return findByClass(row, 'scam-evidence-post');
+// 主卡只露最新一筆證據;全部證據在「命中 N 篇」pill 開的對話框裡。
+// 回傳對話框的證據列容器，供逐筆斷言。
+function openScamHits(ctx, row) {
+  const pill = firstByClass(row, 'scam-hit-count');
+  assert.ok(pill, '前置:應有「命中 N 篇」pill');
+  assert.equal(pill.tag, 'button', '前置:N ≥ 2 時 pill 才可點');
+  pill.fire('click');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, '前置:證據對話框應開啟');
+  return ctx.doc.ids.scamHitsList;
+}
+// 證據貼文連結＝日期本身（比照 Threads：卡上的時間就是那篇的永久連結）。
+function evidenceDateLinks(row) {
+  return findByClass(row, 'scam-evidence-date');
 }
 // data-signal 在 stub 裡可能落在 dataset(直接設屬性)或 attrs(setAttribute),
-// 兩種寫法都合法,不綁實作風格(比照 scamAttrOf)。
+// 兩種寫法都合法，不綁實作風格(比照 scamAttrOf)。
 function signalOf(node) {
   if (node.dataset && typeof node.dataset.signal === 'string' && node.dataset.signal !== '') {
     return node.dataset.signal;
@@ -7313,8 +7356,8 @@ function signalOf(node) {
 test('證據卡文案:新增的 i18n 鍵 zh／en 都要備齊', () => {
   const expected = {
     opScamHitCount: ['命中 {n} 篇', '{n} hits'],
-    opScamLastHit: ['最近命中 {date}', 'Last hit {date}'],
-    opScamShowMore: ['顯示另外 {n} 筆', 'Show {n} more'],
+    // 標題列的貼文日期(可點，連到最新那篇證據貼文)。
+    opScamPostedAt: ['貼文 {date}', 'Posted {date}'],
     opScamSignalLink: ['連結', 'Link'],
     opScamSignalLine: ['LINE', 'LINE'],
     opScamSignalGroup: ['群組', 'Group'],
@@ -7326,41 +7369,48 @@ test('證據卡文案:新增的 i18n 鍵 zh／en 都要備齊', () => {
     assert.equal(i18n.t('en', key), expected[key][1], key + ' 的 en 文案');
   });
 
-  // 這三鍵的英文由實作定稿,只釘「鍵要存在且兩語不同於鍵名」——i18n.t 查無
-  // 鍵時會退回鍵名本身,退回就代表字典沒補。
-  ['opScamEvidencePost', 'opScamEvidenceThread', 'opScamSameText'].forEach((key) => {
+  // 【斷言翻轉】原本這裡還釘 opScamShowMore（details 摺疊區的 summary）、
+  // opScamLastHit（副標的「最近命中」）與 opScamSameText（同文異篇合併的
+  // 「出現在 N 篇」）。三者的 UI 在這一輪改版裡都沒了:摺疊區換成對話框、
+  // 副標整列撤掉、證據改為逐筆呈現不再合併。opScamLastHit 依 PM 指示留在
+  // 字典但不再有人用，不在此釘。
+  //
+  // 這兩鍵的英文由實作定稿，只釘「鍵要存在且兩語不同於鍵名」——i18n.t 查無
+  // 鍵時會退回鍵名本身，退回就代表字典沒補。
+  ['opScamEvidencePost', 'opScamEvidenceThread'].forEach((key) => {
     ['zh', 'en'].forEach((locale) => {
       assert.notEqual(i18n.t(locale, key), key, key + ' 的 ' + locale + ' 文案尚未進字典');
     });
   });
+  // 日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去哪)。
   assert.ok(i18n.t('zh', 'opScamEvidencePost').includes('證據貼文'), 'opScamEvidencePost 的 zh 文案為「證據貼文」');
   assert.ok(i18n.t('zh', 'opScamEvidenceThread').includes('整串'), 'opScamEvidenceThread 的 zh 文案為「整串」');
-  assert.equal(i18n.fmt('zh', 'opScamSameText', { n: 2 }), '出現在 2 篇', 'opScamSameText 的 zh 文案');
 });
 
-// ---- 卡頭:頭像、名稱連結、命中數、副標 ----
+// ---- 卡頭:名稱連結、日期、命中數 ----
 
-test('證據卡:左側 span.scam-avatar 取顯示名首字母大寫;沒有顯示名時取 handle 首字母', async () => {
+// 【斷言翻轉】原斷言為「每一列左側有首字母圓 span.scam-avatar」。名單不對外
+// 抓頭像(那會讓選項頁替每一列向 Threads 發一次請求)，首字母色塊本身也沒有
+// 辨識價值，使用者看過預覽後決定整個撤掉，標題列直接從顯示名開始。
+test('證據卡:不畫首字母圓——標題列直接從顯示名開始，整列不得出現 .scam-avatar', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
-  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  assert.ok(rowA, '前置:應畫出作者 A 那一列');
-  const avatarA = firstByClass(rowA, 'scam-avatar');
-  assert.ok(avatarA, '每一列左側都應有 span.scam-avatar');
-  assert.equal(avatarA.tag, 'span', '頭像是 span,不是圖片(名單不對外抓頭像)');
-  assert.equal(avatarA.textContent, 'E', 'displayName「Example Author」取首字母 E');
+  [SCAM_ID_A, SCAM_ID_B].forEach((id) => {
+    const row = scamRowById(ctx.doc, id);
+    assert.ok(row, '前置:應畫出作者 ' + id + ' 那一列');
+    assert.equal(findByClass(row, 'scam-avatar').length, 0, '不得再畫首字母圓');
+  });
 
-  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
-  assert.ok(rowB, '前置:應畫出作者 B 那一列');
-  assert.equal(
-    firstByClass(rowB, 'scam-avatar').textContent,
-    'U',
-    '沒有顯示名時取 handle「user.b」的首字母,且大寫'
+  // 列的第一個子節點是文字區，頭像撤掉後沒有別的東西擠在它前面。
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(
+    classListOf(rowA.children[0]).indexOf('scam-text') !== -1,
+    '列的第一個子節點應是 .scam-text'
   );
 });
 
-test('證據卡:標題列的 a.scam-name-link 連到作者頁,新分頁開啟且 rel 齊備,內含顯示名與 @handle', async () => {
+test('證據卡:標題列的 a.scam-name-link 連到作者頁，新分頁開啟且 rel 齊備，內含顯示名與 @handle', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
@@ -7387,6 +7437,27 @@ test('證據卡:標題列的 a.scam-name-link 連到作者頁,新分頁開啟且
   );
 });
 
+test('證據卡:handle 帶路徑／query／hash 字元時整段逐字編碼，不得拼出別的路徑', async () => {
+  // 名單裡的 handle 只過 sanitizeDisplayName(摺空白、截長)，字元集沒有收
+  // 斂——storage 是使用者可編輯、也可能被他處寫髒的地方。直接串進網址的話
+  // 「evil/../x?a=1#b」會被瀏覽器解析成另一個路徑加 query，連結點下去去的
+  // 不是那個作者的頁面。
+  const DIRTY = 'evil/../x?a=1#b';
+  const list = scamCardFixture();
+  list.entries[SCAM_ID_A].handle = DIRTY;
+  list.handleIndex = {};
+  const ctx = makeScamCardCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowA, '前置:髒 handle 不得讓整列畫不出來');
+  assert.equal(
+    scamAttrOf(firstByClass(rowA, 'scam-name-link'), 'href'),
+    'https://www.threads.com/@' + encodeURIComponent(DIRTY),
+    'handle 整段走 encodeURIComponent——拿掉它這條斷言必紅'
+  );
+});
+
 test('證據卡:標題列右側 span.scam-hit-count 顯示「命中 N 篇」,N 為證據筆數', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
@@ -7401,23 +7472,86 @@ test('證據卡:標題列右側 span.scam-hit-count 顯示「命中 N 篇」,N �
   assert.equal(firstByClass(rowB, 'scam-hit-count').textContent, '命中 1 篇', 'B 只有一筆證據');
 });
 
-test('證據卡:副標為「加入於 <日期> · 最近命中 <日期>」,最近命中取證據 at 的最大值', async () => {
+// 【斷言翻轉】原斷言為「副標 .scam-sub 是『加入於 <日期> · 最近命中 <日
+// 期>』」。副標整列撤掉，兩個日期併回標題列:
+//   左側 a.scam-posted「貼文 YYYY-MM-DD」——貼文發布時間(postedAt)，而且日
+//     期本身就是連結，連到最新那筆證據貼文(比照 Threads:卡上的時間就是那
+//     篇的永久連結)。
+//   右側 span.scam-added「加入於 YYYY-MM-DD」小字。
+// 「最近命中」不再顯示:使用者要判斷的是這篇招攬貼文什麼時候發的，掃到的時
+// 間只反映自己什麼時候剛好滑到那一頁。
+test('證據卡:標題列左側為可點的「貼文 <發布日期>」，右側為「加入於 <日期>」小字;不再畫 .scam-sub 也不顯示最近命中', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  const sub = firstByClass(rowA, 'scam-sub');
-  assert.ok(sub, '應有副標 .scam-sub');
-  const added = i18n.fmt('zh', 'opScamAddedOn', { d: scamDateOnly(EVC_ADDED_AT) });
-  const last = i18n.fmt('zh', 'opScamLastHit', { date: scamDateOnly(EVC_AT_1) });
-  assert.notEqual(scamDateOnly(EVC_ADDED_AT), scamDateOnly(EVC_AT_1), '前置:兩個日期必須不同才測得出來');
-  assert.equal(scamTextOf(sub), added + ' · ' + last, '副標以「 · 」相隔,加入於在前、最近命中在後');
-  assert.equal(last, '最近命中 ' + scamDateOnly(EVC_AT_1), 'zh 文案(opScamLastHit)');
+  assert.equal(findByClass(rowA, 'scam-sub').length, 0, '副標列已撤掉');
+
+  const posted = firstByClass(rowA, 'scam-posted');
+  assert.ok(posted, '標題列應有 .scam-posted');
+  assert.equal(posted.tag, 'a', '貼文日期本身就是連結');
+  assert.equal(
+    posted.textContent,
+    i18n.fmt('zh', 'opScamPostedAt', { date: scamDateOnly(EVC_POSTED_1) }),
+    '取最新那筆證據的 postedAt(貼文發布時間)，不是 at'
+  );
+  assert.equal(posted.textContent, '貼文 ' + scamDateOnly(EVC_POSTED_1), 'zh 文案');
+  assert.notEqual(
+    scamDateOnly(EVC_POSTED_1),
+    scamDateOnly(EVC_AT_1),
+    '前置:發布時間與掃到的時間必須不同日，才測得出取錯欄位'
+  );
+  assert.equal(scamAttrOf(posted, 'href'), EVC_ANCHOR_1, '連到最新那筆的錨點篇');
+  assert.equal(scamAttrOf(posted, 'target'), '_blank');
+  assert.equal(scamAttrOf(posted, 'rel'), 'noopener noreferrer');
+
+  const added = firstByClass(rowA, 'scam-added');
+  assert.ok(added, '標題列右側應有 .scam-added');
+  assert.equal(
+    added.textContent,
+    i18n.fmt('zh', 'opScamAddedOn', { d: scamDateOnly(EVC_ADDED_AT) }),
+    '加入於走既有的 opScamAddedOn'
+  );
+  assert.equal(added.textContent, '加入於 ' + scamDateOnly(EVC_ADDED_AT), 'zh 文案');
+
+  // 順序:名稱連結 → 貼文日期 → 加入於 → 命中數 pill，同一條標題列上。
+  const nameRow = firstByClass(rowA, 'scam-name-row');
+  assert.ok(nameRow, '前置:應有標題列 .scam-name-row');
+  const order = walkNodes(nameRow, []);
+  const at = (node) => order.indexOf(node);
+  assert.ok(at(firstByClass(nameRow, 'scam-name-link')) < at(posted), '貼文日期排在名稱連結之後');
+  assert.ok(at(posted) < at(added), '「加入於」排在貼文日期之後');
+  assert.ok(at(added) < at(firstByClass(nameRow, 'scam-hit-count')), '命中數 pill 排最右');
+
+  assert.ok(
+    !joinedText(rowA).includes('最近命中'),
+    '「最近命中」不得再出現在卡片上'
+  );
 });
 
-// ---- 證據列表:預設只露最新一筆 ----
+test('證據卡:舊證據沒有 postedAt 時，貼文日期退回 at(掃到的時間)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
 
-test('證據卡:預設只顯示最新一筆證據,其餘收進 details.scam-evidence-more,summary 為「顯示另外 N 筆」', async () => {
+  // 作者 B 是舊形狀證據，只有 postUrl/snippet/at。
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  const posted = firstByClass(rowB, 'scam-posted');
+  assert.ok(posted, '舊證據照樣畫得出貼文日期');
+  assert.equal(
+    posted.textContent,
+    '貼文 ' + scamDateOnly(SCAM_NOW - 5 * SCAM_DAY),
+    '缺 postedAt 時退回 at——有個日期比整欄空著好'
+  );
+  assert.equal(scamAttrOf(posted, 'href'), SCAM_URL_B1, '缺 anchorPostUrl 時退回 postUrl');
+});
+
+// ---- 證據列表:主卡只有最新一筆，全部證據在對話框裡 ----
+
+// 【斷言翻轉】原斷言為「第二筆以後收進 details.scam-evidence-more，summary
+// 為『顯示另外 N 筆』」。使用者看過預覽後改版:主卡只放最新一筆，不再掛摺
+// 疊區(一張卡上同時擺三段長片段仍然太重);全部證據改由可點的「命中 N 篇」
+// pill 開對話框呈現。
+test('證據卡:主卡恰一筆證據(最新那筆)，不畫 details 摺疊區', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
@@ -7425,69 +7559,206 @@ test('證據卡:預設只顯示最新一筆證據,其餘收進 details.scam-evid
   const wrap = firstByClass(rowA, 'scam-evidence');
   assert.ok(wrap, '證據區塊 .scam-evidence 應在');
 
-  const more = firstByClass(rowA, 'scam-evidence-more');
-  assert.ok(more, '第二筆以後應收進 .scam-evidence-more');
-  assert.equal(more.tag, 'details', '摺疊區用原生 <details>,不自刻開合狀態');
-
-  const summary = walkNodes(more, []).filter((n) => n.tag === 'summary')[0];
-  assert.ok(summary, '<details> 內應有 <summary>');
-  assert.equal(summary.textContent, i18n.fmt('zh', 'opScamShowMore', { n: 2 }), 'summary 文案');
-  assert.equal(summary.textContent, '顯示另外 2 筆', 'zh 文案');
+  assert.equal(
+    findByClass(rowA, 'scam-evidence-more').length,
+    0,
+    '不得再畫 details 摺疊區'
+  );
+  assert.equal(
+    walkNodes(rowA, []).filter((n) => n.tag === 'details' || n.tag === 'summary').length,
+    0,
+    '主卡上不得有任何 <details>／<summary>'
+  );
 
   const texts = evidenceTexts(rowA);
-  assert.equal(texts.length, 3, '三筆證據的片段都要畫出來(只是其中兩筆被摺起來)');
-  const visible = texts.filter((n) => !isInside(more, n));
-  assert.equal(visible.length, 1, '預設只露最新一筆');
-  assert.equal(
-    scamTextOf(visible[0]),
-    EVC_SNIPPET_FULL,
-    '露出來的是 at 最大那一筆(最新)的片段'
-  );
-  assert.equal(texts.filter((n) => isInside(more, n)).length, 2, '其餘兩筆在 details 內');
+  assert.equal(texts.length, 1, '主卡恰一筆證據');
+  assert.equal(scamTextOf(texts[0]), EVC_SNIPPET_FULL, '露出來的是 at 最大那一筆(最新)的片段');
+  assert.equal(evidenceDateLinks(rowA).length, 1, '主卡只畫那一筆的日期連結');
 });
 
-test('證據卡:只有一筆證據時不畫 details(沒有「另外 0 筆」這種東西)', async () => {
-  const ctx = makeScamCardCtx();
-  await initScamPage(ctx);
+// ---- 「命中 N 篇」pill 與證據對話框 ----
 
-  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
-  assert.equal(
-    findByClass(rowB, 'scam-evidence-more').length,
-    0,
-    '單筆證據不得畫出空的摺疊區'
-  );
-  assert.equal(evidenceTexts(rowB).length, 1, '單筆證據照樣畫一段片段');
-});
-
-// ---- 每筆證據的 meta 列 ----
-
-test('證據卡:每筆證據的 meta 列含日期、a.scam-evidence-post(href=anchorPostUrl)、a.scam-evidence-thread 與訊號 chips', async () => {
+test('證據卡:N ≥ 2 時「命中 N 篇」是可點的 button，點開對話框列出全部證據', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  const metas = findByClass(rowA, 'scam-evidence-meta');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '前置:對話框預設關著');
+
+  const list = openScamHits(ctx, rowA);
+
+  assert.equal(
+    ctx.doc.ids.scamHitsTitle.textContent,
+    'Example Author @example_author · ' + i18n.fmt('zh', 'opScamHitCount', { n: 3 }),
+    '對話框標題為「顯示名 @handle · 命中 N 篇」'
+  );
+  assert.equal(evidenceTexts(list).length, 3, '對話框列出全部三筆證據');
+  assert.equal(evidenceDateLinks(list).length, 3, '每筆各一條日期連結');
+  assert.deepEqual(
+    evidenceDateLinks(list).map((a) => scamAttrOf(a, 'href')),
+    [EVC_ANCHOR_1, EVC_ANCHOR_2, EVC_ANCHOR_3],
+    '依 at 降冪，每筆各自指向自己的錨點篇'
+  );
+  assert.deepEqual(
+    evidenceDateLinks(list).map((a) => a.textContent),
+    [EVC_POSTED_1, EVC_POSTED_2, EVC_POSTED_3].map(scamDateOnly),
+    '連結文字是各篇自己的貼文發布日期'
+  );
+  assert.equal(
+    scamTextOf(evidenceTexts(list)[0]),
+    EVC_SNIPPET_FULL,
+    '片段完整呈現，對話框不另外截斷'
+  );
+  assert.ok(
+    firstByClass(evidenceTexts(list)[0], 'scam-anchor'),
+    '對話框裡照樣有錨點高亮'
+  );
+});
+
+test('證據卡:主卡那筆的節點結構與對話框第一筆完全一致(同一個建構函式，不是兩套渲染)', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const cardItem = firstByClass(rowA, 'scam-evidence-item');
+  assert.ok(cardItem, '前置:主卡應有一筆 .scam-evidence-item');
+  const cardShape = walkNodes(cardItem, []).map((n) => n.tag + '.' + classListOf(n).join('.'));
+
+  const list = openScamHits(ctx, rowA);
+  const dialogItem = firstByClass(list, 'scam-evidence-item');
+  assert.ok(dialogItem, '對話框第一筆也是 .scam-evidence-item');
+  const dialogShape = walkNodes(dialogItem, []).map((n) => n.tag + '.' + classListOf(n).join('.'));
+
+  assert.deepEqual(
+    dialogShape,
+    cardShape,
+    '兩邊的標籤與 class 集合必須逐一相同——同一個 buildScamEvidenceItem 建的'
+  );
+});
+
+test('證據卡:只有一筆證據時「命中 1 篇」維持靜態 span，不可點也不開對話框', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowB = scamRowById(ctx.doc, SCAM_ID_B);
+  const pill = firstByClass(rowB, 'scam-hit-count');
+  assert.ok(pill, '前置:單筆作者照樣有 pill');
+  assert.equal(pill.textContent, '命中 1 篇', 'zh 文案');
+  assert.equal(pill.tag, 'span', '只有一筆時點開對話框看到的就是卡上那一筆，不給可點的假承諾');
+  assert.equal(evidenceTexts(rowB).length, 1, '主卡照樣畫那一筆');
+});
+
+test('證據卡:證據對話框可由 ✕、遮罩與 Esc 關閉，焦點回到 pill', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const pill = firstByClass(rowA, 'scam-hit-count');
+
+  // ✕ 關閉
+  openScamHits(ctx, rowA);
+  ctx.doc.ids.scamHitsClose.fire('click');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '✕ 應關閉對話框');
+  assert.equal(ctx.doc.activeElement, pill, '關閉後焦點回到開啟它的 pill');
+
+  // 點遮罩關閉(點 modal 內部不關)
+  openScamHits(ctx, rowA);
+  ctx.doc.ids.scamHitsOverlay.fire('click', { target: ctx.doc.ids.scamHitsList });
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, '點內容區不得關閉');
+  ctx.doc.ids.scamHitsOverlay.fire('click', { target: ctx.doc.ids.scamHitsOverlay });
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '點遮罩本身才關閉');
+
+  // Esc 關閉
+  openScamHits(ctx, rowA);
+  ctx.doc.fire('keydown', { key: 'Escape' });
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, 'Esc 應關閉對話框');
+});
+
+// ---- ⋯ 選單 ----
+
+test('證據卡:右上角是 ⋯ 選項鈕(#i-more)，選單只放「解除」;不再有 ⊖ 快捷鈕', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const menuBtn = firstByClass(rowA, 'scam-menu-btn');
+  assert.ok(menuBtn, '每一列右上角應有 button.scam-menu-btn');
+  assert.equal(menuBtn.tag, 'button');
+  assert.equal(scamAttrOf(menuBtn, 'aria-haspopup'), 'menu', 'aria-haspopup 應為 menu');
+  assert.equal(scamAttrOf(menuBtn, 'aria-expanded'), 'false', '預設收合');
+  assert.deepEqual(useHrefs(menuBtn), ['#i-more'], '圖示沿用紀錄卡的三點 #i-more');
+
+  const menu = firstByClass(rowA, 'scam-menu');
+  assert.ok(menu, '應有 .menu.scam-menu');
+  assert.equal(scamAttrOf(menu, 'role'), 'menu');
+  assert.equal(menu.hidden, true, '選單預設關著');
+  assert.ok(classListOf(menu).indexOf('menu') !== -1, '沿用既有 .menu 樣式');
+
+  menuBtn.fire('click');
+  assert.equal(menu.hidden, false, '點 ⋯ 應開選單');
+  assert.equal(scamAttrOf(menuBtn, 'aria-expanded'), 'true', '開啟時 aria-expanded 為 true');
+
+  const items = findByClass(menu, 'menu-item');
+  assert.equal(items.length, 1, '選單只放一項:解除');
+  assert.equal(items[0].dataset.act, 'remove');
+  assert.ok(classListOf(items[0]).indexOf('danger') !== -1, '解除是破壞性動作，走 danger 色');
+
+  // 舊的 ⊖ 快捷鈕已撤掉，解除只剩選單這一條路。
+  assert.equal(findByClass(rowA, 'scam-quick-btn').length, 0, '不得再畫 ⊖ 快捷鈕');
+});
+
+// 【斷言翻轉】原斷言為「證據區上方有 .scam-evidence-title 小標(opScamEvidence)」。
+// 卡片只剩一筆證據時，「證據」兩個字佔一整行卻不帶任何資訊，使用者看過預覽
+// 後決定拿掉。
+test('證據卡:證據區不再畫「證據」小標', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  [SCAM_ID_A, SCAM_ID_B].forEach((id) => {
+    const row = scamRowById(ctx.doc, id);
+    assert.equal(findByClass(row, 'scam-evidence-title').length, 0, '不得再畫證據小標');
+    assert.ok(
+      !joinedText(row).includes(i18n.t('zh', 'opScamEvidence')),
+      '「證據」小標文字不得出現在卡片上'
+    );
+  });
+});
+
+// ---- 每筆證據的 meta 列 ----
+
+// 【斷言翻轉】原斷言為「meta 列上有 a.scam-evidence-post，連結文字為
+// opScamEvidencePost(「證據貼文 ↗」)」。日期本身改成那篇的連結(比照
+// Threads:卡上的時間就是永久連結)，「證據貼文」四個字不再另外佔一段;該文
+// 案改當日期連結的 aria-label——連結文字只有一個日期，讀屏讀不出它連去哪。
+// 日期取的也改成 postedAt(貼文發布時間)，不是 at(掃到的時間)。
+test('證據卡:每筆證據的 meta 列以日期當連結(href=anchorPostUrl)、外加 a.scam-evidence-thread 與訊號 chips', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const metas = findByClass(openScamHits(ctx, rowA), 'scam-evidence-meta');
   assert.equal(metas.length, 3, '每筆證據各一條 meta 列');
 
   const first = metas[0];
-  assert.ok(
-    scamTextOf(first).includes(scamDateOnly(EVC_AT_1)),
-    'meta 列保留日期(YYYY-MM-DD)'
-  );
-
-  const postLink = firstByClass(first, 'scam-evidence-post');
-  assert.ok(postLink, 'meta 列應有 a.scam-evidence-post');
-  assert.equal(postLink.tag, 'a', '證據貼文必須是 <a>');
+  const postLink = firstByClass(first, 'scam-evidence-date');
+  assert.ok(postLink, 'meta 列應有 a.scam-evidence-date');
+  assert.equal(postLink.tag, 'a', '日期本身就是連結');
+  assert.equal(postLink.textContent, scamDateOnly(EVC_POSTED_1), '連結文字是貼文發布日期');
   assert.equal(
     scamAttrOf(postLink, 'href'),
     EVC_ANCHOR_1,
-    '證據貼文連到 anchorPostUrl——錨點篇才是使用者要看的那一篇'
+    '連到 anchorPostUrl——錨點篇才是使用者要看的那一篇'
   );
   assert.equal(scamAttrOf(postLink, 'target'), '_blank');
   assert.equal(scamAttrOf(postLink, 'rel'), 'noopener noreferrer');
+  const ariaLabel = scamAttrOf(postLink, 'aria-label');
   assert.ok(
-    postLink.textContent.includes(i18n.t('zh', 'opScamEvidencePost')),
-    '連結文字為 opScamEvidencePost'
+    ariaLabel.indexOf(i18n.t('zh', 'opScamEvidencePost')) !== -1,
+    '無障礙名稱走 opScamEvidencePost(連結文字只有一個日期，讀屏讀不出它連去哪)'
+  );
+  assert.ok(
+    ariaLabel.indexOf('tH0001') !== -1,
+    '無障礙名稱一併帶貼文代碼尾碼——同文異篇時三條連結的名稱不得長得一模一樣'
   );
 
   const threadLink = firstByClass(first, 'scam-evidence-thread');
@@ -7504,7 +7775,7 @@ test('證據卡:每筆證據的 meta 列含日期、a.scam-evidence-post(href=an
   assert.deepEqual(
     chips.map(signalOf),
     ['line', 'group'],
-    '訊號 chips 依 signals 逐一畫出,data-signal 帶原始值'
+    '訊號 chips 依 signals 逐一畫出，data-signal 帶原始值'
   );
   assert.deepEqual(
     chips.map((c) => c.textContent),
@@ -7523,7 +7794,7 @@ test('證據卡:threadUrl 等於證據貼文時不畫「整串」連結(同一�
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  assert.equal(findByClass(rowA, 'scam-evidence-post').length, 1, '證據貼文連結照畫');
+  assert.equal(findByClass(rowA, 'scam-evidence-date').length, 1, '日期連結照畫');
   assert.equal(
     findByClass(rowA, 'scam-evidence-thread').length,
     0,
@@ -7531,13 +7802,13 @@ test('證據卡:threadUrl 等於證據貼文時不畫「整串」連結(同一�
   );
 });
 
-test('證據卡:舊證據(只有 postUrl/snippet/at)退回以 postUrl 當證據貼文,不畫整串也不畫 chips', async () => {
+test('證據卡:舊證據(只有 postUrl/snippet/at)退回以 postUrl 當證據貼文，不畫整串也不畫 chips', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
   const rowB = scamRowById(ctx.doc, SCAM_ID_B);
-  const postLink = firstByClass(rowB, 'scam-evidence-post');
-  assert.ok(postLink, '舊證據照樣要有證據貼文連結');
+  const postLink = firstByClass(rowB, 'scam-evidence-date');
+  assert.ok(postLink, '舊證據照樣要有日期連結');
   assert.equal(scamAttrOf(postLink, 'href'), SCAM_URL_B1, '缺 anchorPostUrl 時退回 postUrl');
   assert.equal(findByClass(rowB, 'scam-evidence-thread').length, 0, '缺 threadUrl 就不畫整串');
   assert.equal(findByClass(rowB, 'scam-signal').length, 0, '缺 signals 就不畫 chips');
@@ -7548,13 +7819,13 @@ test('證據卡:舊證據(只有 postUrl/snippet/at)退回以 postUrl 當證據�
   );
 });
 
-test('證據卡:貼文代碼尾 6 碼保留在證據貼文連結的文字或 title 裡(同文異篇仍分得出各篇)', async () => {
+test('證據卡:貼文代碼尾 6 碼保留在日期連結的 title 裡(同文異篇仍分得出各篇)', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  const links = evidencePostLinks(rowA);
-  assert.equal(links.length, 3, '前置:三筆證據各一條證據貼文連結');
+  const links = evidenceDateLinks(openScamHits(ctx, rowA));
+  assert.equal(links.length, 3, '前置:三筆證據各一條日期連結');
 
   const tails = ['DxSyNtH0001', 'DxSyNtH0002', 'DxSyNtH0003'].map((code) => code.slice(-6));
   links.forEach((link, i) => {
@@ -7573,8 +7844,8 @@ test('證據卡:三筆證據全部都是 <a>,href 各自指向自己的錨點篇
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  const links = evidencePostLinks(rowA);
-  assert.equal(links.length, 3, '三筆證據都要有各自的證據貼文連結');
+  const links = evidenceDateLinks(openScamHits(ctx, rowA));
+  assert.equal(links.length, 3, '三筆證據都要有各自的日期連結');
   links.forEach((link, i) => {
     assert.equal(link.tag, 'a', '第 ' + (i + 1) + ' 筆證據必須渲染成 <a>');
     assert.notEqual(scamAttrOf(link, 'href'), '', '第 ' + (i + 1) + ' 筆證據的 href 不得為空');
@@ -7588,7 +7859,7 @@ test('證據卡:三筆證據全部都是 <a>,href 各自指向自己的錨點篇
 
 // ---- bug 1:片段被砍到 40 字 ----
 
-test('證據卡:片段完整不截斷——100 字的 snippet 全數出現在 p.scam-evidence-text,不補刪節號', async () => {
+test('證據卡:片段完整不截斷——100 字的 snippet 全數出現在 p.scam-evidence-text，不補刪節號', async () => {
   assert.equal(EVC_SNIPPET_FULL.length, 100, '前置:片段為 100 字(遠超舊版的 40 字截斷門檻)');
 
   const ctx = makeScamCardCtx();
@@ -7601,14 +7872,14 @@ test('證據卡:片段完整不截斷——100 字的 snippet 全數出現在 p.
   assert.equal(
     scamTextOf(text),
     EVC_SNIPPET_FULL,
-    '完整片段逐字畫出(儲存端已保證 ≤120 字,顯示端不再截斷)'
+    '完整片段逐字畫出(儲存端已保證 ≤120 字，顯示端不再截斷)'
   );
   assert.ok(!scamTextOf(text).includes('…'), '不得補刪節號');
 });
 
 // ---- 錨點高亮 ----
 
-test('證據卡:anchorMatch 在片段中出現時以 mark.scam-anchor 包住,三段文字合起來仍是完整片段', async () => {
+test('證據卡:anchorMatch 在片段中出現時以 mark.scam-anchor 包住，三段文字合起來仍是完整片段', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
@@ -7621,12 +7892,12 @@ test('證據卡:anchorMatch 在片段中出現時以 mark.scam-anchor 包住,三
   assert.equal(
     scamTextOf(text),
     EVC_SNIPPET_FULL,
-    '前段 + mark + 後段三段串起來必須等於原片段(indexOf 切三段,零 innerHTML)'
+    '前段 + mark + 後段三段串起來必須等於原片段(indexOf 切三段，零 innerHTML)'
   );
-  assert.ok(text.children.length >= 2, '片段被切成多個節點,不是整段塞成一串文字');
+  assert.ok(text.children.length >= 2, '片段被切成多個節點，不是整段塞成一串文字');
 });
 
-test('證據卡:沒有 anchorMatch 或片段裡找不到它時,片段以純文字呈現、不畫 mark', async () => {
+test('證據卡:沒有 anchorMatch 或片段裡找不到它時，片段以純文字呈現、不畫 mark', async () => {
   const list = scamCardFixture();
   list.entries[SCAM_ID_A].evidence = [
     evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { anchorMatch: undefined }),
@@ -7636,15 +7907,16 @@ test('證據卡:沒有 anchorMatch 或片段裡找不到它時,片段以純文�
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  const texts = evidenceTexts(rowA);
+  const dialog = openScamHits(ctx, rowA);
+  const texts = evidenceTexts(dialog);
   assert.equal(texts.length, 2, '前置:兩筆證據的片段都要畫出來');
-  assert.equal(findByClass(rowA, 'scam-anchor').length, 0, '缺 anchorMatch／對不上時一律不畫 mark');
+  assert.equal(findByClass(dialog, 'scam-anchor').length, 0, '缺 anchorMatch／對不上時一律不畫 mark');
   texts.forEach((node) => {
     assert.equal(scamTextOf(node), EVC_SNIPPET_FULL, '片段照樣完整呈現');
   });
 });
 
-test('證據卡:片段含 <b> 時逐字呈現(createElement/textContent,不得走 innerHTML)', async () => {
+test('證據卡:片段含 <b> 時逐字呈現(createElement/textContent，不得走 innerHTML)', async () => {
   const RAW = '招攬句 <b>加 LINE：ab12cd</b> 拉你進群組';
   const list = scamCardFixture();
   list.entries[SCAM_ID_A].evidence = [evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { snippet: RAW })];
@@ -7659,71 +7931,113 @@ test('證據卡:片段含 <b> 時逐字呈現(createElement/textContent,不得�
   );
 });
 
-// ---- 同文異篇合併 ----
+// ---- 同文異篇:逐筆呈現，不合併 ----
 
-test('證據卡:同一作者多筆證據片段完全相同時只畫一次片段,meta 列列出各篇連結並標示「出現在 N 篇」', async () => {
+// 【斷言翻轉】原斷言為「片段逐字相同的多筆併成一組，片段只畫一次並標示
+// 『出現在 N 篇』」。證據改由對話框逐筆列出(主卡那筆與對話框每一筆走同一
+// 個 buildScamEvidenceItem，不另寫第二套渲染)，合併邏輯連帶撤掉:一位作者
+// 最多三筆證據，在可捲動的對話框裡各自成列不會擁擠，而合併會讓「每筆一個
+// 節點」這條共用結構破例。opScamSameText 依 PM 指示留在字典但不再有人用。
+test('證據卡:片段逐字相同的多筆證據在對話框裡各自成列，不合併', async () => {
   const SAME = '加 LINE：ab12cd，我把你拉進群組一起聊，群裡不報明牌也不收費。';
   const list = scamCardFixture();
   list.entries[SCAM_ID_A].evidence = [
-    evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { snippet: SAME }),
-    evcEvidence(EVC_ANCHOR_2, EVC_AT_2, { snippet: SAME }),
-    evcEvidence(EVC_ANCHOR_3, EVC_AT_3, { snippet: '這一篇的文案不一樣：想進群的私訊我。' }),
+    evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { snippet: SAME, postedAt: EVC_POSTED_1 }),
+    evcEvidence(EVC_ANCHOR_2, EVC_AT_2, { snippet: SAME, postedAt: EVC_POSTED_2 }),
+    evcEvidence(EVC_ANCHOR_3, EVC_AT_3, {
+      snippet: '這一篇的文案不一樣：想進群的私訊我。',
+      postedAt: EVC_POSTED_3,
+    }),
   ];
   const ctx = makeScamCardCtx({ blocklist: list });
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  const texts = evidenceTexts(rowA);
-  assert.equal(texts.length, 2, '同文兩筆合成一組,加上另一篇不同文案共兩段片段');
-  assert.equal(scamTextOf(texts[0]), SAME, '合併後的片段只畫一次');
+  const dialog = openScamHits(ctx, rowA);
+  const texts = evidenceTexts(dialog);
+  assert.equal(texts.length, 3, '三筆證據各自成列，同文的兩筆不得被併成一段');
+  assert.equal(scamTextOf(texts[0]), SAME);
+  assert.equal(scamTextOf(texts[1]), SAME, '同文那兩筆各畫各的片段');
 
-  const links = evidencePostLinks(rowA);
-  assert.equal(links.length, 3, '合併的是片段,不是證據:三篇各自的連結都要留著');
+  const links = evidenceDateLinks(dialog);
+  assert.equal(links.length, 3, '三篇各自的連結都要留著');
   assert.deepEqual(
     links.map((a) => scamAttrOf(a, 'href')),
     [EVC_ANCHOR_1, EVC_ANCHOR_2, EVC_ANCHOR_3],
-    '同文的兩篇連結並列在同一條 meta 列上'
+    '每筆各自指向自己的錨點篇'
   );
-
-  assert.ok(
-    joinedText(rowA).includes(i18n.fmt('zh', 'opScamSameText', { n: 2 })),
-    '合併時要標示「出現在 2 篇」(opScamSameText),否則使用者以為只命中一次'
+  assert.deepEqual(
+    links.map((a) => a.textContent),
+    [EVC_POSTED_1, EVC_POSTED_2, EVC_POSTED_3].map(scamDateOnly),
+    '同文異篇靠各自的貼文日期與連結分辨，不必再標示「出現在 N 篇」'
   );
-  assert.ok(joinedText(rowA).includes('出現在 2 篇'), 'zh 文案');
 });
 
 // ---- en 文案 ----
 
-test('證據卡:langPref 為 en 時,命中數／最近命中／摺疊 summary／訊號 chip 全走英文', async () => {
+// 【斷言翻轉】原斷言包含副標的「Last hit …」與摺疊區 summary 的「Show 2
+// more」;兩者的 UI 都沒了，改釘標題列的 Posted／Added 與對話框標題。
+test('證據卡:langPref 為 en 時，命中數／貼文日期／加入於／訊號 chip 全走英文', async () => {
   const ctx = makeScamCardCtx({ lang: 'en' });
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
   assert.equal(firstByClass(rowA, 'scam-hit-count').textContent, '3 hits', 'opScamHitCount 的 en');
-  assert.ok(
-    scamTextOf(firstByClass(rowA, 'scam-sub')).includes('Last hit ' + scamDateOnly(EVC_AT_1)),
-    'opScamLastHit 的 en'
+  assert.equal(
+    firstByClass(rowA, 'scam-posted').textContent,
+    'Posted ' + scamDateOnly(EVC_POSTED_1),
+    'opScamPostedAt 的 en'
+  );
+  assert.equal(
+    firstByClass(rowA, 'scam-added').textContent,
+    i18n.fmt('en', 'opScamAddedOn', { d: scamDateOnly(EVC_ADDED_AT) }),
+    'opScamAddedOn 的 en'
   );
 
-  const more = firstByClass(rowA, 'scam-evidence-more');
-  assert.ok(more, '前置:三筆證據應有摺疊區');
-  const summary = walkNodes(more, []).filter((n) => n.tag === 'summary')[0];
-  assert.equal(summary.textContent, 'Show 2 more', 'opScamShowMore 的 en');
-
-  const chips = findByClass(firstByClass(rowA, 'scam-evidence-meta'), 'scam-signal');
+  const dialog = openScamHits(ctx, rowA);
+  assert.equal(
+    ctx.doc.ids.scamHitsTitle.textContent,
+    'Example Author @example_author · 3 hits',
+    '對話框標題的 en'
+  );
+  const chips = findByClass(firstByClass(dialog, 'scam-evidence-meta'), 'scam-signal');
   assert.deepEqual(chips.map((c) => c.textContent), ['LINE', 'Group'], '訊號 chip 的 en');
 });
 
 // ---- 版面樣式 ----
 
-test('證據卡:options.html 為新節點備妥樣式(頭像、訊號 chip、錨點高亮、摺疊區、片段)', () => {
+// 【斷言翻轉】原清單含 .scam-avatar 與 .scam-evidence-more;兩者都撤掉了，
+// 換成 .scam-posted／.scam-added／.scam-menu-btn 與對話框的捲動容器。
+test('證據卡:options.html 為新節點備妥樣式(標題列日期、命中數、⋯ 鈕、訊號 chip、錨點高亮、片段、對話框)', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
-  ['.scam-avatar', '.scam-name-link', '.scam-hit-count', '.scam-signal', '.scam-anchor', '.scam-evidence-more', '.scam-evidence-text'].forEach(
+  [
+    '.scam-name-link',
+    '.scam-posted',
+    '.scam-added',
+    '.scam-hit-count',
+    '.scam-menu-btn',
+    '.scam-signal',
+    '.scam-anchor',
+    '.scam-evidence-text',
+    '.scam-hits-list',
+  ].forEach(
     (selector) => {
       assert.ok(
         html.includes(selector),
         'options.html 應有 ' + selector + ' 的樣式規則(mark 不設樣式會吃到瀏覽器預設的螢光黃)'
       );
     }
+  );
+  assert.ok(
+    /\.scam-hits-list\s*\{[^}]*overflow\s*:\s*auto/.test(html),
+    '對話框的證據列容器必須可捲動——三筆完整片段疊起來輕易超過一個螢幕'
+  );
+  assert.ok(
+    /\.scam-hits-list\s*\{[^}]*max-height/.test(html),
+    '捲動容器要有 max-height，否則 overflow 不會生效'
+  );
+  assert.ok(
+    /id="scamHitsOverlay"/.test(html) && /id="scamHitsList"/.test(html),
+    'options.html 應備妥證據對話框的落點'
   );
 });
