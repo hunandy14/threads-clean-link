@@ -491,17 +491,18 @@
           '--tcl-warn-border:rgba(255,180,84,0.45);}',
           '@media (prefers-color-scheme: light){:root{--tcl-warn-fg:#8a4b00;',
           '--tcl-warn-bg:rgba(255,180,84,0.18);--tcl-warn-border:rgba(138,75,0,0.35);}}',
-          // 作者列那顆：落點那層是 overflow:hidden、高 21px，13px 字級配
-          // 1px 上下內距量到 20.04px，剛好放得下；與時間的間距由那一層自己
-          // 的 gap 給，外距因此歸零。
+          // 作者列那顆：落點那層是 overflow:hidden、原生高 21px，pill 高過
+          // 它就會反過來把整列撐高。13px × 1.3 行高 ＝ 16.9，加上下各 1px
+          // 內距與 1px 框線共 20.9px，壓在 21px 之內（量到 20.04px，列高維
+          // 持 21.00）。與時間的間距由那一層自己的 gap 給，外距因此歸零。
           '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:0;',
-          'padding:1px 8px;border-radius:9999px;font-size:13px;line-height:1.4;font-weight:600;',
+          'padding:1px 8px;border-radius:9999px;font-size:13px;line-height:1.3;font-weight:600;',
           'vertical-align:middle;white-space:nowrap;',
           'color:var(--tcl-warn-fg,#ffb454);background:var(--tcl-warn-bg,rgba(255,180,84,0.12));',
           'border:1px solid var(--tcl-warn-border,rgba(255,180,84,0.45));}',
-          // 退回路徑的區塊級 tag 自成一行，不受作者列的高度限制，維持原本的
-          // 尺寸與上下間距。
-          'div.' + TAG_CLASS + '{margin:4px 0 8px;padding:4px 10px;}',
+          // 退回路徑的區塊級 tag 自成一行，不受作者列的高度限制，內距與行高
+          // 都覆寫回原本的尺寸，上下間距照舊。
+          'div.' + TAG_CLASS + '{margin:4px 0 8px;padding:4px 10px;line-height:1.4;}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
