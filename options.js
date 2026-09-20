@@ -33,15 +33,6 @@
   // 投資詐騙黑名單(v1 計畫 §5):純本機、只有 background 寫，本頁讀＋監聽
   // onChanged。
   var SCAM_BLOCKLIST_KEY = 'scamBlocklist';
-  // 證據訊號 → i18n 鍵。白名單外的值一律不畫 chip(證據來自 storage，可能是
-  // 舊版或被他處寫髒的資料)。
-  var SCAM_SIGNAL_KEYS = {
-    link: 'opScamSignalLink',
-    line: 'opScamSignalLine',
-    group: 'opScamSignalGroup',
-    join: 'opScamSignalJoin',
-    pitch: 'opScamSignalPitch',
-  };
   // 帳號同步狀態(docs/cloud-sync.md 4.2)。options 只讀 userId 判斷登入
   // 態、只寫 clearedAt(清除全部的全域水位線)，其餘欄位由同步引擎維護。
   var SYNC_ACCOUNT_KEY = 'syncState';
@@ -2441,35 +2432,6 @@
       return tf('opRelDaysShort', { n: Math.floor(h / 24) });
     }
 
-    // 一筆證據本文下方的 meta 列:「整串 ↗」連結與訊號 chips。日期不在這裡
-    // ——它跟著帳號走在作者列上(比照 Threads 的貼文排法)。兩者都沒有時回
-    // null，呼叫端整列不畫，免得留一條空的細間距。
-    function buildScamEvidenceMeta(evidence) {
-      var meta = document.createElement('div');
-      meta.className = 'scam-evidence-meta';
-
-      // 整串連結只在串頭與證據貼文不是同一篇時才畫——同一篇不必給兩條路。
-      var href = scamEvidencePostUrl(evidence);
-      var threadUrl = nonEmptyString(evidence.threadUrl);
-      if (threadUrl !== null && threadUrl !== href) {
-        meta.appendChild(
-          buildScamExternalLink('scam-evidence-thread', threadUrl, tt('opScamEvidenceThread'))
-        );
-      }
-
-      var signals = Array.isArray(evidence.signals) ? evidence.signals : [];
-      signals.forEach(function (signal) {
-        var key = SCAM_SIGNAL_KEYS[signal];
-        if (!key) return;
-        var chip = document.createElement('span');
-        chip.className = 'scam-signal';
-        chip.dataset.signal = signal;
-        chip.textContent = tt(key);
-        meta.appendChild(chip);
-      });
-      return meta.children.length > 0 ? meta : null;
-    }
-
     // 作者列的名字塊:顯示名 ＋ @handle，整塊連到作者頁。沒有 displayName 時
     // 只留 @handle 一段，不用 handle 充當顯示名再重複一次(§14)。handle 缺席
     // 時沒有作者頁可連，退回不可點的 <span>，名字照樣顯示。
@@ -2560,8 +2522,14 @@
       return el;
     }
 
-    // 一筆證據 ＝ 一則貼文的樣子:作者列(名字 ＋ 時間連結)、本文、本文下方的
-    // 「整串 ↗」與訊號 chips。
+    // 一筆證據 ＝ 一則貼文的樣子，就兩列:作者列(名字、時間連結、標記 pill)
+    // 與本文。
+    //
+    // 本文下方原本還有一條 meta 列(「整串 ↗」連結與訊號 chips)，兩者都拿掉
+    // 了:證據貼文連的就是錨點那一篇，回串頭是 Threads 自己的事，多一條連結
+    // 只是把兩個去處擺在一起讓人猶豫;訊號 chips 則是判定的內部分類，使用者
+    // 看片段本身就知道為什麼被標記。threadUrl 與 signals 照存不動(它們是證
+    // 據的一部分，也還有除錯與日後調參的價值)，只是不畫。
     //
     // 主卡上的那一筆與「命中 N 篇」對話框裡的每一筆都走這支，兩邊的結構與
     // class 因此逐一相同——證據長什麼樣只有一個定義，改版時不會有一邊被漏掉。
@@ -2570,8 +2538,6 @@
       block.className = 'scam-evidence-item';
       block.appendChild(buildScamEvidenceHead(entry, evidence));
       block.appendChild(buildScamEvidenceText(evidence));
-      var meta = buildScamEvidenceMeta(evidence);
-      if (meta) block.appendChild(meta);
       return block;
     }
 
