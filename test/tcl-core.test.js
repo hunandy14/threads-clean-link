@@ -1459,13 +1459,13 @@ test.describe('詐騙偵測:makeBlocklistEntry 與 mergeBlocklistEvidence', () =
 //
 // 首版實作讓五類誤報過關:「信賴：」開頭的正常句被當錨點、體育/職場語境的
 // 「內線」被當投資話術、「免費教學／不收費」單詞就足以命中、全形帳號漏抓、
-// 位元組預算用 JS 字元數而非真位元組(中文 snippet 實際佔 3 倍),外加
+// 位元組預算用 JS 字元數而非真位元組(中文 snippet 實際佔 3 倍)，外加
 // `__proto__` 鍵與 displayName 換行兩個衛生問題。此區塊逐條釘死。
 
 test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
   // 「賴」前面接 信/依/無/仰 時整個詞是「信賴/依賴/無賴/仰賴」，後面的冒號
-  // 是正常標點,不是 LINE 帳號引導。這類句子常同時帶投資詞(討論股票時說
-  // 「我信賴某某分析」),光靠 PITCH 二次確認擋不住,錨點本身必須排除。
+  // 是正常標點，不是 LINE 帳號引導。這類句子常同時帶投資詞(討論股票時說
+  // 「我信賴某某分析」)，光靠 PITCH 二次確認擋不住，錨點本身必須排除。
   test('detectScamPitch:信賴／依賴／無賴／仰賴 後接冒號不是錨點', () => {
     const negatives = [
       '我信賴：Apple 的品質，這檔是飆股',
@@ -1485,7 +1485,7 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
 
   // 【PM 裁決】話術表回歸規格原文:刪除「內線」。內線在中文是體育(內線傳
   // 球)、職場(內線消息)、電話分機的日常詞，投資語境的辨識力不足以單獨撐起
-  // PITCH,留著只會把球評與八卦貼文一起掃進黑名單。表定保留:黑馬股／報明牌
+  // PITCH，留著只會把球評與八卦貼文一起掃進黑名單。表定保留:黑馬股／報明牌
   // ／代操／帶單／飆股／穩賺／獲利分享。
   test('detectScamPitch:內線不在話術表內', () => {
     const text = '他的內線很強，禁區沒人擋得住，加入LINE看直播';
@@ -1515,7 +1515,7 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     assert.equal(short.pitchMatches.includes('明牌'), true);
   });
 
-  // 「免費教學」「不收費」在補習、餐飲、健身、公益貼文裡是中性詞,辨識力遠
+  // 「免費教學」「不收費」在補習、餐飲、健身、公益貼文裡是中性詞，辨識力遠
   // 低於「黑馬股」「代操」。降權成弱詞:只有它們時不足以命中，必須再有一個
   // 其他投資詞才算 PITCH 成立。
   test('detectScamPitch:免費教學／不收費是弱詞，單獨不足以命中', () => {
@@ -1544,8 +1544,8 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
     assert.equal(C.detectScamPitch('賴：ｅｘ 有黑馬股').hit, false, '全形也要滿 3 位');
   });
 
-  // 2MB 軟預算是 chrome.storage 的位元組配額,不是 JS 字元數。snippet 幾乎必
-  // 然是中文(詐騙話術本體),UTF-8 每字 3 bytes——用 String#length 當預算會讓
+  // 2MB 軟預算是 chrome.storage 的位元組配額，不是 JS 字元數。snippet 幾乎必
+  // 然是中文(詐騙話術本體)，UTF-8 每字 3 bytes——用 String#length 當預算會讓
   // 實際寫入量膨脹到三倍而撞配額。
   test('capScamBlocklist:2MB 軟預算算的是 UTF-8 真位元組', () => {
     const entries = {};
@@ -1573,7 +1573,7 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
   // storage 讀回的 JSON 可能含 `__proto__` 鍵(手工編輯的匯入檔、或他處寫入
   // 的髒資料)。`out.entries['__proto__'] = entry` 不會建出自有鍵，而是把
   // entries 的原型整個換掉:Object.keys 看不到它，handleIndex 卻留下指向它的
-  // 孤兒鍵,之後的查表會拿到一筆撈不出來的條目。
+  // 孤兒鍵，之後的查表會拿到一筆撈不出來的條目。
   test('normalizeScamBlocklist:__proto__ 鍵拒收，原型不受污染', () => {
     const raw = JSON.parse(
       '{"entries":{"__proto__":{"handle":"evil","displayName":"x","evidence":[],"addedAt":1,"polluted":"yes"},' +

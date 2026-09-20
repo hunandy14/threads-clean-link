@@ -828,8 +828,8 @@
   // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
   //
   // SOFT_BUDGET 2MB 是本機配額 10MB(Chrome 114 起;更早版本為 5MB)的約
-  // 20%;滿證據時實際可容約 1500-2500 位，由位元組預算先觸發淘汰，
-  // MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。manifest 的
+  // 20%;滿證據時實際可容約 900-1,600 位(含證據五欄)，由位元組預算先觸發淘
+  // 汰，MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。manifest 的
   // minimum_chrome_version 是 103，落在 5MB 配額的那幾版佔比約 40%,仍在安
   // 全水位。
   var SCAM_LIMITS = {
@@ -1156,10 +1156,10 @@
   // 單筆證據正規化:postUrl 需通過讀取側網址白名單(擋掉外部網域混入證據
   // 卡)、at 需為有限數字，snippet 剝除控制字元。任一不符回 null。
   //
-  // anchorPostUrl(含錨點那一篇)、threadUrl(串頭)、anchorMatch(錨點本體)與
-  // signals(踩到哪幾類訊號)四欄皆為選填:形狀不對時**只剝該欄、整筆照留**
-  // ——它們是加值資訊，不是證據成立的必要條件。缺欄時輸出不帶該鍵(不補 null
-  // 也不補空字串):選項頁靠「鍵在不在」決定要不要畫那一行。
+  // anchorPostUrl(含錨點那一篇)、threadUrl(串頭)、anchorMatch(錨點本體)、
+  // signals(訊號類別)與 postedAt(發布時間)五欄皆為選填:形狀不對時**只剝該
+  // 欄、整筆照留**——它們是加值資訊，不是證據成立的必要條件。缺欄時輸出不
+  // 帶該鍵(不補 null 也不補空字串):選項頁靠「鍵在不在」決定要不要畫那一行。
   function normalizeScamEvidence(raw) {
     if (!isPlainObject(raw)) return null;
     var postUrl = normalizePostUrl(raw.postUrl);
@@ -1219,9 +1219,10 @@
   }
 
   // storage 讀回的黑名單正規化成 { version, entries, handleIndex, allowlist }
-  // 四欄形狀。未知欄位不留存，handleIndex 一律由 entries 重建——存下來的反查
-  // 表可能指向已淘汰的條目。entries/allowlist 的鍵不是 userId 形狀的整筆剝
-  // 除;handleIndex 只由留下來的條目寫入，因此不會殘留指向被剝除鍵的孤兒項。
+  // 這四把鍵的形狀。未知欄位不留存，handleIndex 一律由 entries 重建——存下
+  // 來的反查表可能指向已淘汰的條目。entries/allowlist 的鍵不是 userId 形狀
+  // 的整筆剝除;handleIndex 只由留下來的條目寫入，因此不會殘留指向被剝除鍵的
+  // 孤兒項。
   function normalizeScamBlocklist(raw) {
     var out = { version: 1, entries: {}, handleIndex: {}, allowlist: {} };
     if (!isPlainObject(raw)) return out;
