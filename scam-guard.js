@@ -491,10 +491,13 @@
           '--tcl-warn-border:rgba(255,180,84,0.45);}',
           '@media (prefers-color-scheme: light){:root{--tcl-warn-fg:#8a4b00;',
           '--tcl-warn-bg:rgba(255,180,84,0.18);--tcl-warn-border:rgba(138,75,0,0.35);}}',
-          '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:4px 0 8px;',
-          'padding:4px 10px;border-radius:9999px;font-size:13px;line-height:1.4;font-weight:600;',
+          '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:0 0 0 8px;',
+          'padding:2px 8px;border-radius:9999px;font-size:12px;line-height:1.3;font-weight:600;',
+          'vertical-align:middle;white-space:nowrap;',
           'color:var(--tcl-warn-fg,#ffb454);background:var(--tcl-warn-bg,rgba(255,180,84,0.12));',
           'border:1px solid var(--tcl-warn-border,rgba(255,180,84,0.45));}',
+          // 退回路徑的區塊級 tag 自成一行，留回互動列上方原本的上下間距。
+          'div.' + TAG_CLASS + '{margin:4px 0 8px;}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
@@ -644,9 +647,30 @@
         return index === null ? null : rows[index];
       }
 
-      // ---- 在貼文卡的互動列「上方」插一顆警示 tag。文案一律以 textContent
-      // 寫入（頁面上的文字不經 innerHTML）。找不到互動列時退為掛在容器末
-      // 端，至少讓使用者看得到警示。冪等：容器內已有 tag 就不再插。
+      // ---- 取本卡作者列上的時間連結：容器內每一顆 <time> 往上找最近的
+      // <a>，要求這個 <a> 屬於本容器（擋掉引用卡那顆內層時間），且 href 的
+      // post code 與本卡 permalink 相同（擋掉轉發標頭那種指向別篇的時
+      // 間）。實機的作者名與時間連結同屬一個 flex row，因此這個 <a> 之後就
+      // 是作者列上的落點。找不到回傳 null。----
+      function findAuthorRowAnchor(container) {
+        var permalink = readContainerPermalink(container);
+        if (!permalink) return null;
+        var times = container.querySelectorAll('time');
+        for (var i = 0; i < times.length; i++) {
+          var anchor = times[i].closest ? times[i].closest('a') : null;
+          if (!anchor) continue;
+          if (anchor.closest && anchor.closest(CONTAINER_SELECTOR) !== container) continue;
+          var match = POST_PATH_PATTERN.exec(anchor.getAttribute('href') || '');
+          if (match && match[2] === permalink.code) return anchor;
+        }
+        return null;
+      }
+
+      // ---- 在貼文卡掛一顆警示 tag。落點優先取作者列的時間連結右邊（inline
+      // 的 <span>，與作者名、時間同一行）；作者列取不到就退回互動列「上方」
+      // 的區塊級 <div>，連互動列都找不到才掛在容器末端，至少讓使用者看得到
+      // 警示。文案一律以 textContent 寫入（頁面上的文字不經 innerHTML）。冪
+      // 等：容器內已有 tag 就不再插。
       //
       // titleKey 決定滑鼠提示要說哪一句：詳情頁掃描用預設的 scamTagTooltip
       // （這串貼文疑似詐騙），河道查表傳 scamBlockedByList（這個帳號在你的黑
@@ -656,11 +680,21 @@
         try {
           if (container.querySelector && container.querySelector('.' + TAG_CLASS)) return;
           injectStyle();
-          var tag = document.createElement('div');
+          var anchor = findAuthorRowAnchor(container);
+          var tag = document.createElement(anchor ? 'span' : 'div');
           tag.className = TAG_CLASS;
           tag.setAttribute('role', 'note');
           tag.setAttribute('title', t(titleKey || 'scamTagTooltip'));
           tag.textContent = t('scamTagLabel');
+
+          if (anchor) {
+            if (typeof anchor.insertAdjacentElement === 'function') {
+              anchor.insertAdjacentElement('afterend', tag);
+            } else if (anchor.parentNode) {
+              anchor.parentNode.insertBefore(tag, anchor.nextSibling);
+            }
+            return;
+          }
 
           var row = findActionRow(container);
           if (row && row.parentNode) {
