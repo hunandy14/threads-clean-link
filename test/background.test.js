@@ -5897,3 +5897,71 @@ test('L4 scam.hit:錨點篇不同時照樣各記一筆，新欄位逐筆保留',
     '證據依 at 降冪，且每一筆各自帶著自己的 anchorPostUrl'
   );
 });
+
+// ============================================================
+// §14 scam.hit：postedAt（貼文發布時間）
+//
+// 與另外四個新欄位同一條規則：缺席通過（舊版 content script 相容），有帶就
+// 驗形狀——必須是有限數字，否則 bad_request。通過就一路寫進 evidence[0]。
+// ============================================================
+
+const SCAM_POSTED_AT = Date.parse('2026-09-18T10:00:00.000Z');
+
+test('L4 scam.hit:postedAt 為有限數字時通過驗證並落盤，與 at 各記各的', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich({ postedAt: SCAM_POSTED_AT }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '帶 postedAt 的合法命中必須受理');
+  const evidence = scamEntry(bg).evidence[0];
+  assert.equal(evidence.postedAt, SCAM_POSTED_AT, 'postedAt 要落盤（證據卡上的貼文日期）');
+  assert.equal(evidence.at, SCAM_AT, 'at（掃到的時間）照舊，兩者不得互相取代');
+});
+
+test('L4 scam.hit:postedAt 缺席照常受理，且不得補出這一欄', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich({ postedAt: undefined }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '缺 postedAt 不得被擋下');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(scamEntry(bg).evidence[0], 'postedAt'),
+    false,
+    '缺席就不補鍵'
+  );
+});
+
+test('L4 scam.hit:postedAt 不是有限數字一律回 bad_request 且不寫', async () => {
+  // null 不在此列：四個新欄位一律把 null 當「沒帶」（見「缺席通過」那支），
+  // postedAt 沿用同一條規則，不另立一套。
+  for (const bad of ['2026-09-18T10:00:00.000Z', NaN, Infinity, -Infinity, {}, [], true]) {
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const res = await bg.send(scamHitRich({ postedAt: bad }), SCAM_TAB_SENDER);
+    await settle(300);
+
+    const label = 'postedAt=' + JSON.stringify(String(bad));
+    assert.deepEqual(deep(res.response), { ok: false, code: 'bad_request' }, label + ' 應回 bad_request');
+    assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, label + ' 不得寫入 scamBlocklist');
+  }
+});
+
+test('L4 scam.hit:第二筆證據帶著自己的 postedAt，不共用第一筆的', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHitRich({ postedAt: SCAM_POSTED_AT }), SCAM_TAB_SENDER);
+  await settle(400);
+  const second = SCAM_POSTED_AT + 3 * 86400000;
+  await bg.send(
+    scamHitRich({ anchorPostUrl: SCAM_POST_URL_3, at: SCAM_AT + 60000, postedAt: second }),
+    SCAM_TAB_SENDER
+  );
+  await settle(400);
+
+  assert.deepEqual(
+    scamEntry(bg).evidence.map((item) => item.postedAt),
+    [second, SCAM_POSTED_AT],
+    '證據依 at 降冪，每一筆各自帶著自己的貼文發布時間'
+  );
+});
