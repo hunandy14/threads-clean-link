@@ -1173,6 +1173,26 @@
   }
   .scam-menu-btn:hover { background: var(--plane); color: var(--ink-1); }
   .scam-menu { min-width: 140px; }
+  /* 卡頭標題右邊的資訊鈕:尺寸與標題文字對齊，平時灰、hover 才強調。
+     margin-right:auto 讓它緊貼標題，右側的計數 hint 照舊推到最右
+     (.card-head 是 justify-content:space-between)。 */
+  .scam-info-btn {
+    appearance: none; border: none; background: none; padding: 0;
+    margin-right: auto; display: inline-flex; align-items: center;
+    color: var(--ink-3); cursor: pointer;
+  }
+  .scam-info-btn .icon { width: 15px; height: 15px; }
+  .scam-info-btn:hover { color: var(--accent); }
+  /* 說明視窗的五段條列。 */
+  .scam-info-list {
+    margin: 12px 0 0; padding-left: 22px;
+    display: flex; flex-direction: column; gap: 12px;
+    max-height: 70vh; overflow: auto;
+    font-size: 13px; line-height: 1.6; color: var(--ink-2);
+  }
+  .scam-info-list li::marker { color: var(--ink-3); font-weight: 650; }
+  /* 每段的開頭句:斷句本身就是重點，粗體讓人掃得動。 */
+  .scam-info-lead { font-weight: 650; color: var(--ink-1); }
   /* 證據對話框的列表:三筆完整片段疊起來輕易超過一個螢幕，容器自己捲。 */
   .scam-hits-list {
     display: flex; flex-direction: column; gap: 14px;
@@ -1286,6 +1306,7 @@
     <symbol id="i-scissors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></symbol>
     <symbol id="i-mouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4.1 12 6"/><path d="m5.1 8-2.9-.8"/><path d="m6 12-1.9 2"/><path d="M7.2 2.2 8 5.1"/><path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
     <symbol id="i-shield-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
     <symbol id="i-circle-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
@@ -1611,6 +1632,9 @@
     <section class="card scam-blocklist">
       <div class="card-head">
         <h2 data-i18n="opScamListTitle">警示名單</h2>
+        <button class="scam-info-btn" id="scamInfoBtn" type="button" data-i18n-aria="opScamInfoTitle" data-i18n-title="opScamInfoTitle" aria-label="這個功能怎麼運作" title="這個功能怎麼運作" aria-haspopup="dialog">
+          <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
+        </button>
         <span class="hint" id="scamCount"></span>
       </div>
       <div class="scam-list" id="scamList"></div>
@@ -1691,6 +1715,17 @@
     <button class="detail-close" id="scamHitsClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <h3 id="scamHitsTitle"></h3>
     <div class="scam-hits-list" id="scamHitsList"></div>
+  </div>
+</div>
+
+<!-- 警示名單卡的「這個功能怎麼運作」說明視窗:五段條列，全部由 options.js
+     以 textContent 寫入(文案走 i18n，不在 HTML 裡寫死)。外框沿用裝置／證據
+     對話框那一組 overlay/modal 樣式。 -->
+<div class="overlay" id="scamInfoOverlay" hidden>
+  <div class="modal modal-detail modal-scam-info" role="dialog" aria-modal="true" aria-labelledby="scamInfoTitle">
+    <button class="detail-close" id="scamInfoClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+    <h3 id="scamInfoTitle" data-i18n="opScamInfoTitle">這個功能怎麼運作</h3>
+    <ol class="scam-info-list" id="scamInfoList"></ol>
   </div>
 </div>
 

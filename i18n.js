@@ -309,6 +309,20 @@
       opScamEmpty: '警示名單目前沒有作者',
       // 「已解除」小節:列出 allowlist，可一鍵復原回警示名單。
       opScamAllowlistTitle: '已解除',
+      // 卡頭資訊鈕開的「這個功能怎麼運作」說明視窗:五段條列，每段是「粗體
+      // 開頭句 ＋ 說明」。講清楚掃描時機、資料落在哪、以及判定會誤判——這
+      // 是對真人帳號的負面標記，使用者有權知道它憑什麼下判斷。
+      opScamInfoTitle: '這個功能怎麼運作',
+      opScamInfo1:
+        '只在你點進貼文時掃描。|打開一則貼文的詳情頁，擴充會在本機讀整串自回覆的文字，找「引導加 LINE 或群組」的字句（例如 LINE：xxx、賴：xxx、加我、拉你進群）。不會主動去爬河道。',
+      opScamInfo2:
+        '命中就掛標記並記下作者。|貼文作者列會出現「LINE 群組引導」標記，作者的數字 ID 會加入這台裝置的警示名單，並保存那一篇的片段當證據。用 ID 記，對方改帳號名也認得。',
+      opScamInfo3:
+        '河道只查表不掃文。|之後在河道看到名單裡的作者，他的貼文會直接掛標記，不用點進去。',
+      opScamInfo4:
+        '資料只在這台裝置。|名單與證據存在本機，不上傳、不同步、不與他人共享。頁面沒帶作者 ID 時，會對同一篇貼文發一次不帶登入的請求補查，24 小時內同一篇只發一次。',
+      opScamInfo5:
+        '判定是規則比對，可能誤判。|遇到誤判按「⋯ → 解除」，該作者不會再被自動加入；在「已解除」可以復原。標記只是提醒，請自行判斷。',
       opScamRestore: '復原',
       opScamRestoreFailed: '復原失敗，請稍後再試',
     },
@@ -524,6 +538,17 @@
       opScamRemoveFailed: 'Remove failed. Please try again later.',
       opScamEmpty: 'Warning list is empty',
       opScamAllowlistTitle: 'Removed',
+      opScamInfoTitle: 'How this works',
+      opScamInfo1:
+        'It only scans when you open a post.|When you open a post page, the extension reads the whole self-reply thread locally and looks for lines that funnel you to LINE or a group (for example LINE: xxx, 賴: xxx, add me, I will pull you into the group). It never crawls your feed on its own.',
+      opScamInfo2:
+        'A hit gets a badge, and the author is recorded.|A “LINE group funnel” badge appears on the post author row, the author numeric ID is added to this device local warning list, and the matching snippet is kept as evidence. Recording by ID means a rename does not shake it off.',
+      opScamInfo3:
+        'In the feed it only checks the list.|When an author already on the list shows up in your feed, their posts get the badge right away, with no scanning and no need to open them.',
+      opScamInfo4:
+        'The data stays on this device.|The list and its evidence live in local storage only: never uploaded, never synced, never shared. If a page does not carry the author ID, one signed-out request is made for that same post to fill it in, at most once per post per 24 hours.',
+      opScamInfo5:
+        'It is rule matching, so it can be wrong.|If a call looks wrong, use “⋯ → Remove”; that author is never added automatically again, and you can undo it under “Removed”. A badge is a heads-up, not a verdict — judge for yourself.',
       opScamRestore: 'Undo',
       opScamRestoreFailed: 'Undo failed. Please try again later.',
     },
