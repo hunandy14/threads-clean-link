@@ -505,8 +505,8 @@
         scamTagTooltip:
           'This thread nudges readers to add a LINE contact or join a group, a pattern common in investment pitches. Use your own judgment and avoid sharing personal details.',
         scamBlockedByList:
-          'This account has posted threads that funnel readers to LINE. It is on your local flagged list.',
-        scamFirstHitToast: 'Added this account to your local flagged list. Manage it in Settings.',
+          'This account has posted threads that funnel readers to LINE. It is on your local blocklist.',
+        scamFirstHitToast: 'Added this account to your local blocklist. Manage it in Settings.',
       };
 
       function t(key) {

@@ -1077,7 +1077,7 @@
     }
     // 目前疊在最上層、開著的對話框(決定 Tab trap 的作用範圍):時間軸與
     // 刪除確認會疊在詳細視窗之上，匯入是獨立頂層框，優先序由上而下。
-    // 標記名單的證據對話框排在刪除確認之後——它自己不疊在誰之上，但從它裡面
+    // 黑名單的證據對話框排在刪除確認之後——它自己不疊在誰之上，但從它裡面
     // 按解除會開出確認框，那時確認框要接手 trap。
     function topmostOverlayId() {
       var order = [
@@ -2648,10 +2648,30 @@
     // 列右上角的 ⋯ 選項鈕與它的選單。選單目前只有「解除」一項(破壞性動作，
     // 走 danger 色與既有的二次確認);圖示與 .menu/.menu-item 樣式沿用紀錄卡
     // 那一套。
+    // 列右上角:命中篇數與 ⋯ 選項鈕。兩者一起排在列的右緣，與作者列同一條水
+    // 平線(.scam-row 是 align-items:flex-start)。
+    //
+    // 命中篇數刻意不放進 buildScamPostItem:那支是「一筆證據」的定義，主卡與
+    // 對話框共用，而篇數講的是整位作者，對話框裡逐筆重複一次毫無意義。
     function buildScamActions(item) {
       var entry = item.entry;
       var actions = document.createElement('div');
       actions.className = 'scam-actions menu-wrap';
+
+      // 兩筆以上才畫——只有一筆時對話框裡看到的就是卡上那一筆，一顆點了沒變
+      // 化的按鈕只會讓人以為壞了。
+      if (entry.evidence.length > 1) {
+        var hitCount = document.createElement('button');
+        hitCount.type = 'button';
+        hitCount.className = 'scam-hit-count';
+        hitCount.setAttribute('aria-haspopup', 'dialog');
+        hitCount.textContent = tf('opScamHitCount', { n: entry.evidence.length });
+        hitCount.addEventListener('click', function () {
+          closeScamMenu();
+          openScamHits(entry, hitCount);
+        });
+        actions.appendChild(hitCount);
+      }
 
       var menu = document.createElement('div');
       menu.className = 'menu scam-menu';
@@ -2724,25 +2744,6 @@
         evidenceWrap.appendChild(head);
       }
       textWrap.appendChild(evidenceWrap);
-
-      // 本文下方的小字:命中篇數，點下去開對話框看全部。只有一筆時整行不畫
-      // ——對話框裡看到的就是卡上那一筆，多一行字與一顆點了沒變化的按鈕只會
-      // 讓卡片更吵。
-      if (entry.evidence.length > 1) {
-        var foot = document.createElement('div');
-        foot.className = 'scam-foot';
-        var hitCount = document.createElement('button');
-        hitCount.type = 'button';
-        hitCount.className = 'scam-hit-count';
-        hitCount.setAttribute('aria-haspopup', 'dialog');
-        hitCount.textContent = tf('opScamHitCount', { n: entry.evidence.length });
-        hitCount.addEventListener('click', function () {
-          closeScamMenu();
-          openScamHits(entry, hitCount);
-        });
-        foot.appendChild(hitCount);
-        textWrap.appendChild(foot);
-      }
       row.appendChild(textWrap);
 
       row.appendChild(buildScamActions(item));
@@ -2833,7 +2834,7 @@
 
     // 證據對話框與列上 ⋯ 選單的關閉路徑。Esc 與「點外面關掉」都自己登記一條
     // document 監聽，不併進紀錄卡那組集中式 Esc 鏈:那條鏈是按對話框疊放層級
-    // 由上而下試的，而標記名單卡與紀錄卡的對話框互不疊放，硬插進去只會讓兩
+    // 由上而下試的，而黑名單卡與紀錄卡的對話框互不疊放，硬插進去只會讓兩
     // 邊的層級假設互相牽動。
     function bindScamDialogs() {
       on('scamHitsClose', 'click', closeScamHits);

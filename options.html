@@ -1100,7 +1100,7 @@
   }
   .device-empty .icon { width: 26px; height: 26px; }
 
-  /* ---- 標記名單卡 ----
+  /* ---- 黑名單卡 ----
      列的骨架與互動語彙沿用裝置列(.device-row):列高、分隔線、右側 ghost
      圖示鈕的浮現規則一致，只有證據連結區是本卡獨有。 */
   /* 與下一張卡的間距比照 .duo 的 12px。 */
@@ -1129,12 +1129,11 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
   }
   .scam-handle { font-size: 12.5px; color: var(--ink-3); }
-  /* 本文下方的小字列:目前只放「命中 N 篇」。 */
-  .scam-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  /* 命中篇數:純文字小字鈕(不是 pill)，點下去開證據對話框。 */
+  /* 命中篇數:純文字小字鈕(不是 pill)，點下去開證據對話框。與 ⋯ 鈕同在
+     .scam-actions 裡，一起靠在列的右緣、與作者列同一條水平線。 */
   .scam-hit-count {
     appearance: none; border: none; background: none; padding: 0;
-    font: inherit; font-size: 11px; color: var(--ink-3);
+    font: inherit; font-size: 11px; color: var(--ink-3); white-space: nowrap;
     cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
   }
   .scam-hit-count:hover { color: var(--accent); }
@@ -1179,8 +1178,10 @@
     background: var(--accent-soft); color: inherit;
     border-radius: 3px; padding: 0 2px;
   }
-  /* 列右上角的 ⋯ 選項鈕。.scam-actions 同時是 .menu-wrap(選單靠它定位)。 */
-  .scam-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  /* 列右上角的「命中 N 篇」與 ⋯ 選項鈕。.scam-actions 同時是 .menu-wrap
+     (選單靠它定位);.scam-row 是 align-items:flex-start，這一塊因此與作者
+     列對齊在同一條水平線上。 */
+  .scam-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .scam-menu-btn {
     appearance: none; border: none; background: transparent; color: var(--ink-3); width: 28px; height: 28px;
     border-radius: 8px; display: grid; place-items: center; cursor: pointer;
@@ -1526,14 +1527,14 @@
             </span>
             <input type="checkbox" id="saveHistory" class="switch" />
           </label>
-          <!-- LINE 群組引導標記的總開關。純本機功能，值存 chrome.storage.local，
+          <!-- LINE 群組引導黑名單的總開關。純本機功能，值存 chrome.storage.local，
                不跟著帳號跨裝置同步，也不鏡像到 popup(見 options.js 的
                LOCAL_SETTING_IDS)。 -->
           <label class="setting-row" for="scamGuardEnabled">
             <span class="txt">
-              <span class="name" data-i18n="opScamGuardName">LINE 群組引導標記</span>
+              <span class="name" data-i18n="opScamGuardName">LINE 群組引導黑名單</span>
               <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文並標記作者；名單只存在這台裝置，不上雲。</div>
-              <!-- 名單本體搬到標記分頁，設定卡只留這條同頁錨點。原生 <a
+              <!-- 名單本體搬到黑名單分頁，設定卡只留這條同頁錨點。原生 <a
                    href="#flags"> 改 hash 後由 hashchange 接手切分頁，不需另外
                    攔截 click;錨點是 interactive content，點它不會連帶觸發外層
                    label 的開關切換。 -->
@@ -1615,16 +1616,16 @@
     </section>
   </section>
 
-  <!-- 標記分頁:標記名單卡(名單 ＋ 已解除)。 -->
+  <!-- 黑名單分頁:黑名單卡(名單 ＋ 已解除)。 -->
   <section role="tabpanel" data-panel="flags" hidden>
-    <!-- 標記名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
+    <!-- 黑名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
          不進 syncState。名單列、證據連結與「已解除」小節都由 options.js 逐一
          createElement 產生——displayName 與證據片段是他人貼文帶進來的字串，一律
          走 textContent，不得 innerHTML。寫入端只有 background，本頁讀 storage
          ＋監聽 onChanged，解除/復原經 runtime 訊息請 background 代寫。 -->
     <section class="card scam-blocklist">
       <div class="card-head">
-        <h2 data-i18n="opScamListTitle">標記名單</h2>
+        <h2 data-i18n="opScamListTitle">黑名單</h2>
         <span class="hint" id="scamCount"></span>
       </div>
       <div class="scam-list" id="scamList"></div>
@@ -1697,7 +1698,7 @@
   </div>
 </div>
 
-<!-- 標記名單的「命中 N 篇」證據對話框:主卡只放最新一筆，全部證據在這裡逐筆
+<!-- 黑名單的「命中 N 篇」證據對話框:主卡只放最新一筆，全部證據在這裡逐筆
      列出。外框沿用裝置對話框那一組 overlay/modal 樣式;內容由 options.js 的
      renderScamHits 填。 -->
 <div class="overlay" id="scamHitsOverlay" hidden>
