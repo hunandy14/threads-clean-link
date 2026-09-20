@@ -1178,6 +1178,9 @@
     if (anchorMatch !== undefined) out.anchorMatch = anchorMatch;
     var signals = normalizeScamSignals(raw.signals);
     if (signals !== undefined) out.signals = signals;
+    // postedAt 是貼文發布時間(at 是掃到的時間，兩者語意不同)。非有限數字整
+    // 欄剝除——補 0 會在證據卡上畫成 1970。
+    if (typeof raw.postedAt === 'number' && isFinite(raw.postedAt)) out.postedAt = raw.postedAt;
     return out;
   }
 
@@ -1386,7 +1389,10 @@
         if (typeof item.anchorPostUrl === 'string') out.anchorPostUrl = item.anchorPostUrl;
         if (typeof item.threadUrl === 'string') out.threadUrl = item.threadUrl;
         if (typeof item.anchorMatch === 'string') out.anchorMatch = item.anchorMatch;
-        if (Array.isArray(item.signals)) out.signals = item.signals;
+        // signals 複製一份:裁切的輸出會被寫回 storage 並在呼叫端之間流轉，
+        // 與輸入共用同一個陣列參照等於把可變狀態一起帶走。
+        if (Array.isArray(item.signals)) out.signals = item.signals.slice();
+        if (typeof item.postedAt === 'number' && isFinite(item.postedAt)) out.postedAt = item.postedAt;
         return out;
       });
   }
@@ -1412,6 +1418,7 @@
           threadUrl: raw.threadUrl,
           anchorMatch: raw.anchorMatch,
           signals: raw.signals,
+          postedAt: raw.postedAt,
         },
       ],
       addedAt: raw.at,
