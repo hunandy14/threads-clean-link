@@ -4331,7 +4331,14 @@ test('L4 scam.hit:合法命中建立條目——handle／displayName／evidence�
   assert.equal(entry.displayName, SCAM_DISPLAY_NAME);
   assert.equal(entry.addedAt, SCAM_AT, 'addedAt 取這次命中的 at');
   assert.equal(entry.source, 'auto', '掃描寫入的來源標記（TCLCore.normalizeBlocklistEntry 只認 auto／manual）');
-  assert.deepEqual(entry.evidence, [{ postUrl: SCAM_POST_URL, snippet: SCAM_SNIPPET, at: SCAM_AT }]);
+  // 【斷言翻轉】原斷言為「證據只有 postUrl／snippet／at 三欄」。scamHit() 的
+  // 預設 payload 本來就帶 anchorMatch（改版前就有這個欄位，只是舊
+  // validateScamHit 不落盤）；證據結構補強後「有帶就驗形狀、通過就落盤」，
+  // 這筆證據跟著多一欄。四欄皆缺席時仍維持三欄形狀，由
+  // 「L4 scam.hit:新欄位一律可缺席……」那支釘住。
+  assert.deepEqual(entry.evidence, [
+    { postUrl: SCAM_POST_URL, snippet: SCAM_SNIPPET, at: SCAM_AT, anchorMatch: '賴：ex01abc' },
+  ]);
 
   const list = scamList(bg);
   assert.equal(list.version, 1);
