@@ -198,6 +198,42 @@
     return null;
   }
 
+  // 取本容器的發布時間（毫秒），取不到回傳 null。
+  //
+  // 只認「屬於本卡 permalink 的那顆 <time>」：判準與掛 tag 用的
+  // findAuthorRowAnchor 相同——time 的 closest('a') 沒有跨出本容器，且該
+  // <a> 的 href 的 code 等於本卡 code。轉發標頭之類的區塊會在同一個容器裡
+  // 掛上指向**別篇**的 <time>，不比對 code 就會把別篇的時間記成本篇的。
+  //
+  // datetime 解析失敗（缺屬性、格式不是 Date.parse 認得的）一律回 null：證
+  // 據卡上補 0 會畫成 1970，比整欄不畫更糟。
+  //
+  // 找到相符的那一顆就早退（解析失敗也不再往後找），依據的是
+  // readContainerPermalink 的不變量：code 取自本容器**文件序第一個**
+  // `/post/` 連結，也就是作者列時間那一顆，一張卡不會有第二顆指向同一篇的
+  // 時間連結。這個前提若被改掉（例如 permalink 改成別的取法），這裡的早退
+  // 要跟著改成「繼續往後找下一顆」。
+  function readContainerPostedAt(container, code) {
+    var times;
+    try {
+      times = container.querySelectorAll('time');
+    } catch (e) {
+      return null;
+    }
+    for (var i = 0; i < times.length; i++) {
+      var anchor = times[i].closest ? times[i].closest('a') : null;
+      if (!anchor) continue;
+      if (anchor.closest && anchor.closest(CONTAINER_SELECTOR) !== container) continue;
+      var match = POST_PATH_PATTERN.exec(anchor.getAttribute('href') || '');
+      if (!match || match[2] !== code) continue;
+      var raw = times[i].getAttribute('datetime');
+      if (typeof raw !== 'string' || raw === '') return null;
+      var ms = Date.parse(raw);
+      return isFinite(ms) ? ms : null;
+    }
+    return null;
+  }
+
   // 取容器內的本文：收集所有葉 [dir="auto"] 節點（本身不再包含其他
   // [dir="auto"] 者），逐段以 post-icon 的 classifyExcerptCandidate 決定收
   // 下（push）、跳過（skip）或就此打住（stop），再以 \n 串接。
@@ -310,12 +346,16 @@
         var body = readContainerBody(container, wanted);
         var stripped = stripPositionBadge(body);
         var sane = isSaneBadge(stripped, expectedTotal);
-        items.push({
+        var item = {
           code: permalink.code,
           // 徽章不可信時連帶不剝——被誤認的那段是本文的一部分。
           text: sane ? stripped.text : body,
           position: sane ? stripped.position : items.length + 1,
-        });
+        };
+        // 解析不出發布時間就不帶這一欄(不補 0):0 會在證據卡上畫成 1970。
+        var postedAt = readContainerPostedAt(container, permalink.code);
+        if (postedAt !== null) item.postedAt = postedAt;
+        items.push(item);
       }
     } catch (e) {
       return [];
@@ -336,6 +376,29 @@
         return item && typeof item.text === 'string' ? item.text : '';
       })
       .join('\n\n');
+  }
+
+  // 錨點落在整串的哪一篇，回傳 items 的索引;定位不出來時回 0(串頭)。
+  //
+  // anchorMatch 是 detectScamPitch 從「剝過控制字元的全文」切出來的一段，
+  // 全文是各篇 text 以空行串接而成，因此逐篇剝控制字元後找子字串就定得出
+  // 篇。刻意不逐篇重跑 detectScamPitch:判定是整串一次的事，逐篇重跑會讓判
+  // 定次數隨串長膨脹，也可能在單篇不足以成立(命中來自跨篇的訊號組合)時整個
+  // 定不到。錨點橫跨兩篇時沒有任何一篇含得下它，退回串頭。
+  function findAnchorIndex(items, anchorMatch, strip) {
+    if (!Array.isArray(items) || typeof anchorMatch !== 'string' || anchorMatch.length === 0) return 0;
+    for (var i = 0; i < items.length; i++) {
+      var text = items[i] && typeof items[i].text === 'string' ? items[i].text : '';
+      var clean = typeof strip === 'function' ? strip(text) : text;
+      if (clean.indexOf(anchorMatch) !== -1) return i;
+    }
+    return 0;
+  }
+
+  // 某一篇的永久連結:origin ＋ /@handle/post/code。origin 取不到時退成相對
+  // 路徑(與 postUrl 同一套組法)，由 background 的網址白名單擋下。
+  function threadPostUrl(origin, handle, code) {
+    return (origin || '') + '/@' + handle + '/post/' + code;
   }
 
   // ============================================================
@@ -442,8 +505,8 @@
         scamTagTooltip:
           'This thread nudges readers to add a LINE contact or join a group, a pattern common in investment pitches. Use your own judgment and avoid sharing personal details.',
         scamBlockedByList:
-          'This account has posted threads that funnel readers to LINE. It is on your local flagged list.',
-        scamFirstHitToast: 'Added this account to your local flagged list. Manage it in Settings.',
+          'This account has posted threads that funnel readers to LINE. It is on your local warning list.',
+        scamFirstHitToast: 'Added this account to your local warning list. Manage it in Settings.',
       };
 
       function t(key) {
@@ -905,6 +968,20 @@
         claimedMainCode = items[0].code;
         claimedMainContainer = containerOf(own, items[0].code);
 
+        var origin = (root.location && root.location.origin) || '';
+        // 三個網址各有各的語意：postUrl 是使用者當時開的那一頁、
+        // anchorPostUrl 是含錨點那一篇（招攬串的錨點幾乎都落在末篇）、
+        // threadUrl 是串頭。選項頁的證據連結要帶使用者去看得到那句話的地
+        // 方，光有 postUrl 做不到。
+        var anchorItem = items[findAnchorIndex(items, detection.anchorMatch, core.stripControlChars)];
+        // 錨點本體送出前先裁到上限：連結型錨點（lin.ee／linktr.ee／line.me
+        // 深連結）的帳號段沒有長度上限，超長時 background 會整筆判
+        // bad_request，連帶讓一次真的命中寫不進黑名單。裁在送出端，驗證端
+        // 才守得住「有帶就驗形狀」那條線。
+        var anchorMax = core.SCAM_ANCHOR_MATCH_MAX || 40;
+        var anchorMatch =
+          typeof detection.anchorMatch === 'string' ? detection.anchorMatch.slice(0, anchorMax) : '';
+
         var payload = {
           type: 'scam.hit',
           // 比對主鍵是數字 user id；SSR 取不到時送 null，由 background 走匿
@@ -913,12 +990,20 @@
           handle: handle,
           displayName:
             ssrRoot && typeof ssrRoot.displayName === 'string' ? ssrRoot.displayName : '',
-          postUrl: ((root.location && root.location.origin) || '') + pathInfo.path,
+          postUrl: origin + pathInfo.path,
+          anchorPostUrl: threadPostUrl(origin, handle, anchorItem.code),
+          threadUrl: threadPostUrl(origin, handle, items[0].code),
           snippet: detection.snippet,
-          anchorMatch: detection.anchorMatch,
+          anchorMatch: anchorMatch,
           pitchMatches: detection.pitchMatches,
+          signals: detection.signals,
           at: Date.now(),
         };
+        // 錨點篇的發布時間。取不到就整欄不帶——background 對這一欄的規則是
+        // 「缺席通過」，選項頁缺席時退回 at。
+        if (typeof anchorItem.postedAt === 'number' && isFinite(anchorItem.postedAt)) {
+          payload.postedAt = anchorItem.postedAt;
+        }
 
         sendHit(payload, function (response) {
           // 這一輪已經作廢就整個收手：往返期間本文被改寫、SPA 換到別篇都會

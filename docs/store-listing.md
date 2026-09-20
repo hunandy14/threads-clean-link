@@ -52,7 +52,7 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 • 貼文互動列新增「複製原始連結」按鈕:在 Threads 每篇貼文的互動列(分享按鈕旁)多一顆鏈節圖示，點一下就把該貼文的乾淨網址複製到剪貼簿——不含追蹤參數、也不是短碼。外觀比照原生按鈕(顏色自動跟隨、hover 提示採原生 tooltip)，文字支援中英文並跟隨介面語言設定。
 
-【LINE 群組引導標記】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的招攬串文(判準是加 LINE 錨點＋投資話術詞同時出現)，命中就在貼文上掛一枚標記，並把該作者記進標記名單，之後在首頁時間軸上再遇到同一位作者也會標記。標記名單可在「紀錄與設定」頁管理(附證據連結、可解除，解除後不再自動標記)，只存在你這台裝置、不會上傳，也不與其他使用者共享;不想用可以用總開關整個關掉。
+【LINE 群組引導警示】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的招攬串文(判準是加 LINE 錨點＋投資話術詞同時出現)，命中就在貼文上掛一枚標記，並把該作者記進警示名單，之後在首頁時間軸上再遇到同一位作者也會標記。警示名單可在「紀錄與設定」頁管理(附證據連結、可解除，解除後不再自動標記)，只存在你這台裝置、不會上傳，也不與其他使用者共享;不想用可以用總開關整個關掉。
 
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
@@ -205,7 +205,7 @@ Host permissions are limited to these two Threads domains and used for exactly t
 **繁中對照:**
 ```
 host permissions 限定在這兩個 Threads 網域，只用於三件事:
-①背景 service worker 對 Threads 網址(分享短連結，或 LINE 群組引導標記備援時的貼文永久連結)發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
+①背景 service worker 對 Threads 網址(分享短連結，或 LINE 群組引導警示備援時的貼文永久連結)發出一次不帶 cookie 的匿名 GET 請求(credentials: 'omit')，跟隨轉址讀出最終網址——效果等同 Threads 記錄一次匿名點擊，不會關聯到使用者身分。
 ②content script 只注入這兩個網域的頁面，攔截網站自己呼叫的 navigator.clipboard.writeText()/write()，在追蹤參數或分享短碼進入剪貼簿前先行剪除或解析。這個 content script 不會讀取剪貼簿裡原本的內容，也不會在其他任何網站上執行或傳送資料。
 ③同一支 content script 也會在使用者開啟的貼文詳情頁上執行本機 LINE 群組引導判定:只在本機讀取該頁自己的公開貼文內文，決定要不要掛上標記。判定結果與一段 120 字的證據片段只寫入 chrome.storage.local，不對外傳輸。當頁面本身沒有帶出作者的數字識別碼時，背景 service worker 會對同一篇貼文的永久連結額外發出一次不帶 cookie 的匿名 GET(credentials: 'omit')來取得該識別碼，同一篇貼文 24 小時內至多一次，並受全域請求限流約束;功能總開關關閉時完全不發。
 ```
@@ -262,13 +262,13 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Health information | 不勾 | 無關 |
 | Financial and payment information | 不勾 | 無關 |
 | Authentication information | **勾選** | 僅在使用者主動點擊「使用 Google 帳號登入」後才會取得(Google OAuth 身分權杖)，唯一用途是向開發者自營後端建立/維持雲端同步的登入工作階段(App functionality)。不用於廣告或分析，不轉讓、不出售給第三方，不取得或儲存使用者的 Google 密碼。<br>Obtained only after the user actively clicks "Sign in with Google" (a Google OAuth identity token); its sole purpose is establishing/maintaining the cloud-sync login session with the developer's own backend (App functionality). Not used for ads or analytics, not shared or sold to third parties; the user's Google password is never obtained or stored. |
-| Personal communications | 不勾 | 不讀取剪貼簿既有內容;LINE 群組引導標記讀取的是使用者自己開啟的**公開貼文內文**，不是收件匣、私訊或任何私人通訊，且只在本機判定、不傳輸 |
+| Personal communications | 不勾 | 不讀取剪貼簿既有內容;LINE 群組引導警示讀取的是使用者自己開啟的**公開貼文內文**，不是收件匣、私訊或任何私人通訊，且只在本機判定、不傳輸 |
 | Location | 不勾 | 不存取地理位置 |
-| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;送出的請求對象一律是使用者自己觸發的那一條 Threads 連結本身(還原/複製為手動觸發;LINE 群組引導標記的作者識別碼備援請求由使用者開啟貼文頁自動觸發，對象仍只限使用者當下正在看的那一篇貼文)，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
+| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;送出的請求對象一律是使用者自己觸發的那一條 Threads 連結本身(還原/複製為手動觸發;LINE 群組引導警示的作者識別碼備援請求由使用者開啟貼文頁自動觸發，對象仍只限使用者當下正在看的那一篇貼文)，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
 | User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。登入後另同步一組隨機裝置識別碼與可自訂的裝置名稱，用於標示紀錄來源裝置。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方。<br>Occurs only after sign-in: syncs the cleaning-history records the user's own actions generate (post URL, removed tracking parameters, post author and summary, cleaning timestamp), solely to keep that user's own cleaning history consistent across devices, including the companion mobile app (App functionality). Signing in also syncs a randomly generated device identifier and a user-editable device name, used to label which device a record came from. Not used to analyze aggregate user behavior, not used for ads, not shared or sold to third parties. |
-| Website content | 不勾 | 連結淨化的 content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫。LINE 群組引導標記會讀取使用者當下開啟的貼文內文做判定，但讀取與留存都只發生在這台裝置上(命中時只留一段 120 字的證據片段與貼文網址，寫入 `chrome.storage.local`)，不傳輸給開發者或任何第三方——依 CWS 定義，未傳輸即不構成蒐集 |
+| Website content | 不勾 | 連結淨化的 content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫。LINE 群組引導警示會讀取使用者當下開啟的貼文內文做判定，但讀取與留存都只發生在這台裝置上(命中時只留一段 120 字的證據片段與貼文網址，寫入 `chrome.storage.local`)，不傳輸給開發者或任何第三方——依 CWS 定義，未傳輸即不構成蒐集 |
 
-**LINE 群組引導標記(0.8.0)對本表的影響**:無須新增任何勾選項，也無須改動既有勾選。該功能的偵測全在使用者自己的瀏覽器完成:它會讀取使用者當下主動開啟的那一頁貼文內文，命中時留下作者資料與一段證據片段——**讀取與留存都只在本機(`chrome.storage.local`；備援請求的節流表寫 `chrome.storage.session`，瀏覽器關閉即清)，不傳輸給開發者或第三方，依 CWS 定義不構成蒐集**(與「淨化紀錄」同一道理，見上表 Web history 一列)，因此 Website content 與 Personal communications 維持不勾。
+**LINE 群組引導警示(0.8.0)對本表的影響**:無須新增任何勾選項，也無須改動既有勾選。該功能的偵測全在使用者自己的瀏覽器完成:它會讀取使用者當下主動開啟的那一頁貼文內文，命中時留下作者資料與一段證據片段——**讀取與留存都只在本機(`chrome.storage.local`；備援請求的節流表寫 `chrome.storage.session`，瀏覽器關閉即清)，不傳輸給開發者或第三方，依 CWS 定義不構成蒐集**(與「淨化紀錄」同一道理，見上表 Web history 一列)，因此 Website content 與 Personal communications 維持不勾。
 
 少數情況下(貼文頁本身沒帶作者識別碼)，會對**使用者當下正在看的同一篇貼文**發一次匿名請求取得該識別碼:不帶 cookie 與登入憑證、同一篇 24 小時內只發一次、資料不經過也不回傳給開發者，總開關關閉即完全不發。這與上表 Web history 一列既有的敘述是同一型態——請求對象就是使用者自己觸發的那一條 Threads 連結本身，因此該列維持不勾。
 
