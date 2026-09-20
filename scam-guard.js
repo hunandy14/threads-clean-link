@@ -198,6 +198,36 @@
     return null;
   }
 
+  // 取本容器的發布時間（毫秒），取不到回傳 null。
+  //
+  // 只認「屬於本卡 permalink 的那顆 <time>」：判準與掛 tag 用的
+  // findAuthorRowAnchor 相同——time 的 closest('a') 沒有跨出本容器，且該
+  // <a> 的 href 的 code 等於本卡 code。轉發標頭之類的區塊會在同一個容器裡
+  // 掛上指向**別篇**的 <time>，不比對 code 就會把別篇的時間記成本篇的。
+  //
+  // datetime 解析失敗（缺屬性、格式不是 Date.parse 認得的）一律回 null：證
+  // 據卡上補 0 會畫成 1970，比整欄不畫更糟。
+  function readContainerPostedAt(container, code) {
+    var times;
+    try {
+      times = container.querySelectorAll('time');
+    } catch (e) {
+      return null;
+    }
+    for (var i = 0; i < times.length; i++) {
+      var anchor = times[i].closest ? times[i].closest('a') : null;
+      if (!anchor) continue;
+      if (anchor.closest && anchor.closest(CONTAINER_SELECTOR) !== container) continue;
+      var match = POST_PATH_PATTERN.exec(anchor.getAttribute('href') || '');
+      if (!match || match[2] !== code) continue;
+      var raw = times[i].getAttribute('datetime');
+      if (typeof raw !== 'string' || raw === '') return null;
+      var ms = Date.parse(raw);
+      return isFinite(ms) ? ms : null;
+    }
+    return null;
+  }
+
   // 取容器內的本文：收集所有葉 [dir="auto"] 節點（本身不再包含其他
   // [dir="auto"] 者），逐段以 post-icon 的 classifyExcerptCandidate 決定收
   // 下（push）、跳過（skip）或就此打住（stop），再以 \n 串接。
@@ -310,12 +340,16 @@
         var body = readContainerBody(container, wanted);
         var stripped = stripPositionBadge(body);
         var sane = isSaneBadge(stripped, expectedTotal);
-        items.push({
+        var item = {
           code: permalink.code,
           // 徽章不可信時連帶不剝——被誤認的那段是本文的一部分。
           text: sane ? stripped.text : body,
           position: sane ? stripped.position : items.length + 1,
-        });
+        };
+        // 解析不出發布時間就不帶這一欄(不補 0):0 會在證據卡上畫成 1970。
+        var postedAt = readContainerPostedAt(container, permalink.code);
+        if (postedAt !== null) item.postedAt = postedAt;
+        items.push(item);
       }
     } catch (e) {
       return [];
@@ -959,6 +993,11 @@
           signals: detection.signals,
           at: Date.now(),
         };
+        // 錨點篇的發布時間。取不到就整欄不帶——background 對這一欄的規則是
+        // 「缺席通過」，選項頁缺席時退回 at。
+        if (typeof anchorItem.postedAt === 'number' && isFinite(anchorItem.postedAt)) {
+          payload.postedAt = anchorItem.postedAt;
+        }
 
         sendHit(payload, function (response) {
           // 這一輪已經作廢就整個收手：往返期間本文被改寫、SPA 換到別篇都會

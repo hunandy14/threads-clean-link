@@ -735,6 +735,14 @@ function validateScamHit(message) {
     signals = message.signals;
   }
 
+  // postedAt 是貼文發布時間（at 是掃到的時間）。同一條規則：缺席通過，有帶
+  // 就必須是有限數字。
+  let postedAt;
+  if (message.postedAt !== null && message.postedAt !== undefined) {
+    if (typeof message.postedAt !== 'number' || !isFinite(message.postedAt)) return null;
+    postedAt = message.postedAt;
+  }
+
   return {
     userId,
     handle: message.handle,
@@ -746,6 +754,7 @@ function validateScamHit(message) {
     threadUrl,
     anchorMatch,
     signals,
+    postedAt,
   };
 }
 
@@ -1007,6 +1016,7 @@ async function handleScamHit(message) {
           threadUrl: hit.threadUrl,
           anchorMatch: hit.anchorMatch,
           signals: hit.signals,
+          postedAt: hit.postedAt,
           source: 'auto',
         })
       : TCLCore.mergeBlocklistEvidence(existing, {
@@ -1017,6 +1027,7 @@ async function handleScamHit(message) {
           threadUrl: hit.threadUrl,
           anchorMatch: hit.anchorMatch,
           signals: hit.signals,
+          postedAt: hit.postedAt,
         });
 
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
