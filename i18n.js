@@ -257,18 +257,23 @@
       opScamListCount: '{n} 位作者',
       // 列第二行的加入日期(YYYY-MM-DD，比照裝置列的「新增於」)。
       opScamAddedOn: '加入於 {d}',
-      // 副標後半:最近一次命中的日期。加入於是首見時間，兩者常差好幾天。
+      // 標題列的貼文發布日期(postedAt，缺席退回 at)。日期本身就是最新那筆
+      // 證據貼文的連結。
+      opScamPostedAt: '貼文 {date}',
+      // 保留鍵:最近命中日期。改版後卡片只顯示貼文發布日期，這句已無人使
+      // 用，留著以免日後又要重新定稿一次文案。
       opScamLastHit: '最近命中 {date}',
-      // 標題列右側的 pill:這位作者留下幾筆證據。
+      // 標題列最右的 pill:這位作者留下幾筆證據。兩筆以上時可點，開證據對話
+      // 框;對話框標題為「顯示名 @handle · 命中 N 篇」。
       opScamHitCount: '命中 {n} 篇',
-      // 證據連結區的小標:底下每筆 evidence 一條連結。
+      // 保留鍵:證據區小標。改版後證據區只放最新一筆，小標佔一行卻不帶資
+      // 訊，已從版面拿掉。
       opScamEvidence: '證據',
-      // 證據摺疊區的 summary:預設只露最新一組，其餘收進 <details>。
-      opScamShowMore: '顯示另外 {n} 筆',
-      // 證據 meta 列的兩條外開連結:帶錨點那一篇與整串的串頭。
+      // 證據日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去
+      // 哪);「整串」則是實際的連結文字。
       opScamEvidencePost: '證據貼文 ↗',
       opScamEvidenceThread: '整串 ↗',
-      // 同一段招攬文案貼了好幾篇時，片段只畫一次並標示涵蓋幾篇。
+      // 保留鍵:同文異篇合併的篇數標示。改版後證據逐筆呈現不再合併。
       opScamSameText: '出現在 {n} 篇',
       // 訊號 chip:對應 detectScamPitch 的 signals 白名單。
       opScamSignalLink: '連結',
@@ -474,11 +479,11 @@
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
       opScamListCount: '{n} author(s)',
       opScamAddedOn: 'Added {d}',
+      opScamPostedAt: 'Posted {date}',
       opScamLastHit: 'Last hit {date}',
       // 篇數是 1 的機率很高，用不吃單複數的寫法(比照 opScamListCount)。
       opScamHitCount: '{n} hits',
       opScamEvidence: 'Evidence',
-      opScamShowMore: 'Show {n} more',
       opScamEvidencePost: 'Evidence post ↗',
       opScamEvidenceThread: 'Full thread ↗',
       opScamSameText: 'Seen in {n} posts',
