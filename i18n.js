@@ -263,10 +263,7 @@
       // ---- 選項頁:警示名單卡(警示名單分頁) ----
       opScamListTitle: '警示名單',
       opScamListCount: '{n} 位作者',
-      // 標題列右側的小字:這位作者是什麼時候被標記的(條目的 addedAt)。
-      // 「加入」聽起來像使用者主動加的，實際上是偵測命中後自動標記。
-      opScamAddedAt: '標記於 {date}',
-      // 保留鍵:同一個日期的舊文案。改版後標題列走 opScamAddedAt。
+      // 保留鍵:同一個日期的舊文案。
       opScamAddedOn: '加入於 {d}',
       // 保留鍵:貼文發布日期。標題列原本另外畫一段「貼文 YYYY-MM-DD」，但主
       // 卡只放最新一筆證據，證據列上已經有同一個日期連結，兩者重複，改版後
@@ -509,7 +506,6 @@
       opScamListTitle: 'Warning list',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
       opScamListCount: '{n} author(s)',
-      opScamAddedAt: 'Flagged {date}',
       opScamAddedOn: 'Added {d}',
       opScamPostedAt: 'Posted {date}',
       opScamLastHit: 'Last hit {date}',
