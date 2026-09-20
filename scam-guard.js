@@ -492,10 +492,18 @@
           '--tcl-warn-border:rgba(255,180,84,0.45);}',
           '@media (prefers-color-scheme: light){:root{--tcl-warn-fg:#8a4b00;',
           '--tcl-warn-bg:rgba(255,180,84,0.18);--tcl-warn-border:rgba(138,75,0,0.35);}}',
-          '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:4px 0 8px;',
-          'padding:4px 10px;border-radius:9999px;font-size:13px;line-height:1.4;font-weight:600;',
+          // 作者列那顆：落點那層是 overflow:hidden、原生高 21px，pill 高過
+          // 它就會反過來把整列撐高。13px × 1.3 行高 ＝ 16.9，加上下各 1px
+          // 內距與 1px 框線共 20.9px，壓在 21px 之內（量到 20.04px，列高維
+          // 持 21.00）。與時間的間距由那一層自己的 gap 給，外距因此歸零。
+          '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:0;',
+          'padding:1px 8px;border-radius:9999px;font-size:13px;line-height:1.3;font-weight:600;',
+          'vertical-align:middle;white-space:nowrap;',
           'color:var(--tcl-warn-fg,#ffb454);background:var(--tcl-warn-bg,rgba(255,180,84,0.12));',
           'border:1px solid var(--tcl-warn-border,rgba(255,180,84,0.45));}',
+          // 退回路徑的區塊級 tag 自成一行，不受作者列的高度限制，內距與行高
+          // 都覆寫回原本的尺寸，上下間距照舊。
+          'div.' + TAG_CLASS + '{margin:4px 0 8px;padding:4px 10px;line-height:1.4;}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
@@ -645,9 +653,64 @@
         return index === null ? null : rows[index];
       }
 
-      // ---- 在貼文卡的互動列「上方」插一顆警示 tag。文案一律以 textContent
-      // 寫入（頁面上的文字不經 innerHTML）。找不到互動列時退為掛在容器末
-      // 端，至少讓使用者看得到警示。冪等：容器內已有 tag 就不再插。
+      // ---- 取本卡作者列上的時間連結：容器內每一顆 <time> 往上找最近的
+      // <a>，要求這個 <a> 屬於本容器（擋掉引用卡那顆內層時間），且 href 的
+      // post code 與本卡 permalink 相同（擋掉轉發標頭那種指向別篇的時
+      // 間）。實機的作者名與時間連結同屬一個 flex row，這個 <a> 的右邊就是
+      // 作者列上的落點。找不到回傳 null。----
+      function findAuthorRowAnchor(container) {
+        var permalink = readContainerPermalink(container);
+        if (!permalink) return null;
+        var times = container.querySelectorAll('time');
+        for (var i = 0; i < times.length; i++) {
+          var anchor = times[i].closest ? times[i].closest('a') : null;
+          if (!anchor) continue;
+          if (anchor.closest && anchor.closest(CONTAINER_SELECTOR) !== container) continue;
+          var match = POST_PATH_PATTERN.exec(anchor.getAttribute('href') || '');
+          if (match && match[2] === permalink.code) return anchor;
+        }
+        return null;
+      }
+
+      // ---- 取時間連結那一支「最外層的單子節點祖先」：從 <a> 往上走，只要
+      // 當前節點的父層就只有它這一個元素子節點就繼續往上，停在父層還有別
+      // 的元素子節點（即作者列）的那一顆。實機量到的祖先鏈是
+      // row > divC > divB > span > a > time，divC 正是排版上給 6px gap 的那
+      // 層，因此這支走法會停在 divC。走法純看結構、不碰 getComputedStyle。
+      // 不越過貼文容器；<a> 的父層本來就有別的元素子節點時回傳 null（沒有
+      // 可用的包裹層）。
+      //
+      // 走訪上限 6 純粹是防跑飛的保險——改版把單傳鏈接得更長時不至於一路走
+      // 到容器——不是「版面就是這麼多層」的假設；真機目前剛好用滿 4 層。
+      //
+      // 退化情形：gap 那一層日後若多出第二個元素子節點（例如「已編輯」標
+      // 記），走法會停在只包時間的內層，tag 會零間距貼著時間。這裡刻意不加
+      // margin-left 兜底——主路徑停的那層自己有 6px gap，補了外距會在正常版
+      // 面上變成 12px，寧可少數退化版面擠一點，也不讓主路徑跑掉。----
+      function findTimeBranchTop(anchor, container) {
+        var current = anchor;
+        for (var step = 0; step < 6; step++) {
+          var parent = current.parentNode;
+          if (!parent || parent.nodeType !== 1 || parent === container) break;
+          var siblings = parent.children;
+          if (!siblings || siblings.length !== 1) break;
+          current = parent;
+        }
+        return current === anchor ? null : current;
+      }
+
+      // ---- 在貼文卡掛一顆警示 tag。落點優先取作者列：tag 被 append 進時間
+      // 那一支最外層的單子節點祖先（實機量到的 gap 6px 那一層），與時間隔
+      // 開剛好一個 gap，時間、作者名與「⋯」的位置全不動；那一層取不到就退
+      // 而求其次插在時間連結 <a> 之後。作者列整個取不到就退回互動列「上
+      // 方」的區塊級 <div>，連互動列都找不到才掛在容器末端，至少讓使用者看
+      // 得到警示。文案一律以 textContent 寫入（頁面上的文字不經
+      // innerHTML）。冪等：容器內已有 tag 就不再插。
+      //
+      // 【注入原則】擴充只新增自己的節點：不對 Threads 既有節點呼叫
+      // style／setAttribute／classList，也不改動它們的結構。宿主容器放不下
+      // 就縮自己的元素（落點那層是 overflow:hidden、高 21px，pill 因此把內
+      // 距收到 1px 8px），再不行就退回既有插入點——絕不動版面去遷就 tag。
       //
       // titleKey 決定滑鼠提示要說哪一句：詳情頁掃描用預設的 scamTagTooltip
       // （這串貼文疑似詐騙），河道查表傳 scamBlockedByList（這個帳號在你的黑
@@ -657,11 +720,24 @@
         try {
           if (container.querySelector && container.querySelector('.' + TAG_CLASS)) return;
           injectStyle();
-          var tag = document.createElement('div');
+          var anchor = findAuthorRowAnchor(container);
+          var tag = document.createElement(anchor ? 'span' : 'div');
           tag.className = TAG_CLASS;
           tag.setAttribute('role', 'note');
           tag.setAttribute('title', t(titleKey || 'scamTagTooltip'));
           tag.textContent = t('scamTagLabel');
+
+          if (anchor) {
+            var branchTop = findTimeBranchTop(anchor, container);
+            if (branchTop) {
+              branchTop.appendChild(tag);
+            } else if (typeof anchor.insertAdjacentElement === 'function') {
+              anchor.insertAdjacentElement('afterend', tag);
+            } else if (anchor.parentNode) {
+              anchor.parentNode.insertBefore(tag, anchor.nextSibling);
+            }
+            return;
+          }
 
           var row = findActionRow(container);
           if (row && row.parentNode) {
