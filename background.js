@@ -688,10 +688,10 @@ function isScamContentScriptSender(sender) {
 // 黑名單是使用者資料，形狀可疑的回報寧可整筆不收。userId 允許缺席（null）
 // ——那是登入態 SSR JSON 讀不到 id 的情形，由匿名 GET 備援補。
 //
-// 證據補強的四欄（anchorPostUrl／threadUrl／anchorMatch／signals）一律可缺
-// 席——舊版 content script 送來的三欄 payload 照常受理——但**有帶就驗形
-// 狀，不合格整筆回 bad_request**：payload 是自家 content script 送的，形狀
-// 不對代表兩端版本對不上，默默剝掉會讓錯誤晚好幾週才被發現。
+// 證據補強的五欄（anchorPostUrl／threadUrl／anchorMatch／signals／postedAt）
+// 一律可缺席——舊版 content script 送來的三欄 payload 照常受理——但**有
+// 帶就驗形狀，不合格整筆回 bad_request**：payload 是自家 content script 送
+// 的，形狀不對代表兩端版本對不上，默默剝掉會讓錯誤晚好幾週才被發現。
 function validateScamHit(message) {
   if (!message) return null;
   if (typeof message.handle !== 'string' || !SCAM_HANDLE_PATTERN.test(message.handle)) return null;
