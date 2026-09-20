@@ -1133,18 +1133,52 @@
     return key === '__proto__';
   }
 
+  // 證據的訊號白名單與固定顯示順序，與 detectScamPitch 產出的 signals 同一
+  // 份詞彙。選項頁按這個順序畫 chip，寫入順序不影響呈現。
+  var SCAM_SIGNALS = ['link', 'line', 'group', 'join', 'pitch'];
+
+  // anchorMatch 的硬上限。錨點本體只是「片段裡要高亮哪一段」的定位字串，
+  // 40 字足以涵蓋最長的連結型錨點;上限在儲存端保證，選項頁不再自行截斷。
+  var SCAM_ANCHOR_MATCH_MAX = 40;
+
+  // signals 正規化:逐項過白名單、去重、輸出固定順序。非陣列或全被剝光時回
+  // undefined(呼叫端整欄不寫入)——留一個空陣列會讓證據卡畫出一排沒有 chip
+  // 的空白。
+  function normalizeScamSignals(raw) {
+    if (!Array.isArray(raw)) return undefined;
+    var out = [];
+    for (var i = 0; i < SCAM_SIGNALS.length; i++) {
+      if (raw.indexOf(SCAM_SIGNALS[i]) !== -1) out.push(SCAM_SIGNALS[i]);
+    }
+    return out.length > 0 ? out : undefined;
+  }
+
   // 單筆證據正規化:postUrl 需通過讀取側網址白名單(擋掉外部網域混入證據
   // 卡)、at 需為有限數字，snippet 剝除控制字元。任一不符回 null。
+  //
+  // anchorPostUrl(含錨點那一篇)、threadUrl(串頭)、anchorMatch(錨點本體)與
+  // signals(踩到哪幾類訊號)四欄皆為選填:形狀不對時**只剝該欄、整筆照留**
+  // ——它們是加值資訊，不是證據成立的必要條件。缺欄時輸出不帶該鍵(不補 null
+  // 也不補空字串):選項頁靠「鍵在不在」決定要不要畫那一行。
   function normalizeScamEvidence(raw) {
     if (!isPlainObject(raw)) return null;
     var postUrl = normalizePostUrl(raw.postUrl);
     if (postUrl === null) return null;
     if (typeof raw.at !== 'number' || !isFinite(raw.at)) return null;
-    return {
+    var out = {
       postUrl: postUrl,
       snippet: typeof raw.snippet === 'string' ? stripControlChars(raw.snippet) : '',
       at: raw.at,
     };
+    var anchorPostUrl = normalizePostUrl(raw.anchorPostUrl);
+    if (anchorPostUrl !== null) out.anchorPostUrl = anchorPostUrl;
+    var threadUrl = normalizePostUrl(raw.threadUrl);
+    if (threadUrl !== null) out.threadUrl = threadUrl;
+    var anchorMatch = sanitizeText(raw.anchorMatch, SCAM_ANCHOR_MATCH_MAX);
+    if (anchorMatch !== undefined) out.anchorMatch = anchorMatch;
+    var signals = normalizeScamSignals(raw.signals);
+    if (signals !== undefined) out.signals = signals;
+    return out;
   }
 
   // 單筆黑名單條目正規化:非物件回 null(呼叫端逐項剝除),其餘欄位逐一消
@@ -1337,7 +1371,9 @@
   }
 
   // 單筆條目的證據裁切:依 at 降冪留最新 MAX_EVIDENCE 筆，snippet 硬裁
-  // SNIPPET_MAX，其餘欄位原樣保留。
+  // SNIPPET_MAX，其餘欄位原樣保留。四個選填欄位逐一挑出帶過(而非整包淺
+  // 複製):裁切的輸出直接落盤，未知欄位不該跟著存進 storage。缺席的欄位仍
+  // 然不補鍵——舊證據裁完還是三欄。
   function capScamEvidence(evidence) {
     return evidence
       .slice()
@@ -1346,7 +1382,12 @@
       })
       .slice(0, SCAM_LIMITS.MAX_EVIDENCE)
       .map(function (item) {
-        return { postUrl: item.postUrl, snippet: item.snippet.slice(0, SCAM_LIMITS.SNIPPET_MAX), at: item.at };
+        var out = { postUrl: item.postUrl, snippet: item.snippet.slice(0, SCAM_LIMITS.SNIPPET_MAX), at: item.at };
+        if (typeof item.anchorPostUrl === 'string') out.anchorPostUrl = item.anchorPostUrl;
+        if (typeof item.threadUrl === 'string') out.threadUrl = item.threadUrl;
+        if (typeof item.anchorMatch === 'string') out.anchorMatch = item.anchorMatch;
+        if (Array.isArray(item.signals)) out.signals = item.signals;
+        return out;
       });
   }
 
@@ -1362,7 +1403,17 @@
     var entry = normalizeBlocklistEntry({
       handle: sanitizeDisplayName(raw.handle),
       displayName: sanitizeDisplayName(raw.displayName),
-      evidence: [{ postUrl: raw.postUrl, snippet: raw.snippet, at: raw.at }],
+      evidence: [
+        {
+          postUrl: raw.postUrl,
+          snippet: raw.snippet,
+          at: raw.at,
+          anchorPostUrl: raw.anchorPostUrl,
+          threadUrl: raw.threadUrl,
+          anchorMatch: raw.anchorMatch,
+          signals: raw.signals,
+        },
+      ],
       addedAt: raw.at,
       source: raw.source,
     });
@@ -1370,12 +1421,25 @@
     return entry;
   }
 
-  // 證據清單裡是否已有同一篇貼文(以正規化後的網址比對，容尾變體算同一篇)。
-  function hasScamEvidence(list, postUrl) {
+  // 一筆證據的去重鍵:錨點篇優先，缺席時退回 postUrl(以正規化後的網址比
+  // 對，容尾變體算同一篇)。取不出網址時回 null。
+  //
+  // 綁 anchorPostUrl 而非 postUrl:同一串被從不同篇重新打開時 postUrl 是不同
+  // 的一頁，錨點篇卻永遠是同一篇，綁 postUrl 會讓同一次招攬吃掉三筆證據額
+  // 度。退回 postUrl 那一路同時讓舊證據(只有 postUrl＝錨點篇)與新證據認得出
+  // 是同一篇。
+  function scamEvidenceKey(item) {
+    if (!isPlainObject(item)) return null;
+    var url = typeof item.anchorPostUrl === 'string' ? item.anchorPostUrl : item.postUrl;
+    if (typeof url !== 'string') return null;
+    return normalizePostUrl(url) || url;
+  }
+
+  // 證據清單裡是否已有同一篇錨點貼文。
+  function hasScamEvidence(list, key) {
+    if (key === null) return false;
     for (var i = 0; i < list.length; i++) {
-      var item = list[i];
-      if (!isPlainObject(item) || typeof item.postUrl !== 'string') continue;
-      if ((normalizePostUrl(item.postUrl) || item.postUrl) === postUrl) return true;
+      if (scamEvidenceKey(list[i]) === key) return true;
     }
     return false;
   }
@@ -1386,7 +1450,8 @@
   }
 
   // 把新證據併入既有條目，回傳新物件(純函式:不就地改寫傳入的條目)。同一篇
-  // 貼文只算一筆證據，證據依 at 降冪排列;addedAt 是首見時間，不隨新證據往後
+  // 錨點貼文只算一筆證據(去重鍵見 scamEvidenceKey)，證據依 at 降冪排列;
+  // addedAt 是首見時間，不隨新證據往後
   // 跳。此處不裁筆數——上限由 capScamBlocklist 在寫回 storage 前統一處理。
   function mergeBlocklistEvidence(entry, evidence) {
     var base = isPlainObject(entry) ? entry : {};
@@ -1396,7 +1461,7 @@
 
     var list = Array.isArray(base.evidence) ? base.evidence.slice() : [];
     var incoming = normalizeScamEvidence(evidence);
-    if (incoming && !hasScamEvidence(list, incoming.postUrl)) list.push(incoming);
+    if (incoming && !hasScamEvidence(list, scamEvidenceKey(incoming))) list.push(incoming);
     list.sort(function (a, b) {
       return scamEvidenceAt(b) - scamEvidenceAt(a);
     });
@@ -1440,10 +1505,15 @@
     capHistory: capHistory,
     SCAM_LIMITS: SCAM_LIMITS,
     SCAM_RULES: SCAM_RULES,
+    SCAM_SIGNALS: SCAM_SIGNALS,
+    SCAM_ANCHOR_MATCH_MAX: SCAM_ANCHOR_MATCH_MAX,
     detectScamPitch: detectScamPitch,
     isPostDetailPath: isPostDetailPath,
+    normalizeScamEvidence: normalizeScamEvidence,
     normalizeScamBlocklist: normalizeScamBlocklist,
+    capScamEvidence: capScamEvidence,
     capScamBlocklist: capScamBlocklist,
+    scamEntryBytes: scamEntryBytes,
     makeBlocklistEntry: makeBlocklistEntry,
     mergeBlocklistEvidence: mergeBlocklistEvidence,
   };
