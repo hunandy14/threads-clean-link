@@ -338,6 +338,29 @@
       .join('\n\n');
   }
 
+  // 錨點落在整串的哪一篇，回傳 items 的索引;定位不出來時回 0(串頭)。
+  //
+  // anchorMatch 是 detectScamPitch 從「剝過控制字元的全文」切出來的一段，
+  // 全文是各篇 text 以空行串接而成，因此逐篇剝控制字元後找子字串就定得出
+  // 篇。刻意不逐篇重跑 detectScamPitch:判定是整串一次的事，逐篇重跑會讓判
+  // 定次數隨串長膨脹，也可能在單篇不足以成立(命中來自跨篇的訊號組合)時整個
+  // 定不到。錨點橫跨兩篇時沒有任何一篇含得下它，退回串頭。
+  function findAnchorIndex(items, anchorMatch, strip) {
+    if (!Array.isArray(items) || typeof anchorMatch !== 'string' || anchorMatch.length === 0) return 0;
+    for (var i = 0; i < items.length; i++) {
+      var text = items[i] && typeof items[i].text === 'string' ? items[i].text : '';
+      var clean = typeof strip === 'function' ? strip(text) : text;
+      if (clean.indexOf(anchorMatch) !== -1) return i;
+    }
+    return 0;
+  }
+
+  // 某一篇的永久連結:origin ＋ /@handle/post/code。origin 取不到時退成相對
+  // 路徑(與 postUrl 同一套組法)，由 background 的網址白名單擋下。
+  function threadPostUrl(origin, handle, code) {
+    return (origin || '') + '/@' + handle + '/post/' + code;
+  }
+
   // ============================================================
   // api 在 DOM 守衛「外」宣告，Node 測試環境 require() 本檔時不會進入守
   // 衛，api 上就只會有這裡列出的純函式。
@@ -905,6 +928,20 @@
         claimedMainCode = items[0].code;
         claimedMainContainer = containerOf(own, items[0].code);
 
+        var origin = (root.location && root.location.origin) || '';
+        // 三個網址各有各的語意：postUrl 是使用者當時開的那一頁、
+        // anchorPostUrl 是含錨點那一篇（招攬串的錨點幾乎都落在末篇）、
+        // threadUrl 是串頭。選項頁的證據連結要帶使用者去看得到那句話的地
+        // 方，光有 postUrl 做不到。
+        var anchorItem = items[findAnchorIndex(items, detection.anchorMatch, core.stripControlChars)];
+        // 錨點本體送出前先裁到上限：連結型錨點（lin.ee／linktr.ee／line.me
+        // 深連結）的帳號段沒有長度上限，超長時 background 會整筆判
+        // bad_request，連帶讓一次真的命中寫不進黑名單。裁在送出端，驗證端
+        // 才守得住「有帶就驗形狀」那條線。
+        var anchorMax = core.SCAM_ANCHOR_MATCH_MAX || 40;
+        var anchorMatch =
+          typeof detection.anchorMatch === 'string' ? detection.anchorMatch.slice(0, anchorMax) : '';
+
         var payload = {
           type: 'scam.hit',
           // 比對主鍵是數字 user id；SSR 取不到時送 null，由 background 走匿
@@ -913,10 +950,13 @@
           handle: handle,
           displayName:
             ssrRoot && typeof ssrRoot.displayName === 'string' ? ssrRoot.displayName : '',
-          postUrl: ((root.location && root.location.origin) || '') + pathInfo.path,
+          postUrl: origin + pathInfo.path,
+          anchorPostUrl: threadPostUrl(origin, handle, anchorItem.code),
+          threadUrl: threadPostUrl(origin, handle, items[0].code),
           snippet: detection.snippet,
-          anchorMatch: detection.anchorMatch,
+          anchorMatch: anchorMatch,
           pitchMatches: detection.pitchMatches,
+          signals: detection.signals,
           at: Date.now(),
         };
 
