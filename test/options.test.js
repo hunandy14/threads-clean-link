@@ -7868,14 +7868,19 @@ test('證據卡:證據區不再畫「證據」小標', async () => {
   });
 });
 
-// ---- 每筆證據:作者列的日期連結與本文下方的 meta 列 ----
+// ---- 每筆證據:作者列的日期連結 ----
 
-// 【斷言翻轉】原斷言為「meta 列上有 a.scam-evidence-post，連結文字為
-// opScamEvidencePost(「證據貼文 ↗」)」，上一輪改成「meta 列上的日期即連
-// 結」。改排成 Threads 的貼文樣式後，日期跟著帳號走到**作者列**上，本文下
-// 方的 meta 列只剩「整串 ↗」與訊號 chips;日期連結的文字也從絕對日期改成相
-// 對時間(絕對日期退到 title)。「證據貼文」文案仍當日期連結的 aria-label。
-test('證據卡:作者列的日期連結(href=anchorPostUrl)與本文下方的整串連結、訊號 chips', async () => {
+// 【斷言翻轉】這條測試隨版面收了三輪:原本釘「meta 列上有
+// a.scam-evidence-post，連結文字為 opScamEvidencePost(「證據貼文 ↗」)」，
+// 接著改成「meta 列上的日期即連結」，再改成「日期跟著帳號走到作者列、meta
+// 列只剩整串連結與訊號 chips」。這一輪**整條 meta 列都不畫**:
+//   - 「整串 ↗」拿掉——證據貼文連的就是錨點那一篇，回串頭是 Threads 自己的
+//     事，卡上多一條連結只是把兩個去處擺在一起讓人猶豫。
+//   - 訊號 chips 拿掉——那是判定的內部分類，使用者看片段本身就知道為什麼被
+//     標記。
+// threadUrl 與 signals 照存不動（由 tcl-core／background 那批測試釘），只是
+// 不畫。一筆證據因此就兩列:作者列與本文。
+test('證據卡:作者列的日期連結(href=anchorPostUrl)，一筆證據就作者列與本文兩列', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
@@ -7911,58 +7916,50 @@ test('證據卡:作者列的日期連結(href=anchorPostUrl)與本文下方的�
     '無障礙名稱一併帶貼文代碼尾碼——同文異篇時三條連結的名稱不得長得一模一樣'
   );
 
-  // meta 列在本文之下，只放整串連結與訊號。
-  const meta = firstByClass(first, 'scam-evidence-meta');
-  assert.ok(meta, '本文下方應有 .scam-evidence-meta');
-  const order = walkNodes(first, []);
-  assert.ok(
-    order.indexOf(firstByClass(first, 'scam-evidence-text')) < order.indexOf(meta),
-    'meta 列排在本文之後'
+  // 一筆證據就兩列:作者列與本文，本文下方不再有 meta 列。
+  assert.deepEqual(
+    first.children.map((n) => classListOf(n)[0]),
+    ['scam-evidence-head', 'scam-evidence-text'],
+    '證據區塊的直屬子節點恰為作者列與本文兩列'
   );
-  assert.equal(findByClass(meta, 'scam-evidence-date').length, 0, '日期不在 meta 列上');
-
-  const threadLink = firstByClass(meta, 'scam-evidence-thread');
-  assert.ok(threadLink, 'threadUrl 與證據貼文不同時應有 a.scam-evidence-thread');
-  assert.equal(scamAttrOf(threadLink, 'href'), EVC_THREAD_URL, '整串連到 threadUrl');
-  assert.equal(scamAttrOf(threadLink, 'target'), '_blank');
-  assert.equal(scamAttrOf(threadLink, 'rel'), 'noopener noreferrer');
-  assert.ok(
-    threadLink.textContent.includes(i18n.t('zh', 'opScamEvidenceThread')),
-    '連結文字為 opScamEvidenceThread'
+  assert.equal(findByClass(first, 'scam-evidence-meta').length, 0, '不再畫 meta 列');
+  assert.equal(
+    findByClass(list, 'scam-evidence-thread').length,
+    0,
+    '「整串 ↗」不再輸出——threadUrl 照存，只是不畫'
+  );
+  assert.equal(
+    findByClass(list, 'scam-signal').length,
+    0,
+    '訊號 chips 不再輸出——signals 照存，只是不畫'
   );
 
-  const chips = findByClass(meta, 'scam-signal');
-  assert.deepEqual(
-    chips.map(signalOf),
-    ['line', 'group'],
-    '訊號 chips 依 signals 逐一畫出，data-signal 帶原始值'
-  );
-  assert.deepEqual(
-    chips.map((c) => c.textContent),
-    [i18n.t('zh', 'opScamSignalLine'), i18n.t('zh', 'opScamSignalGroup')],
-    'chip 文字走 i18n'
-  );
-  assert.deepEqual(chips.map((c) => c.textContent), ['LINE', '群組'], 'zh 文案');
+  // 前置：這批證據確實帶著 threadUrl 與 signals，才測得出「有資料但不畫」。
+  const stored = ctx.storage.localSnapshot().scamBlocklist.entries[SCAM_ID_A].evidence[0];
+  assert.equal(stored.threadUrl, EVC_THREAD_URL, 'storage 裡 threadUrl 照舊');
+  assert.deepEqual(Array.from(stored.signals), ['line', 'group'], 'storage 裡 signals 照舊');
 });
 
-test('證據卡:threadUrl 等於證據貼文時不畫「整串」連結(同一篇不必給兩條路)', async () => {
+// 【斷言翻轉】原斷言為「threadUrl 等於證據貼文時不畫整串連結」（言下之意是
+// 不同篇時要畫）。現在一律不畫，因此把 fixture 換成「threadUrl 與證據貼文是
+// 不同篇」——那才是原本會畫的情況，測得出來的才叫翻轉。
+test('證據卡:threadUrl 與證據貼文不同篇時也不畫「整串」連結', async () => {
   const list = scamCardFixture();
-  list.entries[SCAM_ID_A].evidence = [
-    evcEvidence(EVC_ANCHOR_1, EVC_AT_1, { threadUrl: EVC_ANCHOR_1 }),
-  ];
+  list.entries[SCAM_ID_A].evidence = [evcEvidence(EVC_ANCHOR_1, EVC_AT_1)];
   const ctx = makeScamCardCtx({ blocklist: list });
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.notEqual(EVC_THREAD_URL, EVC_ANCHOR_1, '前置:串頭與證據貼文必須是不同篇');
   assert.equal(findByClass(rowA, 'scam-evidence-date').length, 1, '日期連結照畫');
   assert.equal(
     findByClass(rowA, 'scam-evidence-thread').length,
     0,
-    'threadUrl 與證據貼文是同一篇時不得重複畫一條「整串」'
+    '不同篇也不畫——回串頭是 Threads 自己的事'
   );
 });
 
-test('證據卡:舊證據(只有 postUrl/snippet/at)退回以 postUrl 當證據貼文，不畫整串也不畫 chips', async () => {
+test('證據卡:舊證據(只有 postUrl/snippet/at)退回以 postUrl 當證據貼文，照樣只有作者列與本文', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
 
@@ -8135,10 +8132,10 @@ test('證據卡:片段逐字相同的多筆證據在對話框裡各自成列，�
 
 // ---- en 文案 ----
 
-// 【斷言翻轉】原斷言包含副標的「Last hit …」與摺疊區 summary 的「Show 2
-// more」，上一輪改成標題列的 Posted／Added;那三者的 UI 都沒了，改釘作者列
-// 的相對時間、標記 pill 與對話框標題。
-test('證據卡:langPref 為 en 時，命中數／相對時間／標記 pill／訊號 chip 全走英文', async () => {
+// 【斷言翻轉】這條也收了三輪:原本包含副標的「Last hit …」與摺疊區 summary
+// 的「Show 2 more」，接著改成標題列的 Posted／Added，再改成作者列的相對時
+// 間、標記 pill 與訊號 chip。這一輪訊號 chips 整個不畫，那一段跟著刪掉。
+test('證據卡:langPref 為 en 時，命中數／相對時間／標記 pill／對話框標題全走英文', async () => {
   const ctx = makeScamCardCtx({ lang: 'en' });
   await initScamPage(ctx);
 
@@ -8175,8 +8172,7 @@ test('證據卡:langPref 為 en 時，命中數／相對時間／標記 pill／�
     'Example Author @example_author · 3 hits',
     '對話框標題的 en'
   );
-  const chips = findByClass(firstByClass(dialog, 'scam-evidence-meta'), 'scam-signal');
-  assert.deepEqual(chips.map((c) => c.textContent), ['LINE', 'Group'], '訊號 chip 的 en');
+  assert.equal(findByClass(dialog, 'scam-signal').length, 0, '訊號 chips 不再輸出');
 });
 
 // ---- 版面樣式 ----
@@ -8184,8 +8180,10 @@ test('證據卡:langPref 為 en 時，命中數／相對時間／標記 pill／�
 // 【斷言翻轉】清單隨版面收斂了兩輪:先移除 .scam-avatar／
 // .scam-evidence-more，這一輪再移除 .scam-posted／.scam-added(兩段都不畫
 // 了)，換成作者列 .scam-evidence-head、日期連結 .scam-evidence-date、標記
-// pill .scam-post-tag;.scam-foot 那一輪又被收掉，命中數回到 .scam-actions。
-test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結、標記 pill、命中數、⋯ 鈕、訊號 chip、錨點高亮、片段、對話框)', () => {
+// pill .scam-post-tag;.scam-foot 那一輪又被收掉，命中數回到 .scam-actions;
+// 這一輪整條 meta 列不畫，.scam-signal 與 .scam-evidence-thread 一併從清單
+// 移除。
+test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結、標記 pill、命中數、⋯ 鈕、錨點高亮、片段、對話框)', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
   [
     '.scam-name-link',
@@ -8194,7 +8192,6 @@ test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結�
     '.scam-post-tag',
     '.scam-hit-count',
     '.scam-menu-btn',
-    '.scam-signal',
     '.scam-anchor',
     '.scam-evidence-text',
     '.scam-hits-list',

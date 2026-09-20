@@ -285,13 +285,17 @@
       // 保留鍵:證據區小標。改版後證據區只放最新一筆，小標佔一行卻不帶資
       // 訊，已從版面拿掉。
       opScamEvidence: '證據',
-      // 證據日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去
-      // 哪);「整串」則是實際的連結文字。
+      // 證據日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去哪)。
       opScamEvidencePost: '證據貼文 ↗',
+      // 保留鍵:回串頭的連結。證據貼文連的就是錨點那一篇，回串頭是 Threads
+      // 自己的事，卡上多一條連結只是把兩個去處擺在一起讓人猶豫;threadUrl
+      // 照存不動，只是不畫。
       opScamEvidenceThread: '整串 ↗',
       // 保留鍵:同文異篇合併的篇數標示。改版後證據逐筆呈現不再合併。
       opScamSameText: '出現在 {n} 篇',
-      // 訊號 chip:對應 detectScamPitch 的 signals 白名單。
+      // 保留鍵:訊號 chip(對應 detectScamPitch 的 signals 白名單)。那是判定
+      // 的內部分類，使用者看片段本身就知道為什麼被標記，已從版面拿掉;
+      // signals 照存不動，除錯與日後調參仍用得到。
       opScamSignalLink: '連結',
       opScamSignalLine: 'LINE',
       opScamSignalGroup: '群組',
