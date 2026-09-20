@@ -6025,9 +6025,6 @@ function scamAllowRows(doc) {
     (n) => n.dataset && typeof n.dataset.id === 'string' && n.dataset.id !== ''
   );
 }
-function scamLinks(row) {
-  return walkNodes(row, []).filter((n) => n.tag === 'a');
-}
 // href/target/rel/title 在既有渲染碼是直接設 DOM 屬性(見 buildEntryCard 的
 // quickOpenBtn)，但 setAttribute 也是合法寫法;兩邊都認，不綁實作風格。
 function scamAttrOf(node, name) {
@@ -6117,48 +6114,47 @@ test('標記名單卡:兩位作者依 addedAt 降冪各畫一列，第一行 dis
   assert.ok(!/undefined|null/.test(textB), '缺 displayName 不得把 undefined/null 畫進畫面');
 });
 
-test('標記名單卡:每筆證據一個 <a>，href/target/rel 正確、文字截到 40 字加刪節號、title 留完整片段', async () => {
-  assert.ok(SCAM_SNIPPET_LONG.length > 40, '前置:長片段須超過 40 字才測得到截斷');
-  assert.ok(SCAM_SNIPPET_SHORT.length <= 40, '前置:短片段須在 40 字內');
-
+// 【斷言翻轉】原斷言為「每筆證據一個 <a>，連結文字＝片段截到 40 字加刪節
+// 號、完整片段留在 title」。證據卡改版後片段不再充當連結文字:
+//   - 片段獨立成 p.scam-evidence-text，完整呈現不截斷(40 字截斷本身是
+//     bug，PM 裁決移除,因此不保留任何等價的截斷斷言)。
+//   - 連結改為 a.scam-evidence-post「證據貼文」，href 取 anchorPostUrl，
+//     缺席(舊證據)時退回 postUrl。
+// target/rel 的要求不變，仍在此逐一斷言。片段完整性與新欄位的 href 由
+// 「證據卡:…」那批測試釘。
+test('標記名單卡:證據連結是「證據貼文」而非片段本身，href 退回 postUrl 時 target/rel 照舊', async () => {
   const ctx = makeScamCtx();
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
   assert.ok(rowA, '前置:應畫出作者 A 那一列');
-  const links = scamLinks(rowA);
-  assert.equal(links.length, 2, '證據連結數應等於 evidence 筆數');
+  const links = findByClass(rowA, 'scam-evidence-post');
+  assert.equal(links.length, 2, '證據貼文連結數應等於 evidence 筆數');
   assert.deepEqual(
     links.map((a) => scamAttrOf(a, 'href')).sort(),
     [SCAM_URL_A1, SCAM_URL_A2].sort(),
-    '每個連結的 href 是該筆證據的 postUrl'
+    '舊證據沒有 anchorPostUrl，href 退回該筆的 postUrl'
   );
   links.forEach((a) => {
+    assert.equal(a.tag, 'a', '證據貼文必須是 <a>');
     assert.equal(scamAttrOf(a, 'target'), '_blank', '證據連結應開新分頁');
     assert.equal(
       scamAttrOf(a, 'rel'),
       'noopener noreferrer',
       '證據連結 rel 應為 noopener noreferrer'
     );
+    assert.ok(
+      !a.textContent.includes(SCAM_SNIPPET_SHORT),
+      '連結文字是「證據貼文」，片段已經搬進 p.scam-evidence-text'
+    );
   });
 
-  const longLink = links.filter((a) => scamAttrOf(a, 'href') === SCAM_URL_A1)[0];
-  assert.equal(
-    longLink.textContent,
-    SCAM_SNIPPET_LONG.slice(0, 40) + '…',
-    '超過 40 字的片段截到 40 字並補刪節號'
-  );
-  assert.equal(
-    scamAttrOf(longLink, 'title'),
-    SCAM_SNIPPET_LONG,
-    'title 留完整片段，截斷只發生在顯示文字'
-  );
-
-  const shortLink = links.filter((a) => scamAttrOf(a, 'href') === SCAM_URL_A2)[0];
-  assert.equal(
-    shortLink.textContent,
-    SCAM_SNIPPET_SHORT,
-    '不足 40 字的片段原樣顯示，不硬掛刪節號'
+  const texts = findByClass(rowA, 'scam-evidence-text');
+  assert.equal(texts.length, 2, '每筆證據各一段片段');
+  assert.deepEqual(
+    texts.map((n) => walkNodes(n, []).map((x) => x.textContent || '').join('')).sort(),
+    [SCAM_SNIPPET_LONG, SCAM_SNIPPET_SHORT].sort(),
+    '兩筆片段都完整呈現——超過 40 字的那筆不得被截斷'
   );
 });
 
@@ -7032,7 +7028,22 @@ function evidenceMetaText(postUrl, at) {
   return id.slice(-6) + ' · ' + scamDateOnly(at);
 }
 
-test('標記名單卡:每筆證據在片段前有 .scam-evidence-meta 小字(貼文代碼尾 6 碼 · 日期)，同文異篇不會看起來重複', async () => {
+// 一列裡所有節點的文字串接(不加分隔符)。.scam-evidence-meta 改版後不再是
+// 單一文字節點，而是一整條 meta 列(日期 ＋ 連結 ＋ 訊號 chips)，只能以子樹
+// 串接取它的完整文字。
+function metaTextOf(node) {
+  return walkNodes(node, [])
+    .map((n) => n.textContent || '')
+    .join('');
+}
+
+// 【斷言翻轉】原斷言為「.scam-evidence-meta 的 textContent 恰為『代碼尾 6
+// 碼 · 日期』，且只放這兩者」。證據卡改版把代碼與日期併進一整條 meta 列,
+// 同一條列上還有「證據貼文」「整串」連結與訊號 chips，因此改為「這條列上
+// 找得到代碼尾碼與日期」而非整串相等;代碼尾碼可以落在連結文字或 title
+// 裡(見「證據卡:貼文代碼尾 6 碼…」)。「meta 排在片段之前」的順序要求不
+// 變。
+test('標記名單卡:每筆證據的 meta 列仍帶得出貼文代碼尾 6 碼與日期，同文異篇不會看起來重複', async () => {
   const ctx = makeScamCtx();
   await initScamPage(ctx);
 
@@ -7040,39 +7051,36 @@ test('標記名單卡:每筆證據在片段前有 .scam-evidence-meta 小字(貼
   assert.ok(rowA, '前置:應畫出作者 A 那一列');
 
   const metas = findByClass(rowA, 'scam-evidence-meta');
-  assert.equal(metas.length, 2, '每筆證據各一行 meta，數量等於 evidence 筆數');
+  assert.equal(metas.length, 2, '每筆證據各一條 meta 列，數量等於 evidence 筆數');
 
   const expected = [
     evidenceMetaText(SCAM_URL_A1, SCAM_NOW - SCAM_HOUR),
     evidenceMetaText(SCAM_URL_A2, SCAM_NOW - 2 * SCAM_HOUR),
   ];
   assert.notEqual(expected[0], expected[1], '前置:兩筆證據的尾碼須不同，才測得出去重複的效果');
-  assert.deepEqual(
-    metas.map((m) => m.textContent),
-    expected,
-    'meta 文字為「貼文代碼尾 6 碼 · YYYY-MM-DD」，以「 · 」相隔'
-  );
-  metas.forEach((m) => {
-    assert.match(
-      m.textContent,
-      /^[\w-]{1,6} · \d{4}-\d{2}-\d{2}$/,
-      'meta 只放代碼尾碼與日期，不夾帶完整網址或時分'
-    );
+  metas.forEach((meta, i) => {
+    const parts = expected[i].split(' · ');
+    const blob = metaTextOf(meta) + ' ' + findByClass(meta, 'scam-evidence-post')
+      .map((a) => scamAttrOf(a, 'title'))
+      .join(' ');
+    assert.ok(blob.includes(parts[0]), '第 ' + (i + 1) + ' 筆的代碼尾 6 碼(' + parts[0] + ')應在 meta 列上');
+    assert.ok(blob.includes(parts[1]), '第 ' + (i + 1) + ' 筆的日期應在 meta 列上');
   });
 
-  // 順序:每筆 meta 要排在它那筆的片段連結之前(walkNodes 是前序走訪，對這
-  // 種淺層結構等同文件順序)。
+  // 順序:每筆 meta 要排在它那筆的片段之前(walkNodes 是前序走訪，對這種淺
+  // 層結構等同文件順序)。
   const order = walkNodes(rowA, []);
-  const links = order.filter((n) => n.tag === 'a');
-  assert.equal(links.length, 2, '前置:兩筆證據各一個連結');
+  const texts = findByClass(rowA, 'scam-evidence-text');
+  assert.equal(texts.length, 2, '前置:兩筆證據各一段片段');
   metas.forEach((m, i) => {
     assert.ok(
-      order.indexOf(m) < order.indexOf(links[i]),
+      order.indexOf(m) < order.indexOf(texts[i]),
       '第 ' + (i + 1) + ' 筆的 meta 要排在片段之前'
     );
   });
 });
 
+// 【斷言翻轉】同上:改為「代碼尾碼與日期在 meta 列上找得到」而非整串相等。
 test('標記名單卡:貼文代碼剛好 6 碼時原樣顯示，不補位也不取到別的路徑片段', async () => {
   const ctx = makeScamCtx();
   await initScamPage(ctx);
@@ -7081,11 +7089,12 @@ test('標記名單卡:貼文代碼剛好 6 碼時原樣顯示，不補位也不�
   assert.ok(rowB, '前置:應畫出作者 B 那一列');
   const metas = findByClass(rowB, 'scam-evidence-meta');
   assert.equal(metas.length, 1, 'B 只有一筆證據');
-  assert.equal(
-    metas[0].textContent,
-    evidenceMetaText(SCAM_URL_B1, SCAM_NOW - 3 * SCAM_DAY),
-    '代碼剛好 6 碼(DeF456)時原樣顯示'
-  );
+  const parts = evidenceMetaText(SCAM_URL_B1, SCAM_NOW - 3 * SCAM_DAY).split(' · ');
+  const blob = metaTextOf(metas[0]) + ' ' + findByClass(metas[0], 'scam-evidence-post')
+    .map((a) => scamAttrOf(a, 'title'))
+    .join(' ');
+  assert.ok(blob.includes('DeF456'), '代碼剛好 6 碼(DeF456)時原樣顯示');
+  assert.ok(blob.includes(parts[1]), '日期照舊出現在 meta 列上');
 });
 
 // ---- 既有行為在分頁化之後不變 ----
