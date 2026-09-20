@@ -66,7 +66,7 @@ test('favContextLost:zh 與 en 兩份字典皆有此 key，且皆非空字串(�
   assert.ok(i18n.STRINGS.en.favContextLost.length > 0);
 });
 
-// ---- LINE 群組引導黑名單(v1 計畫 §3／§6)的文案 ----
+// ---- LINE 群組引導警示(v1 計畫 §3／§6)的文案 ----
 //
 // 上面的 parity 測試只保證「zh 與 en 的鍵集合一致」——兩邊同時漏掉同一顆
 // key 依然全綠。這六顆散落在三個消費端(詳情頁/河道的標籤與
@@ -76,9 +76,9 @@ const SCAM_GUARD_KEYS = [
   // 貼文互動列上方那顆 .tcl-scam-tag 的標籤與原生 tooltip。
   'scamTagLabel',
   'scamTagTooltip',
-  // 某作者第一次被判定命中、自動加入本機黑名單時的提示。
+  // 某作者第一次被判定命中、自動加入本機警示名單時的提示。
   'scamFirstHitToast',
-  // 作者已在黑名單中(非本次命中)時，標籤改顯示的理由。
+  // 作者已在警示名單中(非本次命中)時，標籤改顯示的理由。
   'scamBlockedByList',
   // 選項頁設定卡的總開關 #scamGuardEnabled 的名稱與說明。
   'opScamGuardName',
@@ -103,7 +103,7 @@ test('scamGuard:zh 文案一律全形逗號「，」，不得出現半形 ","', 
   }
 });
 
-// ---- 黑名單卡(v1 計畫 §5;選項頁車道 L6)的文案 ----
+// ---- 警示名單卡(v1 計畫 §5;選項頁車道 L6)的文案 ----
 //
 // 卡片整張的文案都靠這十顆 key:卡頭(標題/計數)、列(加入時間/證據/解除鈕)、
 // 解除確認框三句、空狀態，以及「已解除」小節的標題與復原鈕。漏一顆的症狀
@@ -127,7 +127,7 @@ const SCAM_OPTIONS_KEYS = [
   'opScamRestore',
 ];
 
-test('黑名單卡:十顆選項頁文案 key 在 zh 與 en 兩份字典皆存在且非空', () => {
+test('警示名單卡:十顆選項頁文案 key 在 zh 與 en 兩份字典皆存在且非空', () => {
   for (const locale of ['zh', 'en']) {
     for (const key of SCAM_OPTIONS_KEYS) {
       const value = i18n.STRINGS[locale][key];
@@ -137,7 +137,7 @@ test('黑名單卡:十顆選項頁文案 key 在 zh 與 en 兩份字典皆存在
   }
 });
 
-test('黑名單卡:zh 文案一律全形逗號「，」，不得出現半形 ","', () => {
+test('警示名單卡:zh 文案一律全形逗號「，」，不得出現半形 ","', () => {
   for (const key of SCAM_OPTIONS_KEYS) {
     const value = i18n.STRINGS.zh[key];
     if (typeof value !== 'string') continue;
@@ -148,7 +148,7 @@ test('黑名單卡:zh 文案一律全形逗號「，」，不得出現半形 ","
 // 帶插值的三顆 key 必須留著各自的佔位符:少了佔位符不會炸，只會在畫面上
 // 少一段(計數少了數字、加入時間少了日期、確認框標題少了作者名)，靜態釘住
 // 比較划算。
-test('黑名單卡:帶插值的文案在 zh 與 en 都保留佔位符({n}/{d}/{name})', () => {
+test('警示名單卡:帶插值的文案在 zh 與 en 都保留佔位符({n}/{d}/{name})', () => {
   const PLACEHOLDERS = {
     opScamListCount: '{n}',
     opScamAddedOn: '{d}',
