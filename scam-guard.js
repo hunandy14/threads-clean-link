@@ -491,13 +491,17 @@
           '--tcl-warn-border:rgba(255,180,84,0.45);}',
           '@media (prefers-color-scheme: light){:root{--tcl-warn-fg:#8a4b00;',
           '--tcl-warn-bg:rgba(255,180,84,0.18);--tcl-warn-border:rgba(138,75,0,0.35);}}',
-          '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:0 0 0 8px;',
-          'padding:2px 8px;border-radius:9999px;font-size:12px;line-height:1.3;font-weight:600;',
+          // 作者列那顆：row 是 overflow:hidden、高 21px，pill 要收在這個高
+          // 度內才不會被切掉（12px 字級 ＋ 1px 上下內距 ＋ 1px 框線）；row
+          // 自己有 gap，外距因此歸零。
+          '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:0;',
+          'padding:1px 8px;border-radius:9999px;font-size:12px;line-height:1.4;font-weight:600;',
           'vertical-align:middle;white-space:nowrap;',
           'color:var(--tcl-warn-fg,#ffb454);background:var(--tcl-warn-bg,rgba(255,180,84,0.12));',
           'border:1px solid var(--tcl-warn-border,rgba(255,180,84,0.45));}',
-          // 退回路徑的區塊級 tag 自成一行，留回互動列上方原本的上下間距。
-          'div.' + TAG_CLASS + '{margin:4px 0 8px;}',
+          // 退回路徑的區塊級 tag 自成一行，不受作者列的高度限制，維持原本的
+          // 尺寸與上下間距。
+          'div.' + TAG_CLASS + '{margin:4px 0 8px;padding:4px 10px;font-size:13px;}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
@@ -650,8 +654,8 @@
       // ---- 取本卡作者列上的時間連結：容器內每一顆 <time> 往上找最近的
       // <a>，要求這個 <a> 屬於本容器（擋掉引用卡那顆內層時間），且 href 的
       // post code 與本卡 permalink 相同（擋掉轉發標頭那種指向別篇的時
-      // 間）。實機的作者名與時間連結同屬一個 flex row，因此這個 <a> 之後就
-      // 是作者列上的落點。找不到回傳 null。----
+      // 間）。實機的作者名與時間連結同屬一個 flex row，這個 <a> 的右邊就是
+      // 作者列上的落點。找不到回傳 null。----
       function findAuthorRowAnchor(container) {
         var permalink = readContainerPermalink(container);
         if (!permalink) return null;
@@ -666,11 +670,18 @@
         return null;
       }
 
-      // ---- 在貼文卡掛一顆警示 tag。落點優先取作者列的時間連結右邊（inline
-      // 的 <span>，與作者名、時間同一行）；作者列取不到就退回互動列「上方」
-      // 的區塊級 <div>，連互動列都找不到才掛在容器末端，至少讓使用者看得到
-      // 警示。文案一律以 textContent 寫入（頁面上的文字不經 innerHTML）。冪
-      // 等：容器內已有 tag 就不再插。
+      // ---- 在貼文卡掛一顆警示 tag。落點優先取作者列：實機是
+      // row > span > a > time，tag 插在時間連結的包裹層 <span> 之後，成為
+      // 作者列 flex row 自己的 item（不進時間的行盒，時間的基線與字級不受
+      // 影響）；沒有那層包裹時才退而求其次插在 <a> 之後。作者列整個取不到
+      // 就退回互動列「上方」的區塊級 <div>，連互動列都找不到才掛在容器末
+      // 端，至少讓使用者看得到警示。文案一律以 textContent 寫入（頁面上的
+      // 文字不經 innerHTML）。冪等：容器內已有 tag 就不再插。
+      //
+      // 【注入原則】擴充只新增自己的節點：不對 Threads 既有節點呼叫
+      // style／setAttribute／classList，也不改動它們的結構。宿主容器放不下
+      // 就縮自己的元素（作者列 row 是 overflow:hidden、高 21px，pill 因此收
+      // 到 12px），再不行就退回既有插入點——絕不動版面去遷就 tag。
       //
       // titleKey 決定滑鼠提示要說哪一句：詳情頁掃描用預設的 scamTagTooltip
       // （這串貼文疑似詐騙），河道查表傳 scamBlockedByList（這個帳號在你的黑
@@ -688,10 +699,18 @@
           tag.textContent = t('scamTagLabel');
 
           if (anchor) {
-            if (typeof anchor.insertAdjacentElement === 'function') {
-              anchor.insertAdjacentElement('afterend', tag);
-            } else if (anchor.parentNode) {
-              anchor.parentNode.insertBefore(tag, anchor.nextSibling);
+            // 包裹層要是「連結外面那層 <span>」本身還掛在作者列上才採用；
+            // <a> 直接掛在 row 下時 parentNode 就是 row，插在它之後會掉出作
+            // 者列，這種版面退回插在 <a> 之後。
+            var wrapper = anchor.parentNode;
+            var target =
+              wrapper && wrapper.nodeType === 1 && wrapper.nodeName === 'SPAN' && wrapper.parentNode
+                ? wrapper
+                : anchor;
+            if (typeof target.insertAdjacentElement === 'function') {
+              target.insertAdjacentElement('afterend', tag);
+            } else if (target.parentNode) {
+              target.parentNode.insertBefore(tag, target.nextSibling);
             }
             return;
           }
