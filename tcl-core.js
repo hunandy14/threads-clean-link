@@ -820,7 +820,8 @@
   //
   // 群組/加入詞必須獨立於提及本體之外出現:「加入我的 LINE」整段就是一個片
   // 語型提及，裡面的「加入」不得再充當加入詞，否則「加入 LINE 官方帳號領取
-  // 優惠」這類商家貼文會整批誤報。
+  // 優惠」這類商家貼文會整批誤報。單字型提及的門檻再窄一層:只認主動招攬
+  // 詞，因為「公司公告改用 LINE 群組發布」這類貼文同框的是名詞，不是動作。
 
   // 黑名單的儲存形狀與偵測上限。entries 以 userId 為鍵(帳號改名後仍認得同一
   // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
@@ -854,8 +855,13 @@
   // 連結型錨點:LINE 加好友(ti/p)/群組(ti/g)深連結、lin.ee 短網址、linktr.ee
   // 聚合頁。line.me 的其他路徑(官網首頁、分享頁)不是引導私訊的入口，不在白
   // 名單內。
+  //
+  // scheme 與 www. 都可省:招攬文常直接寫「lin.ee/xxx」,Threads 自己會把它
+  // 渲染成連結。省掉 scheme 後必須擋住黏在別的網域後面的情形——前置的負向
+  // lookbehind 排除英數/點/@/斜線，`xxline.me/ti/g/x`、`a.linktr.ee/x`、
+  // `https://line.me/...` 裡面那段 `line.me` 都不會各自起頭再匹配一次。
   var SCAM_LINK_ANCHOR_RE =
-    /https?:\/\/(?:line\.me\/(?:R\/)?ti\/[gp]\/[A-Za-z0-9@._-]+|lin\.ee\/[A-Za-z0-9._-]+|linktr\.ee\/[A-Za-z0-9._-]+)/i;
+    /(?<![A-Za-z0-9.@/])(?:https?:\/\/)?(?:www\.)?(?:line\.me\/(?:R\/)?ti\/[gp]\/[A-Za-z0-9@._-]+|lin\.ee\/[A-Za-z0-9._-]+|linktr\.ee\/[A-Za-z0-9._-]+)/i;
 
   // 帳號型錨點:賴/籟/LINE(ID 兩字可省) + 冒號 + 至少 3 位帳號字元。全形/半
   // 形冒號、冒號前後空白、大小寫都吃。帳號段少於 3 位的是標點誤判，不是帳
@@ -891,7 +897,14 @@
   // 群組詞與加入詞:招攬串的行動呼籲。這兩類詞單獨出現在任何社團、讀書會、
   // Discord 貼文裡都很常見，必須與 LINE 提及並存才構成命中。
   var SCAM_GROUP_WORDS = ['群組', '社群', '群裡', '進群', '拉進', '拉你進', '小群'];
-  var SCAM_JOIN_WORDS = ['加入', '加我', '加LINE', '加 LINE', '私訊我'];
+  var SCAM_JOIN_WORDS = ['加入', '加我', '私訊我'];
+
+  // 主動招攬詞:上面兩張表裡描述「把你帶走」這個動作的子集，單字型提及只認
+  // 這一組。「群組」「社群」「加入」是名詞，公司公告、社區公告、讀書會、商
+  // 家會員貼文本來就會跟 LINE 同框(「公司公告改用 LINE 群組發布」),配單字
+  // 型提及遠不足以構成招攬;錨點型提及(連結/帳號/片語)已經帶著帳號或祈使
+  // 句，才吃完整詞表。
+  var SCAM_ACTIVE_JOIN_WORDS = ['進群', '拉進', '拉你進', '小群', '加我', '私訊我'];
 
   // 判定用的規則資料。**規則是資料，判定是邏輯**:detectScamPitch 只認這個形
   // 狀，不認特定來源，因此同一份判定可以吃本機常數，也可以吃日後由後端下發
@@ -902,6 +915,7 @@
     weakWords: SCAM_PITCH_WEAK_WORDS,
     groupWords: SCAM_GROUP_WORDS,
     joinWords: SCAM_JOIN_WORDS,
+    activeJoinWords: SCAM_ACTIVE_JOIN_WORDS,
     linkAnchor: SCAM_LINK_ANCHOR_RE,
     accountAnchors: SCAM_ACCOUNT_ANCHOR_RES,
     phraseAnchors: SCAM_PHRASE_ANCHOR_RES,
@@ -952,7 +966,8 @@
   // lastIndex，而不是切片後重掃:錨點樣式帶 lookbehind(前面不得是 信依無仰倚
   // 或英文字母),切片會讓前文落在字串外，lookbehind 跟著失準。
   function collectMatchSpans(pattern, text, out) {
-    var scanner = new RegExp(pattern.source, pattern.ignoreCase ? 'gi' : 'g');
+    // 原樣式的旗標全數保留(i/u/m/s 都會改變比對語意),只換上 g。
+    var scanner = new RegExp(pattern.source, pattern.flags.replace(/g/g, '') + 'g');
     var match;
     while ((match = scanner.exec(text)) !== null) {
       out.push({ start: match.index, end: match.index + match[0].length });
@@ -1026,9 +1041,10 @@
   // 提及取用優先序為連結 > 帳號 > 片語 > 單字:多種形式同時存在時挑帶帳號本
   // 體的那個當 anchorMatch 與 snippet 中心，證據卡才看得到對方的 LINE 帳號。
   //
-  // 命中有三條路:連結型錨點單獨成立、LINE 提及 + (群組詞 或 加入詞)、錨點
-  // (連結/帳號/片語三型) + 至少一個強話術詞。單字型提及只走中間那條——「LINE
-  // 又改版了」配上一句飆股閒聊不該進黑名單。
+  // 命中有三條路:連結型錨點單獨成立、LINE 提及 + 行動呼籲、錨點(連結/帳號/
+  // 片語三型) + 至少一個強話術詞。單字型提及只走中間那條——「LINE 又改版了」
+  // 配上一句飆股閒聊不該進黑名單——而且中間那條對它更窄:只認主動招攬詞，不
+  // 認名詞型的群組/社群/加入。
   //
   // pitchMatches 描述的是這段文字有哪些話術詞，不再是任何門檻的必要條件:門
   // 檻不足而未命中時照樣回報，呼叫端(除錯、調參、之後的人工複核)才看得出差
@@ -1064,6 +1080,10 @@
     var spans = scamMentionSpans(probe, cfg);
     var hasGroup = hasIndependentWord(scan, cfg.groupWords, spans);
     var hasJoin = hasIndependentWord(scan, cfg.joinWords, spans);
+    // 行動呼籲的門檻分兩層:錨點型提及吃完整詞表，單字型只認主動招攬詞。
+    var hasCallToAction = anchor
+      ? hasGroup || hasJoin
+      : hasIndependentWord(scan, cfg.activeJoinWords, spans);
 
     var signals = [];
     if (link) signals.push('link');
@@ -1072,7 +1092,7 @@
     if (hasJoin) signals.push('join');
     if (pitchMatches.length > 0) signals.push('pitch');
 
-    var hit = !!link || (!!mention && (hasGroup || hasJoin)) || (!!anchor && strongCount > 0);
+    var hit = !!link || (!!mention && hasCallToAction) || (!!anchor && strongCount > 0);
     if (!hit) return { hit: false, anchorMatch: '', pitchMatches: pitchMatches, snippet: '', signals: signals };
 
     return {

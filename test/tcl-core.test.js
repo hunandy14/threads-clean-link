@@ -993,6 +993,85 @@ test.describe('詐騙偵測:LINE 提及 ＋ 群組／加入詞', () => {
   });
 });
 
+// ---- 詐騙偵測:單字型 LINE 的窄門與裸網址錨點(覆審裁決)----
+//
+// 【單字型要更窄】「LINE 提及 ＋ 群組／加入詞」對單字型提及太寬:公司公告、
+// 社區公告、讀書會、商家會員這些貼文本來就會同時寫到 LINE 與「群組」「加
+// 入」，它們是名詞，不是把人拉走的動作。單字型因此只配**主動招攬詞**(進
+// 群、拉進、拉你進、小群、加我、私訊我);名詞型的群組／社群／群裡／加入只
+// 有在提及本身已經是錨點(連結／帳號／片語)時才算。
+//
+// 【裸網址】招攬串常把深連結寫成沒有 scheme 的 `lin.ee/xxx`,Threads 照樣會
+// 自動連結。連結型錨點因此讓 `https://` 與 `www.` 都可省，改用前置的負向
+// lookbehind 擋住黏在別的網域後面的情形(`xxline.me/ti/g/x`)。
+
+test.describe('詐騙偵測:單字型 LINE 只配主動招攬詞', () => {
+  // 名詞型的群組／社群／加入配單字型 LINE——正當貼文的日常組合，不得命中。
+  test('detectScamPitch:單字型 LINE 配名詞型群組／加入詞不命中', () => {
+    const negatives = [
+      '公司公告改用 LINE 群組發布',
+      '社區公告都發在 LINE，請加入住戶群組',
+      '讀書會的 LINE 群組本週開放加入',
+      '健身房加入會員送體驗課，LINE 有客服可以問',
+      'LINE Pay 加入會員送點數',
+    ];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤殺');
+    }
+  });
+
+  // 主動招攬詞描述的是「把你帶走」這個動作，單字型配它才成立。
+  test('detectScamPitch:單字型 LINE 配主動招攬詞才命中', () => {
+    const positives = ['想進群的加入我們 LINE 群組', 'LINE 群組名額還有，晚點拉你進群', '有空的話私訊我，LINE 都在'];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  // 錨點型提及(連結／帳號／片語)不受這道窄門影響，照樣吃完整詞表。
+  test('detectScamPitch:錨點型提及仍吃完整群組／加入詞表', () => {
+    const positives = [
+      '可以加 LINE：ab12cd，傳訊息給我，我把你拉進群組',
+      '私訊我 LINE:xyz123',
+      '加line 進群',
+      '加入我的LINE，社群裡有完整筆記',
+      'LINE ID：join002，想聽的加入就好',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  // 「加 LINE／加LINE」本來就被片語型錨點的區間蓋住，留在加入詞表裡只會從
+  // LINEUP／LINEAR 這類英文詞洩漏出來(片語錨點的 lookahead 擋掉了 LINEUP,
+  // 加入詞的純字串比對卻擋不住)。整個移除。
+  test('detectScamPitch:加LINEUP 不得充當加入詞', () => {
+    assert.equal(C.detectScamPitch('LINE 又改版了，記得加LINEUP到行事曆').hit, false, '英文詞片段不得湊成加入詞');
+    assert.equal(C.detectScamPitch('LINE 官方帳號公告，加LINEAR代數課表').hit, false, '英文詞片段不得湊成加入詞');
+  });
+});
+
+test.describe('詐騙偵測:連結型錨點吃裸網址', () => {
+  test('detectScamPitch:lin.ee／line.me 不帶 scheme 也算連結型錨點', () => {
+    const links = ['加我 lin.ee/Ab12Cd', '群組在這 line.me/ti/g/AbCdEf01', '點 www.lin.ee/abc123 就好'];
+    for (const text of links) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 裸網址應單獨命中');
+    }
+    // 帶 scheme 的既有形式不得翻紅。
+    assert.equal(C.detectScamPitch('點這 https://lin.ee/abc123').hit, true, '帶 scheme 的形式維持命中');
+    assert.equal(C.detectScamPitch('看這篇 https://line.me/R/ti/p/@abc').hit, true, '帶 scheme 的形式維持命中');
+  });
+
+  // 網域前面黏著英數/點/@/斜線時是別人的網域(xxline.me、my.lin.ee.evil)，
+  // 不是 LINE 的深連結。
+  test('detectScamPitch:網域前面黏著英數不算連結型錨點', () => {
+    const negatives = ['圖在 xxline.me/ti/g/AbCdEf01', '網址是 9lin.ee/abc123', '看 a.linktr.ee/someone'];
+    for (const text of negatives) {
+      assert.equal(C.detectScamPitch(text).hit, false, JSON.stringify(text) + ' 不得誤判為 LINE 深連結');
+    }
+  });
+});
+
 test.describe('詐騙偵測:isPostDetailPath', () => {
   test('isPostDetailPath:/@handle/post/CODE 為真', () => {
     assert.equal(typeof C.isPostDetailPath, 'function', 'isPostDetailPath 應掛在 TCLCore 匯出');
