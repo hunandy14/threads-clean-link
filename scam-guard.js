@@ -491,17 +491,17 @@
           '--tcl-warn-border:rgba(255,180,84,0.45);}',
           '@media (prefers-color-scheme: light){:root{--tcl-warn-fg:#8a4b00;',
           '--tcl-warn-bg:rgba(255,180,84,0.18);--tcl-warn-border:rgba(138,75,0,0.35);}}',
-          // 作者列那顆：row 是 overflow:hidden、高 21px，pill 要收在這個高
-          // 度內才不會被切掉（12px 字級 ＋ 1px 上下內距 ＋ 1px 框線）；row
-          // 自己有 gap，外距因此歸零。
+          // 作者列那顆：落點那層是 overflow:hidden、高 21px，13px 字級配
+          // 1px 上下內距量到 20.04px，剛好放得下；與時間的間距由那一層自己
+          // 的 gap 給，外距因此歸零。
           '.' + TAG_CLASS + '{display:inline-flex;align-items:center;margin:0;',
-          'padding:1px 8px;border-radius:9999px;font-size:12px;line-height:1.4;font-weight:600;',
+          'padding:1px 8px;border-radius:9999px;font-size:13px;line-height:1.4;font-weight:600;',
           'vertical-align:middle;white-space:nowrap;',
           'color:var(--tcl-warn-fg,#ffb454);background:var(--tcl-warn-bg,rgba(255,180,84,0.12));',
           'border:1px solid var(--tcl-warn-border,rgba(255,180,84,0.45));}',
           // 退回路徑的區塊級 tag 自成一行，不受作者列的高度限制，維持原本的
           // 尺寸與上下間距。
-          'div.' + TAG_CLASS + '{margin:4px 0 8px;padding:4px 10px;font-size:13px;}',
+          'div.' + TAG_CLASS + '{margin:4px 0 8px;padding:4px 10px;}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
@@ -670,18 +670,37 @@
         return null;
       }
 
-      // ---- 在貼文卡掛一顆警示 tag。落點優先取作者列：實機是
-      // row > span > a > time，tag 插在時間連結的包裹層 <span> 之後，成為
-      // 作者列 flex row 自己的 item（不進時間的行盒，時間的基線與字級不受
-      // 影響）；沒有那層包裹時才退而求其次插在 <a> 之後。作者列整個取不到
-      // 就退回互動列「上方」的區塊級 <div>，連互動列都找不到才掛在容器末
-      // 端，至少讓使用者看得到警示。文案一律以 textContent 寫入（頁面上的
-      // 文字不經 innerHTML）。冪等：容器內已有 tag 就不再插。
+      // ---- 取時間連結那一支「最外層的單子節點祖先」：從 <a> 往上走，只要
+      // 當前節點的父層就只有它這一個元素子節點就繼續往上，停在父層還有別
+      // 的元素子節點（即作者列）的那一顆。實機量到的祖先鏈是
+      // row > divC > divB > span > a > time，divC 正是排版上給 6px gap 的那
+      // 層，因此這支走法會停在 divC。走法純看結構、不碰 getComputedStyle。
+      // 最多走 4 層、不越過貼文容器；<a> 的父層本來就有別的元素子節點時回
+      // 傳 null（沒有可用的包裹層）。----
+      function findTimeBranchTop(anchor, container) {
+        var current = anchor;
+        for (var step = 0; step < 4; step++) {
+          var parent = current.parentNode;
+          if (!parent || parent.nodeType !== 1 || parent === container) break;
+          var siblings = parent.children;
+          if (!siblings || siblings.length !== 1) break;
+          current = parent;
+        }
+        return current === anchor ? null : current;
+      }
+
+      // ---- 在貼文卡掛一顆警示 tag。落點優先取作者列：tag 被 append 進時間
+      // 那一支最外層的單子節點祖先（實機量到的 gap 6px 那一層），與時間隔
+      // 開剛好一個 gap，時間、作者名與「⋯」的位置全不動；那一層取不到就退
+      // 而求其次插在時間連結 <a> 之後。作者列整個取不到就退回互動列「上
+      // 方」的區塊級 <div>，連互動列都找不到才掛在容器末端，至少讓使用者看
+      // 得到警示。文案一律以 textContent 寫入（頁面上的文字不經
+      // innerHTML）。冪等：容器內已有 tag 就不再插。
       //
       // 【注入原則】擴充只新增自己的節點：不對 Threads 既有節點呼叫
       // style／setAttribute／classList，也不改動它們的結構。宿主容器放不下
-      // 就縮自己的元素（作者列 row 是 overflow:hidden、高 21px，pill 因此收
-      // 到 12px），再不行就退回既有插入點——絕不動版面去遷就 tag。
+      // 就縮自己的元素（落點那層是 overflow:hidden、高 21px，pill 因此把內
+      // 距收到 1px 8px），再不行就退回既有插入點——絕不動版面去遷就 tag。
       //
       // titleKey 決定滑鼠提示要說哪一句：詳情頁掃描用預設的 scamTagTooltip
       // （這串貼文疑似詐騙），河道查表傳 scamBlockedByList（這個帳號在你的黑
@@ -699,18 +718,13 @@
           tag.textContent = t('scamTagLabel');
 
           if (anchor) {
-            // 包裹層要是「連結外面那層 <span>」本身還掛在作者列上才採用；
-            // <a> 直接掛在 row 下時 parentNode 就是 row，插在它之後會掉出作
-            // 者列，這種版面退回插在 <a> 之後。
-            var wrapper = anchor.parentNode;
-            var target =
-              wrapper && wrapper.nodeType === 1 && wrapper.nodeName === 'SPAN' && wrapper.parentNode
-                ? wrapper
-                : anchor;
-            if (typeof target.insertAdjacentElement === 'function') {
-              target.insertAdjacentElement('afterend', tag);
-            } else if (target.parentNode) {
-              target.parentNode.insertBefore(tag, target.nextSibling);
+            var branchTop = findTimeBranchTop(anchor, container);
+            if (branchTop) {
+              branchTop.appendChild(tag);
+            } else if (typeof anchor.insertAdjacentElement === 'function') {
+              anchor.insertAdjacentElement('afterend', tag);
+            } else if (anchor.parentNode) {
+              anchor.parentNode.insertBefore(tag, anchor.nextSibling);
             }
             return;
           }
