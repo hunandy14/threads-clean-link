@@ -1875,6 +1875,47 @@ test('F1 端到端：多行本文的詳情頁照樣掃到錨點，命中、送 s
   assert.equal(env.tags().length, 1, '多行本文照樣要掛警示');
 });
 
+// ---- 軟性招攬串：LINE 提及 ＋ 群組詞（PM 規則改版）----
+//
+// scam-thread-soft.json 是第二份合成串文：七篇自回覆，招攬篇「一個話術詞都
+// 沒有」，只留一句「加 LINE：ab12cd……我把你拉進群組」。舊判準（錨點 ＋ 強
+// 話術詞）對這串全文回 hit:false，新判準（LINE 提及 ＋ 群組／加入詞）才掃得
+// 到。判定本身的邊界在 test/tcl-core.test.js 釘，這裡只走一條端到端：詳情
+// 頁掃描 → 命中 → 送 scam.hit → 掛 tag。
+const SOFT_FIXTURE = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'fixtures', 'scam-thread-soft.json'), 'utf8')
+);
+const SOFT_POSTS = SOFT_FIXTURE.posts;
+const SOFT_PATH = `/@${AUTHOR}/post/${SOFT_POSTS[0].code}`;
+const SOFT_THREAD_TEXT = SOFT_POSTS.map((post) => post.captionText).join('\n\n');
+
+test('軟性招攬端到端：零話術詞的 LINE 群組招攬串照樣命中、送 scam.hit、掛 tag', async () => {
+  const env = loadEnv({
+    pathname: SOFT_PATH,
+    page: [createSsrScript(SOFT_POSTS[0]), createScanDom(SOFT_POSTS)],
+  });
+  await env.flush();
+
+  assert.equal(env.detectCalls.length, 1, '詳情頁應掃描一次');
+  assert.equal(env.detectCalls[0], SOFT_THREAD_TEXT, '七篇串起來的全文');
+  assert.ok(env.detectCalls[0].includes('LINE：ab12cd'), 'LINE 提及必須進得了判定的輸入');
+  assert.ok(
+    !/黑馬股|報明牌|代操|帶單|飆股|穩賺|獲利分享/.test(env.detectCalls[0]),
+    '這串刻意不帶任何強話術詞，命中只能來自 LINE 提及 ＋ 群組詞'
+  );
+
+  const hits = env.hits();
+  assert.equal(hits.length, 1, '軟性招攬串要通報一則 scam.hit');
+  assert.equal(hits[0].userId, SOFT_POSTS[0].userId);
+  assert.equal(hits[0].handle, AUTHOR);
+  assert.equal(hits[0].postUrl, ORIGIN + SOFT_PATH, 'postUrl 為正規化後的乾淨網址');
+  assert.ok(hits[0].anchorMatch.includes('LINE：ab12cd'), 'anchorMatch 取 LINE 提及本體');
+  assert.ok(hits[0].snippet.includes('LINE：ab12cd'), 'snippet 以 LINE 提及為中心');
+  assert.deepEqual(Array.from(hits[0].pitchMatches), [], '沒有話術詞也要成立');
+
+  assert.equal(env.tags().length, 1, '命中就要掛一顆警示');
+});
+
 // ---- S1 效能：同鍵重複觸發不重讀 SSR script ----
 //
 // 詳情頁有數十份 SSR script，其中不乏數百 KB 的大塊 JSON。MutationObserver
