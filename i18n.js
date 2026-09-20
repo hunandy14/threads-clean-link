@@ -232,32 +232,33 @@
       // (post-icon.js 的失敗 toast 使用)。
       favContextLost: '擴充功能已更新，請重新整理頁面',
 
-      // ---- scam-guard:投資詐騙串文警示 ----
+      // ---- scam-guard:LINE 群組引導標記 ----
       // 詳情頁與河道共用的 .tcl-scam-tag:標籤文字與原生 tooltip(title)。
-      scamTagLabel: '疑似投資詐騙',
-      scamTagTooltip: '這串貼文含加 LINE 與投資話術，疑似詐騙引導。請勿加好友或提供個資。',
-      // 某作者首次被判定命中、自動加入本機黑名單時的提示。
-      scamFirstHitToast: '已把這個帳號加入本機黑名單，可在設定頁管理。',
-      // 作者已在黑名單中(非本次命中)時，標籤顯示的理由。
-      scamBlockedByList: '這個帳號在你的黑名單中',
+      scamTagLabel: 'LINE 群組引導',
+      scamTagTooltip:
+        '這串貼文含引導加入 LINE 或群組的字句，常見於投資招攬。請自行判斷，勿輕易加好友或提供個資。',
+      // 某作者首次被判定命中、自動加入本機標記名單時的提示。
+      scamFirstHitToast: '已把這個帳號加入本機標記名單，可在設定頁管理。',
+      // 作者已在標記名單中(非本次命中)時，標籤顯示的理由。
+      scamBlockedByList: '這個帳號曾發過引導加入 LINE 的串文，已在你的本機標記名單中。',
       // 選項頁設定卡的總開關 #scamGuardEnabled。
-      opScamGuardName: '投資詐騙警示',
-      opScamGuardDesc: '偵測疑似投資詐騙的串文並標記作者；名單只存在這台裝置，不上雲。',
+      opScamGuardName: 'LINE 群組引導標記',
+      opScamGuardDesc: '偵測引導加入 LINE 群組的串文並標記作者；名單只存在這台裝置，不上雲。',
 
-      // ---- 選項頁:投資詐騙黑名單卡(設定卡後、紀錄卡前) ----
-      opScamListTitle: '投資詐騙黑名單',
+      // ---- 選項頁:標記名單卡(設定卡後、紀錄卡前) ----
+      opScamListTitle: '標記名單',
       opScamListCount: '{n} 位作者',
       // 列第二行的加入日期(YYYY-MM-DD，比照裝置列的「新增於」)。
       opScamAddedOn: '加入於 {d}',
       // 證據連結區的小標:底下每筆 evidence 一條連結。
       opScamEvidence: '證據',
       opScamRemove: '解除',
-      opScamRemoveTitle: '解除「{name}」的黑名單？',
-      // 講清楚解除是永久的:該作者進 allowlist，日後再命中也不會自動加回。
-      opScamRemoveDesc: '解除後不會再自動加回；紀錄上的警示會消失。',
+      opScamRemoveTitle: '解除「{name}」的標記？',
+      // 講清楚解除是永久的:該作者進 allowlist，日後再命中也不會自動標記。
+      opScamRemoveDesc: '解除後不會再自動標記；貼文上的標記會消失。',
       opScamRemoveFailed: '解除失敗，請稍後再試',
       opScamEmpty: '目前沒有被標記的作者',
-      // 「已解除」小節:列出 allowlist，可一鍵復原成黑名單。
+      // 「已解除」小節:列出 allowlist，可一鍵復原回標記名單。
       opScamAllowlistTitle: '已解除',
       opScamRestore: '復原',
       opScamRestoreFailed: '復原失敗，請稍後再試',
@@ -431,26 +432,27 @@
 
       favContextLost: 'Extension updated — please refresh the page',
 
-      scamTagLabel: 'Possible investment scam',
+      scamTagLabel: 'LINE group funnel',
       scamTagTooltip:
-        'This thread pushes a LINE contact alongside investment pitches — a common scam funnel. Do not add them or share personal details.',
-      scamFirstHitToast: 'Added this account to your local blocklist. Manage it in Settings.',
-      scamBlockedByList: 'This account is on your blocklist',
-      opScamGuardName: 'Investment scam warning',
+        'This thread nudges readers to add a LINE contact or join a group, a pattern common in investment pitches. Use your own judgment and avoid sharing personal details.',
+      scamFirstHitToast: 'Added this account to your local flagged list. Manage it in Settings.',
+      scamBlockedByList:
+        'This account has posted threads that funnel readers to LINE. It is on your local flagged list.',
+      opScamGuardName: 'LINE group funnel flags',
       opScamGuardDesc:
-        'Flag threads that look like investment scams and mark their authors. The list stays on this device.',
+        'Detects threads that funnel readers into LINE groups and flags the author. The list stays on this device only.',
 
-      opScamListTitle: 'Investment scam blocklist',
+      opScamListTitle: 'Flagged accounts',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
       opScamListCount: '{n} author(s)',
       opScamAddedOn: 'Added {d}',
       opScamEvidence: 'Evidence',
       opScamRemove: 'Remove',
-      opScamRemoveTitle: 'Remove "{name}" from the blocklist?',
+      opScamRemoveTitle: 'Unflag “{name}”?',
       opScamRemoveDesc:
-        'They will not be added back automatically, and the warning on your records will disappear.',
+        'It will not be flagged again automatically; the badge on their posts disappears.',
       opScamRemoveFailed: 'Remove failed. Please try again later.',
-      opScamEmpty: 'No flagged authors yet',
+      opScamEmpty: 'No flagged accounts yet',
       opScamAllowlistTitle: 'Removed',
       opScamRestore: 'Undo',
       opScamRestoreFailed: 'Undo failed. Please try again later.',

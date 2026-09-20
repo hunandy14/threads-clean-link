@@ -1054,7 +1054,7 @@
   }
   .device-empty .icon { width: 26px; height: 26px; }
 
-  /* ---- 投資詐騙黑名單卡 ----
+  /* ---- 標記名單卡 ----
      列的骨架與互動語彙沿用裝置列(.device-row):列高、分隔線、右側 ghost
      圖示鈕的浮現規則一致，只有證據連結區是本卡獨有。 */
   /* 與下一張卡的間距比照 .duo 的 12px。 */
@@ -1407,13 +1407,13 @@
           </span>
           <input type="checkbox" id="saveHistory" class="switch" />
         </label>
-        <!-- 詐騙串文警示的總開關。純本機功能，值存 chrome.storage.local，
+        <!-- LINE 群組引導標記的總開關。純本機功能，值存 chrome.storage.local，
              不跟著帳號跨裝置同步，也不鏡像到 popup(見 options.js 的
              LOCAL_SETTING_IDS)。 -->
         <label class="setting-row" for="scamGuardEnabled">
           <span class="txt">
-            <span class="name" data-i18n="opScamGuardName">投資詐騙警示</span>
-            <div class="desc" data-i18n="opScamGuardDesc">偵測疑似投資詐騙的串文並標記作者；名單只存在這台裝置，不上雲。</div>
+            <span class="name" data-i18n="opScamGuardName">LINE 群組引導標記</span>
+            <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文並標記作者；名單只存在這台裝置，不上雲。</div>
           </span>
           <input type="checkbox" id="scamGuardEnabled" class="switch" />
         </label>
@@ -1421,14 +1421,14 @@
     </div>
   </section>
 
-  <!-- 投資詐騙黑名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
+  <!-- 標記名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
        不進 syncState。名單列、證據連結與「已解除」小節都由 options.js 逐一
        createElement 產生——displayName 與證據片段是他人貼文帶進來的字串，一律
        走 textContent，不得 innerHTML。寫入端只有 background，本頁讀 storage
        ＋監聽 onChanged，解除/復原經 runtime 訊息請 background 代寫。 -->
   <section class="card scam-blocklist">
     <div class="card-head">
-      <h2 data-i18n="opScamListTitle">投資詐騙黑名單</h2>
+      <h2 data-i18n="opScamListTitle">標記名單</h2>
       <span class="hint" id="scamCount"></span>
     </div>
     <div class="scam-list" id="scamList"></div>

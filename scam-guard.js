@@ -438,11 +438,12 @@
       // i18n.js 依 manifest content_scripts 陣列順序必定先載入，這份字面值
       // 只是防禦性後備，避免 TCLI18N 缺席時使用者看到原始 key。
       var FALLBACK_STRINGS = {
-        scamTagLabel: 'Possible investment scam',
+        scamTagLabel: 'LINE group funnel',
         scamTagTooltip:
-          'This thread pushes a LINE contact alongside investment pitches — a common scam funnel. Do not add them or share personal details.',
-        scamBlockedByList: 'This account is on your blocklist',
-        scamFirstHitToast: 'Added this account to your local blocklist. Manage it in Settings.',
+          'This thread nudges readers to add a LINE contact or join a group, a pattern common in investment pitches. Use your own judgment and avoid sharing personal details.',
+        scamBlockedByList:
+          'This account has posted threads that funnel readers to LINE. It is on your local flagged list.',
+        scamFirstHitToast: 'Added this account to your local flagged list. Manage it in Settings.',
       };
 
       function t(key) {
