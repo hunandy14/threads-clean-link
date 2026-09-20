@@ -451,7 +451,7 @@
   .setting-row .txt { min-width: 0; }
   .setting-row .name { font-size: 13px; font-weight: 550; }
   .setting-row .desc { font-size: 12px; color: var(--ink-3); }
-  /* 設定列內的同頁導覽連結(目前只有「管理名單 →」)，另起一行接在說明之下。 */
+  /* 設定列內的同頁導覽連結(目前只有「管理警示名單 →」)，另起一行接在說明之下。 */
   .setting-link {
     display: inline-block;
     margin-top: 2px;
@@ -1544,7 +1544,7 @@
                    href="#flags"> 改 hash 後由 hashchange 接手切分頁，不需另外
                    攔截 click;錨點是 interactive content，點它不會連帶觸發外層
                    label 的開關切換。 -->
-              <a class="setting-link" id="scamManageLink" href="#flags" data-i18n="opScamManageLink">管理名單 →</a>
+              <a class="setting-link" id="scamManageLink" href="#flags" data-i18n="opScamManageLink">管理警示名單 →</a>
             </span>
             <input type="checkbox" id="scamGuardEnabled" class="switch" />
           </label>
@@ -1558,8 +1558,8 @@
     <!-- 紀錄清單為卡片牆，單一 view 直接顯示，不分頁 tab。 -->
     <section class="card history">
       <div class="card-head">
-        <!-- opHistoryTitle 文字包在自己的 span 裡,不直接掛在 h2 上——
-             applyI18nDom 對 data-i18n 節點做 node.textContent = ...,若掛在
+        <!-- opHistoryTitle 文字包在自己的 span 裡，不直接掛在 h2 上——
+             applyI18nDom 對 data-i18n 節點做 node.textContent = ...，若掛在
              h2 本身，語言切換會把巢狀的 envBadgeHistory 一併清空(比照頁首
              .sub 的 opSub span 同一套避雷寫法)。 -->
         <h2><span data-i18n="opHistoryTitle">紀錄</span><span id="envBadgeHistory" class="env-badge env-badge-sm" hidden></span></h2>

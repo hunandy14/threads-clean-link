@@ -5881,7 +5881,7 @@ test.describe('scamGuardEnabled:LINE 群組引導警示總開關', () => {
 //     (文案 opScamListCount,{n} 位作者)
 //   - 名單:#scamList,每列直接掛在它底下、row.dataset.id = userId
 //   - 空狀態:#scamEmpty(文案 opScamEmpty)
-//   - 已解除小節:#scamAllowlist(整個小節,allowlist 為空時 hidden)
+//   - 已解除小節:#scamAllowlist(整個小節，allowlist 為空時 hidden)
 //   - 列內動作鈕以 dataset.act 標記('remove' / 'restore')
 //   節點一律以 createElement/createElementNS 產生(比照 renderDevices),
 //   不得走 innerHTML——displayName／snippet 都是他人貼文帶進來的字串。
@@ -6308,7 +6308,7 @@ test('警示名單卡:allowlist 有資料時「已解除」小節顯示 handle �
 
   const restoreBtn = actBtn(rows[0], 'restore');
   assert.ok(restoreBtn, '每一列都應有 dataset.act="restore" 的復原鈕');
-  // 復原鈕是文字鈕或圖示鈕都行,文案落在 textContent 或 title 任一即可。
+  // 復原鈕是文字鈕或圖示鈕都行，文案落在 textContent 或 title 任一即可。
   const restoreLabel = joinedText(restoreBtn) + ' ' + scamAttrOf(restoreBtn, 'title');
   assert.ok(
     restoreLabel.includes(i18n.t('zh', 'opScamRestore')),
