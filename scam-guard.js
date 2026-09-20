@@ -675,11 +675,19 @@
       // 的元素子節點（即作者列）的那一顆。實機量到的祖先鏈是
       // row > divC > divB > span > a > time，divC 正是排版上給 6px gap 的那
       // 層，因此這支走法會停在 divC。走法純看結構、不碰 getComputedStyle。
-      // 最多走 4 層、不越過貼文容器；<a> 的父層本來就有別的元素子節點時回
-      // 傳 null（沒有可用的包裹層）。----
+      // 不越過貼文容器；<a> 的父層本來就有別的元素子節點時回傳 null（沒有
+      // 可用的包裹層）。
+      //
+      // 走訪上限 6 純粹是防跑飛的保險——改版把單傳鏈接得更長時不至於一路走
+      // 到容器——不是「版面就是這麼多層」的假設；真機目前剛好用滿 4 層。
+      //
+      // 退化情形：gap 那一層日後若多出第二個元素子節點（例如「已編輯」標
+      // 記），走法會停在只包時間的內層，tag 會零間距貼著時間。這裡刻意不加
+      // margin-left 兜底——主路徑停的那層自己有 6px gap，補了外距會在正常版
+      // 面上變成 12px，寧可少數退化版面擠一點，也不讓主路徑跑掉。----
       function findTimeBranchTop(anchor, container) {
         var current = anchor;
-        for (var step = 0; step < 4; step++) {
+        for (var step = 0; step < 6; step++) {
           var parent = current.parentNode;
           if (!parent || parent.nodeType !== 1 || parent === container) break;
           var siblings = parent.children;

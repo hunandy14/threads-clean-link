@@ -3586,6 +3586,16 @@ function tagsAboveActionRow(card) {
     );
 }
 
+// 切出單一 CSS 規則的宣告區段，找不到回傳 null。逐段比對才分得清「作者列
+// 那顆」與「退回路徑那顆」各自寫了什麼——整份字串做 indexOf 時，兩條規則
+// 任一邊出現的值都會讓斷言過關。選擇器前緣限定在字串開頭或 `}`／`;` 之
+// 後，`.tcl-scam-tag` 才不會誤配到 `div.tcl-scam-tag` 的尾段。
+function ruleBody(css, selector) {
+  const pattern = new RegExp('(?:^|[};])' + selector.replace(/\./g, '\\.') + '\\{([^}]*)\\}');
+  const match = pattern.exec(css);
+  return match ? match[1] : null;
+}
+
 // 時間那一支最外層的單子節點祖先（divC，量到 gap 6px 的那一層）：它是作者
 // 列的子節點，往下一路單傳到時間連結。
 function timeGapRowOf(card) {
@@ -3756,21 +3766,25 @@ test('作者列 8：.tcl-scam-tag 沿用原本的 13px，靠內距收進 21px �
   const style = env.document.getElementById(STYLE_ID);
   assert.ok(style, '命中時應注入樣式節點');
   const css = style.textContent;
-  assert.ok(css.indexOf('.' + TAG_CLASS + '{') !== -1, '樣式應含 .tcl-scam-tag 規則');
+  const base = ruleBody(css, '.' + TAG_CLASS);
+  const fallback = ruleBody(css, 'div.' + TAG_CLASS);
+  assert.ok(base, '樣式應含 .tcl-scam-tag 規則');
+  assert.ok(fallback, '樣式應含 div.tcl-scam-tag 這條退回路徑的覆寫');
+
   assert.ok(
-    css.indexOf('font-size:13px') !== -1,
-    '字級沿用原本那顆 pill 的 13px（量到 20.04px，21px 的行高放得下）'
+    base.indexOf('font-size:13px') !== -1,
+    '作者列那顆的字級沿用原本 pill 的 13px（量到 20.04px，21px 的行高放得下）'
   );
   assert.ok(
-    css.indexOf('padding:1px 8px') !== -1,
+    base.indexOf('padding:1px 8px') !== -1,
     '落點那層是 overflow:hidden、高 21px，內距要收到 1px 8px 才不被切掉'
   );
   assert.ok(
-    css.indexOf('div.' + TAG_CLASS + '{') !== -1 && css.indexOf('padding:4px 10px') !== -1,
-    '退回路徑的區塊級 tag 用更具體的選擇器維持原本的 4px 10px'
+    fallback.indexOf('padding:4px 10px') !== -1,
+    '退回路徑的區塊級 tag 覆寫回原本的 4px 10px'
   );
   assert.ok(
-    css.indexOf('var(--tcl-warn-fg') !== -1 && css.indexOf('var(--tcl-warn-bg') !== -1,
+    base.indexOf('var(--tcl-warn-fg') !== -1 && base.indexOf('var(--tcl-warn-bg') !== -1,
     '配色仍走 --tcl-warn-* 變數'
   );
 });
