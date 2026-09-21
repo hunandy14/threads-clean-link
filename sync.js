@@ -463,7 +463,11 @@
      * 同一個鍵直接覆寫:換帳號時 userId 跟著換，舊守衛自然失效。
      */
     function rememberSelfClear(ctx, slot, payload, sentAt) {
-      var clearedAt = payload && finiteNumber(payload.clearedAt) ? payload.clearedAt : null;
+      // 0 視同缺席(序列化過的 null):記成水位線 0 的守衛是「已認領且涵蓋 0」，
+      // 下一輪拉回真正的 clearedAt 就比它新，本機資料被當成別台裝置清的硬刪。
+      // 與下行閘門(只認有限正數)對稱，links 與 marks 共用這一條。
+      var clearedAt =
+        payload && finiteNumber(payload.clearedAt) && payload.clearedAt > 0 ? payload.clearedAt : null;
       return writeClearGuard(
         ctx,
         slot,
