@@ -83,6 +83,9 @@
   // 它的紀錄全刪。**刻意獨立於 syncState**:登出與 session 過期會把 syncState
   // 整包重設，守衛跟著沒了，「刪雲端→登出→再登入」就會全滅。
   var CLEAR_GUARD_KEY = 'syncClearGuard';
+  // 警示名單那一側的同一件事(R3)。與 links 的守衛各存一把鍵:兩條通道的清空
+  // 水位線互不相干，共用一格會讓「只刪了其中一邊」被誤判成兩邊都清過。
+  var MARKS_CLEAR_GUARD_KEY = 'syncMarksClearGuard';
   // 別台裝置的純顯示快取。登出與刪雲端要清掉(留著就會在下一位使用者眼前秀
   // 出上一個帳號的裝置);本機身分 syncDevice 兩者皆不清。
   var DEVICES_CACHE_KEY = 'syncDevices';
@@ -107,6 +110,29 @@
   var MARK_KEY_PREFIX = 'threads:';
   // entries 的鍵形狀(Threads 作者數字主鍵)，與 tcl-core 同一把尺。
   var MARK_USER_ID_PATTERN = /^\d{1,20}$/;
+  // marksEvicted 的累記上限。這一格只是卡頭提示的筆數，長年累加會變成一個沒有
+  // 意義的天文數字。
+  var MARKS_EVICTED_MAX = 1000000;
+
+  // 自清守衛的兩個槽位(D19／R3)。links 與 marks 各有一把 storage 鍵與一組 ctx
+  // 欄位，形狀閘門、四態裁決與落地出口三者共用。
+  var LINKS_GUARD = {
+    storageKey: CLEAR_GUARD_KEY,
+    field: 'clearGuard',
+    invalidField: 'clearGuardInvalid',
+    errorCode: 'clear_guard_invalid',
+    rememberPurged: false,
+  };
+  var MARKS_GUARD = {
+    storageKey: MARKS_CLEAR_GUARD_KEY,
+    field: 'marksClearGuard',
+    invalidField: 'marksClearGuardInvalid',
+    errorCode: 'marks_clear_guard_invalid',
+    // purge 之後把已處理的水位線記進守衛:marks 的硬刪會一併重設四格，沒記下來
+    // 的話下一輪拉回同一個 clearedAt 又判成一次新的清空，游標每兩輪歸零一次，
+    // 通道永遠停在回填。
+    rememberPurged: true,
+  };
 
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
@@ -375,6 +401,7 @@
       defaults[BACKOFF_KEY] = null;
       defaults[VERIFIED_AT_KEY] = null;
       defaults[CLEAR_GUARD_KEY] = null;
+      defaults[MARKS_CLEAR_GUARD_KEY] = null;
       return localGet(defaults).then(function (got) {
         var authRecord = got[AUTH_KEY];
         var backoff = got[BACKOFF_KEY];
@@ -391,6 +418,7 @@
           failures: backoff && typeof backoff.failures === 'number' ? backoff.failures : 0,
           verifiedAt: finiteNumber(got[VERIFIED_AT_KEY]) ? got[VERIFIED_AT_KEY] : null,
           clearGuard: normalizeClearGuard(got[CLEAR_GUARD_KEY]),
+          marksClearGuard: normalizeClearGuard(got[MARKS_CLEAR_GUARD_KEY]),
         };
       });
     }
@@ -414,10 +442,10 @@
     }
 
     /** 守衛落地的唯一出口:記憶體與 storage 一起更新，形狀由閘門統一。 */
-    function writeClearGuard(ctx, guard) {
-      ctx.clearGuard = normalizeClearGuard(guard);
+    function writeClearGuard(ctx, slot, guard) {
+      ctx[slot.field] = normalizeClearGuard(guard);
       var items = {};
-      items[CLEAR_GUARD_KEY] = guard;
+      items[slot.storageKey] = guard;
       return localSet(items);
     }
 
@@ -434,20 +462,22 @@
      * 本機紀錄全刪。sentAt 只留著診斷用，不參與比較。
      * 同一個鍵直接覆寫:換帳號時 userId 跟著換，舊守衛自然失效。
      */
-    function rememberSelfClear(ctx, payload, sentAt) {
+    function rememberSelfClear(ctx, slot, payload, sentAt) {
       var clearedAt = payload && finiteNumber(payload.clearedAt) ? payload.clearedAt : null;
       return writeClearGuard(
         ctx,
+        slot,
         clearedAt === null
           ? pendingGuard(ctx.state.userId, sentAt)
           : { userId: ctx.state.userId, clearedAt: clearedAt }
       );
     }
 
-    /** 丟掉守衛(換帳號)。留著會擋掉新帳號真正的清空水位線。 */
+    /** 丟掉兩條通道的守衛(換帳號)。留著會擋掉新帳號真正的清空水位線。 */
     function forgetSelfClear() {
       var items = {};
       items[CLEAR_GUARD_KEY] = null;
+      items[MARKS_CLEAR_GUARD_KEY] = null;
       return localSet(items);
     }
 
@@ -460,8 +490,8 @@
      * - `claim`  守衛待定 → 這就是自己那一次，本機留著並把水位線寫回守衛。
      * - `invalid` 守衛讀不懂 → 本輪不硬刪(fail-safe)，另記錯誤碼讓使用者知情。
      */
-    function clearGuardVerdict(ctx, clearedAt) {
-      var guard = ctx.clearGuard;
+    function clearGuardVerdict(ctx, slot, clearedAt) {
+      var guard = ctx[slot.field];
       if (!guard) return 'purge';
       if (guard.invalid) return 'invalid';
       if (guard.userId !== ctx.state.userId) return 'purge';
@@ -474,13 +504,18 @@
      * 成待定、標記錯誤碼——下一輪的 clearedAt 就會把它認領回來，同時 runSync
      * 收尾時以 clear_guard_invalid 廣播，不把這件事靜靜吞掉。
      */
-    function settleClearGuard(ctx, verdict, clearedAt) {
+    function settleClearGuard(ctx, slot, verdict, clearedAt) {
       if (verdict === 'claim') {
-        return writeClearGuard(ctx, { userId: ctx.state.userId, clearedAt: clearedAt });
+        return writeClearGuard(ctx, slot, { userId: ctx.state.userId, clearedAt: clearedAt });
       }
       if (verdict === 'invalid') {
-        ctx.clearGuardInvalid = true;
-        return writeClearGuard(ctx, pendingGuard(ctx.state.userId, now()));
+        ctx[slot.invalidField] = true;
+        return writeClearGuard(ctx, slot, pendingGuard(ctx.state.userId, now()));
+      }
+      // 記下已經套用過的水位線(只有 marks 需要):硬刪之後四格全部重設，下一輪
+      // 拉回同一個 clearedAt 必須判成 skip，否則游標反覆歸零。
+      if (verdict === 'purge' && slot.rememberPurged && finiteNumber(clearedAt)) {
+        return writeClearGuard(ctx, slot, { userId: ctx.state.userId, clearedAt: clearedAt });
       }
       return Promise.resolve();
     }
@@ -762,7 +797,7 @@
               // 別台裝置清空了雲端:早於水位線的本機紀錄一併硬刪。自己剛清的
               // 那一次由守衛擋下(D19):使用者要的是「雲端沒了、這台留著」，把
               // 自己的水位線拉回來當別人的會把本機資料清光。
-              verdict = clearGuardVerdict(ctx, changes.clearedAt);
+              verdict = clearGuardVerdict(ctx, LINKS_GUARD, changes.clearedAt);
               if (verdict === 'purge') {
                 next = next.filter(function (entry) {
                   return eventTimeOf(entry) > changes.clearedAt;
@@ -819,7 +854,7 @@
             .then(function () {
               // 守衛的更新排在 history 之後:history 沒寫成功就整輪失敗重來，
               // 守衛也不該先前進。
-              return settleClearGuard(ctx, verdict, changes && changes.clearedAt);
+              return settleClearGuard(ctx, LINKS_GUARD, verdict, changes && changes.clearedAt);
             })
             .then(function () {
               // D25:拉到沒見過的裝置只留旗標，不在同步途中順手打一次 devices。
@@ -848,7 +883,7 @@
           .then(function (payload) {
             // 自己發動的清空記進守衛，同一輪後面拉回來的 clearedAt 才不會
             // 被當成別台裝置的水位線(D19)。
-            return rememberSelfClear(ctx, payload, sentAt);
+            return rememberSelfClear(ctx, LINKS_GUARD, payload, sentAt);
           })
           .then(function () {
             ctx.state.clearedAt = null;
@@ -969,6 +1004,9 @@
         var entry = list.entries[userId];
         var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
         if (pushedAt !== null && updatedAt <= pushedAt) return;
+        // handle 形狀不合的條目不進批:送上去必被伺服器退回 rejectedIds，白佔一
+        // 次往返，還把 key 記進 marksRejected——在本機又動過那一筆之前不再重送。
+        if (entry.handle !== undefined && !TCLCoreRef.isScamMarkHandle(entry.handle)) return;
         var mark = TCLCoreRef.toScamMark(userId, entry);
         if (rejected[mark.key] === updatedAt) return;
         pending.push({ mark: mark, updatedAt: updatedAt });
@@ -997,13 +1035,23 @@
      * 寫前 normalize(readBlocklist)、寫後 cap——與 background 的三支寫入路徑
      * 同一套紀律，handleIndex 一律由 entries 重建，不留孤兒鍵。
      */
-    function applyMarkChanges(marks, deletions) {
-      if (!marks.length && !deletions.length) return Promise.resolve([]);
+    function applyMarkChanges(marks, deletions, purgeBefore) {
+      if (!marks.length && !deletions.length && purgeBefore === null) return Promise.resolve([]);
       // 比墓碑新、因此留在本機的條目。回給呼叫端把推送水位線讓回去，下一輪
       // 才推得到它們。
       var kept = [];
       return writeChain(function () {
         return readBlocklist().then(function (list) {
+          // 【雲端清空】別台裝置打過 DELETE /api/v1/marks:不晚於水位線的本機條
+          // 目一併硬刪，晚於的留著(那是清空之後才動過的，伺服器收得下)。自己剛
+          // 清的那一次由守衛在呼叫端擋下(D19 的同一條紀律)。
+          if (purgeBefore !== null) {
+            Object.keys(list.entries).forEach(function (userId) {
+              var current = list.entries[userId];
+              var at = finiteNumber(current.updatedAt) ? current.updatedAt : 0;
+              if (at <= purgeBefore) delete list.entries[userId];
+            });
+          }
           // 【墓碑守衛】契約 §3.1 R2③「比墓碑舊不復活」的對稱面:本機
           // updatedAt **晚於** deletedAt，代表使用者在別台裝置刪掉這一筆之後
           // 又動過它，那份改動不該被一筆較舊的刪除吃掉。留著並於下一輪重送，
@@ -1083,7 +1131,7 @@
      * - evicted 只累記筆數供 UI 提示，本機一筆不動(被淘汰的 key 由下一次回
      *   填自行對帳)。
      */
-    function settleMarkAck(ctx, payload, batch, floor) {
+    function settleMarkAck(ctx, payload, batch, floor, round) {
       var applied = (payload && payload.applied) || {};
       var sentAt = {};
       batch.forEach(function (row) {
@@ -1100,6 +1148,7 @@
         }
         if (finiteNumber(sentAt[key]) && (high === null || sentAt[key] > high)) high = sentAt[key];
       });
+      if ((applied.rejectedIds || []).length) round.rejected = true;
       (applied.rejectedIds || []).forEach(function (key) {
         if (typeof key !== 'string' || !finiteNumber(sentAt[key])) return;
         rejected[key] = sentAt[key];
@@ -1113,7 +1162,11 @@
         ctx.state.marksPushedAt = high;
       }
       var evicted = payload && finiteNumber(payload.evicted) ? payload.evicted : 0;
-      if (evicted > 0) ctx.state.marksEvicted = (ctx.state.marksEvicted || 0) + evicted;
+      if (evicted > 0) {
+        round.evicted += evicted;
+        // 夾上限:這一格是卡頭提示的筆數，跨輪累加沒有上限就會長成天文數字。
+        ctx.state.marksEvicted = Math.min(MARKS_EVICTED_MAX, (ctx.state.marksEvicted || 0) + evicted);
+      }
     }
 
     /**
@@ -1123,7 +1176,7 @@
      * 【位置參數】marksCursor 為 null 時不帶——契約 §3.1 的首輪回填走 GET，不
      * 帶位置參數時伺服器回 changes: null，這一次 POST 只是把水位線領回來。
      */
-    function postMarks(ctx, batch, floor) {
+    function postMarks(ctx, batch, floor, round) {
       var body = {
         upserts: batch.map(function (row) {
           return row.mark;
@@ -1144,19 +1197,38 @@
             deletions.push({ key: row.key, deletedAt: finiteNumber(row.deletedAt) ? row.deletedAt : -Infinity });
           });
         }
+        // 【清空水位線】0 與非有限數字一律視同「沒有水位線」——0 是序列化過的
+        // null，拿它去比大小會把整份名單清掉。守衛四態與 links 同一套(D19):只有
+        // 「確定不是自己清的」才硬刪。
+        var clearedAt =
+          changes && finiteNumber(changes.clearedAt) && changes.clearedAt > 0 ? changes.clearedAt : null;
+        var verdict = clearedAt === null ? null : clearGuardVerdict(ctx, MARKS_GUARD, clearedAt);
+        var purgeBefore = verdict === 'purge' ? clearedAt : null;
         // 【順序】游標必須等寫入真的落地才前進(比照 links)。
-        return applyMarkChanges(marks, deletions).then(function (kept) {
+        return applyMarkChanges(marks, deletions, purgeBefore).then(function (kept) {
           // 【順序】先記讓位再結算:settleMarkAck 要拿這一輪的 floor 夾住自己
           // 推上去的水位線，floor 晚一步記就夾不到本批的 ack。
           noteMarkFloor(floor, kept);
-          settleMarkAck(ctx, payload, batch, floor);
+          settleMarkAck(ctx, payload, batch, floor, round);
           // 【當場落地】讓位不能等到整輪尾端才統一套用:後面那批一斷線，整條鏈
           // 就 reject，尾端那一步輪不到跑，runSync 的失敗路徑會把**進這一輪之前
           // 就存在**的舊水位線原封不動落盤(夾擠只擋得住這一輪推上去的值，擋不到
           // 舊值)，留存的條目下一輪依舊選不到。整輪尾端那次保留著，重複套用冪等。
           applyMarkFloor(ctx, floor);
           if (payload && typeof payload.cursor === 'string') ctx.state.marksCursor = payload.cursor;
-          return changes;
+          // 【順序】守衛的更新排在名單落盤之後:名單沒寫成功就整輪失敗重來，守
+          // 衛也不該先前進。
+          return settleClearGuard(ctx, MARKS_GUARD, verdict, clearedAt).then(function () {
+            if (purgeBefore === null) return changes;
+            // 清空之後舊游標與推送水位線對這個雲端都沒有意義:四格一併重設，下
+            // 一輪從回填把名單重新長回來。
+            ctx.state.marksCursor = null;
+            ctx.state.marksPushedAt = null;
+            ctx.state.marksRejected = null;
+            ctx.state.marksEvicted = null;
+            round.purged = true;
+            return changes;
+          });
         });
       });
     }
@@ -1182,7 +1254,7 @@
         if (cursor) path += '&cursor=' + encodeURIComponent(cursor);
         return call(ctx, 'GET', path).then(function (payload) {
           var items = payload && Array.isArray(payload.items) ? payload.items : [];
-          return applyMarkChanges(items, []).then(function () {
+          return applyMarkChanges(items, [], null).then(function () {
             var next = payload && typeof payload.nextCursor === 'string' && payload.nextCursor
               ? payload.nextCursor
               : null;
@@ -1202,10 +1274,14 @@
       var lastChanges = null;
       // 整輪共用一份讓位下限:任何一批留下來的條目都要守到這一輪結束。
       var floor = { value: null };
+      // 整輪的結算帳:evicted 累計與「有沒有一筆被拒」決定輪末收不收掉淘汰提
+      // 示;purged 則讓清空當輪立刻收手——四格都重設了，再推再拉都沒有意義。
+      var round = { evicted: 0, rejected: false, purged: false };
       var step = Promise.resolve();
       batches.forEach(function (batch) {
         step = step.then(function () {
-          return postMarks(ctx, batch, floor).then(function (changes) {
+          if (round.purged) return undefined;
+          return postMarks(ctx, batch, floor, round).then(function (changes) {
             lastChanges = changes;
           });
         });
@@ -1215,9 +1291,10 @@
           // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
           var rounds = 0;
           function more() {
+            if (round.purged) return Promise.resolve();
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
             rounds += 1;
-            return postMarks(ctx, [], floor).then(function (changes) {
+            return postMarks(ctx, [], floor, round).then(function (changes) {
               lastChanges = changes;
               return more();
             });
@@ -1226,6 +1303,10 @@
         })
         .then(function () {
           applyMarkFloor(ctx, floor);
+          // 一輪完整跑完(沒有例外、沒有一筆被拒)且這一輪雲端一筆都沒淘汰時，把
+          // 上一輪留下的提示收掉:對完帳那張提示就該收，否則它永遠掛在卡頭上。
+          // 清空當輪已經重設過四格，不再動它。
+          if (!round.purged && !round.rejected && round.evicted === 0) ctx.state.marksEvicted = null;
         });
     }
 
@@ -1423,6 +1504,7 @@
           // 任何清空，留著只會擋掉新帳號真正的清空水位線(D19)。
           if (!switched) return undefined;
           ctx.clearGuard = null;
+          ctx.marksClearGuard = null;
           return forgetSelfClear().then(function () {
             // 別台裝置的清單同樣屬於前一個帳號(D25):鏡像欄位都重置了，這份
             // 顯示層快取沒有獨活下來的道理，留著就是把上一位使用者的裝置名
@@ -1575,11 +1657,14 @@
               // 守衛讀不懂時這一輪照樣走完(推拉都成功，只是沒有執行硬刪)，但
               // 不能靜靜吞掉:記錯誤碼並以 error 廣播，使用者才知道「別台裝置的
               // 清空這一輪沒有套用到這台」。守衛已重置成待定，下一輪會認領回來。
-              ctx.state.lastError = ctx.clearGuardInvalid ? 'clear_guard_invalid' : null;
+              var guardInvalid = null;
+              if (ctx.clearGuardInvalid) guardInvalid = LINKS_GUARD.errorCode;
+              else if (ctx.marksClearGuardInvalid) guardInvalid = MARKS_GUARD.errorCode;
+              ctx.state.lastError = guardInvalid;
               return saveState(ctx.state)
                 .then(scheduleSuccess)
                 .then(function () {
-                  return broadcastState(ctx.clearGuardInvalid ? 'error' : 'signed_in');
+                  return broadcastState(guardInvalid === null ? 'signed_in' : 'error');
                 });
             })
             .catch(function (err) {
@@ -1629,7 +1714,7 @@
             // 先記自清守衛再動 history:伺服器已經寫下 cleared_at 並會回給
             // 這台裝置自己，沒有這一筆的話下一輪(或重新登入後的首輪)拉回
             // 自己的水位線就會把要留在本機的紀錄全刪(D19)。
-            return rememberSelfClear(ctx, payload, sentAt);
+            return rememberSelfClear(ctx, LINKS_GUARD, payload, sentAt);
           })
           .then(function () {
             // 本機紀錄原樣保留但全部標乾淨:刪完雲端若還留著 dirty，下一輪同步
@@ -1646,10 +1731,27 @@
             });
           })
           .then(function () {
+            // 刪除雲端資料必須涵蓋警示名單(R3):只刪 links 的話名單整份留在後
+            // 端。排在 links 之後，前一步失敗時這一步不會把那個錯誤吞掉;總開關
+            // 關閉時照樣刪——使用者要的是雲端那一份消失，與本機掃不掃描無關。
+            var marksSentAt = now();
+            return call(ctx, 'DELETE', MARKS_PATH).then(function (payload) {
+              // 與 links 同一條紀律:沒刪成功就不記守衛(記了等於把「已清空」寫死
+              // 在本機，別台裝置真的清空時反而不刪)。
+              return rememberSelfClear(ctx, MARKS_GUARD, payload, marksSentAt);
+            });
+          })
+          .then(function () {
             // 游標歸零:舊游標指向的增量在清空後的雲端已不存在。
             ctx.state.cursor = null;
             ctx.state.clearedAt = null;
             ctx.state.lastError = null;
+            // marks 的四格同理:雲端名單沒了，水位線、被拒映射與淘汰提示一併歸
+            // 零，下一輪從回填重新長回來。本機名單則留在這台裝置(D19)。
+            ctx.state.marksCursor = null;
+            ctx.state.marksPushedAt = null;
+            ctx.state.marksRejected = null;
+            ctx.state.marksEvicted = null;
             // D15:使用者主動刪雲端資料是明確的隱私動作，即便帳號仍保持登入
             // (userId／email 不動)，快取的名字與大頭照也一併清空，不留在本
             // 機造成「資料已刪但畫面還秀著」的錯覺。
