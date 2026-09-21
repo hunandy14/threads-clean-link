@@ -412,7 +412,8 @@ function normalizeMark(raw) {
 /**
  * 兩筆 mark 合併：純量 LWW（`updatedAt` 大者勝；相等以既有為準，重送同一版不
  * 翻盤），evidence 取聯集。`addedAt` 取較小者——那是首見時間，不隨新版往後
- * 跳。轉 dismissed 照樣保留 evidence：使用者要看得到當初憑什麼掛上警示。
+ * 跳；已經落地的那一列另有一層保護，見 handleMarksSync 的寫入段。轉 dismissed
+ * 照樣保留 evidence：使用者要看得到當初憑什麼掛上警示。
  */
 function mergeMark(existing, incoming) {
   const winner = incoming.updatedAt > existing.updatedAt ? incoming : existing;
@@ -958,7 +959,15 @@ function createMockSyncServer(options = {}) {
         state.markTombstones.delete(key);
       }
       const existing = state.marks.get(key);
-      const merged = existing ? mergeMark(existing, incoming) : incoming;
+      let merged = incoming;
+      if (existing) {
+        merged = mergeMark(existing, incoming);
+        // 既有列的 addedAt 由伺服器保管：首見時間只寫一次，傳入值一律忽略（仍
+        // 須是合法數字，不合法整筆 reject，那一關在 normalizeMark）。少了這一
+        // 行，裝置各自算出來的首見時間會互相覆蓋，同一筆警示的「加入時間」在
+        // 每台裝置上都不一樣。
+        merged.addedAt = existing.addedAt;
+      }
       state.marks.set(key, Object.assign({}, merged, { serverAt: tick() }));
       applied.upserts.push(key);
     });
