@@ -165,3 +165,43 @@ test('警示名單卡:帶插值的文案在 zh 與 en 都保留佔位符({n}/{d}
     }
   }
 });
+
+// ---- 警示名單 v2(D35 ＋ 顯示)新增的四顆 key ----
+//
+// 關閉狀態列的說明與開啟鈕、證據缺片段時的灰字說明、雲端配額淘汰提示。
+// 漏一顆的症狀同樣是 UI 上直接顯示裸 key，parity 測試擋不住，逐顆釘住。
+const SCAM_V2_KEYS = [
+  'opScamDisabledBar',
+  'opScamEnable',
+  'opScamEvidenceMissing',
+  'opScamEvictedHint',
+];
+
+test('警示名單 v2:四顆新文案 key 在 zh 與 en 兩份字典皆存在且非空', () => {
+  for (const locale of ['zh', 'en']) {
+    for (const key of SCAM_V2_KEYS) {
+      const value = i18n.STRINGS[locale][key];
+      assert.equal(typeof value, 'string', `${locale}.${key} 應為字串`);
+      assert.ok(value.length > 0, `${locale}.${key} 不得為空字串`);
+    }
+  }
+});
+
+test('警示名單 v2:zh 文案一律全形逗號「，」，不得出現半形 ","', () => {
+  for (const key of SCAM_V2_KEYS) {
+    const value = i18n.STRINGS.zh[key];
+    if (typeof value !== 'string') continue;
+    assert.ok(!value.includes(','), `zh.${key} 不得含半形逗號 ","，實際:${value}`);
+  }
+});
+
+test('警示名單 v2:淘汰提示在 zh 與 en 都保留 {n} 佔位符', () => {
+  for (const locale of ['zh', 'en']) {
+    const value = i18n.STRINGS[locale].opScamEvictedHint;
+    assert.equal(typeof value, 'string', `${locale}.opScamEvictedHint 應為字串`);
+    assert.ok(
+      value.includes('{n}'),
+      `${locale}.opScamEvictedHint 應含佔位符 {n}，實際:${value}`
+    );
+  }
+});
