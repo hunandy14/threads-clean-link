@@ -979,9 +979,26 @@ async function resolveScamAuthorId(postUrl, handle) {
   }
 }
 
+// 證據要記下的本機裝置 id。直接讀 storage 而不走 ensureDevice：ensureDevice
+// 自己佔一段 historyWriteChain（在鏈上的工作裡呼叫等於等自己），而且沒有身分
+// 時會生一組新的——證據記的是「哪一台寫的」，還沒有身分就該缺席，不值得為它
+// 生一組 deviceId 出來。讀不到（缺席、形狀不合、storage 抽風）一律回
+// undefined 讓證據不帶這一欄，絕不因此擋下整次寫入。
+async function readLocalDeviceId() {
+  if (!hasStorageLocal()) return undefined;
+  try {
+    const stored = await chrome.storage.local.get(DEVICE_KEY);
+    const device = stored && stored[DEVICE_KEY];
+    return device && typeof device === 'object' ? TCLCore.normalizeDeviceId(device.deviceId) : undefined;
+  } catch (err) {
+    console.warn('[threads-clean-link] 證據取裝置 id 失敗', err);
+    return undefined;
+  }
+}
+
 // content script 掃到詐騙串文：建條目或替既有作者補一筆證據。
 // 順序刻意如此：驗 payload → 總開關（關閉時連備援請求都不發）→ 缺 id 才走
-// 匿名備援（allowlist 以 userId 為鍵，沒有 id 就無從判斷解除與否）→ 讀改寫。
+// 匿名備援（解除與否以 userId 為準，沒有 id 就無從判斷）→ 讀改寫。
 async function handleScamHit(message) {
   const hit = validateScamHit(message);
   if (!hit) return { ok: false, code: 'bad_request' };
@@ -994,41 +1011,46 @@ async function handleScamHit(message) {
     if (userId === null) return { ok: false, code: 'no_user_id' };
   }
 
+  const deviceId = await readLocalDeviceId();
+
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
 
-    // 使用者解除過的作者不得被下一次掃描復活，且整條路徑不留任何寫入。
-    if (Object.prototype.hasOwnProperty.call(list.allowlist, userId)) {
+    // 使用者解除過的作者不得被下一次掃描復活，且整條路徑不留任何寫入——連
+    // updatedAt 都不推新，否則這筆會在跨裝置合併時無端勝出。
+    const existing = list.entries[userId];
+    if (existing && existing.state === 'dismissed') {
       return { ok: true, added: false, allowlisted: true };
     }
 
-    const existing = list.entries[userId];
+    // 證據帶判定規則版本與寫入裝置：兩者是日後跨裝置對帳與規則調參的依據，
+    // 由寫入端記下，與 content script 送來的 payload 無關。
+    const evidence = {
+      postUrl: hit.postUrl,
+      snippet: hit.snippet,
+      at: hit.at,
+      anchorPostUrl: hit.anchorPostUrl,
+      threadUrl: hit.threadUrl,
+      anchorMatch: hit.anchorMatch,
+      signals: hit.signals,
+      postedAt: hit.postedAt,
+      rulesVersion: TCLCore.SCAM_RULES.version,
+      deviceId: deviceId,
+    };
+
     const added = !existing;
-    list.entries[userId] = added
-      ? TCLCore.makeBlocklistEntry({
-          handle: hit.handle,
-          displayName: hit.displayName,
-          postUrl: hit.postUrl,
-          snippet: hit.snippet,
-          at: hit.at,
-          anchorPostUrl: hit.anchorPostUrl,
-          threadUrl: hit.threadUrl,
-          anchorMatch: hit.anchorMatch,
-          signals: hit.signals,
-          postedAt: hit.postedAt,
-          source: 'auto',
-        })
-      : TCLCore.mergeBlocklistEvidence(existing, {
-          postUrl: hit.postUrl,
-          snippet: hit.snippet,
-          at: hit.at,
-          anchorPostUrl: hit.anchorPostUrl,
-          threadUrl: hit.threadUrl,
-          anchorMatch: hit.anchorMatch,
-          signals: hit.signals,
-          postedAt: hit.postedAt,
-        });
+    if (added) {
+      list.entries[userId] = TCLCore.makeBlocklistEntry(
+        Object.assign({ handle: hit.handle, displayName: hit.displayName, source: 'auto' }, evidence)
+      );
+    } else {
+      const merged = TCLCore.mergeBlocklistEvidence(existing, evidence);
+      // updatedAt 是合併時的 LWW 判準，補證據等於「最近又看到一次」。取較
+      // 大值而非直接覆寫：舊分頁補送的過期 at 不得讓時戳往回跳。
+      merged.updatedAt = Math.max(merged.updatedAt, hit.at);
+      list.entries[userId] = merged;
+    }
 
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
     // entries 重建，孤兒鍵沒有任何機會留下。
@@ -1038,8 +1060,10 @@ async function handleScamHit(message) {
   });
 }
 
-// 選項頁的「解除」：條目移出 entries，userId 記進 allowlist（附解除時間與
-// 當下的 handle，供「已解除」小節顯示），下次掃到同一位作者不再入名單。
+// 選項頁的「解除」：條目留在 entries，state 翻成 dismissed 並記下解除時間，
+// 下次掃到同一位作者不再入名單。證據一律保留——復原後卡片要畫得出來，跨裝置
+// 對帳也還需要它。名單裡沒有這一筆時補一筆空的解除條目：使用者按過解除就得
+// 擋得住之後的掃描，哪怕條目已被上限淘汰。
 async function handleScamBlocklistRemove(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
@@ -1049,19 +1073,23 @@ async function handleScamBlocklistRemove(message) {
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
-    const entry = list.entries[userId];
-    delete list.entries[userId];
-    list.allowlist[userId] = {
-      at: Date.now(),
-      handle: entry && typeof entry.handle === 'string' ? entry.handle : '',
-    };
+    const now = Date.now();
+    const entry = list.entries[userId] || { evidence: [], addedAt: now, source: 'auto' };
+    // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
+    // entries 重建，dismissed 不進反查表，孤兒鍵沒有任何機會留下。
+    list.entries[userId] = Object.assign({}, entry, {
+      state: 'dismissed',
+      dismissedAt: now,
+      updatedAt: now,
+    });
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
     return { ok: true };
   });
 }
 
-// 選項頁的「復原」（使用者反悔解除）：只把 userId 移出 allowlist，不負責把
-// 條目長回來——證據已經不在名單裡，得等下一次掃描重新命中。
+// 選項頁的「復原」（使用者反悔解除）：把同一筆條目翻回 active 並刪掉
+// dismissedAt，證據一路留著——復原後不必等下一次掃描，卡片就畫得出來。名單裡
+// 沒有這一筆時無事可做（沒有條目可復原）。
 async function handleScamBlocklistRestore(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
@@ -1071,7 +1099,12 @@ async function handleScamBlocklistRestore(message) {
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
-    delete list.allowlist[userId];
+    const entry = list.entries[userId];
+    if (entry) {
+      const restored = Object.assign({}, entry, { state: 'active', updatedAt: Date.now() });
+      delete restored.dismissedAt;
+      list.entries[userId] = restored;
+    }
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
     return { ok: true };
   });
