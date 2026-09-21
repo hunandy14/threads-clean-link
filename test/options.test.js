@@ -8782,6 +8782,21 @@ test('警示名單 v2:沒有 dismissed 條目時已解除小節整個隱藏(不�
   assert.equal(scamAllowRows(ctx.doc).length, 0, '不得畫出任何已解除的列');
 });
 
+// 【審查 F1】dismissedAt 為 0(或非有限值)代表解除時間不明(TCLCore 的
+// finiteOr 把缺席補成 0)，formatScamDate(0) 會退化成 1970-01-01——沒有
+// 解除時間就不畫日期節點，不能顯示一個看起來合法但錯得離譜的日期。
+test('警示名單 v2:已解除列的 dismissedAt 為 0(解除時間不明)時不畫日期，不得出現「1970」', async () => {
+  const list = marksFixture();
+  list.entries[SCAM_ID_C].dismissedAt = 0;
+  const ctx = makeMarksCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rows = scamAllowRows(ctx.doc);
+  assert.equal(rows.length, 1, '前置:應有一列已解除');
+  const shown = joinedText(rows[0]);
+  assert.ok(!shown.includes('1970'), '解除時間不明時不得畫出 1970 開頭的退化日期');
+});
+
 // v2 的復原是把 state 翻回 active,條目本體(含證據)原地留著。v1 的 allowlist
 // 只存 { at, handle },復原等於把整筆證據丟掉——這條釘的就是那個差別。
 test('警示名單 v2:復原後條目回到名單，且證據仍在(命中篇數與證據連結照舊)', async () => {
