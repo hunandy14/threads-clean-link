@@ -2733,16 +2733,20 @@ test.describe('警示名單 v2:toScamMark', () => {
         {
           anchorPostUrl: MK_PAGE_URL,
           threadUrl: null,
-          signals: null,
+          // 【斷言翻轉｜審查 F2】原斷言為 signals: null。signals 的契約型別
+          // 是 string[],缺席送空陣列;讀取端因此永遠可以直接走訪,不必先分
+          // 辨 null 與陣列兩種形狀。其餘五欄是純量,照舊以 null 表缺席。
+          signals: [],
           at: 500,
           postedAt: null,
           rulesVersion: null,
           deviceId: null,
         },
       ],
-      '舊證據的 postUrl 就是錨點篇;其餘六欄補 null 而非缺鍵'
+      '舊證據的 postUrl 就是錨點篇;純量五欄補 null、signals 補空陣列,都不缺鍵'
     );
     assert.equal(mark.evidence[0].rulesVersion, null, '舊證據沒有規則版本,寫 null 不得補 0');
+    assert.deepEqual(mark.evidence[0].signals, [], 'signals 缺席送 [],不得送 null(契約型別是 string[])');
   });
 
   test('toScamMark:純函式——不得改動傳入的條目', () => {
@@ -3050,6 +3054,61 @@ test.describe('警示名單 v2:mergeScamEntry', () => {
     assert.equal(ev.postedAt, 800);
     assert.equal(ev.rulesVersion, 3);
     assert.equal(ev.deviceId, MK_DEVICE_ID_2);
+  });
+
+  // 【審查 F1】上面那支的 remote 是手寫的 literal:剛好沒有 snippet／
+  // anchorMatch／postUrl 這三把鍵。真實路徑上的遠端條目不是這個形狀——它是
+  // 雲端 mark 經 fromScamMark 落回本機形狀的,而本機形狀要求 postUrl 必填、
+  // snippet 至少是空字串,於是 normalizeScamEvidence 會補出 snippet:'' 與
+  // postUrl＝錨點篇。兩欄都「有鍵」卻是空殼,只看「鍵在不在」的守衛因此放行,
+  // 遠端一勝出就把使用者的證據片段與來源頁洗掉,證據卡當場變空白。
+  test('mergeScamEntry:遠端條目走真實往返時,本機的 snippet／anchorMatch／postUrl 不得被空殼蓋掉', () => {
+    // 另一台裝置的同一位作者:本機條目 → mark → 落回本機,再過一次 JSON 往返
+    // (雲端來回一定會序列化)。全程不手寫 literal,守衛面對的就是真實形狀。
+    const remote = JSON.parse(
+      JSON.stringify(
+        C.fromScamMark(
+          C.toScamMark(
+            MK_ID,
+            C.makeBlocklistEntry({
+              handle: MK_HANDLE,
+              displayName: 'Example Author',
+              postUrl: MK_OTHER_ANCHOR_URL,
+              snippet: '另一台裝置看到的原文,不上雲',
+              at: 900,
+              anchorPostUrl: MK_ANCHOR_URL,
+              threadUrl: MK_THREAD_URL,
+              anchorMatch: '另一台裝置的高亮位置',
+              signals: ['line', 'group'],
+              postedAt: 800,
+              rulesVersion: 3,
+              deviceId: MK_DEVICE_ID_2,
+              source: 'auto',
+            })
+          )
+        ).entry
+      )
+    );
+
+    // 先釘住這份 fixture 真的是空殼形狀——否則這支測試會隨著往返邏輯變形而
+    // 悄悄失去意義。
+    const remoteEv = remote.evidence[0];
+    assert.equal(remoteEv.snippet, '', '雲端 mark 不帶 snippet,落回本機時被補成空字串');
+    assert.equal(remoteEv.postUrl, MK_ANCHOR_URL, '雲端 mark 不帶 postUrl,落回本機時被補成錨點篇');
+    assert.equal(mkHas(remoteEv, 'anchorMatch'), false, 'anchorMatch 不上雲,落回本機時整欄缺席');
+
+    const local = mkEntry({
+      updatedAt: 100,
+      evidence: [mkEvidence({ anchorPostUrl: MK_ANCHOR_URL, at: 100 })],
+    });
+
+    const ev = C.mergeScamEntry(local, remote).evidence[0];
+    assert.equal(ev.snippet, MK_SNIPPET, '遠端的空字串不得蓋掉本機的證據片段');
+    assert.equal(ev.anchorMatch, MK_ANCHOR_TEXT, '遠端缺席的高亮位置不得把本機的清掉');
+    assert.equal(ev.postUrl, MK_PAGE_URL, '遠端回填的錨點篇不得取代本機真正的來源頁');
+    assert.equal(ev.at, 900, '其餘欄位照舊 LWW by at,遠端較新');
+    assert.equal(ev.deviceId, MK_DEVICE_ID_2);
+    assert.equal(ev.postedAt, 800);
   });
 
   test('mergeScamEntry:同一篇錨點但本機 at 較新時,遠端不得覆蓋本機欄位', () => {
