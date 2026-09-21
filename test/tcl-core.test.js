@@ -1142,7 +1142,10 @@ test.describe('詐騙偵測:isPostDetailPath', () => {
 });
 
 test.describe('詐騙偵測:normalizeScamBlocklist', () => {
-  const EMPTY_LIST = { version: 1, entries: {}, handleIndex: {}, allowlist: {} };
+  // 【斷言翻轉｜D36】version 由 1 改成 2:讀回時一律就地升版，v1 的形狀不再
+  // 是任何一條路徑的輸出。allowlist 仍在輸出上，但已是 dismissed 條目的派生
+  // 唯讀視圖（見檔尾「警示名單 v2」區塊）。
+  const EMPTY_LIST = { version: 2, entries: {}, handleIndex: {}, allowlist: {} };
 
   test('normalizeScamBlocklist:缺席／非物件一律回空的四欄形狀', () => {
     assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
@@ -1172,8 +1175,15 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
       allowlist: { '777': true },
       junkField: 'should not survive',
     });
-    assert.equal(out.version, 1, 'version 固定正規化成 1');
-    assert.deepEqual(Object.keys(out.entries).sort(), ['111', '444'], 'entries 內非物件逐項剝除');
+    // 【斷言翻轉｜D36】version 1 → 2；allowlist 的 '777' 現在會升成 entries
+    // 裡的一筆 dismissed 條目，因此 entries 多一把鍵。
+    assert.equal(out.version, 2, 'version 一律正規化成 2');
+    assert.deepEqual(
+      Object.keys(out.entries).sort(),
+      ['111', '444', '777'],
+      'entries 內非物件逐項剝除；v1 的 allowlist 升成 dismissed 條目'
+    );
+    assert.equal(out.entries['777'].state, 'dismissed', '舊 allowlist 那一筆是解除態');
     assert.deepEqual(out.entries['444'].evidence, [], 'evidence 非陣列退成空陣列，不整筆丟棄');
     assert.equal(Array.isArray(out.entries['111'].evidence), true);
     assert.equal(out.entries['111'].evidence.length, 1);
@@ -1225,7 +1235,15 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
       out.entries['222'].handle,
       '超長 handle 兩側截到同一長度'
     );
-    assert.equal(out.handleIndex['example author'], '111', 'handleIndex 由清洗後的 handle 小寫重建');
+    // 【斷言翻轉｜D36】原斷言為 handleIndex['example author'] === '111'。輸入
+    // 的 '111' 同時出現在 entries 與 allowlist，v2 遷移以 dismissed 為準，而
+    // handleIndex 只含 active——反查鍵因此不該存在。handle 清洗一致性（本測試
+    // 的本意）改由上面兩條 entries／allowlist 的比對承擔。
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out.handleIndex, 'example author'),
+      false,
+      'dismissed 條目不進 handleIndex'
+    );
   });
 
   test('normalizeScamBlocklist:allowlist 髒值退成空物件', () => {
@@ -1270,7 +1288,11 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
     assert.equal(Object.getPrototypeOf(out.allowlist['111']), Object.prototype);
   });
 
-  test('capScamBlocklist:allowlist 透傳正規化後的 { at, handle }', () => {
+  // 【斷言翻轉｜D36】原斷言為「capScamBlocklist 把 allowlist 原樣帶出來」。
+  // v2 的落盤物件只有 version／entries／handleIndex 三把鍵:allowlist 只是
+  // normalizeScamBlocklist 掛在記憶體物件上的派生視圖，跟著落盤等於讓
+  // storage 存兩份真相。舊 allowlist 的每一列改以 dismissed 條目落盤。
+  test('capScamBlocklist:v1 的 allowlist 落盤成 dismissed 條目，輸出不帶 allowlist 鍵', () => {
     assert.equal(typeof C.capScamBlocklist, 'function', 'capScamBlocklist 應掛在 TCLCore 匯出');
     const out = C.capScamBlocklist({
       version: 1,
@@ -1278,11 +1300,12 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
       handleIndex: {},
       allowlist: { '111': { at: 5, handle: 'foo' }, '222': true, '333': 'nope' },
     });
-    assert.deepEqual(
-      out.allowlist,
-      { '111': { at: 5, handle: 'foo' }, '222': { at: 0, handle: '' } },
-      'capScamBlocklist 不碰 allowlist，只把 normalizeScamBlocklist 的結果原樣帶出來'
-    );
+    assert.equal(Object.prototype.hasOwnProperty.call(out, 'allowlist'), false, '派生視圖不得落盤');
+    assert.deepEqual(Object.keys(out.entries).sort(), ['111', '222'], 'true 以外的非物件值一律剝除');
+    assert.equal(out.entries['111'].state, 'dismissed');
+    assert.equal(out.entries['111'].dismissedAt, 5);
+    assert.equal(out.entries['111'].handle, 'foo');
+    assert.equal(out.entries['222'].dismissedAt, 0, '舊值 true 沒有時間，退 0');
   });
 });
 
@@ -1368,10 +1391,11 @@ test.describe('詐騙偵測:capScamBlocklist', () => {
     const out = C.capScamBlocklist(small);
     assert.deepEqual(Object.keys(out.entries).sort(), ['1', '2', '3']);
     assert.equal(out.entries['2'].evidence.length, 2);
+    // 【斷言翻轉｜D36】空形狀改成 v2 的三欄:version 2，且不帶 allowlist。
     for (const bad of [undefined, null, 'nope', 42, []]) {
       assert.deepEqual(
         C.capScamBlocklist(bad),
-        { version: 1, entries: {}, handleIndex: {}, allowlist: {} },
+        { version: 2, entries: {}, handleIndex: {} },
         JSON.stringify(String(bad)) + ' 應回空形狀'
       );
     }
@@ -1644,72 +1668,6 @@ test.describe('詐騙偵測:誤報防線(審查 FAIL 回歸)', () => {
       source: 'auto',
     });
     assert.equal(/[\r\n\t]/.test(dirtyHandle.handle), false, 'handle 不得留下換行或 tab');
-  });
-});
-
-// ---- 詐騙偵測:allowlist 的筆數上限（L4 審查建議）----
-//
-// entries 有 MAX_ENTRIES 擋著，allowlist 卻是無上限的：使用者每按一次「解
-// 除」就多一筆，而解除紀錄會永遠留著（它的作用就是不讓下一次掃描把人復
-// 活）。同一份位元組軟預算下，無上限的 allowlist 最終會把 entries 擠光。
-// 上限與 entries 同為 5000 筆，依 at 降冪留最新——舊值升級來的 { at:0 } 排在
-// 最後，本來就是最沒有顯示價值的那一批。
-test.describe('詐騙偵測:capScamBlocklist allowlist 上限', () => {
-  function makeAllowlist(count) {
-    const allowlist = {};
-    for (let i = 0; i < count; i++) {
-      allowlist[String(900000000 + i)] = { at: i + 1, handle: 'h' + i };
-    }
-    return allowlist;
-  }
-
-  test('capScamBlocklist:allowlist 超過 5000 筆時依 at 降冪留最新 5000', () => {
-    const out = C.capScamBlocklist({
-      version: 1,
-      entries: {},
-      handleIndex: {},
-      allowlist: makeAllowlist(5001),
-    });
-
-    assert.equal(Object.keys(out.allowlist).length, 5000, 'allowlist 上限與 entries 同為 5000 筆');
-    assert.equal(out.allowlist['900000000'], undefined, 'at 最小（最舊）的一筆被淘汰');
-    assert.deepEqual(
-      out.allowlist['900005000'],
-      { at: 5001, handle: 'h5000' },
-      '最新的一筆必須留著，且值的形狀不變'
-    );
-  });
-
-  test('capScamBlocklist:allowlist 恰 5000 筆時一筆都不裁', () => {
-    const out = C.capScamBlocklist({
-      version: 1,
-      entries: {},
-      handleIndex: {},
-      allowlist: makeAllowlist(5000),
-    });
-
-    assert.equal(Object.keys(out.allowlist).length, 5000, '恰為上限不得誤裁');
-    assert.deepEqual(out.allowlist['900000000'], { at: 1, handle: 'h0' }, '最舊的那一筆在上限內照樣留著');
-  });
-
-  test('capScamBlocklist:allowlist 裁切不得動到 entries', () => {
-    const out = C.capScamBlocklist({
-      version: 1,
-      entries: {
-        '111': {
-          handle: 'Example_Author',
-          displayName: 'Example',
-          evidence: [{ postUrl: SCAM_POST_URL, snippet: '賴：ex01abc', at: 5 }],
-          addedAt: 5,
-          source: 'auto',
-        },
-      },
-      handleIndex: { example_author: '111' },
-      allowlist: makeAllowlist(5001),
-    });
-
-    assert.ok(out.entries['111'], '解除名單爆量不得連帶淘汰黑名單條目');
-    assert.equal(out.handleIndex['example_author'], '111');
   });
 });
 
@@ -2306,5 +2264,850 @@ test.describe('詐騙偵測:normalizeScamEvidence 的 postedAt', () => {
       evUtf8(JSON.stringify(withPosted)) - evUtf8(JSON.stringify(lean)),
       '差額應等於條目序列化後的實際 UTF-8 位元組差'
     );
+  });
+});
+
+// ============================================================
+// 車道 A(計畫 D36／D37):警示名單本機 v2 形狀、v1 遷移、雲端 mark 互轉與合併
+// ============================================================
+//
+// v1 的名單把「已封鎖」與「已解除」拆成 entries 與 allowlist 兩張表，解除時
+// 條目連同證據一起被刪掉——證據沒了就無法在多裝置之間對帳，使用者反悔復原
+// 時卡片也是空的。v2 收斂成單一張 entries:一位作者一筆條目，用 state 分
+// 「active／dismissed」兩態，解除只翻狀態、證據照留。
+//
+// 【派生唯讀視圖】既有讀者(content script 的 releaseAllowlistedScan、選項頁
+// 的「已解除」小節、background 判斷作者是否解除過)都查 list.allowlist。
+// normalizeScamBlocklist 因此在輸出上另掛一份由 dismissed 條目派生的
+// allowlist 視圖 { [userId]: { at: dismissedAt || 0, handle } },讓那些讀者零
+// 改動。它只存在於記憶體:capScamBlocklist 寫回 storage 的物件只有
+// version／entries／handleIndex 三把鍵,落盤的資料不得有兩份真相。
+//
+// 【雲端形狀】本機 entry 與雲端 mark 不同形:mark 的鍵帶 threads: 前綴,證據
+// 只留可跨裝置對帳的欄位(anchorPostUrl／threadUrl／signals／at／postedAt／
+// rulesVersion／deviceId),剝掉 snippet／anchorMatch／postUrl——前兩者是這台
+// 裝置當下看到的原文與高亮位置(他人貼文的內容,不該離開本機),postUrl 則是
+// 「使用者從哪一頁看到的」,換台裝置沒有意義。
+//
+// 合成資料沿用 example_author／10000000001／DxSyNtH000x。
+// ============================================================
+
+const MK_ID = '10000000001';
+const MK_ID_2 = '10000000002';
+const MK_ID_3 = '10000000003';
+const MK_HANDLE = 'Example_Author';
+const MK_HANDLE_KEY = 'example_author';
+const MK_PAGE_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const MK_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0002';
+const MK_OTHER_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0003';
+const MK_THIRD_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0004';
+const MK_FOURTH_ANCHOR_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0005';
+const MK_THREAD_URL = 'https://www.threads.com/@example_author/post/DxSyNtH0001';
+const MK_SNIPPET = '想多一個地方交流可以加 LINE：ab12cd，我把你拉進群組';
+const MK_ANCHOR_TEXT = 'LINE：ab12cd';
+const MK_DEVICE_ID = '11111111-2222-4333-8444-555555555555';
+const MK_DEVICE_ID_2 = '99999999-8888-4777-8666-555555555555';
+
+const mkHas = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const mkSnap = (value) => JSON.stringify(value);
+
+// 本機形狀的一筆證據(已含 v2 新增的 rulesVersion／deviceId)。
+function mkEvidence(patch) {
+  return Object.assign(
+    {
+      postUrl: MK_PAGE_URL,
+      snippet: MK_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: MK_ANCHOR_URL,
+      threadUrl: MK_THREAD_URL,
+      anchorMatch: MK_ANCHOR_TEXT,
+      signals: ['line', 'group'],
+      postedAt: 1700000000000,
+      rulesVersion: 3,
+      deviceId: MK_DEVICE_ID,
+    },
+    patch || {}
+  );
+}
+
+// v2 形狀的一筆條目。
+function mkEntry(patch) {
+  return Object.assign(
+    {
+      state: 'active',
+      handle: MK_HANDLE,
+      displayName: 'Example Author',
+      source: 'auto',
+      evidence: [mkEvidence()],
+      addedAt: 1700000100000,
+      updatedAt: 1700000100000,
+    },
+    patch || {}
+  );
+}
+
+test.describe('警示名單 v2:normalizeScamBlocklist 的形狀與派生 allowlist', () => {
+  test('normalizeScamBlocklist:v2 輸入回 version 2,兩態條目各自保留 state／updatedAt／dismissedAt', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: mkEntry({ addedAt: 100, updatedAt: 900 }),
+        [MK_ID_2]: mkEntry({
+          state: 'dismissed',
+          dismissedAt: 2000,
+          handle: 'Other_Author',
+          evidence: [],
+          addedAt: 300,
+          updatedAt: 2000,
+        }),
+      },
+      handleIndex: { stale: '999' },
+    });
+
+    assert.equal(out.version, 2, 'v2 輸入的 version 維持 2');
+    assert.equal(out.entries[MK_ID].state, 'active');
+    assert.equal(out.entries[MK_ID].updatedAt, 900, 'updatedAt 是合併的判準,不得被 addedAt 取代');
+    assert.equal(mkHas(out.entries[MK_ID], 'dismissedAt'), false, 'active 條目不得補出 dismissedAt');
+    assert.equal(out.entries[MK_ID_2].state, 'dismissed');
+    assert.equal(out.entries[MK_ID_2].dismissedAt, 2000);
+    assert.equal(out.entries[MK_ID_2].updatedAt, 2000);
+  });
+
+  test('normalizeScamBlocklist:allowlist 是 dismissed 條目派生的唯讀視圖 { at, handle }', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: mkEntry(),
+        [MK_ID_2]: mkEntry({
+          state: 'dismissed',
+          dismissedAt: 2000,
+          handle: 'Other_Author',
+          evidence: [],
+          updatedAt: 2000,
+        }),
+        [MK_ID_3]: mkEntry({ state: 'dismissed', handle: 'Third_Author', evidence: [], updatedAt: 5 }),
+      },
+    });
+
+    assert.deepEqual(
+      out.allowlist,
+      { [MK_ID_2]: { at: 2000, handle: 'Other_Author' }, [MK_ID_3]: { at: 0, handle: 'Third_Author' } },
+      'allowlist 只含 dismissed 條目,at 取 dismissedAt,缺席退 0'
+    );
+    assert.equal(mkHas(out.allowlist, MK_ID), false, 'active 條目不得出現在 allowlist 視圖');
+  });
+
+  test('normalizeScamBlocklist:handleIndex 只含 active——dismissed 不得佔住反查鍵', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: mkEntry({ handle: MK_HANDLE }),
+        [MK_ID_2]: mkEntry({
+          state: 'dismissed',
+          dismissedAt: 9000,
+          handle: 'Other_Author',
+          evidence: [],
+          updatedAt: 9000,
+        }),
+      },
+    });
+
+    assert.deepEqual(out.handleIndex, { [MK_HANDLE_KEY]: MK_ID }, 'handleIndex 只由 active 條目重建');
+    assert.equal(mkHas(out.handleIndex, 'other_author'), false, 'dismissed 條目不進 handleIndex');
+  });
+
+  test('normalizeScamBlocklist:v2 輸入冪等——再正規化一次結果完全相同', () => {
+    const once = C.normalizeScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: mkEntry({ addedAt: 100, updatedAt: 900 }),
+        [MK_ID_2]: mkEntry({
+          state: 'dismissed',
+          dismissedAt: 2000,
+          handle: 'Other_Author',
+          evidence: [],
+          updatedAt: 2000,
+        }),
+      },
+    });
+    const twice = C.normalizeScamBlocklist(once);
+    assert.deepEqual(twice, once, 'v2 輸出餵回去必須原樣還原(含派生的 allowlist 視圖)');
+  });
+
+  test('normalizeScamBlocklist:純函式——不得就地改寫傳入的 storage 物件', () => {
+    const raw = {
+      version: 1,
+      entries: { [MK_ID]: { handle: MK_HANDLE, evidence: [mkEvidence()], addedAt: 100, source: 'auto' } },
+      allowlist: { [MK_ID_2]: { at: 700, handle: 'Other_Author' } },
+    };
+    const before = mkSnap(raw);
+    C.normalizeScamBlocklist(raw);
+    assert.equal(mkSnap(raw), before, 'normalizeScamBlocklist 不得改動輸入');
+  });
+});
+
+test.describe('警示名單 v2:v1 遷移', () => {
+  test('v1 遷移:只有 entries——升成 state active,updatedAt 取 addedAt', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 1,
+      entries: {
+        [MK_ID]: {
+          handle: MK_HANDLE,
+          displayName: 'Example Author',
+          evidence: [mkEvidence()],
+          addedAt: 100,
+          source: 'auto',
+        },
+      },
+      handleIndex: { [MK_HANDLE_KEY]: MK_ID },
+      allowlist: {},
+    });
+
+    assert.equal(out.version, 2, 'v1 讀回時就地升版成 2');
+    assert.equal(out.entries[MK_ID].state, 'active', '舊 entries 一律是 active');
+    assert.equal(out.entries[MK_ID].addedAt, 100);
+    assert.equal(out.entries[MK_ID].updatedAt, 100, 'v1 沒有 updatedAt,遷移時取 addedAt');
+    assert.equal(mkHas(out.entries[MK_ID], 'dismissedAt'), false);
+    assert.equal(out.entries[MK_ID].evidence.length, 1, '證據照留');
+    assert.deepEqual(out.allowlist, {}, '沒有 dismissed 條目時派生視圖為空');
+    assert.equal(out.handleIndex[MK_HANDLE_KEY], MK_ID);
+  });
+
+  test('v1 遷移:只有 allowlist——升成 dismissed 條目,evidence 空、三個時戳對齊解除時間', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 1,
+      entries: {},
+      allowlist: { [MK_ID]: { at: 700, handle: MK_HANDLE }, [MK_ID_2]: true },
+    });
+
+    assert.equal(out.version, 2);
+    const entry = out.entries[MK_ID];
+    assert.ok(entry, 'v1 的 allowlist 必須升成 entries 裡的一筆 dismissed 條目');
+    assert.equal(entry.state, 'dismissed');
+    assert.equal(entry.dismissedAt, 700);
+    assert.equal(entry.updatedAt, 700);
+    assert.equal(entry.addedAt, 700, '舊解除紀錄沒有首見時間,只能取解除時間');
+    assert.deepEqual(entry.evidence, [], 'v1 解除時證據已被刪,遷移補不回來');
+    assert.equal(entry.source, 'auto');
+    assert.equal(entry.handle, MK_HANDLE);
+
+    assert.equal(out.entries[MK_ID_2].state, 'dismissed', '舊值 true 同樣升成 dismissed 條目');
+    assert.equal(out.entries[MK_ID_2].dismissedAt, 0, 'true 沒有時間,退 0');
+
+    assert.deepEqual(out.handleIndex, {}, 'dismissed 不進 handleIndex');
+    assert.deepEqual(out.allowlist, {
+      [MK_ID]: { at: 700, handle: MK_HANDLE },
+      [MK_ID_2]: { at: 0, handle: '' },
+    });
+  });
+
+  test('v1 遷移:同 userId 同時在 entries 與 allowlist 時以 dismissed 為準', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 1,
+      entries: {
+        [MK_ID]: { handle: MK_HANDLE, evidence: [mkEvidence()], addedAt: 100, source: 'auto' },
+      },
+      handleIndex: { [MK_HANDLE_KEY]: MK_ID },
+      allowlist: { [MK_ID]: { at: 700, handle: MK_HANDLE } },
+    });
+
+    assert.equal(Object.keys(out.entries).length, 1, '同一位作者只能有一筆條目,不得分裂成兩筆');
+    assert.equal(out.entries[MK_ID].state, 'dismissed', '使用者解除過就是解除過,不得被舊 entries 復活');
+    assert.equal(out.entries[MK_ID].dismissedAt, 700);
+    assert.equal(out.entries[MK_ID].updatedAt, 700);
+    assert.equal(mkHas(out.handleIndex, MK_HANDLE_KEY), false, 'dismissed 不得留在 handleIndex');
+    assert.deepEqual(out.allowlist, { [MK_ID]: { at: 700, handle: MK_HANDLE } });
+  });
+
+  test('v1 遷移:無 version 的舊資料視同 v1', () => {
+    const out = C.normalizeScamBlocklist({
+      entries: { [MK_ID]: { handle: MK_HANDLE, evidence: [], addedAt: 100, source: 'auto' } },
+      allowlist: { [MK_ID_2]: { at: 700, handle: 'Other_Author' } },
+    });
+    assert.equal(out.version, 2);
+    assert.equal(out.entries[MK_ID].state, 'active');
+    assert.equal(out.entries[MK_ID].updatedAt, 100);
+    assert.equal(out.entries[MK_ID_2].state, 'dismissed');
+  });
+
+  test('v1 遷移:遷移後再遷移一次冪等', () => {
+    const raw = {
+      version: 1,
+      entries: { [MK_ID]: { handle: MK_HANDLE, evidence: [mkEvidence()], addedAt: 100, source: 'auto' } },
+      allowlist: { [MK_ID_2]: { at: 700, handle: 'Other_Author' } },
+    };
+    const once = C.normalizeScamBlocklist(raw);
+    assert.deepEqual(C.normalizeScamBlocklist(once), once, '遷移一次之後就穩定,不得每次讀回都再動一次');
+  });
+});
+
+test.describe('警示名單 v2:capScamBlocklist', () => {
+  // 造 n 筆 v2 條目:updatedAt 由舊到新(1..n),addedAt 刻意反向(n..1)——淘汰
+  // 序若還看 addedAt,留下來的會是完全相反的一批。
+  function mkV2List(n, opts) {
+    const cfg = opts || {};
+    const entries = {};
+    for (let i = 1; i <= n; i++) {
+      const id = String(20000000000 + i);
+      const evidence = [];
+      for (let e = 0; e < (cfg.evidencePerEntry || 1); e++) {
+        evidence.push({
+          postUrl: 'https://www.threads.com/@h' + i + '/post/DxSyNtH' + e + i,
+          snippet: 'S'.repeat(cfg.snippetLen || 10),
+          at: i * 1000 + e,
+        });
+      }
+      entries[id] = {
+        state: cfg.state || 'active',
+        handle: 'h' + i,
+        displayName: 'name' + i,
+        source: 'auto',
+        evidence: evidence,
+        addedAt: n - i + 1,
+        updatedAt: i,
+      };
+      if ((cfg.state || 'active') === 'dismissed') entries[id].dismissedAt = i;
+    }
+    return { version: 2, entries: entries, handleIndex: {} };
+  }
+
+  test('capScamBlocklist:寫回 storage 的物件只有 version／entries／handleIndex 三把鍵', () => {
+    const out = C.capScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: mkEntry(),
+        [MK_ID_2]: mkEntry({
+          state: 'dismissed',
+          dismissedAt: 2000,
+          handle: 'Other_Author',
+          evidence: [],
+          updatedAt: 2000,
+        }),
+      },
+    });
+    assert.deepEqual(Object.keys(out).sort(), ['entries', 'handleIndex', 'version'], '落盤的物件不得帶派生視圖');
+    assert.equal(mkHas(out, 'allowlist'), false, 'allowlist 只是記憶體視圖,不得寫進 storage');
+    assert.equal(out.version, 2);
+    assert.equal(out.entries[MK_ID_2].state, 'dismissed', 'dismissed 條目照樣落盤(證據要留著)');
+  });
+
+  test('capScamBlocklist:非物件／空輸入回 v2 的三欄空形狀', () => {
+    for (const bad of [undefined, null, 'nope', 42, []]) {
+      assert.deepEqual(
+        C.capScamBlocklist(bad),
+        { version: 2, entries: {}, handleIndex: {} },
+        JSON.stringify(String(bad)) + ' 應回 v2 空形狀'
+      );
+    }
+  });
+
+  test('capScamBlocklist:筆數淘汰依 updatedAt 降冪,不看 addedAt', () => {
+    const out = C.capScamBlocklist(mkV2List(5050));
+    const ids = Object.keys(out.entries);
+    assert.equal(ids.length, 5000, 'entries 裁到 SCAM_LIMITS.MAX_ENTRIES');
+    assert.equal(mkHas(out.entries, String(20000000001)), false, 'updatedAt 最舊的先走(即使它的 addedAt 最新)');
+    assert.equal(mkHas(out.entries, String(20000000050)), false);
+    assert.equal(mkHas(out.entries, String(20000000051)), true, '保留 updatedAt 最新的 5000 筆');
+    assert.equal(mkHas(out.entries, String(20000005050)), true);
+  });
+
+  test('capScamBlocklist:dismissed 與 active 共用同一個 5000 筆名額', () => {
+    const list = mkV2List(2);
+    // 兩態混排:updatedAt 最大的那筆是 dismissed,它必須跟 active 一起排序。
+    list.entries[String(20000000002)].state = 'dismissed';
+    list.entries[String(20000000002)].dismissedAt = 2;
+    const out = C.capScamBlocklist(list);
+    assert.equal(Object.keys(out.entries).length, 2, '未超量時兩態都留著');
+    assert.equal(C.SCAM_LIMITS.MAX_ENTRIES, 5000, 'MAX_ENTRIES 不變,只是改成兩態共用');
+    assert.equal(C.SCAM_LIMITS.MAX_ALLOWLIST, 5000, 'MAX_ALLOWLIST 廢止但常數保留');
+  });
+
+  test('capScamBlocklist:位元組預算把 dismissed 一起算進去', () => {
+    // 全 dismissed、每筆三段滿版證據:筆數上限攔不住,只能靠 2MB 軟預算。
+    // dismissed 若被排除在預算之外,這份名單會整包落盤而爆掉配額。
+    const out = C.capScamBlocklist(mkV2List(4000, { state: 'dismissed', evidencePerEntry: 3, snippetLen: 120 }));
+    const ids = Object.keys(out.entries);
+    assert.equal(ids.length < 4000, true, 'dismissed 也要被軟預算淘汰,實得 ' + ids.length + ' 筆');
+    assert.equal(ids.length > 0, true, '不得把整份名單清空');
+    assert.equal(Buffer.byteLength(JSON.stringify(out), 'utf8') <= 2 * 1024 * 1024, true, '整包不得超過 2MB');
+    assert.equal(mkHas(out.entries, String(20000004000)), true, 'updatedAt 最新的一筆永遠留著');
+  });
+
+  test('capScamBlocklist:v1 輸入一併遷移後才裁切', () => {
+    const out = C.capScamBlocklist({
+      version: 1,
+      entries: { [MK_ID]: { handle: MK_HANDLE, evidence: [mkEvidence()], addedAt: 100, source: 'auto' } },
+      allowlist: { [MK_ID_2]: { at: 700, handle: 'Other_Author' } },
+    });
+    assert.equal(out.version, 2);
+    assert.equal(out.entries[MK_ID].state, 'active');
+    assert.equal(out.entries[MK_ID_2].state, 'dismissed', '舊 allowlist 那一筆落盤時已是 dismissed 條目');
+    assert.equal(mkHas(out, 'allowlist'), false);
+  });
+});
+
+// 【契約 R1】雲端 Mark 是**固定欄位**的物件,不是本機那種「缺席就不補鍵」的
+// 形狀:九欄一律在(key／state／dismissedAt／handle／displayName／source／
+// evidence／addedAt／updatedAt),可空者寫 null;evidence 每筆固定七欄
+// (anchorPostUrl／threadUrl／signals／at／postedAt／rulesVersion／deviceId),
+// 同樣以 null 表缺席。上雲的是跨端契約,欄位在不在不該當成訊號——固定欄位讓
+// 後端的 schema 與索引一次定死,本機那套「靠鍵在不在決定畫不畫」留在本機。
+const MK_MARK_KEYS = [
+  'addedAt',
+  'dismissedAt',
+  'displayName',
+  'evidence',
+  'handle',
+  'key',
+  'source',
+  'state',
+  'updatedAt',
+];
+const MK_MARK_EVIDENCE_KEYS = [
+  'anchorPostUrl',
+  'at',
+  'deviceId',
+  'postedAt',
+  'rulesVersion',
+  'signals',
+  'threadUrl',
+];
+
+test.describe('警示名單 v2:toScamMark', () => {
+  test('toScamMark:key 帶 threads: 前綴,純量欄位原樣帶出', () => {
+    assert.equal(typeof C.toScamMark, 'function', 'toScamMark 應掛在 TCLCore 匯出');
+    const mark = C.toScamMark(MK_ID, mkEntry({ addedAt: 100, updatedAt: 900 }));
+    assert.equal(mark.key, 'threads:' + MK_ID, '雲端主鍵是 threads: 加 userId');
+    assert.equal(mark.state, 'active');
+    assert.equal(mark.handle, MK_HANDLE);
+    assert.equal(mark.displayName, 'Example Author');
+    assert.equal(mark.source, 'auto');
+    assert.equal(mark.addedAt, 100);
+    assert.equal(mark.updatedAt, 900);
+    assert.equal(mkHas(mark, 'userId'), false, 'userId 已在 key 裡,不重複一份');
+  });
+
+  test('toScamMark:輸出固定九欄,可空者寫 null 而非缺鍵', () => {
+    const mark = C.toScamMark(MK_ID, mkEntry({ displayName: undefined }));
+    assert.deepEqual(Object.keys(mark).sort(), MK_MARK_KEYS, 'Mark 是固定欄位的跨端契約');
+    assert.equal(mark.dismissedAt, null, 'active 的 mark 寫 dismissedAt: null,不是缺鍵');
+    assert.equal(mark.displayName, null, '沒有顯示名時寫 null');
+  });
+
+  test('toScamMark:dismissed 條目帶 dismissedAt', () => {
+    const mark = C.toScamMark(
+      MK_ID,
+      mkEntry({ state: 'dismissed', dismissedAt: 2000, evidence: [], updatedAt: 2000 })
+    );
+    assert.equal(mark.state, 'dismissed');
+    assert.equal(mark.dismissedAt, 2000);
+    assert.deepEqual(mark.evidence, [], '沒有證據時是空陣列,不是 null');
+  });
+
+  test('toScamMark:證據剝掉 snippet／anchorMatch／postUrl,只留可跨裝置對帳的七欄', () => {
+    const mark = C.toScamMark(MK_ID, mkEntry({ evidence: [mkEvidence({ at: 900, postedAt: 800 })] }));
+    assert.deepEqual(mark.evidence, [
+      {
+        anchorPostUrl: MK_ANCHOR_URL,
+        threadUrl: MK_THREAD_URL,
+        signals: ['line', 'group'],
+        at: 900,
+        postedAt: 800,
+        rulesVersion: 3,
+        deviceId: MK_DEVICE_ID,
+      },
+    ]);
+    const ev = mark.evidence[0];
+    assert.deepEqual(Object.keys(ev).sort(), MK_MARK_EVIDENCE_KEYS, '證據同樣是固定七欄');
+    assert.equal(mkHas(ev, 'snippet'), false, 'snippet 是他人貼文原文,不上雲');
+    assert.equal(mkHas(ev, 'anchorMatch'), false, 'anchorMatch 是原文片段,不上雲');
+    assert.equal(mkHas(ev, 'postUrl'), false, 'postUrl 是本機這次從哪一頁看到的,換台裝置沒有意義');
+  });
+
+  test('toScamMark:缺 anchorPostUrl 的舊證據以 postUrl 當 anchorPostUrl,其餘欄位寫 null', () => {
+    const lean = { postUrl: MK_PAGE_URL, snippet: MK_SNIPPET, at: 500 };
+    const mark = C.toScamMark(MK_ID, mkEntry({ evidence: [lean] }));
+    assert.deepEqual(
+      mark.evidence,
+      [
+        {
+          anchorPostUrl: MK_PAGE_URL,
+          threadUrl: null,
+          signals: null,
+          at: 500,
+          postedAt: null,
+          rulesVersion: null,
+          deviceId: null,
+        },
+      ],
+      '舊證據的 postUrl 就是錨點篇;其餘六欄補 null 而非缺鍵'
+    );
+    assert.equal(mark.evidence[0].rulesVersion, null, '舊證據沒有規則版本,寫 null 不得補 0');
+  });
+
+  test('toScamMark:純函式——不得改動傳入的條目', () => {
+    const entry = mkEntry();
+    const before = mkSnap(entry);
+    C.toScamMark(MK_ID, entry);
+    assert.equal(mkSnap(entry), before);
+  });
+});
+
+test.describe('警示名單 v2:fromScamMark', () => {
+  function mkMark(patch) {
+    return Object.assign(
+      {
+        key: 'threads:' + MK_ID,
+        state: 'active',
+        dismissedAt: null,
+        handle: MK_HANDLE,
+        displayName: 'Example Author',
+        source: 'auto',
+        evidence: [
+          {
+            anchorPostUrl: MK_ANCHOR_URL,
+            threadUrl: MK_THREAD_URL,
+            signals: ['line', 'group'],
+            at: 900,
+            postedAt: 800,
+            rulesVersion: 3,
+            deviceId: MK_DEVICE_ID,
+          },
+        ],
+        addedAt: 100,
+        updatedAt: 900,
+      },
+      patch || {}
+    );
+  }
+
+  test('fromScamMark:合法 mark 還原成 { userId, entry }', () => {
+    assert.equal(typeof C.fromScamMark, 'function', 'fromScamMark 應掛在 TCLCore 匯出');
+    const out = C.fromScamMark(mkMark());
+    assert.ok(out, '合法 mark 不得回 null');
+    assert.equal(out.userId, MK_ID, 'userId 由 key 去掉 threads: 前綴而來');
+    assert.equal(out.entry.state, 'active');
+    assert.equal(out.entry.handle, MK_HANDLE);
+    assert.equal(out.entry.displayName, 'Example Author');
+    assert.equal(out.entry.source, 'auto');
+    assert.equal(out.entry.addedAt, 100);
+    assert.equal(out.entry.updatedAt, 900);
+    assert.equal(mkHas(out.entry, 'dismissedAt'), false);
+  });
+
+  test('fromScamMark:雲端證據落回本機形狀——postUrl 退回 anchorPostUrl,新欄位保留', () => {
+    const entry = C.fromScamMark(mkMark()).entry;
+    assert.equal(entry.evidence.length, 1, '雲端證據沒有 postUrl,不得因此被 normalize 整筆丟掉');
+    const ev = entry.evidence[0];
+    assert.equal(ev.anchorPostUrl, MK_ANCHOR_URL);
+    assert.equal(ev.postUrl, MK_ANCHOR_URL, 'postUrl 是本機的必要欄位,沒有就用錨點篇填');
+    assert.equal(ev.at, 900);
+    assert.equal(ev.postedAt, 800);
+    assert.equal(ev.rulesVersion, 3);
+    assert.equal(ev.deviceId, MK_DEVICE_ID);
+    assert.deepEqual(ev.signals, ['line', 'group']);
+  });
+
+  test('fromScamMark:dismissed 的 mark 帶回 dismissedAt', () => {
+    const out = C.fromScamMark(mkMark({ state: 'dismissed', dismissedAt: 2000, evidence: [], updatedAt: 2000 }));
+    assert.equal(out.entry.state, 'dismissed');
+    assert.equal(out.entry.dismissedAt, 2000);
+    assert.deepEqual(out.entry.evidence, []);
+  });
+
+  // 【契約 R1】雲端是固定欄位、以 null 表缺席;本機是「缺席就不補鍵」。
+  // 兩種寫法(null 與整個鍵不在)都要當成缺席——固定欄位是給後端 schema 用
+  // 的,不是給本機當訊號用的,讀回來一律落成本機那套形狀。
+  test('fromScamMark:null 與缺鍵都算缺席,一律不落成本機的鍵', () => {
+    const withNulls = C.fromScamMark(
+      mkMark({
+        dismissedAt: null,
+        displayName: null,
+        evidence: [
+          {
+            anchorPostUrl: MK_ANCHOR_URL,
+            threadUrl: null,
+            signals: null,
+            at: 900,
+            postedAt: null,
+            rulesVersion: null,
+            deviceId: null,
+          },
+        ],
+      })
+    ).entry;
+    const withMissing = C.fromScamMark(
+      mkMark({
+        dismissedAt: undefined,
+        displayName: undefined,
+        evidence: [{ anchorPostUrl: MK_ANCHOR_URL, at: 900 }],
+      })
+    ).entry;
+
+    assert.deepEqual(withNulls, withMissing, 'null 與缺鍵必須落成同一份本機條目');
+    assert.equal(mkHas(withNulls, 'dismissedAt'), false, 'dismissedAt: null 不得落成本機的一把鍵');
+    assert.equal(mkHas(withNulls, 'displayName'), false, 'displayName: null 不得落成空字串或 null');
+    for (const field of ['threadUrl', 'signals', 'postedAt', 'rulesVersion', 'deviceId']) {
+      assert.equal(mkHas(withNulls.evidence[0], field), false, field + ' 為 null 時本機不補鍵');
+    }
+  });
+
+  test('fromScamMark:key 不合法一律回 null', () => {
+    const bads = [
+      ['缺席', undefined],
+      ['null', null],
+      ['非物件', 'threads:10000000001'],
+      ['沒有 key', mkMark({ key: undefined })],
+      ['key 非字串', mkMark({ key: 10000000001 })],
+      ['沒有前綴', mkMark({ key: MK_ID })],
+      ['前綴不對', mkMark({ key: 'twitter:' + MK_ID })],
+      ['前綴後面是空的', mkMark({ key: 'threads:' })],
+      ['userId 非數字', mkMark({ key: 'threads:abcdef' })],
+      ['userId 超過 20 位', mkMark({ key: 'threads:' + '1'.repeat(21) })],
+      ['原型污染鍵', mkMark({ key: 'threads:__proto__' })],
+    ];
+    for (const bad of bads) {
+      assert.equal(C.fromScamMark(bad[1]), null, bad[0] + ' 應回 null');
+    }
+  });
+
+  test('fromScamMark:顯示名截到 80 字,handle 走既有清洗', () => {
+    const out = C.fromScamMark(mkMark({ displayName: 'D'.repeat(200), handle: '  Example \t\n  Author  ' }));
+    assert.equal(out.entry.displayName.length, 80, '顯示名硬裁 80(DISPLAY_NAME_MAX)');
+    assert.equal(out.entry.handle, 'Example Author', 'handle 走 sanitizeDisplayName,與本機同一把尺');
+  });
+
+  test('fromScamMark:髒證據逐筆剝除,其餘欄位照留', () => {
+    const out = C.fromScamMark(
+      mkMark({
+        evidence: [
+          { anchorPostUrl: 'https://example.com/@x/post/AAA', at: 100 },
+          { anchorPostUrl: MK_OTHER_ANCHOR_URL, at: 'nope' },
+          { anchorPostUrl: MK_ANCHOR_URL, at: 900 },
+        ],
+      })
+    );
+    assert.equal(out.entry.evidence.length, 1, '外部網域與壞 at 的證據逐筆剝除');
+    assert.equal(out.entry.evidence[0].anchorPostUrl, MK_ANCHOR_URL);
+  });
+
+  test('fromScamMark／toScamMark:往返一圈純量欄位不變', () => {
+    const entry = mkEntry({ addedAt: 100, updatedAt: 900 });
+    const back = C.fromScamMark(C.toScamMark(MK_ID, entry));
+    assert.equal(back.userId, MK_ID);
+    for (const field of ['state', 'handle', 'displayName', 'source', 'addedAt', 'updatedAt']) {
+      assert.equal(back.entry[field], entry[field], field + ' 往返後不得變形');
+    }
+    assert.equal(back.entry.evidence.length, 1, '證據往返後仍在');
+  });
+
+  test('fromScamMark:純函式——不得改動傳入的 mark', () => {
+    const mark = mkMark();
+    const before = mkSnap(mark);
+    C.fromScamMark(mark);
+    assert.equal(mkSnap(mark), before);
+  });
+});
+
+test.describe('警示名單 v2:mergeScamEntry', () => {
+  test('mergeScamEntry:remote 較新時純量整組換成遠端的', () => {
+    assert.equal(typeof C.mergeScamEntry, 'function', 'mergeScamEntry 應掛在 TCLCore 匯出');
+    const local = mkEntry({
+      state: 'active',
+      handle: 'Old_Handle',
+      displayName: 'Old Name',
+      source: 'auto',
+      addedAt: 200,
+      updatedAt: 500,
+      evidence: [mkEvidence({ at: 500 })],
+    });
+    const remote = mkEntry({
+      state: 'dismissed',
+      dismissedAt: 900,
+      handle: 'New_Handle',
+      displayName: 'New Name',
+      source: 'manual',
+      addedAt: 300,
+      updatedAt: 900,
+      evidence: [],
+    });
+
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(out.state, 'dismissed');
+    assert.equal(out.dismissedAt, 900);
+    assert.equal(out.handle, 'New_Handle');
+    assert.equal(out.displayName, 'New Name');
+    assert.equal(out.source, 'manual');
+    assert.equal(out.addedAt, 200, 'addedAt 取較小——首見時間不得往後跳');
+    assert.equal(out.updatedAt, 900, 'updatedAt 取較大');
+    assert.equal(out.evidence.length, 1, '純量落敗不影響證據聯集,本機那筆照留');
+  });
+
+  test('mergeScamEntry:local 較新時保留本機純量,且 dismissedAt 不得被遠端帶進來', () => {
+    const local = mkEntry({
+      state: 'active',
+      handle: 'Local_Handle',
+      displayName: 'Local Name',
+      source: 'auto',
+      addedAt: 300,
+      updatedAt: 900,
+      evidence: [mkEvidence({ at: 900 })],
+    });
+    const remote = mkEntry({
+      state: 'dismissed',
+      dismissedAt: 500,
+      handle: 'Remote_Handle',
+      displayName: 'Remote Name',
+      source: 'manual',
+      addedAt: 200,
+      updatedAt: 500,
+      evidence: [],
+    });
+
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(out.state, 'active');
+    assert.equal(mkHas(out, 'dismissedAt'), false, 'active 勝出時不得殘留遠端的 dismissedAt');
+    assert.equal(out.handle, 'Local_Handle');
+    assert.equal(out.displayName, 'Local Name');
+    assert.equal(out.source, 'auto');
+    assert.equal(out.addedAt, 200, 'addedAt 一律取兩邊較小的');
+    assert.equal(out.updatedAt, 900);
+  });
+
+  test('mergeScamEntry:updatedAt 相等時取 local', () => {
+    const local = mkEntry({ handle: 'Local_Handle', updatedAt: 900, addedAt: 100, evidence: [] });
+    const remote = mkEntry({ handle: 'Remote_Handle', updatedAt: 900, addedAt: 100, evidence: [] });
+    assert.equal(C.mergeScamEntry(local, remote).handle, 'Local_Handle', '平手時本機說了算');
+  });
+
+  test('mergeScamEntry:evidence 以錨點篇為鍵聯集,依 at 降冪留 3', () => {
+    const local = mkEntry({
+      updatedAt: 900,
+      evidence: [
+        mkEvidence({ anchorPostUrl: MK_ANCHOR_URL, at: 100 }),
+        mkEvidence({ anchorPostUrl: MK_OTHER_ANCHOR_URL, at: 200 }),
+      ],
+    });
+    const remote = mkEntry({
+      updatedAt: 500,
+      evidence: [
+        { anchorPostUrl: MK_THIRD_ANCHOR_URL, at: 300 },
+        { anchorPostUrl: MK_FOURTH_ANCHOR_URL, at: 400 },
+      ],
+    });
+
+    const out = C.mergeScamEntry(local, remote);
+    assert.deepEqual(
+      out.evidence.map((e) => e.at),
+      [400, 300, 200],
+      '聯集四筆後依 at 降冪裁到 SCAM_LIMITS.MAX_EVIDENCE'
+    );
+    assert.deepEqual(
+      out.evidence.map((e) => e.anchorPostUrl),
+      [MK_FOURTH_ANCHOR_URL, MK_THIRD_ANCHOR_URL, MK_OTHER_ANCHOR_URL],
+      '最舊的那筆被擠掉'
+    );
+  });
+
+  test('mergeScamEntry:同一篇錨點只算一筆,本機獨有的 snippet／anchorMatch／postUrl 保留', () => {
+    const local = mkEntry({
+      updatedAt: 100,
+      evidence: [
+        {
+          postUrl: MK_PAGE_URL,
+          snippet: MK_SNIPPET,
+          anchorMatch: MK_ANCHOR_TEXT,
+          anchorPostUrl: MK_ANCHOR_URL,
+          signals: ['line'],
+          at: 100,
+        },
+      ],
+    });
+    const remote = mkEntry({
+      updatedAt: 900,
+      evidence: [
+        {
+          anchorPostUrl: MK_ANCHOR_URL,
+          threadUrl: MK_THREAD_URL,
+          signals: ['line', 'group'],
+          at: 900,
+          postedAt: 800,
+          rulesVersion: 3,
+          deviceId: MK_DEVICE_ID_2,
+        },
+      ],
+    });
+
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(out.evidence.length, 1, '同一篇錨點貼文不得分裂成兩筆證據');
+    const ev = out.evidence[0];
+    assert.equal(ev.snippet, MK_SNIPPET, '雲端沒有 snippet,不得把本機的洗掉');
+    assert.equal(ev.anchorMatch, MK_ANCHOR_TEXT, '雲端沒有 anchorMatch,不得把本機的洗掉');
+    assert.equal(ev.postUrl, MK_PAGE_URL, '雲端沒有 postUrl,不得把本機的洗掉');
+    assert.equal(ev.at, 900, '其餘欄位 LWW by at,遠端較新');
+    assert.equal(ev.threadUrl, MK_THREAD_URL);
+    assert.deepEqual(ev.signals, ['line', 'group']);
+    assert.equal(ev.postedAt, 800);
+    assert.equal(ev.rulesVersion, 3);
+    assert.equal(ev.deviceId, MK_DEVICE_ID_2);
+  });
+
+  test('mergeScamEntry:同一篇錨點但本機 at 較新時,遠端不得覆蓋本機欄位', () => {
+    const local = mkEntry({
+      updatedAt: 900,
+      evidence: [mkEvidence({ anchorPostUrl: MK_ANCHOR_URL, at: 900, signals: ['line'], deviceId: MK_DEVICE_ID })],
+    });
+    const remote = mkEntry({
+      updatedAt: 100,
+      evidence: [{ anchorPostUrl: MK_ANCHOR_URL, at: 100, signals: ['pitch'], deviceId: MK_DEVICE_ID_2 }],
+    });
+    const ev = C.mergeScamEntry(local, remote).evidence[0];
+    assert.equal(ev.at, 900);
+    assert.deepEqual(ev.signals, ['line'], '本機那筆較新,LWW 由本機勝出');
+    assert.equal(ev.deviceId, MK_DEVICE_ID);
+  });
+
+  test('mergeScamEntry:dismissed 勝出時證據照樣聯集保留', () => {
+    const local = mkEntry({
+      state: 'dismissed',
+      dismissedAt: 900,
+      updatedAt: 900,
+      evidence: [
+        mkEvidence({ anchorPostUrl: MK_ANCHOR_URL, at: 100 }),
+        mkEvidence({ anchorPostUrl: MK_OTHER_ANCHOR_URL, at: 200 }),
+      ],
+    });
+    const remote = mkEntry({
+      state: 'active',
+      updatedAt: 500,
+      evidence: [{ anchorPostUrl: MK_THIRD_ANCHOR_URL, at: 300 }],
+    });
+
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(out.state, 'dismissed', '解除狀態較新,合併後仍是解除');
+    assert.equal(out.dismissedAt, 900);
+    assert.equal(out.evidence.length, 3, '解除不等於刪證據——三筆聯集全留');
+    assert.deepEqual(
+      out.evidence.map((e) => e.at),
+      [300, 200, 100]
+    );
+  });
+
+  test('mergeScamEntry:純函式——兩邊輸入都不得被改動', () => {
+    const local = mkEntry({ updatedAt: 100, evidence: [mkEvidence({ at: 100 })] });
+    const remote = mkEntry({
+      updatedAt: 900,
+      handle: 'Remote_Handle',
+      evidence: [{ anchorPostUrl: MK_OTHER_ANCHOR_URL, at: 900 }],
+    });
+    const beforeLocal = mkSnap(local);
+    const beforeRemote = mkSnap(remote);
+    const out = C.mergeScamEntry(local, remote);
+
+    assert.equal(mkSnap(local), beforeLocal, 'local 不得被就地改寫');
+    assert.equal(mkSnap(remote), beforeRemote, 'remote 不得被就地改寫');
+    assert.notEqual(out.evidence, local.evidence, '輸出的證據陣列不得與輸入共用同一個參照');
+    out.evidence.push({ postUrl: MK_PAGE_URL, at: 1 });
+    assert.equal(local.evidence.length, 1, '改動輸出不得波及輸入');
   });
 });
