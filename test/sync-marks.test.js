@@ -1419,3 +1419,361 @@ test('M7 共存：marks 與 links 在同一輪各自往返，scamBlocklist 的�
   });
   assert.equal(env.storage.syncState().lastError, null, '兩條通道都成功時不記錯誤');
 });
+
+// ============================================================================
+// R3 — 刪除雲端資料涵蓋警示名單（安全審查 2026-09-22，後端契約 R3）
+// ----------------------------------------------------------------------------
+// 既有的「刪除雲端資料」只打 `DELETE /api/v1/links`，警示名單整份留在後端、
+// marks 的四格水位線一格不動。R3 把 links 的 `clearedAt` 模式一比一鏡射到
+// marks：
+//
+//   syncState.marksClearedAt  number | null   本機已套用過的 marks 清空水位線
+//
+// 1. `deleteCloud()` 在 `DELETE /api/v1/links` 之後續打 `DELETE /api/v1/marks`，
+//    成功後把回應的 `clearedAt` 記進 `marksClearedAt`，並把
+//    `marksCursor`／`marksPushedAt`／`marksRejected`／`marksEvicted` 四格重設成
+//    null。本機名單比照 D19 對本機紀錄的做法**留在這台裝置**——伺服器對
+//    `updatedAt <= clearedAt` 的 upsert 一律拒收，留著也推不回去。
+// 2. 下行：`changes.clearedAt` 非 null 且**大於** `marksClearedAt`（本機 null
+//    視為 0）＝別台裝置清的，本機照 links 的判準硬刪（不晚於水位線的條目清
+//    掉、晚於的留著），記下水位線、四格重設，下一輪 `marksCursor` 為 null 重新
+//    回填。等於或較小＝自己那一次，一格不動。
+//    `changes` 為 null（請求沒帶位置參數）不得被當成清空。
+// 3. `marksClearedAt` 走 `normalizeSyncState` 白名單，並隨 `buildState` 廣播。
+// 7. 縱深：`marksEvicted` 夾上限；一輪完整成功且本輪 `evicted === 0` 時歸零。
+// 11. 縱深：handle 不合 `^[A-Za-z0-9._]{1,80}$` 的條目不進推送批——送上去必被
+//    伺服器退回 rejectedIds，白佔一次往返又把 key 記進 marksRejected。
+// ============================================================================
+
+const API_BASE = 'https://api.metalinkclearer.workers.dev';
+const MARKS_EVICTED_MAX = 1000000;
+
+/**
+ * 直接對假後端打一次 `DELETE /api/v1/marks`（模擬別台裝置清空雲端），回傳水位
+ * 線。端點未實作時先在這裡斷言失敗，紅燈才不會落在後面一路拿 undefined 比較的
+ * 假綠燈上。
+ */
+async function clearCloudMarks(env) {
+  const res = await env.server.fetch(API_BASE + '/api/v1/marks', {
+    method: 'DELETE',
+    headers: { authorization: 'Bearer tok-seeded' },
+  });
+  assert.equal(res.status, 200, 'DELETE /api/v1/marks 應回 200（mock 端點見 test/mock-marks-server.test.js）');
+  const body = await res.json();
+  assert.equal(typeof body.clearedAt, 'number', 'DELETE /api/v1/marks 應回 clearedAt 毫秒');
+  return body.clearedAt;
+}
+
+function marksDeletes(env) {
+  return env.server.requestsTo('/api/v1/marks', 'DELETE');
+}
+
+// ---- R3-1 deleteCloud ----
+
+test('R3-1 deleteCloud：links 刪完接著打 DELETE /api/v1/marks，水位線寫進 marksClearedAt、四格重設', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }) }),
+    syncState: {
+      marksCursor: 'cursor-before-delete',
+      marksPushedAt: T0 - 2 * DAY,
+      marksEvicted: 7,
+      marksRejected: { 'threads:1001': T0 - 3 * DAY },
+    },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.deleteCloud();
+  await settle();
+
+  assert.equal(env.server.requestsTo('/api/v1/links', 'DELETE').length, 1, '前置條件:links 照舊刪');
+  assert.equal(marksDeletes(env).length, 1, '刪除雲端資料必須涵蓋警示名單，否則名單整份留在後端');
+  assert.equal(marksDeletes(env)[0].headers.authorization, 'Bearer tok-seeded');
+  const last = env.server.lastRequest();
+  assert.equal(last.path, '/api/v1/marks', 'marks 的刪除排在 links 之後（前一步失敗時不吞掉）');
+  assert.equal(last.method, 'DELETE');
+
+  const state = env.storage.syncState();
+  assert.equal(typeof env.server.marks.clearedAt, 'function', '前置條件:mock 應有 marks.clearedAt() 輔助 API');
+  assert.equal(state.marksClearedAt, env.server.marks.clearedAt(), '記下伺服器寫的水位線，之後拉回自己這一次不得清本機');
+  assert.equal(state.marksCursor, null, '舊游標對清空後的雲端沒有意義，歸零重拉');
+  assert.equal(state.marksPushedAt, null);
+  assert.equal(state.marksRejected, null);
+  assert.equal(state.marksEvicted, null);
+});
+
+test('R3-1 deleteCloud：本機警示名單留在這台裝置（比照 D19 對本機紀錄的處理）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }),
+      1002: localEntry({ handle: 'bob', updatedAt: T0 - 2 * DAY }),
+    }),
+    syncState: { marksCursor: 'cursor-before-delete' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.deleteCloud();
+  await settle();
+
+  assert.deepEqual(
+    Object.keys(env.entries()).sort(),
+    ['1001', '1002'],
+    '「刪雲端但留本機」的語意對警示名單同樣成立（D19）'
+  );
+});
+
+test('R3-1 deleteCloud：marks 刪除失敗時不得把 marksClearedAt 當成已清空記下來', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice' }) }),
+    syncState: { marksCursor: 'cursor-before-delete' },
+  });
+  env.failPath('/api/v1/marks', { status: 500, body: { error: 'server_error' } });
+  const engine = TCLSync.create(env.deps);
+  await engine.deleteCloud();
+  await settle();
+
+  const state = env.storage.syncState();
+  assert.equal(marksDeletes(env).length, 1, '前置條件:確實打了一次');
+  assert.equal(state.marksClearedAt, null, '沒刪成功就記水位線，等於把「已清空」寫死在本機，下一輪再也補不回來');
+});
+
+// ---- R3-2 下行水位線 ----
+
+test('R3-2 下行：changes.clearedAt 大於本機 → 不晚於水位線的本機條目清掉、晚於的留著，四格重設', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }),
+      1002: localEntry({ handle: 'bob', updatedAt: T0 + 5 * DAY }),
+    }),
+    // marksCursor 非 null:跳過回填，這一輪直接走增量（POST 帶 since）。
+    // marksPushedAt 壓在兩筆之上,這一輪沒有要推的東西,只拉。
+    syncState: { marksCursor: '0', marksPushedAt: T0 + 10 * DAY, marksEvicted: 3 },
+  });
+  const cleared = await clearCloudMarks(env);
+  assert.ok(T0 - 5 * DAY < cleared && cleared < T0 + 5 * DAY, '前置條件:水位線夾在兩筆本機條目之間');
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(
+    Object.keys(env.entries()),
+    ['1002'],
+    '別台裝置清了雲端:不晚於水位線的本機條目硬刪，晚於的留著（比照 links 的 eventTimeOf > clearedAt）'
+  );
+  const state = env.storage.syncState();
+  assert.equal(state.marksClearedAt, cleared, '記下這一次的水位線，同一個 clearedAt 下一輪不得再清一次');
+  assert.equal(state.marksCursor, null, '游標歸零，下一輪重新回填');
+  assert.equal(state.marksPushedAt, null);
+  assert.equal(state.marksRejected, null);
+  assert.equal(state.marksEvicted, null);
+});
+
+test('R3-2 下行：清空後的下一輪重新回填（marksCursor 為 null → 走 GET /api/v1/marks）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }) }),
+    syncState: { marksCursor: '0', marksPushedAt: T0 + 10 * DAY },
+  });
+  await clearCloudMarks(env);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+  const backfillsAfterFirst = env.marksGets().length;
+
+  env.advance(10 * 60000);
+  await engine.syncNow();
+  await settle();
+
+  assert.ok(
+    env.marksGets().length > backfillsAfterFirst,
+    '清空後游標歸零，下一輪必須重走回填，否則沒拉到的雲端警示永遠落在水位線之前'
+  );
+});
+
+test('R3-2 下行：changes 為 null（請求沒帶位置參數）不得被當成清空', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }) }),
+    // marksCursor 為 null:首輪走回填 GET，接著那次 POST 不帶位置參數，
+    // 依契約 changes 整個是 null——沒有 clearedAt 可讀，一律不得推斷成清空。
+    syncState: { marksCursor: null },
+  });
+  await clearCloudMarks(env);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const posts = env.marksPosts();
+  assert.ok(posts.length >= 1, '前置條件:回填後至少發一次 POST');
+  assert.equal(posts[0].body.since, undefined, '前置條件:首輪 POST 不帶位置參數');
+  assert.deepEqual(Object.keys(env.entries()), ['1001'], 'changes 為 null 時本機名單一筆不動');
+  assert.equal(env.storage.syncState().marksClearedAt, null, '沒拉到 clearedAt 就不得寫水位線');
+});
+
+test('R3-2 下行：changes.clearedAt 為 null 時一格不動', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }) }),
+    syncState: { marksCursor: '0', marksPushedAt: T0 + 10 * DAY, marksEvicted: 3 },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const posts = env.marksPosts();
+  assert.ok(posts.length >= 1, '前置條件:這一輪確實發了 POST');
+  assert.deepEqual(Object.keys(env.entries()), ['1001'], '雲端沒清空過，本機名單不動');
+  const state = env.storage.syncState();
+  assert.equal(state.marksClearedAt, null, 'clearedAt 為 null 不寫水位線');
+  assert.notEqual(state.marksCursor, null, '四格不得因為一個 null 的 clearedAt 被重設');
+});
+
+test('R3-2 下行：clearedAt 等於本機 marksClearedAt（自己剛清的那一次）不得清本機名單', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }) }),
+    syncState: { marksCursor: '0', marksPushedAt: T0 + 10 * DAY },
+  });
+  const cleared = await clearCloudMarks(env);
+  // deleteCloud 記下的那一格:同一個水位線拉回來時是「自己清的」，硬刪不可逆，
+  // 一律往不刪倒（links 的自清守衛 D19 同一條紀律）。
+  env.storage.localData.syncState.marksClearedAt = cleared;
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(
+    Object.keys(env.entries()),
+    ['1001'],
+    '自己那一次的水位線拉回來時清本機，等於「刪雲端 → 下一輪」把本機名單也滅了'
+  );
+  assert.equal(env.storage.syncState().marksClearedAt, cleared, '水位線原地不動');
+});
+
+// ---- R3-3 廣播 ----
+
+test('R3-3 廣播：sync.stateChanged 的 state 帶出 marksClearedAt', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice' }) }),
+    syncState: { marksCursor: '0' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const state = env.lastState();
+  assert.ok(state, '前置條件:至少廣播過一次');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(state, 'marksClearedAt'),
+    true,
+    'marksClearedAt 是 marks 通道的水位線，比照其餘四格隨廣播帶出'
+  );
+});
+
+// ---- R3-7 marksEvicted 的上限與歸零 ----
+
+test('R3-7 marksEvicted：累記夾上限，不得無限成長', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - DAY }) }),
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 5 * DAY, marksEvicted: MARKS_EVICTED_MAX - 5 },
+  });
+  // 配額壓到 1，雲端先種 10 筆:這一輪推上去之後會淘汰 10 筆。
+  env.server.marks.setQuota(1);
+  env.server.marks.seed(bulkMarks(10, 2001));
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const evicted = env.storage.syncState().marksEvicted;
+  assert.ok(evicted !== null, '前置條件:這一輪確實有淘汰');
+  assert.equal(
+    evicted,
+    MARKS_EVICTED_MAX,
+    '累記值夾在 1,000,000:這一格只是 UI 提示的筆數，長年累加會變成無意義的天文數字'
+  );
+});
+
+test('R3-7 marksEvicted：一輪完整成功且本輪 evicted 為 0 時歸零成 null', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - DAY }) }),
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 5 * DAY, marksEvicted: 7 },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(Object.keys(env.storage.syncState().marksRejected || {}), [], '前置條件:這一輪沒有被拒的條目');
+  assert.equal(
+    env.storage.syncState().marksEvicted,
+    null,
+    '上一輪的淘汰提示在下一輪順利跑完後就該收掉，否則那張提示永遠掛著'
+  );
+});
+
+test('R3-7 marksEvicted：本輪有錯時不得歸零（提示還沒對帳完）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - DAY }) }),
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 5 * DAY, marksEvicted: 7 },
+  });
+  env.failPath('/api/v1/marks/sync', { status: 500, body: { error: 'server_error' } });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.equal(env.storage.syncState().marksEvicted, 7, '這一輪沒跑完，淘汰筆數留著');
+});
+
+// ---- R3-11 handle 形狀閘門（推送側） ----
+
+test('R3-11 推：handle 不合 ^[A-Za-z0-9._]{1,80}$ 的條目不進推送批', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'alice.ok_1', updatedAt: T0 - DAY }),
+      // 空白與驚嘆號都不在伺服器的 handle 白名單內:送上去必被退回
+      // rejectedIds，白佔一次往返還把 key 記進 marksRejected 永久跳過。
+      1002: localEntry({ handle: 'bad handle!', updatedAt: T0 - DAY }),
+    }),
+    syncState: { marksCursor: '0' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const pushed = Object.keys(env.upsertsByKey()).sort();
+  assert.deepEqual(pushed, ['threads:1001'], 'handle 形狀不合的條目在本機這一關就攔下來');
+});
