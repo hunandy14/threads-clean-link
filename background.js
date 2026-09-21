@@ -1056,6 +1056,9 @@ async function handleScamHit(message) {
     // entries 重建，孤兒鍵沒有任何機會留下。
     const next = TCLCore.capScamBlocklist(list);
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: next });
+    // 名單是與紀錄並存的第二條同步通道(D38)：不掛去抖同步的話，新標記的作者
+    // 最久要等一輪週期 alarm 才推得上去，期間別台裝置看到的是舊名單。
+    notifySyncRecorded();
     return { ok: true, added, entry: next.entries[userId] };
   });
 }
@@ -1063,7 +1066,8 @@ async function handleScamHit(message) {
 // 選項頁的「解除」：條目留在 entries，state 翻成 dismissed 並記下解除時間，
 // 下次掃到同一位作者不再入名單。證據一律保留——復原後卡片要畫得出來，跨裝置
 // 對帳也還需要它。名單裡沒有這一筆時補一筆空的解除條目：使用者按過解除就得
-// 擋得住之後的掃描，哪怕條目已被上限淘汰。
+// 擋得住之後的掃描，哪怕條目已被上限淘汰；補建的那一筆要帶上訊息送來的帳號
+// 快照，handle 為 null 的 mark 會被後端整筆拒收，那次解除就永遠同步不出去。
 async function handleScamBlocklistRemove(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
@@ -1074,15 +1078,22 @@ async function handleScamBlocklistRemove(message) {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
     const now = Date.now();
-    const entry = list.entries[userId] || { evidence: [], addedAt: now, source: 'auto' };
+    const existing = list.entries[userId];
+    const entry = existing || { evidence: [], addedAt: now, source: 'auto' };
+    const patch = { state: 'dismissed', dismissedAt: now, updatedAt: now };
+    if (!existing) {
+      // 補建的空條目：帳號快照只認伺服器那把尺(TCLCore.isScamMarkHandle)，形狀
+      // 不合就忽略該欄位——解除本身不因為一個壞欄位失敗(使用者會按不掉標記)，
+      // 但訊息端的任意字串也不得落進 entries 與 handleIndex。
+      if (TCLCore.isScamMarkHandle(message.handle)) patch.handle = message.handle;
+      const displayName = TCLCore.sanitizeDisplayName(message.displayName);
+      if (displayName) patch.displayName = displayName;
+    }
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
     // entries 重建，dismissed 不進反查表，孤兒鍵沒有任何機會留下。
-    list.entries[userId] = Object.assign({}, entry, {
-      state: 'dismissed',
-      dismissedAt: now,
-      updatedAt: now,
-    });
+    list.entries[userId] = Object.assign({}, entry, patch);
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
+    notifySyncRecorded();
     return { ok: true };
   });
 }
@@ -1106,6 +1117,7 @@ async function handleScamBlocklistRestore(message) {
       list.entries[userId] = restored;
     }
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
+    notifySyncRecorded();
     return { ok: true };
   });
 }

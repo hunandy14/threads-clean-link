@@ -2851,11 +2851,15 @@ test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原
   const desc = doc.ids.confirmDesc.textContent;
   assert.equal(desc, i18n.t('zh', 'opSyncDeleteConfirmDesc'));
   assert.match(desc, /無法復原/);
-  assert.match(desc, /這台裝置上的紀錄不受影響/);
+  assert.match(desc, /這台裝置/);
   // 語意修正(伺服器對早於 cleared_at 的紀錄一律拒收，api-spec 4.4):刪除
   // 雲端後本機紀錄不會再自動上傳，舊文案「下次登入時會再次上傳」與後端
   // 實際行為矛盾。
-  assert.match(desc, /不會再上傳到雲端/);
+  assert.match(desc, /不會再上傳/);
+  // R3-5:這顆按鈕現在連警示名單一起刪（deleteCloud 會續打 DELETE
+  // /api/v1/marks），確認框不講清楚就是讓使用者在不知情下刪掉第二種資料。
+  // 上面兩條改成不綁死句型的子字串，好讓文案改寫時只需要顧語意。
+  assert.match(desc, /警示名單/);
 
   const callsBefore = runtime.calls.length;
   doc.ids.confirmOk.fire('click');
@@ -6249,7 +6253,10 @@ test('警示名單卡:解除鈕為 #i-circle-minus 圖示鈕，點下先開確�
   await settle();
 
   assert.deepEqual(
-    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    // 【斷言放寬｜R3-15】payload 另帶 handle／displayName（背景補建空條目時
+    // 要寫進去，否則同步上雲會因為 handle 為 null 整筆被拒），這裡只比型別
+    // 與 userId，handle 由檔末 R3-15 那一條專門釘。
+    callsOfType(ctx.runtime, 'scam.blocklist.remove').map((m) => ({ type: m.type, userId: m.userId })),
     [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
     '確認後才送 scam.blocklist.remove，帶正確的 userId(§14)'
   );
@@ -7163,7 +7170,10 @@ test('分頁化後既有行為不變:警示名單分頁上 storage.onChanged 照
   await settle();
 
   assert.deepEqual(
-    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    // 【斷言放寬｜R3-15】payload 另帶 handle／displayName（背景補建空條目時
+    // 要寫進去，否則同步上雲會因為 handle 為 null 整筆被拒），這裡只比型別
+    // 與 userId，handle 由檔末 R3-15 那一條專門釘。
+    callsOfType(ctx.runtime, 'scam.blocklist.remove').map((m) => ({ type: m.type, userId: m.userId })),
     [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
     '解除流程在分頁內照常送出'
   );
@@ -8244,7 +8254,9 @@ test('警示名單卡:說明視窗是五段 ol > li，逐段文案與字典相�
       '只在你點進貼文時掃描。',
       '命中就掛標記並記下作者。',
       '河道只查表不掃文。',
-      '資料只在這台裝置。',
+      // 【技術修正｜R3-8】名單已經有雲端同步通道，舊的開頭句「資料只在這台裝
+      // 置。」正是 R3-8 禁的那句不實陳述，跟著字典一起改。
+      '名單跟著你的帳號走。',
       '判定是規則比對，可能誤判。',
     ],
     '五段開頭句'
@@ -8640,7 +8652,10 @@ test('警示名單 v2:總開關關閉時名單仍可編輯——列照畫、命�
   await settle();
 
   assert.deepEqual(
-    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    // 【斷言放寬｜R3-15】payload 另帶 handle／displayName（背景補建空條目時
+    // 要寫進去，否則同步上雲會因為 handle 為 null 整筆被拒），這裡只比型別
+    // 與 userId，handle 由檔末 R3-15 那一條專門釘。
+    callsOfType(ctx.runtime, 'scam.blocklist.remove').map((m) => ({ type: m.type, userId: m.userId })),
     [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
     '關閉狀態下解除照樣送得出去'
   );
@@ -9031,4 +9046,29 @@ test('警示名單 v2 文案:新增的 i18n 鍵 zh／en 都要備齊', () => {
     assert.equal(i18n.t('zh', key), expected[key][0], key + ' 的 zh 文案');
     assert.equal(i18n.t('en', key), expected[key][1], key + ' 的 en 文案');
   });
+});
+
+// ============================================================
+// R3-15：解除訊息要帶 handle（staging 實測）
+// ------------------------------------------------------------
+// background 在本機沒有該條目時會補一筆空的 dismissed 條目擋住之後的掃描，
+// 但那一筆沒有 handle；上雲時 `toScamMark` 送 `handle: null`，被後端整筆拒
+// 收、key 進 marksRejected 永不重送，那次解除從此同步不出去。選項頁手上就有
+// 這一列的 handle，送訊息時一併帶上。
+// ============================================================
+
+test('R3-15 警示名單卡:解除訊息帶上該列的 handle 與 displayName', async () => {
+  const ctx = makeScamCtx();
+  await initScamPage(ctx);
+
+  const removeBtn = actBtn(scamRowById(ctx.doc, SCAM_ID_A), 'remove');
+  assert.ok(removeBtn, '前置:應有解除鈕');
+  removeBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const [msg] = callsOfType(ctx.runtime, 'scam.blocklist.remove');
+  assert.ok(msg, '前置條件:確認後送出解除訊息');
+  assert.equal(msg.handle, 'example_author', '帶上 handle，background 補建空條目時才寫得出名字');
+  assert.equal(msg.displayName, 'Example Author', '有顯示名就一併帶上');
 });

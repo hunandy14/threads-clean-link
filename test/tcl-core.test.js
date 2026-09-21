@@ -2875,10 +2875,18 @@ test.describe('警示名單 v2:fromScamMark', () => {
     }
   });
 
-  test('fromScamMark:顯示名截到 80 字，handle 走既有清洗', () => {
-    const out = C.fromScamMark(mkMark({ displayName: 'D'.repeat(200), handle: '  Example \t\n  Author  ' }));
+  // 【斷言翻轉｜R3-6】handle 不再走 sanitizeDisplayName 的「摺空白後照收」，
+  // 改驗伺服器那把尺 ^[A-Za-z0-9._]{1,80}$，不合整筆回 null（帶空白的 handle
+  // 落進 handleIndex 就是一條跨裝置的冒名管道）。displayName 的 80 字硬裁不變。
+  test('fromScamMark:顯示名截到 80 字，handle 改驗形狀（R3-6）', () => {
+    const out = C.fromScamMark(mkMark({ displayName: 'D'.repeat(200) }));
     assert.equal(out.entry.displayName.length, 80, '顯示名硬裁 80(DISPLAY_NAME_MAX)');
-    assert.equal(out.entry.handle, 'Example Author', 'handle 走 sanitizeDisplayName，與本機同一把尺');
+    assert.equal(out.entry.handle, MK_HANDLE, '合法 handle 原樣保留');
+    assert.equal(
+      C.fromScamMark(mkMark({ handle: '  Example \t\n  Author  ' })),
+      null,
+      '帶空白的 handle 不再被摺成合法值，整筆丟棄'
+    );
   });
 
   test('fromScamMark:髒證據逐筆剝除，其餘欄位照留', () => {
@@ -3168,5 +3176,170 @@ test.describe('警示名單 v2:mergeScamEntry', () => {
     assert.notEqual(out.evidence, local.evidence, '輸出的證據陣列不得與輸入共用同一個參照');
     out.evidence.push({ postUrl: MK_PAGE_URL, at: 1 });
     assert.equal(local.evidence.length, 1, '改動輸出不得波及輸入');
+  });
+});
+
+// ============================================================================
+// R3 — 警示名單同步的縱深修補（安全審查 2026-09-22，後端契約 R3）
+// ----------------------------------------------------------------------------
+// 6.  `fromScamMark`：`handle` 驗形狀 `^[A-Za-z0-9._]{1,80}$`，不合整筆回 null。
+//     伺服器對 handle 用的就是這把尺（見 test/mock-marks-server.test.js 的
+//     normalizeMark），本機這一側不驗等於讓雲端任意字串落進 entries 與
+//     handleIndex——那張反查表是河道「只查表不掃文」的依據，混進帶空白／標點
+//     的假 handle 就成了跨裝置的冒名管道。
+// 9.  `normalizeScamEvidence` 的 `deviceId` 改走 `normalizeDeviceId`（UUID 形
+//     狀、一律小寫），不合整欄剝除。原本是 `sanitizeText(…, 64)`，任意字串都
+//     放行，拿去 join 裝置清單永遠落空。
+// 10. `scamMergeEvidenceKey`（雲端合併路徑）去掉 `threadUrl` 那一段，與
+//     `scamEvidenceKey`（`anchorPostUrl ‖ postUrl`）對齊。兩把尺不一致時，帶
+//     threadUrl 但沒有 anchorPostUrl 的本機證據跑一趟雲端往返就會裂成兩筆。
+// 12. `normalizeMarksRejected` 夾筆數上限：那是寫進 syncState 的映射，沒有上
+//     限就會隨著被拒的 key 無限成長，最後撐爆 storage 配額。
+// 14. `normalizeBlocklistEntry`：`addedAt` 與 `updatedAt` 兩者都不合法時整筆
+//     丟棄；只有一個不合法時以另一個補。兩格都補 0 的舊行為會讓一筆壞資料的
+//     updatedAt 變成 0，在 LWW 合併裡永遠輸，從此無法更新也無法解除。
+// ============================================================================
+
+const MARKS_REJECTED_MAX = 5000;
+
+test.describe('警示名單 R3:形狀閘門與合併鍵', () => {
+  function r3Mark(patch) {
+    return Object.assign(
+      {
+        key: 'threads:' + MK_ID,
+        state: 'active',
+        dismissedAt: null,
+        handle: MK_HANDLE,
+        displayName: 'Example Author',
+        source: 'auto',
+        evidence: [],
+        addedAt: 100,
+        updatedAt: 900,
+      },
+      patch || {}
+    );
+  }
+
+  test('R3-6 fromScamMark:handle 不合 ^[A-Za-z0-9._]{1,80}$ 一律整筆回 null', () => {
+    const bads = [
+      ['含空白', 'Example Author'],
+      ['含斜線', 'example/author'],
+      ['含 @', '@example_author'],
+      ['含全形字', '詐騙帳號'],
+      ['含控制字元', 'example\u0000author'],
+      ['含 HTML 角括號', '<b>example</b>'],
+      ['超過 80 字', 'a'.repeat(81)],
+      ['空字串', ''],
+      ['非字串', 12345],
+    ];
+    for (const bad of bads) {
+      assert.equal(
+        C.fromScamMark(r3Mark({ handle: bad[1] })),
+        null,
+        'handle ' + bad[0] + ' 時整筆丟棄（落進 handleIndex 就是一條冒名管道）'
+      );
+    }
+  });
+
+  test('R3-6 fromScamMark:合法 handle 原樣收下，缺席（null）仍算合法', () => {
+    const ok = ['example_author', 'Example.Author', 'a', '0'.repeat(80), 'a.b_c.1'];
+    for (const handle of ok) {
+      const out = C.fromScamMark(r3Mark({ handle }));
+      assert.ok(out, 'handle=' + handle + ' 應收下');
+      assert.equal(out.entry.handle, handle, '合法 handle 不得被改寫');
+    }
+    // 契約允許 handle 為 null（可空欄位），那不是「形狀不合」。
+    const withoutHandle = C.fromScamMark(r3Mark({ handle: null }));
+    assert.ok(withoutHandle, 'handle 為 null 是合法的缺席，不得整筆丟棄');
+    assert.equal(mkHas(withoutHandle.entry, 'handle'), false, '缺席不落成本機的鍵');
+  });
+
+  test('R3-9 normalizeScamEvidence:deviceId 只收 UUID 形狀並轉小寫，其餘整欄剝除', () => {
+    const base = { postUrl: MK_PAGE_URL, snippet: MK_SNIPPET, at: 1700000100000 };
+    const upper = C.normalizeScamEvidence(Object.assign({}, base, { deviceId: MK_DEVICE_ID.toUpperCase() }));
+    assert.equal(upper.deviceId, MK_DEVICE_ID, 'UUID 一律轉小寫（伺服器存小寫，不對齊就 join 不到裝置）');
+
+    const bads = ['not-a-uuid', '', '11111111-2222-4333-8444', MK_DEVICE_ID + 'x', 42, null, {}];
+    for (const bad of bads) {
+      const out = C.normalizeScamEvidence(Object.assign({}, base, { deviceId: bad }));
+      assert.ok(out, '前置條件:其餘欄位合法時整筆仍收下');
+      assert.equal(
+        mkHas(out, 'deviceId'),
+        false,
+        'deviceId=' + JSON.stringify(bad) + ' 形狀不合應整欄剝除，不得原樣落盤'
+      );
+    }
+  });
+
+  test('R3-10 證據去重鍵對齊:有 threadUrl、無 anchorPostUrl 的證據跑完雲端往返不得裂成兩筆', () => {
+    // 本機證據只有 postUrl 與 threadUrl（自回覆串的錨點篇還沒記下來）。
+    const local = mkEntry({
+      evidence: [
+        {
+          postUrl: MK_PAGE_URL,
+          snippet: MK_SNIPPET,
+          at: 1700000100000,
+          threadUrl: MK_ANCHOR_URL,
+        },
+      ],
+    });
+    // 一趟真實往返:上雲時 anchorPostUrl 以 postUrl 補位，落回本機後兩邊指的
+    // 其實是同一篇。
+    const remote = C.fromScamMark(C.toScamMark(MK_ID, local)).entry;
+    const merged = C.mergeScamEntry(local, remote);
+    assert.equal(
+      merged.evidence.length,
+      1,
+      '合併鍵若還吃 threadUrl，本機那一筆與落回來的同一筆會被當成兩篇，每同步一次就多一筆'
+    );
+    assert.equal(merged.evidence[0].snippet, MK_SNIPPET, '合併後本機獨有的片段要留著');
+  });
+
+  test('R3-12 normalizeMarksRejected:被拒映射夾筆數上限，不得無限成長', () => {
+    const raw = {};
+    for (let i = 0; i < MARKS_REJECTED_MAX + 100; i += 1) raw['threads:' + (90000000000 + i)] = 1700000000000 + i;
+    const out = C.normalizeSyncState({ marksRejected: raw }).marksRejected;
+    assert.ok(out && typeof out === 'object', '前置條件:合法映射照收');
+    assert.equal(
+      Object.keys(out).length,
+      MARKS_REJECTED_MAX,
+      `被拒映射是整包寫回 storage 的，沒有上限就會一路長到配額爆掉（上限 ${MARKS_REJECTED_MAX}）`
+    );
+  });
+
+  test('R3-12 normalizeMarksRejected:未達上限時一項不刪', () => {
+    const raw = {};
+    for (let i = 0; i < 10; i += 1) raw['threads:' + (90000000000 + i)] = 1700000000000 + i;
+    const out = C.normalizeSyncState({ marksRejected: raw }).marksRejected;
+    assert.equal(Object.keys(out).length, 10, '沒到上限就不該動它');
+  });
+
+  test('R3-14 normalizeBlocklistEntry:addedAt 與 updatedAt 都不合法時整筆丟棄', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: mkEntry({ addedAt: 'nope', updatedAt: null }),
+        [MK_ID_2]: mkEntry({ addedAt: 100, updatedAt: 900 }),
+      },
+    });
+    assert.deepEqual(
+      Object.keys(out.entries),
+      [MK_ID_2],
+      '兩個時戳都讀不懂的條目沒有可比較的版本，補 0 只會讓它在 LWW 裡永遠輸、再也改不動'
+    );
+  });
+
+  test('R3-14 normalizeBlocklistEntry:只有一個時戳不合法時以另一個補', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: mkEntry({ addedAt: 'nope', updatedAt: 900 }),
+        [MK_ID_2]: mkEntry({ addedAt: 100, updatedAt: 'nope' }),
+      },
+    });
+    assert.equal(out.entries[MK_ID].addedAt, 900, 'addedAt 壞掉時拿 updatedAt 補，不補 0');
+    assert.equal(out.entries[MK_ID].updatedAt, 900);
+    assert.equal(out.entries[MK_ID_2].addedAt, 100);
+    assert.equal(out.entries[MK_ID_2].updatedAt, 100, 'updatedAt 壞掉時拿 addedAt 補');
   });
 });

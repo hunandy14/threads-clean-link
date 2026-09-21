@@ -329,18 +329,36 @@
     };
   }
 
+  // marksRejected 的筆數上限，與本機名單的 MAX_ENTRIES 同級:被拒的 key 最多
+  // 就是整份名單那麼多筆，再多代表映射本身壞了。
+  var MARKS_REJECTED_MAX = 5000;
+
   // D38:被拒警示的映射(key → 被拒當下的 updatedAt)。逐項夾擠成「字串鍵 →
   // 有限數字」，形狀不對的整項剝除;非物件一律回 null。**每次回傳新物件**
   // ——與整包 syncState 同一條紀律，回傳輸入的參照會讓呼叫端就地改到 storage
   // 讀回來的那份。
   function normalizeMarksRejected(value) {
     if (!isPlainObject(value)) return null;
-    var out = {};
+    var kept = [];
     var keys = Object.keys(value);
     for (var i = 0; i < keys.length; i++) {
       if (isUnsafeMapKey(keys[i])) continue;
-      if (typeof value[keys[i]] === 'number' && isFinite(value[keys[i]])) out[keys[i]] = value[keys[i]];
+      if (typeof value[keys[i]] === 'number' && isFinite(value[keys[i]])) {
+        kept.push({ key: keys[i], at: value[keys[i]] });
+      }
     }
+    // 超過上限時留下被拒時間最新的那些:映射整包寫回 storage，沒有上限就會隨著
+    // 被拒的 key 一路長到配額爆掉。舊的那些對應的本機條目多半早就又動過(那時
+    // updatedAt 已前進，映射也就失效)，先丟。
+    if (kept.length > MARKS_REJECTED_MAX) {
+      kept.sort(function (a, b) {
+        if (a.at !== b.at) return b.at - a.at;
+        return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+      });
+      kept = kept.slice(0, MARKS_REJECTED_MAX);
+    }
+    var out = {};
+    for (var j = 0; j < kept.length; j++) out[kept[j].key] = kept[j].at;
     return out;
   }
 
@@ -1233,7 +1251,9 @@
     // content script 的 payload 帶。舊證據沒有這兩欄，缺席不補 0 也不補空字
     // 串——補了就分不出「沒記」與「記成 0」。
     if (typeof raw.rulesVersion === 'number' && isFinite(raw.rulesVersion)) out.rulesVersion = raw.rulesVersion;
-    var deviceId = sanitizeText(raw.deviceId, SCAM_DEVICE_ID_MAX);
+    // deviceId 只收 UUID 形狀並一律轉小寫(與 seen[].deviceId 同一把尺):任意
+    // 字串放行的話，拿它去 join 裝置清單永遠落空，時間軸上就顯示成未知裝置。
+    var deviceId = normalizeDeviceId(raw.deviceId);
     if (deviceId !== undefined) out.deviceId = deviceId;
     return out;
   }
@@ -1268,8 +1288,13 @@
         if (evidence) entry.evidence.push(evidence);
       }
     }
-    entry.addedAt = finiteOr(raw.addedAt, 0);
-    entry.updatedAt = finiteOr(raw.updatedAt, entry.addedAt);
+    // 兩個時戳互為備位:只有一個讀不懂時以另一個補。兩個都讀不懂就整筆丟棄
+    // ——補 0 會讓這筆在 LWW 合併裡永遠輸，從此既改不動也解除不了。
+    var addedAt = typeof raw.addedAt === 'number' && isFinite(raw.addedAt) ? raw.addedAt : null;
+    var updatedAt = typeof raw.updatedAt === 'number' && isFinite(raw.updatedAt) ? raw.updatedAt : null;
+    if (addedAt === null && updatedAt === null) return null;
+    entry.addedAt = addedAt === null ? updatedAt : addedAt;
+    entry.updatedAt = updatedAt === null ? entry.addedAt : updatedAt;
     entry.source = raw.source === 'manual' ? 'manual' : 'auto';
     return entry;
   }
@@ -1307,7 +1332,9 @@
       for (var j = 0; j < keys.length; j++) {
         if (isUnsafeMapKey(keys[j]) || !isScamUserIdKey(keys[j])) continue;
         var allowed = normalizeScamAllowEntry(raw.allowlist[keys[j]]);
-        if (allowed) out.entries[keys[j]] = migrateScamDismissal(out.entries[keys[j]], allowed);
+        if (!allowed) continue;
+        var migrated = migrateScamDismissal(out.entries[keys[j]], allowed);
+        if (migrated) out.entries[keys[j]] = migrated;
       }
     }
     rebuildScamViews(out);
@@ -1535,11 +1562,20 @@
           deviceId: raw.deviceId,
         },
       ],
-      addedAt: raw.at,
+      addedAt: finiteOr(raw.at, 0),
+      updatedAt: finiteOr(raw.at, 0),
       source: raw.source,
     });
     entry.evidence = capScamEvidence(entry.evidence);
     return entry;
+  }
+
+  // 雲端 mark 的 handle 形狀(契約 §3.1):與伺服器同一把尺。本機 entries 與
+  // handleIndex 的寫入路徑共用它，免得各處各養一份正則。
+  var SCAM_MARK_HANDLE_PATTERN = /^[A-Za-z0-9._]{1,80}$/;
+
+  function isScamMarkHandle(value) {
+    return typeof value === 'string' && SCAM_MARK_HANDLE_PATTERN.test(value);
   }
 
   // 一筆證據的去重鍵:錨點篇優先，缺席時退回 postUrl(以正規化後的網址比
@@ -1683,6 +1719,11 @@
     if (mark.key.indexOf(SCAM_MARK_KEY_PREFIX) !== 0) return null;
     var userId = mark.key.slice(SCAM_MARK_KEY_PREFIX.length);
     if (isUnsafeMapKey(userId) || !isScamUserIdKey(userId)) return null;
+    // handle 驗伺服器那把尺，不合整筆丟棄(null 是契約允許的缺席，不算不合)。
+    // 摺空白後照收會讓雲端的任意字串落進 entries 與 handleIndex，而那張反查表
+    // 是河道「只查表不掃文」的依據——混進帶空白／標點的假 handle 就是一條跨裝
+    // 置的冒名管道。
+    if (mark.handle !== null && mark.handle !== undefined && !isScamMarkHandle(mark.handle)) return null;
     var evidence = [];
     if (Array.isArray(mark.evidence)) {
       for (var i = 0; i < mark.evidence.length; i++) {
@@ -1690,7 +1731,7 @@
         if (item) evidence.push(item);
       }
     }
-    return {
+    var parsed = {
       userId: userId,
       entry: normalizeBlocklistEntry({
         state: mark.state,
@@ -1703,17 +1744,22 @@
         source: mark.source,
       }),
     };
+    // 兩個時戳都讀不懂時 normalizeBlocklistEntry 回 null，整筆一併丟棄:呼叫端
+    // 拿 parsed.entry 直接落盤，放一個 null 進 entries 比不收更糟。
+    return parsed.entry ? parsed : null;
   }
 
   // ----------------------------------------------------------
   // 本機與雲端條目的合併
   // ----------------------------------------------------------
 
-  // 證據聯集的鍵:錨點篇 → 串頭 → postUrl。三者都取不到的證據沒有身分，各算
-  // 一筆(不與任何人合併)。
+  // 證據聯集的鍵:錨點篇 → postUrl，與 scamEvidenceKey 同一把尺。兩者都取不到
+  // 的證據沒有身分，各算一筆(不與任何人合併)。串頭不入鍵——帶 threadUrl 但沒
+  // 有 anchorPostUrl 的本機證據，跑一趟雲端往返(anchorPostUrl 以 postUrl 補位)
+  // 落回來就會與本機那一筆算成兩篇，每同步一次多一筆。
   function scamMergeEvidenceKey(item, index) {
     if (!isPlainObject(item)) return 'x' + index;
-    var url = item.anchorPostUrl || item.threadUrl || item.postUrl;
+    var url = item.anchorPostUrl || item.postUrl;
     if (typeof url !== 'string') return 'x' + index;
     return normalizePostUrl(url) || url;
   }
@@ -1862,6 +1908,7 @@
     mergeBlocklistEvidence: mergeBlocklistEvidence,
     toScamMark: toScamMark,
     fromScamMark: fromScamMark,
+    isScamMarkHandle: isScamMarkHandle,
     mergeScamEntry: mergeScamEntry,
   };
 
