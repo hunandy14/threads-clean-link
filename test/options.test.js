@@ -2445,6 +2445,9 @@ test('雲端同步:normalizeSyncCardState 對非法/形狀不對的輸入一律�
     pendingCount: 4,
     lastError: null,
     apiBase: 'https://api.example/',
+    // 警示名單 v2(D35 ＋ 顯示)新增欄位:雲端配額用罄而淘汰的筆數，輸入缺
+    // 席時退回 0(見下方「警示名單 v2」段落的 scamEvictedHint 測試)。
+    marksEvicted: 0,
   });
 
   // 型別不對的 displayName/avatarUrl 個別退回 null，不整包丟棄其餘欄位
@@ -8414,4 +8417,618 @@ test('警示名單卡:options.html 備妥資訊鈕與說明視窗(靜態節點�
       /\.scam-info-list\s*\{[^}]*max-height/.test(html),
     '五段說明疊起來可能超過一個螢幕，容器要能捲'
   );
+});
+
+// ============================================================
+// 警示名單 v2(車道 C;D35 ＋ 顯示)
+//
+// 四件事:
+//   1. 總開關關閉時，警示名單分頁維持可見可編輯，卡頭下方多一條狀態列說明
+//      「關了會怎樣」，並給一顆就地開啟的按鈕。
+//   2. 「已解除」不再是另一張表:條目自己帶 state('active'／'dismissed')，
+//      已解除小節由 state==='dismissed' 的條目產生，名單列只列 active。
+//      復原是把 state 翻回 active，證據原地保留(v1 的 allowlist 視圖裡沒有
+//      證據，復原等於把證據丟掉)。
+//   3. 雲端同步來的證據沒有 snippet(片段只留在掃到它的那台裝置)，片段位置
+//      改畫灰字說明，日期連結與標記 pill 照常。
+//   4. 雲端配額用罄而被淘汰的筆數(syncState.marksEvicted)在卡頭以小字說明。
+//
+// 【DOM 契約】本組新增三個落點，實作端須照此產生:
+//   - 關閉狀態列:#scamDisabledBar,div.scam-disabled-bar[role="status"]，
+//     靜態長在卡頭之後、#scamList 之前;內容(說明文字與開啟鈕)由 JS 逐一
+//     createElement，開關為 true 時整條 hidden。
+//   - 開啟鈕:狀態列內的 button.scam-enable-btn,dataset.act="enable"。
+//   - 淘汰提示:#scamEvictedHint，卡頭小字，marksEvicted 為 0／缺席時 hidden。
+//   - 缺片段的證據:p.scam-evidence-text 內改掛 span.scam-evidence-missing。
+//
+// 【storage 形狀】本組的假資料一律給 v2(entries 逐筆帶 state，已解除的多帶
+// dismissedAt，不再有 allowlist 鍵);另釘一條 v1 形狀(entries ＋ allowlist)
+// 經 TCLCore.normalizeScamBlocklist 照樣畫得出已解除小節。
+// ============================================================
+
+const MARKS_ID_C_HANDLE = 'scammer.c';
+const MARKS_DISMISSED_AT = SCAM_NOW - SCAM_DAY;
+const MARKS_URL_C1 = 'https://www.threads.com/@scammer.c/post/DxSyNtH0011';
+const MARKS_URL_C2 = 'https://www.threads.com/@scammer.c/post/DxSyNtH0012';
+const MARKS_SNIPPET_C = '加賴 exC0001 進群，穩賺不賠的合成範例句';
+
+// v2 形狀:A／B 為 active(A 兩筆證據、較新)，C 為 dismissed 且證據仍在。
+function marksFixture(patch) {
+  const list = {
+    version: 2,
+    entries: {
+      [SCAM_ID_A]: {
+        handle: 'example_author',
+        displayName: 'Example Author',
+        state: 'active',
+        evidence: [
+          { postUrl: SCAM_URL_A1, snippet: SCAM_SNIPPET_LONG, at: SCAM_NOW - SCAM_HOUR },
+          { postUrl: SCAM_URL_A2, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 2 * SCAM_HOUR },
+        ],
+        addedAt: SCAM_NOW - SCAM_HOUR,
+        source: 'auto',
+      },
+      [SCAM_ID_B]: {
+        handle: 'user.b',
+        state: 'active',
+        evidence: [
+          { postUrl: SCAM_URL_B1, snippet: SCAM_SNIPPET_SHORT, at: SCAM_NOW - 3 * SCAM_DAY },
+        ],
+        addedAt: SCAM_NOW - 3 * SCAM_DAY,
+        source: 'auto',
+      },
+      [SCAM_ID_C]: {
+        handle: MARKS_ID_C_HANDLE,
+        state: 'dismissed',
+        dismissedAt: MARKS_DISMISSED_AT,
+        evidence: [
+          { postUrl: MARKS_URL_C1, snippet: MARKS_SNIPPET_C, at: SCAM_NOW - 4 * SCAM_DAY },
+          { postUrl: MARKS_URL_C2, snippet: MARKS_SNIPPET_C, at: SCAM_NOW - 5 * SCAM_DAY },
+        ],
+        addedAt: SCAM_NOW - 5 * SCAM_DAY,
+        source: 'auto',
+      },
+    },
+    handleIndex: {
+      example_author: SCAM_ID_A,
+      'user.b': SCAM_ID_B,
+      [MARKS_ID_C_HANDLE]: SCAM_ID_C,
+    },
+  };
+  return Object.assign(list, patch || {});
+}
+
+// 缺片段的證據:雲端同步只帶得回 postUrl/at 這類結構欄位，snippet 留在掃到
+// 它的那台裝置。鍵整個缺席與存成空字串都算「沒有片段」——正規化把缺席補成
+// '' 是實作細節，顯示端兩種都得畫成灰字說明。
+const MARKS_MISS_URL_1 = 'https://www.threads.com/@example_author/post/DxSyNtH0021';
+const MARKS_MISS_URL_2 = 'https://www.threads.com/@example_author/post/DxSyNtH0022';
+const MARKS_KEEP_URL_3 = 'https://www.threads.com/@example_author/post/DxSyNtH0023';
+const MARKS_KEEP_SNIPPET = '本機掃到的那一篇，片段還在:加我賴 exK0003 拉你進群';
+
+function marksMissingFixture() {
+  const list = marksFixture();
+  list.entries[SCAM_ID_A].evidence = [
+    // 最新一筆(主卡露出的就是它)連 snippet 鍵都沒有。
+    { postUrl: MARKS_MISS_URL_1, anchorPostUrl: MARKS_MISS_URL_1, at: SCAM_NOW - SCAM_HOUR },
+    // 次新一筆存成空字串。
+    {
+      postUrl: MARKS_MISS_URL_2,
+      anchorPostUrl: MARKS_MISS_URL_2,
+      snippet: '',
+      at: SCAM_NOW - 2 * SCAM_HOUR,
+    },
+    // 最舊一筆是本機掃到的，片段完整。
+    {
+      postUrl: MARKS_KEEP_URL_3,
+      anchorPostUrl: MARKS_KEEP_URL_3,
+      snippet: MARKS_KEEP_SNIPPET,
+      at: SCAM_NOW - 3 * SCAM_HOUR,
+    },
+  ];
+  return list;
+}
+
+const MARKS_STUB_IDS = SCAM_STUB_IDS.concat([
+  'scamDisabledBar',
+  'scamEvictedHint',
+  'scamGuardEnabled',
+]);
+
+// makeScamCtx 綁死 zh、總開關預設、未登入狀態;本組要動的正是這三樣，另開
+// 一顆可帶語言／總開關／同步狀態的 ctx，其餘接線完全相同。
+function makeMarksCtx(opts) {
+  const o = opts || {};
+  const blocklist = Object.prototype.hasOwnProperty.call(o, 'blocklist')
+    ? o.blocklist
+    : marksFixture();
+  const localSeed = { history: [] };
+  if (blocklist !== undefined) localSeed.scamBlocklist = blocklist;
+  if (o.guardEnabled !== undefined) localSeed.scamGuardEnabled = o.guardEnabled;
+  const storage = createChromeStorage({ langPref: o.lang || 'zh' }, localSeed);
+  const doc = makeDocumentStub();
+  MARKS_STUB_IDS.forEach((id) => doc.getElementById(id));
+  const state = Object.assign({}, DEV_SIGNED_OUT_STATE, o.syncState || {});
+  const runtime = makeFakeRuntime({
+    'sync.getState': () => state,
+    'scam.blocklist.remove': o.remove || (() => ({ ok: true })),
+    'scam.blocklist.restore': o.restore || (() => ({ ok: true })),
+  });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => SCAM_NOW,
+    runtime,
+  });
+  return { storage, doc, runtime, controller, lang: o.lang || 'zh' };
+}
+
+function marksBar(ctx) {
+  return ctx.doc.ids.scamDisabledBar;
+}
+function marksEnableBtn(ctx) {
+  return firstByClass(marksBar(ctx), 'scam-enable-btn');
+}
+function marksGuardWrites(ctx) {
+  return ctx.storage.localCalls.set.filter((items) =>
+    Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled')
+  );
+}
+
+// ---- 1. 關閉狀態列 ----
+
+test('警示名單 v2:scamGuardEnabled 為 false 時卡頭下方出現狀態列，文案 opScamDisabledBar ＋ 開啟鈕 opScamEnable(zh)', async () => {
+  const ctx = makeMarksCtx({ guardEnabled: false });
+  await initScamPage(ctx);
+
+  const bar = marksBar(ctx);
+  assert.equal(bar.hidden, false, '總開關關閉時狀態列應顯示');
+  assert.ok(
+    joinedText(bar).includes(i18n.t('zh', 'opScamDisabledBar')),
+    '狀態列文案走 opScamDisabledBar'
+  );
+
+  const btn = marksEnableBtn(ctx);
+  assert.ok(btn, '狀態列右側應有 button.scam-enable-btn');
+  assert.equal(btn.tag, 'button', '開啟鈕是 <button>');
+  assert.equal(btn.dataset.act, 'enable', '開啟鈕以 dataset.act="enable" 標記');
+  assert.ok(
+    (joinedText(btn) + ' ' + scamAttrOf(btn, 'title')).includes(i18n.t('zh', 'opScamEnable')),
+    '開啟鈕文案走 opScamEnable'
+  );
+});
+
+test('警示名單 v2:狀態列與開啟鈕的 en 文案', async () => {
+  const ctx = makeMarksCtx({ guardEnabled: false, lang: 'en' });
+  await initScamPage(ctx);
+
+  const bar = marksBar(ctx);
+  assert.equal(bar.hidden, false, '前置:en 之下狀態列照樣顯示');
+  assert.ok(joinedText(bar).includes(i18n.t('en', 'opScamDisabledBar')), '狀態列的 en 文案');
+  const btn = marksEnableBtn(ctx);
+  assert.ok(btn, '前置:狀態列內應有 button.scam-enable-btn');
+  assert.ok(joinedText(btn).includes(i18n.t('en', 'opScamEnable')), '開啟鈕的 en 文案');
+});
+
+test('警示名單 v2:scamGuardEnabled 為 true 時狀態列 hidden', async () => {
+  const ctx = makeMarksCtx({ guardEnabled: true });
+  await initScamPage(ctx);
+
+  assert.equal(marksBar(ctx).hidden, true, '總開關開著時狀態列應收起');
+});
+
+// 關掉只是「不再掃、不再標」，名單本身仍是使用者的資料:列、解除、復原與
+// 命中對話框全都照常，否則關掉開關等於把已經記下的東西鎖死。
+test('警示名單 v2:總開關關閉時名單仍可編輯——列照畫、命中對話框照開、解除照走(進已解除小節)', async () => {
+  const ctx = makeMarksCtx({ guardEnabled: false });
+  await initScamPage(ctx);
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '關閉狀態下名單列照畫'
+  );
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const list = openScamHits(ctx, rowA);
+  assert.equal(list.children.length, 2, '關閉狀態下命中對話框照開，逐筆列出證據');
+
+  actBtn(rowA, 'remove').fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.remove'),
+    [{ type: 'scam.blocklist.remove', userId: SCAM_ID_A }],
+    '關閉狀態下解除照樣送得出去'
+  );
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_B],
+    '解除後該列離開名單'
+  );
+  assert.ok(
+    scamAllowRows(ctx.doc)
+      .map((r) => r.dataset.id)
+      .indexOf(SCAM_ID_A) !== -1,
+    '解除後該條目出現在已解除小節(state 翻成 dismissed，不是整筆刪掉)'
+  );
+});
+
+test('警示名單 v2:點狀態列的開啟鈕把 scamGuardEnabled 寫成 true(local 區、與總開關同一顆鍵)，狀態列即時隱藏、設定卡開關同步為開', async () => {
+  const ctx = makeMarksCtx({ guardEnabled: false });
+  await initScamPage(ctx);
+
+  const syncSetsBefore = ctx.storage.calls.set.length;
+  assert.equal(marksGuardWrites(ctx).length, 0, '前置:init 不應寫回總開關');
+
+  const enableBtn = marksEnableBtn(ctx);
+  assert.ok(enableBtn, '前置:狀態列內應有 button.scam-enable-btn');
+  enableBtn.fire('click');
+  await settle();
+
+  const writes = marksGuardWrites(ctx);
+  assert.equal(writes.length, 1, '點開啟鈕應寫入 local 區一次');
+  assert.equal(writes[0].scamGuardEnabled, true, '寫入的值為 true');
+  assert.equal(
+    ctx.storage.localSnapshot().scamGuardEnabled,
+    true,
+    '落盤後 local 區的 scamGuardEnabled 為 true(與總開關同一顆鍵)'
+  );
+  assert.equal(
+    ctx.storage.calls.set
+      .slice(syncSetsBefore)
+      .filter((items) => Object.prototype.hasOwnProperty.call(items, 'scamGuardEnabled')).length,
+    0,
+    '純本機設定，不得寫進 sync 區'
+  );
+
+  assert.equal(marksBar(ctx).hidden, true, '開啟後狀態列即時收起，不等 storage 往返');
+  assert.equal(
+    ctx.doc.getElementById('scamGuardEnabled').checked,
+    true,
+    '設定卡的總開關同步為開'
+  );
+});
+
+test('警示名單 v2:storage.onChanged 帶來 scamGuardEnabled 變化時狀態列即時反映', async () => {
+  const ctx = makeMarksCtx({ guardEnabled: true });
+  await initScamPage(ctx);
+  assert.equal(marksBar(ctx).hidden, true, '前置:一開始是開著的');
+
+  ctx.controller.setLocalSettings({ scamGuardEnabled: { newValue: false, oldValue: true } });
+  await settle();
+  assert.equal(marksBar(ctx).hidden, false, '別處關掉時狀態列應現身');
+  assert.ok(
+    joinedText(marksBar(ctx)).includes(i18n.t('zh', 'opScamDisabledBar')),
+    '現身時文案已備妥'
+  );
+
+  ctx.controller.setLocalSettings({ scamGuardEnabled: { newValue: true, oldValue: false } });
+  await settle();
+  assert.equal(marksBar(ctx).hidden, true, '別處開回來時狀態列應收起');
+});
+
+test('警示名單 v2:options.html 備妥狀態列落點(div.scam-disabled-bar[role=status]，卡頭之後、名單之前)與樣式', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+  const cardIdx = html.search(/<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/);
+  assert.notEqual(cardIdx, -1, '前置:應找得到警示名單卡');
+  const footerIdx = html.indexOf('<footer');
+  const card = html.slice(cardIdx, footerIdx === -1 ? html.length : footerIdx);
+
+  const bar = /<div[^>]*id="scamDisabledBar"[^>]*>/.exec(card);
+  assert.ok(bar, '卡內應有 #scamDisabledBar');
+  assert.ok(
+    /class="[^"]*\bscam-disabled-bar\b/.test(bar[0]),
+    '狀態列的 class 為 scam-disabled-bar'
+  );
+  assert.ok(/role="status"/.test(bar[0]), '狀態列是 role="status"(開關變化要讀得出來)');
+  assert.ok(/\bhidden\b/.test(bar[0]), '預設收起——總開關預設為開，載入時不該先閃一條狀態列');
+
+  const headEnd = card.indexOf('</div>', card.indexOf('class="card-head"'));
+  assert.ok(headEnd !== -1, '前置:應找得到卡頭結尾');
+  assert.ok(card.indexOf('id="scamDisabledBar"') > headEnd, '狀態列排在卡頭之後');
+  assert.ok(
+    card.indexOf('id="scamDisabledBar"') < card.indexOf('id="scamList"'),
+    '狀態列排在名單之前'
+  );
+
+  assert.ok(html.includes('.scam-disabled-bar'), 'options.html 應有 .scam-disabled-bar 的樣式規則');
+  assert.ok(html.includes('.scam-enable-btn'), 'options.html 應有 .scam-enable-btn 的樣式規則');
+});
+
+// ---- 2. 已解除小節走 entry.state ----
+
+test('警示名單 v2:已解除小節由 entries 的 state==="dismissed" 產生(顯示 handle 與 dismissedAt)，名單列只含 active', async () => {
+  const ctx = makeMarksCtx();
+  await initScamPage(ctx);
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    '名單列只列 state==="active" 的條目'
+  );
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 2 }),
+    '計數只算 active'
+  );
+
+  const section = ctx.doc.ids.scamAllowlist;
+  assert.equal(section.hidden, false, '有 dismissed 條目時已解除小節應顯示');
+  const rows = scamAllowRows(ctx.doc);
+  assert.deepEqual(rows.map((r) => r.dataset.id), [SCAM_ID_C], '已解除小節列出 dismissed 的條目');
+
+  const shown = joinedText(rows[0]);
+  assert.ok(shown.includes('@' + MARKS_ID_C_HANDLE), '已解除的列顯示 @handle');
+  assert.ok(
+    shown.includes(scamRelDate(MARKS_DISMISSED_AT)) ||
+      shown.includes(scamDateOnly(MARKS_DISMISSED_AT)),
+    '已解除的列顯示 dismissedAt(相對時間或絕對日期皆可，但必須畫得出來)'
+  );
+});
+
+test('警示名單 v2:沒有 dismissed 條目時已解除小節整個隱藏(不因為 entries 非空就現身)', async () => {
+  const list = marksFixture();
+  delete list.entries[SCAM_ID_C];
+  delete list.handleIndex[MARKS_ID_C_HANDLE];
+  const ctx = makeMarksCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  assert.equal(ctx.doc.ids.scamAllowlist.hidden, true, '沒有 dismissed 條目時小節應隱藏');
+  assert.equal(scamAllowRows(ctx.doc).length, 0, '不得畫出任何已解除的列');
+});
+
+// 【審查 F1】dismissedAt 為 0(或非有限值)代表解除時間不明(TCLCore 的
+// finiteOr 把缺席補成 0)，formatScamDate(0) 會退化成 1970-01-01——沒有
+// 解除時間就不畫日期節點，不能顯示一個看起來合法但錯得離譜的日期。
+test('警示名單 v2:已解除列的 dismissedAt 為 0(解除時間不明)時不畫日期，不得出現「1970」', async () => {
+  const list = marksFixture();
+  list.entries[SCAM_ID_C].dismissedAt = 0;
+  const ctx = makeMarksCtx({ blocklist: list });
+  await initScamPage(ctx);
+
+  const rows = scamAllowRows(ctx.doc);
+  assert.equal(rows.length, 1, '前置:應有一列已解除');
+  const shown = joinedText(rows[0]);
+  assert.ok(!shown.includes('1970'), '解除時間不明時不得畫出 1970 開頭的退化日期');
+});
+
+// v2 的復原是把 state 翻回 active，條目本體(含證據)原地留著。v1 的 allowlist
+// 只存 { at, handle }，復原等於把整筆證據丟掉——這條釘的就是那個差別。
+test('警示名單 v2:復原後條目回到名單，且證據仍在(命中篇數與證據連結照舊)', async () => {
+  const ctx = makeMarksCtx();
+  await initScamPage(ctx);
+
+  const allowRow = scamAllowRows(ctx.doc)[0];
+  assert.ok(allowRow, '前置:應有一列已解除');
+  actBtn(allowRow, 'restore').fire('click');
+  await settle();
+
+  assert.deepEqual(
+    callsOfType(ctx.runtime, 'scam.blocklist.restore'),
+    [{ type: 'scam.blocklist.restore', userId: SCAM_ID_C }],
+    '點復原送 scam.blocklist.restore'
+  );
+
+  const rowC = scamRowById(ctx.doc, SCAM_ID_C);
+  assert.ok(rowC, '復原後條目回到名單列');
+  assert.equal(
+    ctx.doc.ids.scamCount.textContent,
+    i18n.fmt('zh', 'opScamListCount', { n: 3 }),
+    '計數跟著加回一位'
+  );
+  const hitCount = firstByClass(rowC, 'scam-hit-count');
+  assert.ok(hitCount, '復原後該列應有命中篇數 pill(證據沒被丟掉)');
+  assert.equal(
+    hitCount.textContent,
+    i18n.fmt('zh', 'opScamHitCount', { n: 2 }),
+    '兩筆證據原地保留(v2 不丟證據)'
+  );
+  const dateLink = firstByClass(rowC, 'scam-evidence-date');
+  assert.ok(dateLink, '復原後該列應畫得出證據的日期連結');
+  assert.equal(scamAttrOf(dateLink, 'href'), MARKS_URL_C1, '主卡露出的仍是最新那一筆證據');
+  assert.equal(ctx.doc.ids.scamAllowlist.hidden, true, '復原後已解除小節清空並收起');
+});
+
+// 舊版寫下的 storage 還是 v1(entries 沒有 state、已解除另存 allowlist)。
+// 正規化要把它升成 v2 的形狀，選項頁照樣畫得出已解除小節;v1 的 allowlist
+// 條目在 entries 裡沒有本體，升級後不得混進名單列。
+test('警示名單 v2:v1 形狀(entries ＋ allowlist)經 normalizeScamBlocklist 照樣畫得出已解除小節，且不混進名單列', async () => {
+  const v1 = scamBlocklistFixture({
+    allowlist: { [SCAM_ID_C]: { at: MARKS_DISMISSED_AT, handle: MARKS_ID_C_HANDLE } },
+  });
+  assert.equal(v1.version, 1, '前置:這份假資料是 v1 形狀');
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(v1.entries[SCAM_ID_A], 'state'),
+    '前置:v1 的條目沒有 state'
+  );
+
+  const ctx = makeMarksCtx({ blocklist: v1 });
+  await initScamPage(ctx);
+
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A, SCAM_ID_B],
+    'v1 沒有 state 的條目升級後視為 active;allowlist 那一筆不得出現在名單列'
+  );
+  assert.equal(ctx.doc.ids.scamAllowlist.hidden, false, 'v1 的 allowlist 照樣畫成已解除小節');
+  assert.deepEqual(
+    scamAllowRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_C],
+    'v1 的 allowlist 條目升級成 state==="dismissed"'
+  );
+  assert.ok(
+    joinedText(scamAllowRows(ctx.doc)[0]).includes('@' + MARKS_ID_C_HANDLE),
+    'v1 的 allowlist handle 照樣顯示'
+  );
+});
+
+// ---- 3. 缺本文顯示 ----
+
+test('警示名單 v2:證據缺 snippet 時片段位置改為灰字 span.scam-evidence-missing(文案 opScamEvidenceMissing)，日期連結與標記 pill 照常', async () => {
+  const ctx = makeMarksCtx({ blocklist: marksMissingFixture() });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const text = evidenceTexts(rowA)[0];
+  assert.ok(text, '前置:主卡應有片段節點 p.scam-evidence-text');
+  assert.equal(text.tag, 'p', '片段容器仍是 <p class="scam-evidence-text">');
+
+  const missing = firstByClass(text, 'scam-evidence-missing');
+  assert.ok(missing, '缺片段時 p.scam-evidence-text 內應有 span.scam-evidence-missing');
+  assert.equal(missing.tag, 'span', '灰字說明是 <span>');
+  assert.equal(
+    missing.textContent,
+    i18n.t('zh', 'opScamEvidenceMissing'),
+    '灰字文案走 opScamEvidenceMissing'
+  );
+
+  const dateLink = firstByClass(rowA, 'scam-evidence-date');
+  assert.ok(dateLink, '缺片段不影響日期連結');
+  assert.equal(scamAttrOf(dateLink, 'href'), MARKS_MISS_URL_1, '日期連結指向 anchorPostUrl');
+  assert.ok(firstByClass(rowA, 'scam-post-tag'), '標記 pill 照常');
+});
+
+test('警示名單 v2:snippet 存成空字串同樣算缺片段(正規化把缺席補成空字串是實作細節)', async () => {
+  const ctx = makeMarksCtx({ blocklist: marksMissingFixture() });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const items = openScamHits(ctx, rowA).children;
+  assert.equal(items.length, 3, '前置:對話框逐筆列出三筆證據');
+  assert.ok(
+    firstByClass(items[1], 'scam-evidence-missing'),
+    'snippet 為空字串的那一筆也要畫灰字說明，不留一個空白的 <p>'
+  );
+});
+
+test('警示名單 v2:有 snippet 的證據照舊畫片段，不得出現 .scam-evidence-missing', async () => {
+  const ctx = makeMarksCtx({ blocklist: marksMissingFixture() });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const kept = openScamHits(ctx, rowA).children[2];
+  assert.equal(
+    scamTextOf(firstByClass(kept, 'scam-evidence-text')),
+    MARKS_KEEP_SNIPPET,
+    '片段還在的那一筆逐字畫出'
+  );
+  assert.equal(findByClass(kept, 'scam-evidence-missing').length, 0, '有片段就不該再掛灰字說明');
+});
+
+// 主卡那一筆與對話框裡的同一筆走的是同一支 buildScamPostItem:缺片段的畫法
+// 只能有一個定義，不能一邊改了另一邊漏掉。
+test('警示名單 v2:缺片段的那一筆在主卡與命中對話框裡畫法一致', async () => {
+  const ctx = makeMarksCtx({ blocklist: marksMissingFixture() });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const onCard = firstByClass(evidenceTexts(rowA)[0], 'scam-evidence-missing');
+  const inDialog = firstByClass(openScamHits(ctx, rowA).children[0], 'scam-evidence-missing');
+  assert.ok(onCard && inDialog, '兩處都要有灰字說明');
+  assert.equal(onCard.textContent, inDialog.textContent, '兩處文案逐字相同');
+  assert.equal(onCard.tag, inDialog.tag, '兩處節點型別相同');
+});
+
+test('警示名單 v2:缺片段說明的 en 文案', async () => {
+  const ctx = makeMarksCtx({ blocklist: marksMissingFixture(), lang: 'en' });
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  const missing = firstByClass(evidenceTexts(rowA)[0], 'scam-evidence-missing');
+  assert.ok(missing, '前置:缺片段時應有 span.scam-evidence-missing');
+  assert.equal(missing.textContent, i18n.t('en', 'opScamEvidenceMissing'), '缺片段說明的 en 文案');
+});
+
+test('警示名單 v2:options.html 備妥 .scam-evidence-missing 樣式(灰字，與片段本體分得出來)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  assert.ok(
+    html.includes('.scam-evidence-missing'),
+    'options.html 應有 .scam-evidence-missing 的樣式規則——沒有樣式的話灰字說明會長得跟真片段一樣'
+  );
+});
+
+// ---- 4. 雲端淘汰提示 ----
+
+test('警示名單 v2:syncState.marksEvicted > 0 時卡頭出現 opScamEvictedHint 小字(帶筆數)', async () => {
+  const ctx = makeMarksCtx({ syncState: { marksEvicted: 7 } });
+  await initScamPage(ctx);
+
+  const hint = ctx.doc.ids.scamEvictedHint;
+  assert.equal(hint.hidden, false, 'marksEvicted 大於 0 時提示應顯示');
+  assert.equal(
+    hint.textContent,
+    i18n.fmt('zh', 'opScamEvictedHint', { n: 7 }),
+    '提示文案走 opScamEvictedHint，{n} 代入淘汰筆數'
+  );
+});
+
+test('警示名單 v2:marksEvicted 為 0 或缺席時不畫淘汰提示', async () => {
+  const zero = makeMarksCtx({ syncState: { marksEvicted: 0 } });
+  await initScamPage(zero);
+  assert.equal(zero.doc.ids.scamEvictedHint.hidden, true, 'marksEvicted 為 0 時提示應隱藏');
+  assert.equal(zero.doc.ids.scamEvictedHint.textContent, '', '隱藏時不留殘字');
+
+  const absent = makeMarksCtx();
+  await initScamPage(absent);
+  assert.equal(absent.doc.ids.scamEvictedHint.hidden, true, 'marksEvicted 缺席時提示應隱藏');
+});
+
+test('警示名單 v2:setSyncState 帶來新的 marksEvicted 時卡頭提示即時更新', async () => {
+  const ctx = makeMarksCtx();
+  await initScamPage(ctx);
+  assert.equal(ctx.doc.ids.scamEvictedHint.hidden, true, '前置:一開始沒有淘汰筆數');
+
+  ctx.controller.setSyncState(Object.assign({}, DEV_SIGNED_OUT_STATE, { marksEvicted: 3 }));
+  await settle();
+
+  assert.equal(ctx.doc.ids.scamEvictedHint.hidden, false, '廣播帶來淘汰筆數時提示現身');
+  assert.equal(
+    ctx.doc.ids.scamEvictedHint.textContent,
+    i18n.fmt('zh', 'opScamEvictedHint', { n: 3 }),
+    '提示跟著新筆數更新'
+  );
+});
+
+test('警示名單 v2:options.html 備妥 #scamEvictedHint 落點(卡頭小字，預設收起)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+
+  const cardIdx = html.search(/<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/);
+  assert.notEqual(cardIdx, -1, '前置:應找得到警示名單卡');
+  const headStart = html.indexOf('class="card-head"', cardIdx);
+  const headEnd = html.indexOf('</div>', headStart);
+  assert.ok(headStart !== -1 && headEnd !== -1, '前置:應找得到卡頭');
+  const head = html.slice(headStart, headEnd);
+
+  const hint = /<[a-z]+[^>]*id="scamEvictedHint"[^>]*>/.exec(head);
+  assert.ok(hint, '卡頭內應有 #scamEvictedHint');
+  assert.ok(/\bhidden\b/.test(hint[0]), '預設收起——沒有淘汰筆數時不該佔一行');
+});
+
+// ---- 5. 文案 ----
+
+test('警示名單 v2 文案:新增的 i18n 鍵 zh／en 都要備齊', () => {
+  const expected = {
+    opScamDisabledBar: [
+      'LINE 群組引導警示已關閉——名單不會同步，也不會在河道掛標記',
+      'LINE group funnel warnings are off — the list will not sync and no badges will show in the feed',
+    ],
+    opScamEnable: ['開啟', 'Turn on'],
+    opScamEvidenceMissing: [
+      '證據片段只存在掃到它的裝置',
+      'The evidence snippet only exists on the device that detected it',
+    ],
+    opScamEvictedHint: [
+      '雲端已達免費額度，較舊的 {n} 筆只保留在本機',
+      'Cloud quota reached; the oldest {n} entries stay on this device only',
+    ],
+  };
+  Object.keys(expected).forEach((key) => {
+    assert.equal(i18n.t('zh', key), expected[key][0], key + ' 的 zh 文案');
+    assert.equal(i18n.t('en', key), expected[key][1], key + ' 的 en 文案');
+  });
 });

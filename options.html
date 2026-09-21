@@ -1157,6 +1157,9 @@
     margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-2);
     white-space: pre-wrap; overflow-wrap: anywhere;
   }
+  /* 雲端同步來的證據沒有片段(片段只留在掃到它的那台裝置)時的灰字說明:
+     灰階＋斜體，一眼就分得出這不是真的片段內容。 */
+  .scam-evidence-missing { color: var(--ink-3); font-style: italic; }
   /* 錨點高亮:<mark> 的瀏覽器預設是螢光黃底黑字，深色主題下刺眼且文字色不跟
      著主題走;改用暖色淡底並繼承文字色。 */
   mark.scam-anchor {
@@ -1214,6 +1217,23 @@
   .scam-allow-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
   .scam-allow-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .scam-allow-row .scam-handle { font-size: 12.5px; }
+  .scam-allow-info { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .scam-allow-date { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+  /* 總開關關閉時的狀態列:與 .scam-list 同寬(左右 16px)，暖色淡底與作者列
+     上的標記 pill(.scam-post-tag)同一套警示色票，跟著主題走。 */
+  .scam-disabled-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    margin: 0 16px 8px; padding: 8px 12px; border-radius: 10px;
+    font-size: 12.5px; line-height: 1.5; color: var(--warn); background: var(--warn-soft);
+  }
+  .scam-enable-btn {
+    appearance: none; border: none; border-radius: 8px; cursor: pointer;
+    padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
+    color: var(--warn); background: var(--surface); white-space: nowrap;
+  }
+  .scam-enable-btn:hover { background: var(--plane); }
+  /* 淘汰提示緊接在計數 hint 之後，同一列小字，不搶主標題的視覺份量。 */
+  .scam-evicted-hint { margin-left: 4px; }
   .modal {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1636,7 +1656,14 @@
           <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
         </button>
         <span class="hint" id="scamCount"></span>
+        <!-- 雲端配額用罄而被淘汰的筆數(syncState.marksEvicted)，卡頭小字，
+             預設收起。內容由 renderScamEvictedHint 逐次補上(文案帶 {n})。 -->
+        <span class="hint scam-evicted-hint" id="scamEvictedHint" hidden></span>
       </div>
+      <!-- 總開關(#scamGuardEnabled)關閉時的狀態列:說明「關了會怎樣」＋就地
+           開啟鈕。內容由 renderScamDisabledBar 逐一 createElement，關閉時整條
+           hidden。 -->
+      <div class="scam-disabled-bar" id="scamDisabledBar" role="status" hidden></div>
       <div class="scam-list" id="scamList"></div>
       <div class="empty scam-empty" id="scamEmpty" hidden></div>
       <div class="scam-allow" id="scamAllowlist" hidden></div>
