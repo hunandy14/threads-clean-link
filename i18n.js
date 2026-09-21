@@ -318,6 +318,16 @@
         '判定是規則比對，可能誤判。|遇到誤判按「⋯ → 解除」，該作者不會再被自動加入；在「已解除」可以復原。標記只是提醒，請自行判斷。',
       opScamRestore: '復原',
       opScamRestoreFailed: '復原失敗，請稍後再試',
+
+      // ---- 警示名單 v2(D35 ＋ 顯示;車道 C) ----
+      // 總開關關閉時卡頭下方的狀態列文案，與就地開啟鈕。
+      opScamDisabledBar: 'LINE 群組引導警示已關閉——名單不會同步，也不會在河道掛標記',
+      opScamEnable: '開啟',
+      // 雲端同步來的證據沒有 snippet(片段只留在掃到它的那台裝置)時，片段
+      // 位置改畫這句灰字說明。
+      opScamEvidenceMissing: '證據片段只存在掃到它的裝置',
+      // 雲端配額用罄而被淘汰的筆數，卡頭小字說明。{n} 代入淘汰筆數。
+      opScamEvictedHint: '雲端已達免費額度，較舊的 {n} 筆只保留在本機',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -540,6 +550,13 @@
         'It is rule matching, so it can be wrong.|If a call looks wrong, use “⋯ → Remove”; that author is never added automatically again, and you can undo it under “Removed”. A badge is a heads-up, not a verdict — judge for yourself.',
       opScamRestore: 'Undo',
       opScamRestoreFailed: 'Undo failed. Please try again later.',
+
+      // ---- Warning list v2 (D35 + display; lane C) ----
+      opScamDisabledBar:
+        'LINE group funnel warnings are off — the list will not sync and no badges will show in the feed',
+      opScamEnable: 'Turn on',
+      opScamEvidenceMissing: 'The evidence snippet only exists on the device that detected it',
+      opScamEvictedHint: 'Cloud quota reached; the oldest {n} entries stay on this device only',
     },
   };
 

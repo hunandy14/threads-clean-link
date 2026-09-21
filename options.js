@@ -523,6 +523,9 @@
     pendingCount: 0,
     lastError: null,
     apiBase: '',
+    // 雲端配額用罄而被淘汰(未上傳)的警示名單筆數(D35 ＋ 顯示，車道 C)。
+    // 警示名單卡頭以小字提示，見 renderScamEvictedHint。
+    marksEvicted: 0,
   };
 
   // 權限描述子的 origin 來源:state.apiBase 尚未從 background 回來時的退回值。
@@ -566,6 +569,10 @@
       pendingCount: typeof state.pendingCount === 'number' && isFinite(state.pendingCount) ? state.pendingCount : 0,
       lastError: typeof state.lastError === 'string' ? state.lastError : null,
       apiBase: typeof state.apiBase === 'string' ? state.apiBase : '',
+      marksEvicted:
+        typeof state.marksEvicted === 'number' && isFinite(state.marksEvicted) && state.marksEvicted > 0
+          ? state.marksEvicted
+          : 0,
     };
   }
 
@@ -1527,6 +1534,7 @@
       var transient = state ? state.transientError : null;
       syncState = normalizeSyncCardState(state);
       renderAccount(syncState);
+      renderScamEvictedHint(syncState);
       // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
       // 有沒有失敗——deleteCloud 是 fire-and-forget，這裡是唯一能得知
       // 結果的管道(見 acctDeleteBtn 的 click handler)。
@@ -2329,10 +2337,16 @@
       return TCLCore.normalizeScamBlocklist(raw);
     }
 
-    // 名單依 addedAt 降冪:最近被標記的在最前。
+    // 名單依 addedAt 降冪:最近被標記的在最前。只列 state==='active' 的條
+    // 目——v2 的 entries 把已解除的條目留在原地(state 翻成 dismissed),不
+    // 再整筆刪掉,名單列因此得自己篩掉它們(見 buildScamAllowRow 那份走
+    // dismissed 的視圖)。
     function sortedScamEntries() {
       var map = scamBlocklist.entries;
       return Object.keys(map)
+        .filter(function (userId) {
+          return map[userId].state !== 'dismissed';
+        })
         .map(function (userId) {
           return { userId: userId, entry: map[userId] };
         })
@@ -2503,10 +2517,22 @@
     // 片段本體。完整呈現不截斷(儲存端已保證 ≤120 字)，anchorMatch 在片段裡
     // 找得到時以 mark.scam-anchor 包住:以 indexOf 切前中後三段各自建文字節
     // 點，全程零 innerHTML——片段是他人貼文帶進來的字串。
+    //
+    // 雲端同步來的證據沒有 snippet(片段只留在掃到它的那台裝置);鍵缺席與
+    // 存成空字串(TCLCore.normalizeScamEvidence 把缺席補成空字串是實作細節)
+    // 兩種都算「沒有片段」，一律改掛 span.scam-evidence-missing 的灰字說
+    // 明，不留一個空白的 <p>。
     function buildScamEvidenceText(evidence) {
       var el = document.createElement('p');
       el.className = 'scam-evidence-text';
       var snippet = typeof evidence.snippet === 'string' ? evidence.snippet : '';
+      if (snippet === '') {
+        var missing = document.createElement('span');
+        missing.className = 'scam-evidence-missing';
+        missing.textContent = tt('opScamEvidenceMissing');
+        el.appendChild(missing);
+        return el;
+      }
       var anchor = nonEmptyString(evidence.anchorMatch);
       var at = anchor === null ? -1 : snippet.indexOf(anchor);
       if (at === -1) {
@@ -2780,10 +2806,23 @@
       row.className = 'scam-allow-row';
       row.dataset.id = item.userId;
 
+      var info = document.createElement('span');
+      info.className = 'scam-allow-info';
+
       var handleEl = document.createElement('span');
       handleEl.className = 'scam-handle';
       handleEl.textContent = scamHandleLabel(item.handle);
-      row.appendChild(handleEl);
+      info.appendChild(handleEl);
+
+      // 解除時間:格式與算式同證據列上的時間(formatScamDate),一週內相對
+      // 時間、滿七天改絕對日期;絕對日期另留在 title。
+      var dateEl = document.createElement('span');
+      dateEl.className = 'scam-allow-date';
+      dateEl.textContent = formatScamDate(item.at);
+      dateEl.title = formatDateOnly(item.at);
+      info.appendChild(dateEl);
+
+      row.appendChild(info);
 
       var restoreBtn = document.createElement('button');
       restoreBtn.type = 'button';
@@ -2852,7 +2891,63 @@
       });
     }
 
+    // 總開關(#scamGuardEnabled)關閉時卡頭下方的狀態列:說明「關了會怎樣」
+    // ＋就地開啟鈕，內容由 JS 逐一 createElement 產生(比照整張卡零
+    // innerHTML 的慣例)，開關為 true 時整條 hidden。點開啟鈕直接寫
+    // scamGuardEnabled=true 到 local 區(與設定卡同一顆鍵，見
+    // LOCAL_SETTING_IDS)，不吃二次確認——這不是破壞性動作，名單本身完全
+    // 不受影響。
+    function renderScamDisabledBar() {
+      var bar = byId('scamDisabledBar');
+      if (!bar) return;
+      var toggle = byId('scamGuardEnabled');
+      var enabled = toggle ? !!toggle.checked : true;
+      bar.textContent = '';
+      if (enabled) {
+        bar.hidden = true;
+        return;
+      }
+      bar.hidden = false;
+
+      var textEl = document.createElement('span');
+      textEl.textContent = tt('opScamDisabledBar');
+      bar.appendChild(textEl);
+
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scam-enable-btn';
+      btn.dataset.act = 'enable';
+      btn.textContent = tt('opScamEnable');
+      btn.title = tt('opScamEnable');
+      btn.addEventListener('click', function () {
+        localStore.set({ scamGuardEnabled: true });
+        if (toggle) toggle.checked = true;
+        renderScamDisabledBar();
+      });
+      bar.appendChild(btn);
+    }
+
+    // 雲端配額用罄而被淘汰(未上傳)的警示名單筆數(syncState.marksEvicted)，
+    // 卡頭小字說明，0 或缺席時收起。呼叫端一律傳目前的 syncState(帳號卡片
+    // 的同一份狀態，見 setSyncState/fetchSyncState)。
+    function renderScamEvictedHint(state) {
+      var el = byId('scamEvictedHint');
+      if (!el) return;
+      var s = state || DEFAULT_SYNC_CARD_STATE;
+      var n = typeof s.marksEvicted === 'number' && isFinite(s.marksEvicted) && s.marksEvicted > 0
+        ? s.marksEvicted
+        : 0;
+      if (n === 0) {
+        el.hidden = true;
+        el.textContent = '';
+        return;
+      }
+      el.hidden = false;
+      el.textContent = tf('opScamEvictedHint', { n: n });
+    }
+
     function renderScamBlocklist() {
+      renderScamDisabledBar();
       renderScamList();
       renderScamAllowlist();
     }
@@ -2904,38 +2999,49 @@
       });
     }
 
+    // v2 的解除不整筆刪掉:entry 留在 entries 裡，state 翻成 dismissed、
+    // dismissedAt 記下時間,證據原地保留(「已解除」小節要顯示 handle,復原
+    // 也要保留證據,見 submitScamRestore)。
     function submitScamRemove(userId) {
       var entry = scamBlocklist.entries[userId];
-      if (!entry) return;
+      if (!entry || entry.state === 'dismissed') return;
       sendBackgroundMessage({ type: 'scam.blocklist.remove', userId: userId }).then(function (res) {
         if (!(res && res.ok === true)) {
-          // 失敗不樂觀刪:那一列留著，只用 toast 說明。
+          // 失敗不樂觀改:那一列留著，只用 toast 說明。
           toast(tt('opScamRemoveFailed'));
           return;
         }
         // background 寫回 storage 後的 onChanged 才是權威;本地先做同一件事
-        // (條目移出、進 allowlist)，畫面不必等一次 storage 往返。
-        delete scamBlocklist.entries[userId];
+        // (state 翻成 dismissed、退出 handleIndex)，畫面不必等一次 storage
+        // 往返。
         var handleKey = typeof entry.handle === 'string' ? entry.handle.toLowerCase() : null;
         if (handleKey !== null && scamBlocklist.handleIndex[handleKey] === userId) {
           delete scamBlocklist.handleIndex[handleKey];
         }
+        entry.state = 'dismissed';
+        entry.dismissedAt = now();
         var handle = nonEmptyString(entry.handle);
-        scamBlocklist.allowlist[userId] = { at: now(), handle: handle === null ? '' : handle };
+        scamBlocklist.allowlist[userId] = { at: entry.dismissedAt, handle: handle === null ? '' : handle };
         renderScamBlocklist();
       });
     }
 
-    // 復原不做二次確認:它是「誤解除」的補救動作，本身不破壞任何資料。條目
-    // 本體由 background 決定要不要加回，本頁只把 allowlist 那一列收掉。
+    // 復原不做二次確認:它是「誤解除」的補救動作，本身不破壞任何資料。v2
+    // 的復原是把 state 翻回 active,entry 本體(含證據)原地留著——不像 v1
+    // 的 allowlist 只存 { at, handle },復原一次就把證據丟掉。
     function submitScamRestore(userId) {
-      if (!Object.prototype.hasOwnProperty.call(scamBlocklist.allowlist, userId)) return;
+      var entry = scamBlocklist.entries[userId];
+      if (!entry || entry.state !== 'dismissed') return;
       sendBackgroundMessage({ type: 'scam.blocklist.restore', userId: userId }).then(function (res) {
         if (!(res && res.ok === true)) {
           toast(tt('opScamRestoreFailed'));
           return;
         }
+        entry.state = 'active';
+        delete entry.dismissedAt;
         delete scamBlocklist.allowlist[userId];
+        var handleKey = typeof entry.handle === 'string' ? entry.handle.toLowerCase() : null;
+        if (handleKey !== null) scamBlocklist.handleIndex[handleKey] = userId;
         renderScamBlocklist();
       });
     }
@@ -3521,6 +3627,7 @@
       // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderAccount
       // 必須排在它後面才能把已登入態的文案蓋回去。
       renderAccount(syncState);
+      renderScamEvictedHint(syncState);
       // 裝置列整批是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃，
       // applyI18nDom 掃不到它們。對話框開著時切語言，「這台裝置」pill 與動作
       // 鈕的 aria-label 會停在舊語言，而且沒有「關掉再開」以外的自我修復。
@@ -3759,6 +3866,9 @@
           var patch = {};
           patch[id] = checked;
           localStore.set(patch);
+          // 設定卡的總開關直接被切換時，警示名單卡的狀態列跟著即時反映，
+          // 不必等 storage.onChanged 往返(見 setLocalSettings 那條路徑)。
+          if (id === 'scamGuardEnabled') renderScamDisabledBar();
         });
       });
     }
@@ -3886,6 +3996,7 @@
         return fetchSyncState().then(function (state) {
           syncState = state;
           renderAccount(syncState);
+          renderScamEvictedHint(syncState);
         });
       });
     }
@@ -3988,6 +4099,11 @@
         var newValue = changes[id] && changes[id].newValue;
         el.checked = typeof newValue === 'boolean' ? newValue : LOCAL_SETTING_DEFAULTS[id];
       });
+      // 總開關別處被改動(另一個開著的 options 分頁、或狀態列的開啟鈕自己
+      // 那次寫入回彈)時，狀態列跟著即時反映——不等使用者手動重整。
+      if (Object.prototype.hasOwnProperty.call(changes, 'scamGuardEnabled')) {
+        renderScamDisabledBar();
+      }
       // 黑名單整包由 background 寫入(解除/復原、掃描命中)，帶來新值就原地
       // 重畫，常開的頁面不必手動重整。
       if (Object.prototype.hasOwnProperty.call(changes, SCAM_BLOCKLIST_KEY)) {
