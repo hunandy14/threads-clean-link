@@ -541,7 +541,7 @@ test('M1 推：applied.upserts 才推進 syncState.marksPushedAt（被拒收的�
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 - 10 * DAY },
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 10 * DAY },
     blocklist: blocklist({
       1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }),
       1002: localEntry({ handle: 'bob', updatedAt: T0 - 4 * DAY }),
@@ -574,7 +574,7 @@ test('M1 推：rejectedIds 記進 syncState.marksRejected 映射，同一版不�
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 - 10 * DAY },
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 10 * DAY },
     blocklist: blocklist({
       1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }),
       // 刻意讓被拒那筆的 updatedAt 是全場最大：只靠水位線擋不住重送，必須靠
@@ -633,7 +633,7 @@ test('M1 推：51 筆切成兩批（單批上限 50）', async () => {
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: null },
+    syncState: { marksCursor: '0', marksPushedAt: null },
     blocklist: blocklist(bulkEntries(51, 2001)),
   });
   const engine = TCLSync.create(env.deps);
@@ -656,7 +656,7 @@ test('M1 推：只送 updatedAt 晚於 marksPushedAt 的條目', async () => {
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 - 2 * DAY },
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 2 * DAY },
     blocklist: blocklist({
       1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }),
       1002: localEntry({ handle: 'bob', updatedAt: T0 - 2 * DAY }),
@@ -685,7 +685,7 @@ test('M2 拉：changes.marks 合併——遠端較新覆蓋 state、evidence 取
     signedIn: true,
     scamGuardEnabled: true,
     // 水位線都在本機條目之後：這一輪不推，只拉。
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 - 2 * DAY },
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 2 * DAY },
     blocklist: blocklist({
       1001: localEntry({
         handle: 'alice',
@@ -762,7 +762,7 @@ test('M2 拉：changes.deleted 的 key 刪掉本機條目（伺服器墓碑是�
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 - 2 * DAY },
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 2 * DAY },
     blocklist: blocklist({
       1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }),
       1002: localEntry({ handle: 'bob', updatedAt: T0 - 3 * DAY }),
@@ -785,7 +785,7 @@ test('M2 拉：hasMore 為 true 時同一輪續拉，不等下一個 alarm', asy
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 },
+    syncState: { marksCursor: '0', marksPushedAt: T0 },
     blocklist: blocklist({}),
   });
   env.server.marks.seed(bulkMarks(total, 3001));
@@ -842,7 +842,7 @@ test('M3 evicted：只記 syncState.marksEvicted 筆數，本機一筆都不刪'
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: null },
+    syncState: { marksCursor: '0', marksPushedAt: null },
     blocklist: blocklist({
       1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }),
       1002: localEntry({ handle: 'bob', updatedAt: T0 - 4 * DAY }),
@@ -912,7 +912,7 @@ test('M4 開關 A：重新開啟後下一輪照常，且推上關閉期間的 up
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: false,
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 - 5 * DAY },
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 5 * DAY },
     blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 4 * DAY }) }),
   });
   const engine = TCLSync.create(env.deps);
@@ -1004,7 +1004,7 @@ test('M6 錯誤：marks 通道 401 走與 links 同一條 session_expired 處理
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: null },
+    syncState: { marksCursor: '0', marksPushedAt: null },
     blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - DAY }) }),
   });
   env.failPath('/api/v1/marks/sync', { status: 401 });
@@ -1027,7 +1027,7 @@ test('M6 錯誤：marks 通道 429 進退避排程，Retry-After 夾在上限內
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: null },
+    syncState: { marksCursor: '0', marksPushedAt: null },
     blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - DAY }) }),
   });
   env.failPath('/api/v1/marks/sync', { status: 429, retryAfter: 5 });
@@ -1072,7 +1072,7 @@ test('M7 共存：marks 與 links 在同一輪各自往返，scamBlocklist 的�
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: 'c-0', marksPushedAt: T0 - 2 * DAY },
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 2 * DAY },
     blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }) }),
     local: {
       history: [
