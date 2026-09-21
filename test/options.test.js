@@ -8429,16 +8429,16 @@ test('警示名單卡:options.html 備妥資訊鈕與說明視窗(靜態節點�
 //      已解除小節由 state==='dismissed' 的條目產生，名單列只列 active。
 //      復原是把 state 翻回 active，證據原地保留(v1 的 allowlist 視圖裡沒有
 //      證據，復原等於把證據丟掉)。
-//   3. 雲端同步來的證據沒有 snippet(片段只留在掃到它的那台裝置),片段位置
+//   3. 雲端同步來的證據沒有 snippet(片段只留在掃到它的那台裝置)，片段位置
 //      改畫灰字說明，日期連結與標記 pill 照常。
 //   4. 雲端配額用罄而被淘汰的筆數(syncState.marksEvicted)在卡頭以小字說明。
 //
 // 【DOM 契約】本組新增三個落點，實作端須照此產生:
 //   - 關閉狀態列:#scamDisabledBar,div.scam-disabled-bar[role="status"]，
 //     靜態長在卡頭之後、#scamList 之前;內容(說明文字與開啟鈕)由 JS 逐一
-//     createElement,開關為 true 時整條 hidden。
+//     createElement，開關為 true 時整條 hidden。
 //   - 開啟鈕:狀態列內的 button.scam-enable-btn,dataset.act="enable"。
-//   - 淘汰提示:#scamEvictedHint,卡頭小字，marksEvicted 為 0／缺席時 hidden。
+//   - 淘汰提示:#scamEvictedHint，卡頭小字，marksEvicted 為 0／缺席時 hidden。
 //   - 缺片段的證據:p.scam-evidence-text 內改掛 span.scam-evidence-missing。
 //
 // 【storage 形狀】本組的假資料一律給 v2(entries 逐筆帶 state，已解除的多帶
@@ -8536,7 +8536,7 @@ const MARKS_STUB_IDS = SCAM_STUB_IDS.concat([
 ]);
 
 // makeScamCtx 綁死 zh、總開關預設、未登入狀態;本組要動的正是這三樣，另開
-// 一顆可帶語言／總開關／同步狀態的 ctx,其餘接線完全相同。
+// 一顆可帶語言／總開關／同步狀態的 ctx，其餘接線完全相同。
 function makeMarksCtx(opts) {
   const o = opts || {};
   const blocklist = Object.prototype.hasOwnProperty.call(o, 'blocklist')
@@ -8797,8 +8797,8 @@ test('警示名單 v2:已解除列的 dismissedAt 為 0(解除時間不明)時�
   assert.ok(!shown.includes('1970'), '解除時間不明時不得畫出 1970 開頭的退化日期');
 });
 
-// v2 的復原是把 state 翻回 active,條目本體(含證據)原地留著。v1 的 allowlist
-// 只存 { at, handle },復原等於把整筆證據丟掉——這條釘的就是那個差別。
+// v2 的復原是把 state 翻回 active，條目本體(含證據)原地留著。v1 的 allowlist
+// 只存 { at, handle }，復原等於把整筆證據丟掉——這條釘的就是那個差別。
 test('警示名單 v2:復原後條目回到名單，且證據仍在(命中篇數與證據連結照舊)', async () => {
   const ctx = makeMarksCtx();
   await initScamPage(ctx);
