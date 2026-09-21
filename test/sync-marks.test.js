@@ -448,7 +448,7 @@ test('M1 推：首次全量上傳三筆 active ＋一筆 dismissed——九欄�
             anchorMatch: 'line.me/ti/g',
             signals: ['line', 'group'],
             postedAt: T0 - 4 * DAY,
-            rulesVersion: '2026-09-01',
+            rulesVersion: 3,
             deviceId: DEVICE_ID,
             at: T0 - 3 * DAY,
           }),
@@ -504,7 +504,7 @@ test('M1 推：首次全量上傳三筆 active ＋一筆 dismissed——九欄�
   assert.deepEqual(a.evidence[0].signals, ['line', 'group']);
   assert.equal(a.evidence[0].threadUrl, THREAD_A);
   assert.equal(a.evidence[0].postedAt, T0 - 4 * DAY);
-  assert.equal(a.evidence[0].rulesVersion, '2026-09-01');
+  assert.equal(a.evidence[0].rulesVersion, 3);
   assert.equal(a.evidence[0].deviceId, DEVICE_ID);
 
   const b = sent['threads:1002'];
