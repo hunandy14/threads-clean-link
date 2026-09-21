@@ -6017,22 +6017,22 @@ test('L4 scam.hit:第二筆證據帶著自己的 postedAt，不共用第一筆�
 // 車道 A(計畫 D36／D37):警示名單 v2 的 background 寫入側
 // ============================================================================
 //
-// v2 把「已封鎖／已解除」收進同一張 entries,用 state 分兩態。background 這
+// v2 把「已封鎖／已解除」收進同一張 entries，用 state 分兩態。background 這
 // 一側要跟著變的有四件事:
-//   1. 新建條目帶 state:'active' 與 updatedAt,證據多帶 rulesVersion(判定
+//   1. 新建條目帶 state:'active' 與 updatedAt，證據多帶 rulesVersion(判定
 //      規則版本)與 deviceId(本機 syncDevice 的 id)——兩者是日後跨裝置對帳
-//      與規則調參的依據,缺了就分不出「這筆是誰、用哪一版規則標的」。
+//      與規則調參的依據，缺了就分不出「這筆是誰、用哪一版規則標的」。
 //   2. 既有條目再次命中只補證據並把 updatedAt 推到這次的 at;addedAt 不動。
 //   3. dismissed 命中仍回 { ok:true, added:false, allowlisted:true } 且整條
-//      路徑不寫——使用者解除過就是解除過,不得被掃描復活,也不得因為「摸過一
+//      路徑不寫——使用者解除過就是解除過，不得被掃描復活，也不得因為「摸過一
 //      次」就把 updatedAt 推新(那會讓這筆在合併時無端勝出)。
-//   4. remove／restore 只翻 state,證據一律保留;落盤的物件是 version 2 的
-//      三欄形狀,不得帶 allowlist(那只是記憶體裡的派生視圖)。
+//   4. remove／restore 只翻 state，證據一律保留;落盤的物件是 version 2 的
+//      三欄形狀，不得帶 allowlist(那只是記憶體裡的派生視圖)。
 //
 // 合成資料沿用上方 L4 區塊的 example_author／10000000001／DxSyNtH000x。
 // ============================================================================
 
-// v2 形狀的單筆黑名單種子:一位 active 作者,帶一筆完整證據。
+// v2 形狀的單筆黑名單種子:一位 active 作者，帶一筆完整證據。
 function seededBlocklistV2() {
   return {
     version: 2,
@@ -6059,7 +6059,7 @@ function seededBlocklistV2() {
   };
 }
 
-// v2 形狀的「已解除」種子:條目還在,只是 state 翻成 dismissed,證據照留。
+// v2 形狀的「已解除」種子:條目還在，只是 state 翻成 dismissed，證據照留。
 function dismissedBlocklistV2() {
   const list = seededBlocklistV2();
   list.entries[SCAM_USER_ID].state = 'dismissed';
@@ -6069,7 +6069,7 @@ function dismissedBlocklistV2() {
   return list;
 }
 
-test('L4 v2 scam.hit:新建條目帶 state active／updatedAt,證據帶 rulesVersion 與 deviceId', async () => {
+test('L4 v2 scam.hit:新建條目帶 state active／updatedAt，證據帶 rulesVersion 與 deviceId', async () => {
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
 
   const res = await bg.send(scamHit(), SCAM_TAB_SENDER);
@@ -6093,7 +6093,7 @@ test('L4 v2 scam.hit:新建條目帶 state active／updatedAt,證據帶 rulesVer
   assert.equal(entry.evidence[0].deviceId, LOCAL_DEVICE_ID, 'deviceId 取本機 syncDevice 的 id');
 });
 
-test('L4 v2 scam.hit:deviceId 一律讀 storage 的 syncDevice,不得自己生一個', async () => {
+test('L4 v2 scam.hit:deviceId 一律讀 storage 的 syncDevice，不得自己生一個', async () => {
   const otherDevice = { deviceId: OTHER_DEVICE_ID, platform: 'chrome_extension', createdAt: 1700000000000 };
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: otherDevice } });
 
@@ -6114,10 +6114,10 @@ test('L4 v2 scam.hit:既有條目再次命中把 updatedAt 推到這次的 at,ad
   );
   await settle(400);
 
-  assert.equal(deep(res.response).added, false, '既有作者是補證據,不是新建');
+  assert.equal(deep(res.response).added, false, '既有作者是補證據，不是新建');
   const entry = scamEntry(bg);
   assert.equal(entry.state, 'active');
-  assert.equal(entry.addedAt, SCAM_AT, 'addedAt 是首見時間,不隨新證據往後跳');
+  assert.equal(entry.addedAt, SCAM_AT, 'addedAt 是首見時間，不隨新證據往後跳');
   assert.equal(entry.updatedAt, SCAM_AT + 60000, 'updatedAt 要推到這次命中的 at(它是合併的判準)');
   assert.equal(entry.evidence.length, 2, '證據併成兩筆');
 });
@@ -6141,7 +6141,7 @@ test('L4 v2 scam.hit:dismissed 條目命中回 allowlisted 且完全不寫(state
   assert.equal(bg.storage.localCalls.set.length, before, 'dismissed 命中時不得發生任何一次 storage 寫入');
 });
 
-test('L4 v2 blocklist.remove:條目留在 entries 但翻成 dismissed,證據保留、反查鍵清掉', async () => {
+test('L4 v2 blocklist.remove:條目留在 entries 但翻成 dismissed，證據保留、反查鍵清掉', async () => {
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklistV2() },
   });
@@ -6151,9 +6151,9 @@ test('L4 v2 blocklist.remove:條目留在 entries 但翻成 dismissed,證據保�
 
   assert.equal(deep(res.response).ok, true, '解除成功回 ok:true(回應契約不變)');
   const entry = scamEntry(bg);
-  assert.equal(entry.state, 'dismissed', '解除只翻 state,條目不得從 entries 消失');
+  assert.equal(entry.state, 'dismissed', '解除只翻 state，條目不得從 entries 消失');
   assert.equal(typeof entry.dismissedAt, 'number', 'dismissedAt 記下解除時間');
-  assert.equal(entry.dismissedAt > SCAM_AT, true, '解除時間取的是當下,不是命中時間');
+  assert.equal(entry.dismissedAt > SCAM_AT, true, '解除時間取的是當下，不是命中時間');
   assert.equal(entry.updatedAt, entry.dismissedAt, '解除同時把 updatedAt 推到解除時間');
   assert.equal(entry.evidence.length, 1, '解除不刪證據——復原後卡片要畫得出來');
   assert.equal(entry.addedAt, SCAM_AT, 'addedAt 不動');
@@ -6177,14 +6177,14 @@ test('L4 v2 blocklist.restore:翻回 active、刪掉 dismissedAt、證據保留�
   assert.equal(
     Object.prototype.hasOwnProperty.call(entry, 'dismissedAt'),
     false,
-    '復原要把 dismissedAt 整欄刪掉,不是留著一個舊時戳'
+    '復原要把 dismissedAt 整欄刪掉，不是留著一個舊時戳'
   );
   assert.equal(entry.updatedAt > SCAM_AT + 1000, true, 'updatedAt 推到復原當下');
-  assert.equal(entry.evidence.length, 1, '證據一路保留,復原後不必等下一次掃描');
+  assert.equal(entry.evidence.length, 1, '證據一路保留，復原後不必等下一次掃描');
   assert.equal(scamList(bg).handleIndex[SCAM_HANDLE], SCAM_USER_ID, '回到 active 就要回填反查鍵');
 });
 
-test('L4 v2:落盤的 scamBlocklist 是 version 2 的三欄形狀,不得帶 allowlist', async () => {
+test('L4 v2:落盤的 scamBlocklist 是 version 2 的三欄形狀，不得帶 allowlist', async () => {
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
 
   await bg.send(scamHit(), SCAM_TAB_SENDER);
@@ -6195,11 +6195,11 @@ test('L4 v2:落盤的 scamBlocklist 是 version 2 的三欄形狀,不得帶 allo
   assert.deepEqual(
     Object.keys(list).sort(),
     ['entries', 'handleIndex', 'version'],
-    'allowlist 是 normalizeScamBlocklist 的派生視圖,不得跟著落盤(落盤兩份真相遲早對不上)'
+    'allowlist 是 normalizeScamBlocklist 的派生視圖，不得跟著落盤(落盤兩份真相遲早對不上)'
   );
 });
 
-test('L4 v2:讀到 v1 的舊名單時就地升版,已解除的作者變成 dismissed 條目', async () => {
+test('L4 v2:讀到 v1 的舊名單時就地升版，已解除的作者變成 dismissed 條目', async () => {
   const v1 = {
     version: 1,
     entries: {},
