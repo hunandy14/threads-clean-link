@@ -46,7 +46,7 @@
 | D35 | 總開關 `scamGuardEnabled` 關閉時，警示名單**不拉也不推**，本機那一份原封保留不動；「警示名單」分頁維持可見、可編輯，頂端加一條狀態列「LINE 群組引導警示已關閉——名單不會同步，也不會在河道掛標記」並附一顆「開啟」鈕；貼文頁不掛 pill、河道不查表。關閉期間在本機解除或復原照常更新 `updatedAt`，重新開啟後依 D37 與雲端做 LWW 合併 | 依 disabled-vs-hidden 原則，暫時關閉的功能該用停用態＋一句說明，而不是把介面整塊藏起來：名單藏起來，使用者會以為資料已被刪掉，也失去把誤判解除掉的機會。狀態列把「為什麼現在什麼都沒發生」擺在他看得到的位置，一顆按鈕就能改回來。書籤與稍後閱讀類產品在同步關閉時同樣保留本機清單的管理能力 | 2026-09-22 |
 | D36 | 本機名單升到 v2：`scamBlocklist = { version: 2, entries, handleIndex }`，每筆 entry 帶 `state`（`active`｜`dismissed`）、`dismissedAt?` 與 `updatedAt`；頂層 `allowlist` 不再獨立儲存，改由 `entries` 中 `state === "dismissed"` 的條目派生。已解除的條目**保留證據**。v1 遷移規則：原 `entries` 一律轉成 `state: "active"`；原 `allowlist` 的每一把鍵轉成 `state: "dismissed"` 的條目（沒有證據，`dismissedAt` 取原本的 `at`）；`updatedAt` 缺席時以 `addedAt`／`at` 補 | 「解除」是使用者對誤判的明確決定，跨裝置必須一致。名單與白名單各存一邊時，同一位作者在雲端是兩筆互不相干的資料，LWW 根本沒有共同的比較對象；狀態併進同一個物件之後，一筆 mark 的最後更新時間就足以決定勝負。證據留著則讓「復原」當下立刻有內容可看，不必等下一次命中才長回來 | 2026-09-22 |
 | D37 | 合併以一筆 mark 為單位：純量欄位（`state`／`dismissedAt`／`handle`／`displayName`／`source`／`addedAt`）取 `updatedAt` 較新的一邊，兩邊相等時取本機；`evidence` 不覆寫而是取**聯集**，以錨點貼文（`anchorPostUrl`）去重，再依 `at` 降冪保留 3 筆；本機有而雲端沒有的欄位（`snippet`／`anchorMatch`／`postUrl`）原封保留 | 兩台裝置各自在不同串命中同一位作者是常態，整筆覆蓋會讓後寫的一邊把另一邊的證據與命中篇數一起抹掉——而命中篇數正是使用者判斷「這個標記可不可信」的依據。純量欄位沒有這個問題：使用者最後一次的決定就是他現在的意思 | 2026-09-22 |
-| D38 | 名單走自己的端點 `POST /api/v1/marks/sync`／`GET /api/v1/marks`，請求與回應形狀比照連結同步（`upserts`／`deletes`／`since`／`cursor` → `applied`／`changes`／`cursor`／`evicted`）；登入態、`chrome.alarms` 排程、退避曲線、批次上限 50 筆與 cursor 續頁一律沿用連結同步那一套。每輪只推 `updatedAt` 晚於上次推送水位線的條目；回應的 `evicted` 只代表雲端不再保留那幾筆，本機**一筆都不動**；首次登入的全量上傳與免費額度提示沿用 D3。免費方案雲端保留 1,000 筆、依 `updatedAt` 由舊到新淘汰且**不寫墓碑**；使用者真正刪除的條目才寫墓碑，保留 90 天 | 名單與連結的生命週期不同（名單會被解除、復原，連結不會），塞進同一個端點會讓兩種資料的合併規則互相牽制。共用排程與退避則是因為同步的節奏由網路與後端決定，與資料種類無關，各排各的只會讓兩套時鐘互相打架。`evicted` 不動本機，是因為雲端額度是雲端的事：使用者沒有刪掉任何東西，本機就不該替他刪 | 2026-09-22 |
+| D38 | 名單走自己的端點 `POST /api/v1/marks/sync`／`GET /api/v1/marks`，請求與回應形狀比照連結同步（`upserts`／`deletes`／`since`／`cursor` → `cursor`／`applied`／`changes`／`evicted`，各欄語意以 §3.1 為準：2026-09-22 R1 修訂後 `cursor` 恆回、`applied` 拆成 `upserts`／`rejectedIds`／`deletedIds`、`changes` 可為 `null`、`evicted` 是筆數而非 key 清單）；登入態、`chrome.alarms` 排程、退避曲線、推送批次上限 50 筆與 cursor 續頁一律沿用連結同步那一套。每輪只推 `updatedAt` 晚於上次推送水位線的條目；回應的 `evicted` 只代表雲端不再保留那麼多筆，本機**一筆都不動**；首次登入的全量上傳與免費額度提示沿用 D3。免費方案雲端保留 1,000 筆、依 `updatedAt` 由舊到新淘汰且**不寫墓碑**；使用者真正刪除的條目才寫墓碑，保留 90 天 | 名單與連結的生命週期不同（名單會被解除、復原，連結不會），塞進同一個端點會讓兩種資料的合併規則互相牽制。共用排程與退避則是因為同步的節奏由網路與後端決定，與資料種類無關，各排各的只會讓兩套時鐘互相打架。`evicted` 不動本機，是因為雲端額度是雲端的事：使用者沒有刪掉任何東西，本機就不該替他刪 | 2026-09-22 |
 | D39 | 匯出／匯入檔仍**不含**警示名單，沿用 D30 的既有行為，不因名單可同步而改變 | 匯出檔是使用者會自己傳來傳去的檔案，落地之後就脫離插件的控制；名單是對真人帳號的負面標記，夾帶在一份可轉寄的 JSON 裡，與「這台裝置上的使用者自己的判斷」語意不合。雲端同步則是同一位使用者在自己帳號底下的跨裝置一致，兩者的風險不是同一回事 | 2026-09-22 |
 | D40 | 商店隱私揭露照名單上雲的事實重填：登入並啟用雲端同步後，名單會把作者數字 id、帳號與顯示名快照、證據貼文網址、掃到的時間與貼文發布時間、規則版本與回報裝置 id 上傳到開發者自營後端；**貼文文字片段（`snippet`／`anchorMatch`）與使用者當時開的那一頁網址（`postUrl`）不上傳**。揭露表的 Website content 與 Web history 兩列改為勾選，並註明僅在使用者主動登入雲端同步時才發生、登出即停止；Personal communications 維持不勾 | 揭露表描述的是資料實際流到哪裡，不是功能的初衷。作者帳號與貼文網址一旦離開這台裝置，在 CWS 的定義下就是 Website content 與 Web history 的傳輸，不勾等於漏報。反過來把貼文文字片段留在本機，是讓「使用者讀到的內容」完全不出裝置——判定要用的識別資訊與人在看的內容，本來就該切在不同邊 | 2026-09-22 |
 
@@ -72,35 +72,65 @@
 
 LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結同步分開的一組端點：
 
-- **推送**：`POST /api/v1/marks/sync`，`Content-Type: application/json`（缺就回 415），body 帶 `upserts`／`deletes`／`since`／`cursor`，回應帶 `applied`／`changes`／`cursor`／`evicted`，各欄語意與連結同步同形。
-- **拉取**：`GET /api/v1/marks`，以 `since`／`cursor` 續頁。
-- **共用的部分**（D38）：Bearer 登入態、`credentials: "omit"`、只從 service worker 發請求、`chrome.alarms` 排程與退避曲線、批次上限 50 筆、cursor 續頁，以及第 3 節列出的共用錯誤碼（401／403／415／429／503），全部沿用連結同步那一套。
+- **推送**：`POST /api/v1/marks/sync`，`Content-Type: application/json`（缺就回 415），body 帶 `upserts`／`deletes`／`since`／`cursor`，回應形狀見下。
+- **拉取**：`GET /api/v1/marks`，依 `updatedAt` **升冪**分頁，`limit` 預設 50、最多 100（超出即夾到 100）；以 `since`／`cursor` 續頁。升冪是為了讓中斷後的續傳有意義——水位線只會往前推，重跑一次不會漏掉中間那幾筆。
+- **共用的部分**（D38）：Bearer 登入態、`credentials: "omit"`、只從 service worker 發請求、`chrome.alarms` 排程與退避曲線、推送批次上限 50 筆、cursor 續頁，以及第 3 節列出的共用錯誤碼（401／403／415／429／503），全部沿用連結同步那一套。
 - **推送水位線**：每輪只送 `updatedAt` 晚於上次成功推送時間的條目。
-- **`evicted`**：只代表雲端不再保留那幾把 key（免費方案 1,000 筆依 `updatedAt` 由舊到新淘汰、不寫墓碑），本機一筆都不動。
 - **墓碑**：使用者真正刪除的條目才進 `deletes`，墓碑保留 90 天。
 - **總開關**：`scamGuardEnabled` 關閉時這兩支端點一律不呼叫（D35）。
 
-mark 的線上形狀：
+**同步回應形狀**（R1 修訂，與連結同步對齊）：
+
+```
+{
+  cursor: string,            // 不透明字串，恆回：這一輪有沒有增量都會帶。
+                             //   插件原封存下來當下一輪的續傳位置，不解析、不比較大小
+  applied: {                 // 這一次請求的處理結果，三個陣列都是 key（"threads:<id>"）
+    upserts: string[],       //   實際寫入的
+    rejectedIds: string[],   //   被拒收的（形狀不合、key 不合法等）
+    deletedIds: string[],    //   實際刪除的
+  },
+  changes: null | {          // null 代表這一輪沒有增量（不是空物件，也不是空陣列）
+    marks: Mark[],           //   異動的完整 Mark（見下方固定九欄）
+    deleted: [{ key, deletedAt }],   // 墓碑：只有這兩個欄位
+    hasMore: boolean,        //   true 代表還有下一頁，立刻帶新 cursor 再拉一次
+  },
+  evicted: number,           // 筆數，不是清單：這一輪雲端淘汰了幾筆
+}
+```
+
+- **`cursor` 恆回**：插件一律把回應的 `cursor` 寫回本機水位線，不論 `changes` 是不是 `null`；游標是不透明字串，插件端不得從裡面推算時間或筆數。
+- **`applied`**：只有出現在 `applied.upserts`／`applied.deletedIds` 的 key 才算推送成功、才可以清掉本機的待推標記；`rejectedIds` 不算成功，也**不無限重送**——那代表兩端版本對不上，重送只會每輪再撞一次。
+- **`changes` 與增量分頁**：增量**單頁 200 筆**（`marks` 與 `deleted` 合計），`hasMore` 為 `true` 時用同一輪回應的 `cursor` 續拉，直到 `hasMore` 為 `false`。
+- **`evicted`**：是**筆數**而非 key 清單，只說明雲端這一輪淘汰了幾筆（免費方案 1,000 筆依 `updatedAt` 由舊到新淘汰、不寫墓碑），**本機一筆都不動**；插件拿它做提示用，不得據以刪除本機條目。
+
+**Mark 固定九欄**（`key`／`state`／`dismissedAt`／`handle`／`displayName`／`source`／`evidence`／`addedAt`／`updatedAt`）：九個鍵一律出現，**可空的以 `null` 表示，不省略鍵**。
 
 ```
 {
   key: "threads:<作者數字 id>",   // 主鍵，與本機 entries 的鍵同源
   state: "active" | "dismissed",  // dismissed 即使用者解除過（取代 v1 的 allowlist）
   dismissedAt: number | null,     // state 為 active 時為 null
-  handle: string,                 // 帳號快照（不帶 @）
-  displayName: string,            // 顯示名快照，上限 80 字元
+  handle: string | null,          // 帳號快照（不帶 @）
+  displayName: string | null,     // 顯示名快照，上限 80 字元
   source: "auto" | "manual",
-  evidence: [{                    // 上限 3 筆，依 at 降冪
-    anchorPostUrl: string,        // 含錨點那一篇的永久連結
-    threadUrl?: string,           // 串頭永久連結
-    signals: string[],            // link｜line｜group｜join｜pitch
-    at: number,                   // 掃到的時間
-    postedAt?: number,            // 貼文發布時間
-    rulesVersion?: string,        // 命中當下的規則版本
-    deviceId?: string,            // 回報這筆證據的裝置（UUID 形狀）
-  }],
+  evidence: Evidence[],           // 上限 3 筆，依 at 降冪；沒有證據時為空陣列
   addedAt: number,
   updatedAt: number,              // LWW 判準（D37）
+}
+```
+
+**Evidence 固定七欄**（`anchorPostUrl`／`threadUrl`／`signals`／`at`／`postedAt`／`rulesVersion`／`deviceId`）：同樣七個鍵一律出現，**可空的以 `null` 表示，不省略鍵**——本機那一份是「缺席就不寫鍵」（`docs/scam-guard.md` 第 4 節），兩邊在送出與讀回時各做一次轉換。
+
+```
+{
+  anchorPostUrl: string,          // 含錨點那一篇的永久連結
+  threadUrl: string | null,       // 串頭永久連結
+  signals: string[],              // link｜line｜group｜join｜pitch；沒有就空陣列
+  at: number,                     // 掃到的時間
+  postedAt: number | null,        // 貼文發布時間
+  rulesVersion: string | null,    // 命中當下的規則版本
+  deviceId: string | null,        // 回報這筆證據的裝置（UUID 形狀）
 }
 ```
 
@@ -231,20 +261,29 @@ chrome.storage.local.scamBlocklist = {
 
 v1 的頂層 `allowlist` 在 v2 消失，改由 `state === "dismissed"` 的條目派生；遷移規則見 D36。`handleIndex` 是本機派生的反查表，與 `version` 一樣不進同步。
 
-本機與雲端的差異只有三個欄位：本機的 `evidence` 多存 `snippet`（120 字證據片段）、`anchorMatch`（錨點本體，40 字）與 `postUrl`（使用者當時開的那一頁），這三項留在本機，永不上傳（D40）。反過來，`rulesVersion` 與 `deviceId` 兩欄本機與雲端都有，本機原有的舊證據可能缺席，缺席時整個鍵不寫。
+本機與雲端的差異只有三個欄位：本機的 `evidence` 多存 `snippet`（120 字證據片段）、`anchorMatch`（錨點本體，40 字）與 `postUrl`（使用者當時開的那一頁），這三項留在本機，永不上傳（D40）。反過來，`rulesVersion` 與 `deviceId` 兩欄本機與雲端都有，本機原有的舊證據可能缺席。
 
-**欄位映射表（本機 entry → 雲端 mark）**
+兩邊對「沒有值」的表示法不同，映射時必須各做一次轉換：**本機缺席就不寫鍵**（`docs/scam-guard.md` 第 4 節的正規化規則），**雲端 Mark 固定九欄、Evidence 固定七欄，缺值一律寫 `null`**（§3.1 R1）。送出時把缺席的鍵補成 `null`，讀回時把 `null` 的鍵整個拿掉，不要在本機留下一排 `null`——選項頁靠「鍵在不在」決定要不要畫那一行。
 
-| 雲端 mark | 本機 | 對齊方式 |
+**欄位映射表（本機 entry ↔ 雲端 Mark）**
+
+| 雲端 Mark（固定九欄） | 本機 | 對齊方式 |
 |---|---|---|
-| `key`（必填） | `entries` 的鍵 | 前綴後送出：`threads:` ＋ userId |
-| `state`（必填） | `state` | 直接映射；v1 遷上來的條目依 D36 決定初值 |
-| `dismissedAt` | `dismissedAt?` | 本機缺席時送 `null` |
-| `handle`／`displayName`／`source`／`addedAt` | 同名 | 直接映射；`displayName` 送出前裁到 80 字元 |
-| `updatedAt`（必填） | `updatedAt` | 直接映射，同時是推送水位線與 LWW 判準 |
-| `evidence[].anchorPostUrl` | `anchorPostUrl ‖ postUrl` | 本機缺 `anchorPostUrl` 時以 `postUrl` 補位（去重鍵本來就是這個組合） |
-| `evidence[].threadUrl`／`signals`／`at`／`postedAt`／`rulesVersion`／`deviceId` | 同名 | 直接映射，缺席時整個鍵不送 |
-| — | `evidence[].snippet`／`anchorMatch`／`postUrl` | **不送**：貼文文字片段與使用者當時開的頁面網址一律留在本機（D40） |
+| `key` | `entries` 的鍵 | 送出時前綴：`threads:` ＋ userId；讀回時剝掉前綴，前綴不符的整筆丟棄 |
+| `state` | `state` | 直接映射；v1 遷上來的條目依 D36 決定初值 |
+| `dismissedAt` | `dismissedAt`（缺席即不寫鍵） | 本機缺席時送 `null`；讀回 `null` 時不寫這個鍵 |
+| `handle`／`displayName` | 同名 | 直接映射，可空；`displayName` 送出前裁到 80 字元 |
+| `source`／`addedAt` | 同名 | 直接映射 |
+| `evidence` | `evidence` | 陣列本身必回，沒有證據時為空陣列（不是 `null`）；上限 3 筆、依 `at` 降冪 |
+| `updatedAt` | `updatedAt` | 直接映射，同時是推送水位線與 LWW 判準 |
+
+| 雲端 Evidence（固定七欄） | 本機 | 對齊方式 |
+|---|---|---|
+| `anchorPostUrl` | `anchorPostUrl ‖ postUrl` | 本機缺 `anchorPostUrl` 時以 `postUrl` 補位（去重鍵本來就是這個組合）；這一欄不可為 `null`，兩者都缺的證據不送 |
+| `threadUrl`／`postedAt`／`rulesVersion`／`deviceId` | 同名（缺席即不寫鍵） | 缺席時送 `null`；讀回 `null` 時不寫這個鍵 |
+| `signals` | `signals`（缺席即不寫鍵） | 陣列必回，沒有訊號時送空陣列；讀回空陣列時本機不寫這個鍵（留空陣列會讓證據卡畫出一排沒有 chip 的空白） |
+| `at` | `at` | 直接映射，不可為 `null` |
+| — | `snippet`／`anchorMatch`／`postUrl` | **不送**：貼文文字片段與使用者當時開的頁面網址一律留在本機（D40）。讀回的證據因此沒有片段本文，選項頁該筆不畫本文、也沒有高亮 |
 | — | `handleIndex`／`version` | 本機派生，不送 |
 
 ## 5. 模組介面
