@@ -1774,6 +1774,10 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
     'lastSyncedAt',
     // D38（車道 B）：警示名單 marks 通道的四格。C 車道的「雲端額度滿了」提示
     // 讀的是 marksEvicted，不隨廣播帶出來那張提示就沒有筆數可顯示。
+    // 【斷言翻轉｜R3-3】封閉鍵集 12 → 13:安全審查（2026-09-22）補的
+    // marksClearedAt——marks 通道的清空水位線，比照 links 的 clearedAt 模式，
+    // 隨 buildState 一併廣播（UI 要靠它分辨「雲端已被清空」）。
+    'marksClearedAt',
     'marksCursor',
     'marksEvicted',
     'marksPushedAt',
@@ -1784,7 +1788,8 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
   assert.equal(state.status, 'signed_out');
   assert.equal(state.email, null);
   assert.equal(state.apiBase, PRODUCTION_BASE);
-  assert.equal(state.marksCursor, null, '未登入時四格一律是預設值');
+  assert.equal(state.marksCursor, null, '未登入時五格一律是預設值');
+  assert.equal(state.marksClearedAt, null);
   assert.equal(state.marksPushedAt, null);
   assert.equal(state.marksEvicted, null);
   assert.equal(state.marksRejected, null);

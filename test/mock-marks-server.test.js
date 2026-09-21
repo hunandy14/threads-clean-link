@@ -959,3 +959,126 @@ test('marks 輔助 API：setQuota 可覆寫配額', async () => {
     [KEY_B]
   );
 });
+
+// ============================================================================
+// R3 — DELETE /api/v1/marks 與 marks 的清空水位線（後端 2026-09-22 契約）
+// ----------------------------------------------------------------------------
+// 安全審查抓到「刪除雲端資料」只打 `DELETE /api/v1/links`，警示名單整份留在後
+// 端。後端補的 R3 契約：
+//
+// - `DELETE /api/v1/marks` 硬刪該使用者的 marks ＋墓碑並寫下 `clearedAt`，回
+//   `{ ok:true, clearedAt }`（毫秒）。守門沿用 links（Bearer、限流）。
+// - `POST /api/v1/marks/sync` 對 `updatedAt <= clearedAt` 的 upsert 一律退進
+//   `applied.rejectedIds`（與 links 的「早於 cleared_at 一律拒收」同一條規則），
+//   這是插件端刪完雲端後本機名單留著也不會被推回去的保證。
+// - 回應的 `changes` 物件補一格 `clearedAt`（null 或毫秒）。`changes` 為 null
+//   （請求沒帶 since／cursor，首輪回填走 GET）時整個物件就是 null，不另立鍵：
+//   插件端因此只在帶位置參數的增量請求才得知清空。
+// - `DELETE /api/v1/links` 不碰 marks（現況即如此，在此釘住，免得日後被順手
+//   改成連帶清空而讓兩條通道的清空語意糊在一起）。
+// ============================================================================
+
+// 清空雲端警示並回傳水位線。端點未實作時 body 沒有 clearedAt，先斷言形狀，讓
+// 紅燈停在「端點還沒做」而不是後面一路拿 undefined 去比較的假綠燈。
+async function clearMarks(h) {
+  const res = await h.call('DELETE', '/api/v1/marks');
+  assert.equal(res.status, 200, 'DELETE /api/v1/marks 應回 200');
+  const body = await res.json();
+  assert.equal(typeof body.clearedAt, 'number', 'DELETE /api/v1/marks 應回 clearedAt 毫秒');
+  return body.clearedAt;
+}
+
+test('R3-4 DELETE /api/v1/marks：硬刪 marks 與墓碑並回 { ok:true, clearedAt }', async () => {
+  const h = harness();
+  await h.push([markOf({ key: KEY_A }), markOf({ key: KEY_B })]);
+  await h.syncJson({ upserts: [], deletes: [KEY_C] });
+  assert.equal(h.server.marks.count(), 2, '前置條件:雲端有兩筆警示');
+  assert.equal(h.server.marks.tombstoneCount(), 1, '前置條件:雲端有一個墓碑');
+
+  const res = await h.call('DELETE', '/api/v1/marks');
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(Object.keys(body).sort(), ['clearedAt', 'ok'], '回應只有 ok 與 clearedAt 兩把鍵');
+  assert.equal(body.ok, true);
+  assert.equal(typeof body.clearedAt, 'number');
+  assert.ok(Number.isFinite(body.clearedAt) && body.clearedAt > 0, 'clearedAt 是毫秒時戳');
+  assert.equal(h.server.marks.count(), 0, '警示整份硬刪');
+  assert.equal(h.server.marks.tombstoneCount(), 0, '墓碑一併硬刪，不留下會被當成刪除意圖再送一次的殘渣');
+});
+
+test('R3-4 DELETE /api/v1/marks：守門沿用 links——無 bearer 回 401 且一筆不刪', async () => {
+  const h = harness();
+  await h.push([markOf()]);
+  const res = await h.call('DELETE', '/api/v1/marks', { token: null });
+  assert.equal(res.status, 401);
+  assert.deepEqual(await res.json(), { error: 'unauthorized' });
+  assert.equal(h.server.marks.count(), 1, '未授權的請求不得動到資料');
+});
+
+test('R3-4 輔助 API：server.marks.clearedAt() 讀得到清空水位線', async () => {
+  const h = harness();
+  assert.equal(typeof h.server.marks.clearedAt, 'function', 'marks 輔助 API 應有 clearedAt()');
+  assert.equal(h.server.marks.clearedAt(), null, '沒清空過時是 null');
+  const body = await (await h.call('DELETE', '/api/v1/marks')).json();
+  assert.equal(h.server.marks.clearedAt(), body.clearedAt, '輔助 API 看到的水位線與回應一致');
+});
+
+test('R3-4 marks sync：updatedAt 不大於 clearedAt 的 upsert 退進 rejectedIds，一筆不寫', async () => {
+  const h = harness();
+  const cleared = await clearMarks(h);
+
+  const { res, body } = await h.syncJson({
+    upserts: [markOf({ key: KEY_A, updatedAt: cleared - 1 }), markOf({ key: KEY_B, updatedAt: cleared })],
+    deletes: [],
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(body.applied.upserts, [], '早於（含等於）水位線的一律不收');
+  assert.deepEqual(body.applied.rejectedIds.sort(), [KEY_A, KEY_B]);
+  assert.equal(h.server.marks.count(), 0, '被拒的一筆都不得落地');
+});
+
+test('R3-4 marks sync：updatedAt 大於 clearedAt 的 upsert 照常收下', async () => {
+  const h = harness();
+  const cleared = await clearMarks(h);
+
+  const body = await h.push([markOf({ key: KEY_A, addedAt: cleared + 1, updatedAt: cleared + 1 })]);
+  assert.deepEqual(body.applied.upserts, [KEY_A], '晚於水位線的新警示照收，否則清空後名單永遠長不回來');
+  assert.deepEqual(body.applied.rejectedIds, []);
+  assert.equal(h.server.marks.count(), 1);
+});
+
+test('R3-4 marks sync：changes 物件必帶 clearedAt（沒清空過時為 null）', async () => {
+  const h = harness();
+  await h.push([markOf()]);
+  const body = (await h.syncJson({ upserts: [], deletes: [], since: 0 })).body;
+  assert.notEqual(body.changes, null, '前置條件:帶 since 就有 changes');
+  assert.deepEqual(
+    Object.keys(body.changes).sort(),
+    ['clearedAt', 'deleted', 'hasMore', 'marks'],
+    'changes 固定四欄'
+  );
+  assert.equal(body.changes.clearedAt, null, '沒清空過時是 null，不是缺鍵');
+});
+
+test('R3-4 marks sync：清空之後 changes.clearedAt 帶回水位線毫秒', async () => {
+  const h = harness();
+  const cleared = await clearMarks(h);
+  const body = (await h.syncJson({ upserts: [], deletes: [], since: 0 })).body;
+  assert.equal(body.changes.clearedAt, cleared, '其他裝置靠這一格得知雲端被清空');
+});
+
+test('R3-4 marks sync：沒帶 since／cursor 時 changes 整個為 null，不另立 clearedAt 鍵', async () => {
+  const h = harness();
+  await clearMarks(h);
+  const body = (await h.syncJson({ upserts: [], deletes: [] })).body;
+  assert.equal(body.changes, null, '首輪回填走 GET，這一次 POST 只領游標');
+});
+
+test('R3-4 DELETE /api/v1/links 不碰 marks（兩條通道的清空各自獨立）', async () => {
+  const h = harness();
+  await h.push([markOf({ key: KEY_A })]);
+  const res = await h.call('DELETE', '/api/v1/links');
+  assert.equal(res.status, 200);
+  assert.equal(h.server.marks.count(), 1, '刪連結不得順手清掉警示名單');
+  assert.equal(h.server.marks.clearedAt(), null, 'marks 的水位線不隨 links 的清空前進');
+});
