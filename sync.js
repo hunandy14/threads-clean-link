@@ -1045,6 +1045,35 @@
     }
 
     /**
+     * 本輪的「讓位下限」。墓碑守衛留下比墓碑新的條目之後，水位線必須退到它們
+     * 之下，下一輪才選得到、推得出去——否則「保留」只是讓兩端永遠不一致。
+     *
+     * 水位線是整輪共用的一格，讓位卻發生在某一批，因此 floor 必須是**整輪**的
+     * 累積值:同一輪後面每一批的 ack 都要守同一條線，不然前面讓出來的空間會被
+     * 後面那批推回去。取最小的一個，同時照顧到多筆留存。
+     */
+    function noteMarkFloor(floor, kept) {
+      kept.forEach(function (row) {
+        var candidate = row.updatedAt - 1;
+        if (floor.value === null || candidate < floor.value) floor.value = candidate;
+      });
+    }
+
+    /**
+     * 整輪結算完的最後一步。settleMarkAck 只夾得住「這一輪推上去的」水位線;
+     * 進這一輪之前就已經高於 floor 的舊值(留存的條目本來就在水位線底下，這正
+     * 是它沒被推上去的原因)得在這裡退回去。
+     *
+     * marksPushedAt 為 null 時不動:那代表「全部都要推」，本來就選得到。
+     */
+    function applyMarkFloor(ctx, floor) {
+      if (floor.value === null) return;
+      if (ctx.state.marksPushedAt !== null && ctx.state.marksPushedAt > floor.value) {
+        ctx.state.marksPushedAt = floor.value;
+      }
+    }
+
+    /**
      * 一次 POST 的回應結算(只動記憶體裡的 ctx.state，落盤由 runSync 收尾):
      *
      * - marksPushedAt 只吃 applied.upserts:被拒那筆的 updatedAt 不算數，否則
@@ -1054,7 +1083,7 @@
      * - evicted 只累記筆數供 UI 提示，本機一筆不動(被淘汰的 key 由下一次回
      *   填自行對帳)。
      */
-    function settleMarkAck(ctx, payload, batch) {
+    function settleMarkAck(ctx, payload, batch, floor) {
       var applied = (payload && payload.applied) || {};
       var sentAt = {};
       batch.forEach(function (row) {
@@ -1077,6 +1106,9 @@
         touched = true;
       });
       if (touched) ctx.state.marksRejected = rejected;
+      // 本輪讓位的上限:墓碑守衛留下來的條目必須留在水位線之上，這一批的 ack
+      // 再高也不能蓋過去（同一輪後面每一批都要守同一條線）。
+      if (high !== null && floor.value !== null && high > floor.value) high = floor.value;
       if (high !== null && (ctx.state.marksPushedAt === null || high > ctx.state.marksPushedAt)) {
         ctx.state.marksPushedAt = high;
       }
@@ -1091,7 +1123,7 @@
      * 【位置參數】marksCursor 為 null 時不帶——契約 §3.1 的首輪回填走 GET，不
      * 帶位置參數時伺服器回 changes: null，這一次 POST 只是把水位線領回來。
      */
-    function postMarks(ctx, batch) {
+    function postMarks(ctx, batch, floor) {
       var body = {
         upserts: batch.map(function (row) {
           return row.mark;
@@ -1114,15 +1146,10 @@
         }
         // 【順序】游標必須等寫入真的落地才前進(比照 links)。
         return applyMarkChanges(marks, deletions).then(function (kept) {
-          settleMarkAck(ctx, payload, batch);
-          // 比墓碑新而留下來的條目要真的推得出去，否則「保留」只是讓兩端永遠
-          // 不一致。把水位線讓到它們之下，下一輪就選得到(順帶重推幾筆已經上
-          // 過雲的條目，upsert 本身冪等，代價只是一次多餘的寫入)。
-          kept.forEach(function (row) {
-            if (ctx.state.marksPushedAt !== null && ctx.state.marksPushedAt >= row.updatedAt) {
-              ctx.state.marksPushedAt = row.updatedAt - 1;
-            }
-          });
+          // 【順序】先記讓位再結算:settleMarkAck 要拿這一輪的 floor 夾住自己
+          // 推上去的水位線，floor 晚一步記就夾不到本批的 ack。
+          noteMarkFloor(floor, kept);
+          settleMarkAck(ctx, payload, batch, floor);
           if (payload && typeof payload.cursor === 'string') ctx.state.marksCursor = payload.cursor;
           return changes;
         });
@@ -1168,27 +1195,33 @@
       // 推空的也要發一次:一次 POST 同時處理推與拉。
       if (!batches.length) batches.push([]);
       var lastChanges = null;
+      // 整輪共用一份讓位下限:任何一批留下來的條目都要守到這一輪結束。
+      var floor = { value: null };
       var step = Promise.resolve();
       batches.forEach(function (batch) {
         step = step.then(function () {
-          return postMarks(ctx, batch).then(function (changes) {
+          return postMarks(ctx, batch, floor).then(function (changes) {
             lastChanges = changes;
           });
         });
       });
-      return step.then(function () {
-        // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
-        var rounds = 0;
-        function more() {
-          if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
-          rounds += 1;
-          return postMarks(ctx, []).then(function (changes) {
-            lastChanges = changes;
-            return more();
-          });
-        }
-        return more();
-      });
+      return step
+        .then(function () {
+          // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
+          var rounds = 0;
+          function more() {
+            if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+            rounds += 1;
+            return postMarks(ctx, [], floor).then(function (changes) {
+              lastChanges = changes;
+              return more();
+            });
+          }
+          return more();
+        })
+        .then(function () {
+          applyMarkFloor(ctx, floor);
+        });
     }
 
     /** 一輪 marks:開關 → 回填 → 推 → 拉。 */
