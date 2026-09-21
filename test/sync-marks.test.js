@@ -1157,7 +1157,7 @@ test('M5 回填：marksCursor 為 null 時走 GET /api/v1/marks 分頁（nextCur
 test('M5 回填：一輪拉不完時不寫 cursor、不推，留待下一輪續填', async () => {
   const TCLSync = loadSync();
   // 單頁上限 100 × 一輪的續頁保險 20 = 2,000 筆；多一筆就拉不完。回填沒到底
-  // 卻讓 POST 把 marksCursor 寫下去的話，沒拉到的那些永遠落在增量水位線之前,
+  // 卻讓 POST 把 marksCursor 寫下去的話，沒拉到的那些永遠落在增量水位線之前，
   // 從此回填不到——靜默漏資料比慢一輪嚴重得多。
   const total = 2001;
   const env = makeEnv({

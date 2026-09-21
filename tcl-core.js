@@ -231,7 +231,7 @@
     clearedAt: null,
     lastError: null,
     // D38:警示名單(marks)通道的四格水位線。與 links 的 cursor 並存於同一
-    // 包 syncState,兩條通道各自獨立推進。
+    // 包 syncState，兩條通道各自獨立推進。
     marksCursor: null,
     marksPushedAt: null,
     marksEvicted: null,
@@ -330,8 +330,8 @@
   }
 
   // D38:被拒警示的映射(key → 被拒當下的 updatedAt)。逐項夾擠成「字串鍵 →
-  // 有限數字」,形狀不對的整項剝除;非物件一律回 null。**每次回傳新物件**
-  // ——與整包 syncState 同一條紀律,回傳輸入的參照會讓呼叫端就地改到 storage
+  // 有限數字」，形狀不對的整項剝除;非物件一律回 null。**每次回傳新物件**
+  // ——與整包 syncState 同一條紀律，回傳輸入的參照會讓呼叫端就地改到 storage
   // 讀回來的那份。
   function normalizeMarksRejected(value) {
     if (!isPlainObject(value)) return null;
