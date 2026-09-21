@@ -2001,3 +2001,39 @@ test('R3-11 推：handle 不合 ^[A-Za-z0-9._]{1,80}$ 的條目不進推送批',
   const pushed = Object.keys(env.upsertsByKey()).sort();
   assert.deepEqual(pushed, ['threads:1001'], 'handle 形狀不合的條目在本機這一關就攔下來');
 });
+
+// 【契約澄清｜R3-11】staging 實測：後端把 `handle` 當**必填**（`^[A-Za-z0-9._]
+// {1,80}$`），送 `handle: null` 的 mark 整筆進 `applied.rejectedIds`。因此
+// 「缺席」與「形狀不合」在推送這一關是同一件事——兩者都攔在本機，不佔往返、也
+// 不把 key 記進 marksRejected（記了就得等使用者又動過那一筆才會再送，而補建的
+// 空條目根本不會再被動到，那次解除從此同步不出去）。
+test('R3-11 推：handle 缺席的條目同樣不進推送批，也不得記進 marksRejected', async () => {
+  const TCLSync = loadSync();
+  // background 在名單裡沒有該筆時補建的空 dismissed 條目就長這樣:沒有 handle。
+  const withoutHandle = localEntry({ state: 'dismissed', dismissedAt: T0 - DAY, updatedAt: T0 - DAY });
+  delete withoutHandle.handle;
+
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'alice', updatedAt: T0 - DAY }),
+      1002: withoutHandle,
+    }),
+    syncState: { marksCursor: '0' },
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(
+    Object.keys(env.upsertsByKey()).sort(),
+    ['threads:1001'],
+    'handle 缺席的條目送上去必被整筆拒收，白佔一次往返'
+  );
+  assert.equal(
+    env.storage.syncState().marksRejected,
+    null,
+    '攔在本機這一關才不會把 key 記進被拒映射——那一筆之後再也不會被動到，記了就永遠跳過'
+  );
+});
