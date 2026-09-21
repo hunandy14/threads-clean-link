@@ -1772,12 +1772,22 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
     'email',
     'lastError',
     'lastSyncedAt',
+    // D38（車道 B）：警示名單 marks 通道的四格。C 車道的「雲端額度滿了」提示
+    // 讀的是 marksEvicted，不隨廣播帶出來那張提示就沒有筆數可顯示。
+    'marksCursor',
+    'marksEvicted',
+    'marksPushedAt',
+    'marksRejected',
     'pendingCount',
     'status',
   ]);
   assert.equal(state.status, 'signed_out');
   assert.equal(state.email, null);
   assert.equal(state.apiBase, PRODUCTION_BASE);
+  assert.equal(state.marksCursor, null, '未登入時四格一律是預設值');
+  assert.equal(state.marksPushedAt, null);
+  assert.equal(state.marksEvicted, null);
+  assert.equal(state.marksRejected, null);
 });
 
 // ============================================================================

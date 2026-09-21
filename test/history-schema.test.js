@@ -582,6 +582,11 @@ test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
     lastSyncedAt: null,
     clearedAt: null,
     lastError: null,
+    // D38（車道 B）:警示名單 marks 通道的四格水位線,見 sync-marks 契約。
+    marksCursor: null,
+    marksPushedAt: null,
+    marksEvicted: null,
+    marksRejected: null,
   });
   assert.deepEqual(C.DEFAULT_SYNC_AUTH, { token: null });
 });
