@@ -4170,6 +4170,10 @@ test('B6 遷移:seen 事件帶髒 deviceId（陣列長度不變）經 migrateHis
 const SCAM_KEY = 'scamBlocklist';
 const SCAM_ENABLED_KEY = 'scamGuardEnabled';
 
+// 共用核心的真值來源（規則版本、上限常數）。沙箱裡的 TCLCore 是另一個
+// realm 的複本，斷言拿這份 Node 端的 require 結果比對即可。
+const TCL = require(path.join(__dirname, '..', 'tcl-core.js'));
+
 // 範例比照內部可行性評估：@example_author 的六篇自回覆串，末篇留 LINE 帳號。
 const SCAM_USER_ID = '10000000001';
 const SCAM_HANDLE = 'example_author';
@@ -4336,12 +4340,21 @@ test('L4 scam.hit:合法命中建立條目——handle／displayName／evidence�
   // validateScamHit 不落盤）；證據結構補強後「有帶就驗形狀、通過就落盤」，
   // 這筆證據跟著多一欄。四欄皆缺席時仍維持三欄形狀，由
   // 「L4 scam.hit:新欄位一律可缺席……」那支釘住。
+  // 【斷言翻轉｜D36】v2 起每筆證據都記下判定規則版本與寫入裝置，這筆因此再
+  // 多兩欄；名單的 version 同時由 1 升成 2。
   assert.deepEqual(entry.evidence, [
-    { postUrl: SCAM_POST_URL, snippet: SCAM_SNIPPET, at: SCAM_AT, anchorMatch: '賴：ex01abc' },
+    {
+      postUrl: SCAM_POST_URL,
+      snippet: SCAM_SNIPPET,
+      at: SCAM_AT,
+      anchorMatch: '賴：ex01abc',
+      rulesVersion: TCL.SCAM_RULES.version,
+      deviceId: LOCAL_DEVICE_ID,
+    },
   ]);
 
   const list = scamList(bg);
-  assert.equal(list.version, 1);
+  assert.equal(list.version, 2);
   assert.equal(list.handleIndex[SCAM_HANDLE.toLowerCase()], SCAM_USER_ID, 'handleIndex 以 handle 小寫為鍵指向 userId');
   assert.deepEqual(response.entry, deep(entry), '回應的 entry 要與落地的那一筆同形');
 });
@@ -4567,7 +4580,10 @@ test('L4 scam.hit:寫入後經 capScamBlocklist——第 5001 筆入名單時最
 
 // ---- §14 scam.blocklist.remove／restore ----
 
-test('L4 blocklist.remove:條目移除、allowlist 記下該 userId、handleIndex 無孤兒，回 { ok:true }', async () => {
+// 【斷言翻轉｜D36】原斷言為「條目要從 entries 移除、userId 寫進 allowlist」。
+// v2 的解除只把 state 翻成 dismissed（證據留著），落盤的物件也不再有
+// allowlist 這把鍵——它是 normalizeScamBlocklist 的記憶體派生視圖。
+test('L4 blocklist.remove:條目翻成 dismissed、handleIndex 無孤兒，回 { ok:true }', async () => {
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
   });
@@ -4578,10 +4594,14 @@ test('L4 blocklist.remove:條目移除、allowlist 記下該 userId、handleInde
   const response = deep(res.response);
   assert.equal(response && response.ok, true, '解除成功回 ok:true');
   const list = scamList(bg);
-  assert.equal(list.entries[SCAM_USER_ID], undefined, '條目要從 entries 移除');
+  assert.equal(list.entries[SCAM_USER_ID].state, 'dismissed', '解除後條目留在 entries，只是翻成解除態');
   assert.equal(list.handleIndex[SCAM_HANDLE], undefined, '反查鍵一起清掉，不留孤兒');
   assertNoOrphanIndex(list);
-  assert.ok(list.allowlist[SCAM_USER_ID], '解除的作者要寫進 allowlist，下次掃到不再入名單');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(list, 'allowlist'),
+    false,
+    '落盤的名單不得帶 allowlist（派生視圖只活在記憶體）'
+  );
 });
 
 test('L4 blocklist.remove:解除後同一作者再次命中不得重新入名單', async () => {
@@ -4595,7 +4615,11 @@ test('L4 blocklist.remove:解除後同一作者再次命中不得重新入名單
   await settle(400);
 
   assert.deepEqual(deep(hit.response), { ok: true, added: false, allowlisted: true });
-  assert.equal(scamList(bg).entries[SCAM_USER_ID], undefined, '解除過的作者不得被下一次掃描復活');
+  // 【斷言翻轉｜D36】原斷言為「entries 不得有這一筆」。v2 的條目一直都在，
+  // 「不得復活」改由 state 仍是 dismissed、且證據沒有被這次命中補進來承擔。
+  const entry = scamEntry(bg);
+  assert.equal(entry.state, 'dismissed', '解除過的作者不得被下一次掃描復活');
+  assert.equal(entry.evidence.length, 1, 'dismissed 命中整條路徑不寫，證據筆數不得增加');
 });
 
 test('L4 blocklist.remove:非法 userId 回 bad_request 且不動名單', async () => {
@@ -4626,7 +4650,9 @@ test('L4 blocklist.remove／restore:content script 送來一律忽略（只認�
   assert.deepEqual(bg.storage.localSnapshot()[SCAM_KEY], seededBlocklist(), '被忽略的訊息不得留下任何寫入');
 });
 
-test('L4 blocklist.restore:把 userId 從 allowlist 移除，回 { ok:true }', async () => {
+// 【斷言翻轉｜D36】原斷言為「allowlist 要移除這一筆、entries 不長回來」。
+// v2 的復原是把同一筆條目翻回 active（證據照留），落盤物件不再有 allowlist。
+test('L4 blocklist.restore:把條目翻回 active，回 { ok:true }', async () => {
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: allowlistedBlocklist() },
   });
@@ -4637,8 +4663,17 @@ test('L4 blocklist.restore:把 userId 從 allowlist 移除，回 { ok:true }', a
   const response = deep(res.response);
   assert.equal(response && response.ok, true, '復原成功回 ok:true');
   const list = scamList(bg);
-  assert.equal(list.allowlist[SCAM_USER_ID], undefined, '「已解除」名單要移除這一筆（使用者反悔）');
-  assert.equal(list.entries[SCAM_USER_ID], undefined, 'restore 只動 allowlist，不負責把條目長回來');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(list, 'allowlist'),
+    false,
+    '落盤的名單不得帶 allowlist（派生視圖只活在記憶體）'
+  );
+  assert.equal(list.entries[SCAM_USER_ID].state, 'active', '復原把同一筆條目翻回 active');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(list.entries[SCAM_USER_ID], 'dismissedAt'),
+    false,
+    'dismissedAt 整欄刪掉，不留舊時戳'
+  );
 });
 
 test('L4 blocklist.restore:復原後同一作者再次命中重新入名單', async () => {
@@ -4651,9 +4686,15 @@ test('L4 blocklist.restore:復原後同一作者再次命中重新入名單', as
   const hit = await bg.send(scamHit(), SCAM_TAB_SENDER);
   await settle(400);
 
+  // 【斷言翻轉｜D36】原斷言為 added:true。v2 的復原留下一筆 active 條目，下
+  // 一次命中因此是「補證據」而非新建，added 為 false；要驗的是這位作者重新受
+  // 掃描管轄（state 仍 active、證據被補進去）。
   const response = deep(hit.response);
-  assert.equal(response && response.added, true, '不在 allowlist 之後照常入名單');
-  assert.ok(scamEntry(bg));
+  assert.equal(response && response.ok, true, '復原後照常受理');
+  assert.equal(response.added, false, '條目已存在，這次是補證據');
+  const entry = scamEntry(bg);
+  assert.equal(entry.state, 'active');
+  assert.equal(entry.evidence.length, 1, '復原後的命中要把證據寫進去');
 });
 
 test('L4 blocklist.restore:非法 userId 回 bad_request', async () => {
@@ -5812,10 +5853,13 @@ test('L4 scam.hit:新欄位一律可缺席——舊版 content script 送來的�
 
   assert.equal(deep(res.response).ok, true, '缺新欄位不得被擋下');
   const evidence = scamEntry(bg).evidence[0];
+  // 【斷言翻轉｜D36】payload 的選填欄位缺席時仍不補殼，但 rulesVersion 與
+  // deviceId 不是 payload 帶來的——它們由 background 在寫入時記下，與
+  // content script 的版本無關，因此一律在。
   assert.deepEqual(
     Object.keys(evidence).sort(),
-    ['at', 'postUrl', 'snippet'],
-    '沒帶新欄位時證據維持舊三欄形狀，不得補出空殼'
+    ['at', 'deviceId', 'postUrl', 'rulesVersion', 'snippet'],
+    '沒帶新欄位時 payload 那幾欄不得補出空殼；寫入端自己記的兩欄照舊'
   );
 });
 
@@ -5984,8 +6028,6 @@ test('L4 scam.hit:第二筆證據帶著自己的 postedAt，不共用第一筆�
 //
 // 合成資料沿用上方 L4 區塊的 example_author／10000000001／DxSyNtH000x。
 // ============================================================================
-
-const TCL = require(path.join(__dirname, '..', 'tcl-core.js'));
 
 // v2 形狀的單筆黑名單種子:一位 active 作者,帶一筆完整證據。
 function seededBlocklistV2() {
