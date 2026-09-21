@@ -10,7 +10,8 @@
 //   → 200 `{ cursor, applied, changes, evicted }`：
 //   - `cursor` 恆回一個不透明字串；
 //   - `applied` ＝ `{ upserts:[key], rejectedIds:[key], deletedIds:[key] }`
-//     （子欄位沿用 links 命名，值是 key 字串）；
+//     （子欄位沿用 links 命名，值是 key 字串）。`rejectedIds` 三種來源：整筆驗
+//     證不過、同批被 delete 撞掉、比墓碑舊不復活；
 //   - `changes` ＝ `null`（沒帶 `since`／`cursor` 時，首次回填走 GET）或
 //     `{ marks:[mark], deleted:[{key, deletedAt}], hasMore }`，單頁 200 筆；
 //   - `evicted` ＝ 這一輪因配額被淘汰的筆數。
@@ -20,7 +21,8 @@
 //   `source`、`evidence`、`addedAt`、`updatedAt`，可空者輸出 `null`。
 //   驗證：`key` `^threads:\d{1,20}$`、`state` `active|dismissed`、
 //   `handle` `^[A-Za-z0-9._]{1,80}$`、`addedAt`／`updatedAt` 必填有限數字，
-//   任一不符整筆靜默丟棄；`displayName` 超過 80 截斷；`source` 非枚舉退回 auto。
+//   任一不符整筆退回 `rejectedIds`；`displayName` 超過 80 截斷、缺席回 null；
+//   `dismissedAt` 在 active 狀態一律回 null；`source` 非枚舉退回 auto 不 reject。
 // - evidence 固定七欄：`anchorPostUrl`、`threadUrl`、`signals`、`at`、
 //   `postedAt`、`rulesVersion`、`deviceId`，可空者輸出 `null`（`signals` 為清
 //   單，沒有訊號時是空陣列）。`anchorPostUrl`（Threads 貼文網址）與 `at` 缺一
@@ -32,8 +34,8 @@
 // - 守門沿用 links：Content-Type 早於解析 body、Bearer 未登入 401、批次上限、
 //   per-user 限流桶共用。
 //
-// 備註：批次上限的狀態碼與錯誤碼比照既有 `/api/v1/links/sync`（422
-// `too_many_upserts`／`too_many_deletes`），不另立一套。
+// 備註：批次上限沿用 links 的 50 筆與 422，錯誤碼另立
+// `too_many_mark_upserts`／`too_many_mark_deletes`，與連結那邊分得開。
 'use strict';
 
 const test = require('node:test');
@@ -203,7 +205,7 @@ test('marks sync：body 非物件回 400 bad_request', async () => {
   assert.deepEqual(await res.json(), { error: 'bad_request' });
 });
 
-test('marks sync：upserts 超過批次上限回 422 too_many_upserts', async () => {
+test('marks sync：upserts 超過批次上限回 422 too_many_mark_upserts', async () => {
   const h = harness();
   const upserts = [];
   for (let i = 0; i <= MAX_SYNC_UPSERTS; i += 1) {
@@ -211,16 +213,16 @@ test('marks sync：upserts 超過批次上限回 422 too_many_upserts', async ()
   }
   const res = await h.sync({ upserts, deletes: [] });
   assert.equal(res.status, 422);
-  assert.deepEqual(await res.json(), { error: 'too_many_upserts', max: MAX_SYNC_UPSERTS });
+  assert.deepEqual(await res.json(), { error: 'too_many_mark_upserts', max: MAX_SYNC_UPSERTS });
 });
 
-test('marks sync：deletes 超過批次上限回 422 too_many_deletes', async () => {
+test('marks sync：deletes 超過批次上限回 422 too_many_mark_deletes', async () => {
   const h = harness();
   const deletes = [];
   for (let i = 0; i <= MAX_SYNC_DELETES; i += 1) deletes.push(`threads:300${String(i).padStart(4, '0')}`);
   const res = await h.sync({ upserts: [], deletes });
   assert.equal(res.status, 422);
-  assert.deepEqual(await res.json(), { error: 'too_many_deletes', max: MAX_SYNC_DELETES });
+  assert.deepEqual(await res.json(), { error: 'too_many_mark_deletes', max: MAX_SYNC_DELETES });
 });
 
 test('marks sync：壞 since 回 400 bad_since', async () => {
@@ -319,26 +321,51 @@ test('marks sync：回上來的 null 欄位視同缺席，不會被當成髒值�
   assert.equal(mark.evidence.length, 1);
 });
 
-test('marks sync：key 形狀不符整筆靜默丟棄，不擋同批合法項', async () => {
+test('marks sync：key 形狀不符整筆退回 rejectedIds，不擋同批合法項', async () => {
   const h = harness();
   const bad = ['threads:abc', '1000001', 'threads:', `threads:${'9'.repeat(21)}`, 'instagram:1000001'];
   const upserts = bad.map((key) => markOf({ key })).concat([markOf({ key: KEY_B })]);
   const body = await h.push(upserts);
-  assert.deepEqual(body.applied, { upserts: [KEY_B], rejectedIds: [], deletedIds: [] });
+  assert.deepEqual(body.applied, { upserts: [KEY_B], rejectedIds: bad, deletedIds: [] });
   assert.deepEqual(
     h.server.marks.snapshot().map((m) => m.key),
     [KEY_B]
   );
 });
 
-test('marks sync：state 不在枚舉內整筆丟棄', async () => {
+test('marks sync：state／handle／addedAt／updatedAt 不合法同樣退回 rejectedIds', async () => {
+  const h = harness();
+  const body = await h.push([
+    markOf({ key: KEY_A, state: 'blocked' }),
+    markOf({ key: KEY_B, handle: 'alice scam' }),
+    markOf({ key: KEY_C, updatedAt: Number.POSITIVE_INFINITY }),
+    markOf({ key: 'threads:1000004', addedAt: '1700000000000' }),
+  ]);
+  assert.deepEqual(body.applied.rejectedIds, [KEY_A, KEY_B, KEY_C, 'threads:1000004']);
+  assert.deepEqual(body.applied.upserts, []);
+  assert.deepEqual(h.server.marks.snapshot(), []);
+});
+
+test('marks sync：同一個壞 key 在同批出現多次，rejectedIds 只列一次', async () => {
+  const h = harness();
+  const body = await h.push([markOf({ state: 'blocked' }), markOf({ handle: 'bad handle' })]);
+  assert.deepEqual(body.applied.rejectedIds, [KEY_A]);
+});
+
+test('marks sync：key 不是字串時無從回報，整筆丟掉且不進 rejectedIds', async () => {
+  const h = harness();
+  const body = await h.push([null, {}, markOf({ key: 12345 }), markOf({ key: KEY_B })]);
+  assert.deepEqual(body.applied, { upserts: [KEY_B], rejectedIds: [], deletedIds: [] });
+});
+
+test('marks sync：state 不在枚舉內整筆不落地', async () => {
   const h = harness();
   await h.push([markOf({ state: 'blocked' }), markOf({ key: KEY_B, state: 'dismissed' })]);
   assert.equal(h.server.marks.byKey(KEY_A), null);
   assert.equal(requireMark(h, KEY_B).state, 'dismissed');
 });
 
-test('marks sync：handle 不符形狀整筆丟棄', async () => {
+test('marks sync：handle 不符形狀整筆不落地', async () => {
   const h = harness();
   await h.push([
     markOf({ handle: 'alice scam' }),
@@ -348,7 +375,7 @@ test('marks sync：handle 不符形狀整筆丟棄', async () => {
   assert.deepEqual(h.server.marks.snapshot(), []);
 });
 
-test('marks sync：addedAt／updatedAt 非有限數字整筆丟棄', async () => {
+test('marks sync：addedAt／updatedAt 非有限數字整筆不落地', async () => {
   const h = harness();
   await h.push([
     markOf({ addedAt: '1700000000000' }),
@@ -379,6 +406,30 @@ test('marks sync：dismissedAt 有限數字留存，髒值只剝該欄', async (
   ]);
   assert.equal(requireMark(h, KEY_A).dismissedAt, T0 + MINUTE);
   assert.equal(requireMark(h, KEY_B).dismissedAt, null, '髒值輸出 null，不補 0');
+});
+
+test('marks sync：active 狀態的 dismissedAt 一律回 null', async () => {
+  const h = harness();
+  await h.push([markOf({ state: 'active', dismissedAt: T0 + MINUTE })]);
+  assert.equal(requireMark(h, KEY_A).dismissedAt, null, '沒解除封鎖就不該有解除時間');
+
+  // 解除後再重新掛上（active 且 updatedAt 較新）：舊的解除時間不得殘留。
+  await h.push([markOf({ state: 'dismissed', dismissedAt: T0 + MINUTE, updatedAt: T0 + MINUTE })]);
+  assert.equal(requireMark(h, KEY_A).dismissedAt, T0 + MINUTE);
+  await h.push([markOf({ state: 'active', updatedAt: T0 + 2 * MINUTE })]);
+  const mark = requireMark(h, KEY_A);
+  assert.equal(mark.state, 'active');
+  assert.equal(mark.dismissedAt, null);
+});
+
+test('marks sync：signals 輸入 null 或缺席一律視為空陣列', async () => {
+  const h = harness();
+  await h.push([
+    markOf({ evidence: [evidenceOf({ signals: null })] }),
+    markOf({ key: KEY_B, evidence: [evidenceOf({ signals: 'link' })] }),
+  ]);
+  assert.deepEqual(requireMark(h, KEY_A).evidence[0].signals, []);
+  assert.deepEqual(requireMark(h, KEY_B).evidence[0].signals, []);
 });
 
 test('marks sync：mark 的未知欄位不留存', async () => {
