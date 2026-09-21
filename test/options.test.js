@@ -2445,6 +2445,9 @@ test('雲端同步:normalizeSyncCardState 對非法/形狀不對的輸入一律�
     pendingCount: 4,
     lastError: null,
     apiBase: 'https://api.example/',
+    // 警示名單 v2(D35 ＋ 顯示)新增欄位:雲端配額用罄而淘汰的筆數，輸入缺
+    // 席時退回 0(見下方「警示名單 v2」段落的 scamEvictedHint 測試)。
+    marksEvicted: 0,
   });
 
   // 型別不對的 displayName/avatarUrl 個別退回 null，不整包丟棄其餘欄位
