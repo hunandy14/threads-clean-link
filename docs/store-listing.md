@@ -238,12 +238,12 @@ Optional permission, off by default and never requested at install time. It is r
 
 **English:**
 ```
-Optional host permissions, off by default and never requested at install time — requested together with identity only when the user signs in on the History & Settings page. Used for exactly one purpose: syncing the user's own cleaning-history records (URL before and after cleaning, removed tracking parameters, post author name/handle, post summary text, and cleaning timestamp), plus the user's own flagged list (author numeric identifier, handle and display-name snapshot, evidence post URLs, detection timestamp and post timestamp, rules version, and reporting device identifier; never the post text snippet), with the developer's own backend server, which is shared with the developer's companion mobile app so the same history stays consistent across the user's devices. No browsing history or tab list (only the permalinks of flagged posts themselves are uploaded), cookies, Threads credentials, or uncleaned page content is ever sent. All traffic is HTTPS. api-staging.metalinkclearer.workers.dev is the developer's own pre-release testing endpoint for this same sync feature. If the user never signs in, neither domain is ever contacted.
+Optional host permissions, off by default and never requested at install time — requested together with identity only when the user signs in on the History & Settings page. Used for exactly one purpose: syncing the user's own cleaning-history records (URL before and after cleaning, removed tracking parameters, post author name/handle, post summary text, and cleaning timestamp), plus the user's own flagged list (author numeric identifier, handle and display-name snapshot, evidence post URLs, detection timestamp and post timestamp, detection signal categories such as link/line/group/join/pitch — never the matched wording itself, rules version, and reporting device identifier; never the post text snippet), with the developer's own backend server, which is shared with the developer's companion mobile app so the same history stays consistent across the user's devices. No browsing history or tab list (only the permalinks of flagged posts themselves are uploaded), cookies, Threads credentials, or uncleaned page content is ever sent. All traffic is HTTPS. api-staging.metalinkclearer.workers.dev is the developer's own pre-release testing endpoint for this same sync feature. If the user never signs in, neither domain is ever contacted.
 ```
 
 **繁中對照:**
 ```
-選用 host permissions，安裝當下不會要求，只有使用者在「紀錄與設定」頁登入時，才會與 identity 一起被請求。用途單一:把使用者自己的清理紀錄(清理前後的網址、被移除的追蹤參數、貼文作者名稱與帳號、貼文摘要、清理時間)，以及警示名單(作者數字識別碼、帳號與顯示名快照、證據貼文網址、掃到時間與貼文時間、規則版本、回報裝置識別碼;不含貼文文字片段)同步到開發者自營的後端伺服器，這套伺服器與開發者自製的手機 App 共用，讓同一份紀錄在使用者的裝置間保持一致。不會傳送使用者的瀏覽紀錄或分頁清單(上傳的僅限被標記貼文本身的永久連結)、cookie、Threads 帳號密碼，或任何未清理的頁面內容。所有傳輸皆為 HTTPS。api-staging.metalinkclearer.workers.dev 是開發者針對同一項同步功能的上線前測試端點。使用者若從未登入，這兩個網域都不會被連線。
+選用 host permissions，安裝當下不會要求，只有使用者在「紀錄與設定」頁登入時，才會與 identity 一起被請求。用途單一:把使用者自己的清理紀錄(清理前後的網址、被移除的追蹤參數、貼文作者名稱與帳號、貼文摘要、清理時間)，以及警示名單(作者數字識別碼、帳號與顯示名快照、證據貼文網址、掃到時間與貼文時間、判定訊號類別如 link／line／group／join／pitch——不含命中的原文、規則版本、回報裝置識別碼;不含貼文文字片段)同步到開發者自營的後端伺服器，這套伺服器與開發者自製的手機 App 共用，讓同一份紀錄在使用者的裝置間保持一致。不會傳送使用者的瀏覽紀錄或分頁清單(上傳的僅限被標記貼文本身的永久連結)、cookie、Threads 帳號密碼，或任何未清理的頁面內容。所有傳輸皆為 HTTPS。api-staging.metalinkclearer.workers.dev 是開發者針對同一項同步功能的上線前測試端點。使用者若從未登入，這兩個網域都不會被連線。
 ```
 
 ---
@@ -273,8 +273,8 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 **LINE 群組引導警示對本表的影響**:功能剛上線(0.8.0)時名單純屬本機，三列皆維持不勾;名單改為可隨雲端同步之後(見 `docs/cloud-sync.md` 決策 D35–D40)，**Website content 與 Web history 兩列改為勾選**，Personal communications 維持不勾。分界點是「資料有沒有離開這台裝置」:
 
 - **偵測本身仍全在本機**:讀取使用者當下主動開啟的那一頁貼文內文，命中時留下作者資料與一段證據片段，未登入時一律只寫 `chrome.storage.local`(備援請求的節流表寫 `chrome.storage.session`，瀏覽器關閉即清)，不傳輸給任何一方，依 CWS 定義不構成蒐集。
-- **登入雲端同步後才會上傳**、且只上傳這些欄位:作者數字 id、帳號與顯示名快照、證據貼文網址、掃到的時間與貼文發布時間、規則版本、回報裝置 id。其中帳號與顯示名屬 Website content，證據貼文網址屬 Web history，兩列因此勾選。
-- **貼文文字片段(`snippet`)、錨點字串(`anchorMatch`)與使用者當時開的那一頁網址(`postUrl`)一律不上傳**，留在本機。Personal communications 據此維持不勾——上傳的欄位裡沒有任何一項是通訊內容。
+- **登入雲端同步後才會上傳**、且只上傳這些欄位:作者數字 id、帳號與顯示名快照、證據貼文網址、掃到的時間與貼文發布時間、判定訊號類別(link／line／group／join／pitch，不含命中的原文)、規則版本、回報裝置 id。其中帳號與顯示名屬 Website content，證據貼文網址屬 Web history，兩列因此勾選。
+- **貼文文字片段(`snippet`)、錨點字串(`anchorMatch`)一律不上傳**，留在本機;`postUrl` 這個**欄位**同樣不上傳，但缺錨點篇的舊證據會以它的**值**充當證據貼文網址一併上傳(見 `docs/cloud-sync.md` D40)，並非整包留在本機。Personal communications 據此維持不勾——上傳的欄位裡沒有任何一項是通訊內容。
 - **全程以使用者的主動行為為條件**:不登入就不會發生，登出即停止上傳;總開關關閉時名單既不拉也不推。
 
 少數情況下(貼文頁本身沒帶作者識別碼)，會對**使用者當下正在看的同一篇貼文**發一次匿名請求取得該識別碼:不帶 cookie 與登入憑證、同一篇 24 小時內只發一次、資料不經過也不回傳給開發者，總開關關閉即完全不發。這一項與登入與否無關，也不改變上述任何一列的勾選。
