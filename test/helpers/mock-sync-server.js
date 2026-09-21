@@ -55,7 +55,9 @@
 // ============================================================================
 // - `POST /api/v1/marks/sync` body `{ upserts, deletes, since?, cursor? }` →
 //   `{ cursor, applied:{upserts:[key], rejectedIds:[key], deletedIds:[key]},
-//   changes, evicted:n }`。`applied` 的子欄位沿用 links 命名，值是 key 字串。
+//   changes, evicted:n }`。`applied` 的子欄位沿用 links 命名，值是 key 字串；
+//   `rejectedIds` 三種來源：整筆驗證不過、同批被 delete 撞掉、比墓碑舊不復活
+//   （evidence 單筆不合法只剝那一筆，不影響該 mark）。
 //   `changes` 為 `null`（沒帶 `since`／`cursor` 時，首次回填走 GET）或
 //   `{ marks:[mark], deleted:[{key, deletedAt}], hasMore }`，單頁 200 筆。
 // - `GET /api/v1/marks?since=&cursor=&limit=` → `{ items, nextCursor }`，依
@@ -65,9 +67,10 @@
 // - 合併：純量 LWW by `updatedAt`（大者勝、相等以伺服器既有為準）；evidence 以
 //   `anchorPostUrl`（缺則 `threadUrl`）去重取聯集、依 `at` 降冪留 3；轉
 //   dismissed 不清 evidence。
-// - 配額：free 滿額時依 `updatedAt` 最舊淘汰，被淘汰的 key 列在 `evicted` 且不
-//   寫墓碑（寫了會讓其他裝置跟著刪）；pro 無上限。墓碑保留 90 天。
-// - 守門、限流桶、批次上限與游標工具一律沿用 links，不另寫第二套。
+// - 配額：free 滿額時依 `updatedAt` 最舊淘汰，`evicted` 回筆數且不寫墓碑（寫了
+//   會讓其他裝置跟著刪）；pro 無上限。墓碑保留 90 天。
+// - 守門、限流桶與游標工具一律沿用 links；批次上限也是 50，但錯誤碼另立
+//   `too_many_mark_upserts`／`too_many_mark_deletes`（422），與連結那邊分得開。
 //
 // ============================================================================
 // 契約備註（PM 已裁決）
@@ -376,8 +379,9 @@ function mergeMarkEvidence(existing, incoming) {
 
 /**
  * 單筆 mark 正規化。`key`／`state`／`handle`／`addedAt`／`updatedAt` 任一不符
- * 即整筆靜默丟棄（不擋整批）；`source` 不在枚舉內退回 auto；`displayName` 以
- * code point 截斷；`dismissedAt` 只在 dismissed 狀態下留存。未知欄位不輸出。
+ * 即回 null，整筆退回 `applied.rejectedIds`（不擋整批）；`source` 不在枚舉內
+ * 退回 auto、不算驗證失敗；`displayName` 以 code point 截斷；`dismissedAt` 只
+ * 在 dismissed 狀態下留存（active 一律輸出 null）。未知欄位不輸出。
  */
 function normalizeMark(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -906,10 +910,10 @@ function createMockSyncServer(options = {}) {
       (key) => typeof key === 'string' && MARK_KEY_PATTERN.test(key)
     );
     if (upserts.length > MAX_SYNC_UPSERTS) {
-      return jsonResponse(422, { error: 'too_many_upserts', max: MAX_SYNC_UPSERTS });
+      return jsonResponse(422, { error: 'too_many_mark_upserts', max: MAX_SYNC_UPSERTS });
     }
     if (deletes.length > MAX_SYNC_DELETES) {
-      return jsonResponse(422, { error: 'too_many_deletes', max: MAX_SYNC_DELETES });
+      return jsonResponse(422, { error: 'too_many_mark_deletes', max: MAX_SYNC_DELETES });
     }
 
     // `cursor` 是續傳位置、`since` 是起點，兩者同一種編碼；同時帶時以 cursor
@@ -920,17 +924,24 @@ function createMockSyncServer(options = {}) {
       return jsonResponse(400, { error: usingCursor ? 'bad_cursor' : 'bad_since' });
     }
 
-    // 批內先依 key 合併，同一輪只寫一次。
+    const applied = { upserts: [], rejectedIds: [], deletedIds: [] };
+
+    // 批內先依 key 合併，同一輪只寫一次。整筆驗證不過的退回 rejectedIds（不擋
+    // 整批）：客戶端得知道哪一筆別再送，光是靜默丟棄會讓它每輪重送同一筆髒資
+    // 料。`key` 不是字串時沒有可回報的識別，只能丟掉。
     const batch = new Map();
     upserts.forEach((raw) => {
       const mark = normalizeMark(raw);
-      if (!mark) return; // 無效項靜默丟棄，不擋整批
+      if (!mark) {
+        const key = raw && typeof raw === 'object' && typeof raw.key === 'string' ? raw.key : null;
+        if (key !== null && applied.rejectedIds.indexOf(key) === -1) applied.rejectedIds.push(key);
+        return;
+      }
       const prev = batch.get(mark.key);
       batch.set(mark.key, prev ? mergeMark(prev, mark) : mark);
     });
 
     const deleteSet = new Set(deletes);
-    const applied = { upserts: [], rejectedIds: [], deletedIds: [] };
     batch.forEach((incoming, key) => {
       // 同批 delete 撞 upsert：刪除勝，這筆連寫都不寫。
       if (deleteSet.has(key)) {
