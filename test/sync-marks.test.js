@@ -865,6 +865,39 @@ test('M3 evicted：只記 syncState.marksEvicted 筆數，本機一筆都不刪'
   assert.equal(env.server.marks.tombstoneCount(), 0, '淘汰不寫墓碑（寫了其他裝置會跟著刪）');
 });
 
+test('M3 evicted：getState() 與廣播都帶回 marksEvicted 筆數，UI 才出得了額度提示', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    syncState: { marksCursor: '0', marksPushedAt: null },
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }),
+      1002: localEntry({ handle: 'bob', updatedAt: T0 - 4 * DAY }),
+      1003: localEntry({ handle: 'carol', updatedAt: T0 - 3 * DAY }),
+    }),
+  });
+  env.server.marks.setPlan('free').setQuota(2);
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  // 水位線落在 storage 只夠引擎自己用；提示那張卡片是 C 車道畫的，它拿得到的
+  // 只有 getState() 的回傳與 sync.stateChanged 的 state。
+  const state = await engine.getState();
+  assert.equal(state.marksEvicted, 1, 'getState 必須帶回淘汰筆數，否則提示沒有數字可填');
+  assert.equal(state.marksPushedAt, T0 - 3 * DAY, '四格一律原樣帶出，不只帶 evicted 那一格');
+  assert.equal(
+    state.marksCursor,
+    env.storage.syncState().marksCursor,
+    'marksCursor 與落盤的同一個值'
+  );
+  assert.equal(state.marksRejected, null, '這一輪沒有被拒條目，維持預設 null');
+
+  assert.equal(env.lastState().marksEvicted, 1, 'sync.stateChanged 同樣帶四格');
+});
+
 // ============================================================================
 // M4 — 開關 A（scamGuardEnabled）
 // ============================================================================
