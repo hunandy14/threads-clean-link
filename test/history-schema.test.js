@@ -587,10 +587,6 @@ test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
     marksPushedAt: null,
     marksEvicted: null,
     marksRejected: null,
-    // 【斷言翻轉｜R3-3】形狀鏡射表補一格:marks 通道的清空水位線。「刪除雲端
-    // 資料」現在一併打 DELETE /api/v1/marks，這一格記下伺服器寫的 clearedAt，
-    // 之後拉回自己那一次時不得清本機名單（links 的 clearedAt 同一個模式）。
-    marksClearedAt: null,
   });
   assert.deepEqual(C.DEFAULT_SYNC_AUTH, { token: null });
 });
@@ -634,21 +630,6 @@ test('S5 normalizeSyncState:垃圾輸入回全預設，且每次回傳新物件�
   // 未知鍵不得夾帶進來（同步狀態會整包寫回 storage，夾帶的鍵會一路長存）。
   const extra = C.normalizeSyncState({ userId: 'u', evil: 'x' });
   assert.deepEqual(Object.keys(extra).sort(), Object.keys(C.DEFAULT_SYNC_STATE).sort());
-});
-
-// S5（R3-3）：marksClearedAt 走與 links 的 clearedAt 同一道閘門——合法毫秒原樣
-// 保留，非有限數字／非數字／負值一律回 null。這一格是「要不要硬刪本機警示名
-// 單」的唯一判準，放行垃圾值等於讓一個讀不懂的水位線決定使用者的資料去留。
-test('S5 normalizeSyncState:marksClearedAt 只收有限正整數毫秒，其餘一律 null', () => {
-  assert.equal(C.normalizeSyncState({ marksClearedAt: 1700000000000 }).marksClearedAt, 1700000000000, '合法毫秒原樣保留');
-  const bad = [undefined, null, '1700000000000', Infinity, -Infinity, NaN, -1, {}, []];
-  for (const value of bad) {
-    assert.equal(
-      C.normalizeSyncState({ marksClearedAt: value }).marksClearedAt,
-      null,
-      `marksClearedAt=${JSON.stringify(value) || String(value)} 應回 null`
-    );
-  }
 });
 
 // S5（車道 A，D15）：normalizeSyncState 對 displayName／avatarUrl 的垃圾輸入
