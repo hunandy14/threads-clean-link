@@ -230,6 +230,12 @@
     lastSyncedAt: null,
     clearedAt: null,
     lastError: null,
+    // D38:警示名單(marks)通道的四格水位線。與 links 的 cursor 並存於同一
+    // 包 syncState,兩條通道各自獨立推進。
+    marksCursor: null,
+    marksPushedAt: null,
+    marksEvicted: null,
+    marksRejected: null,
   };
 
   // chrome.storage.local.syncAuth 的預設形狀(D10:bearer token 明文存 local)。
@@ -313,7 +319,29 @@
       lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
       clearedAt: optionalFiniteNumber(raw.clearedAt),
       lastError: optionalString(raw.lastError),
+      // D38:marks 通道的四格。cursor 是伺服器發的不透明字串、pushedAt 是本
+      // 機推送水位線、evicted 是雲端淘汰筆數(純 UI 提示)、rejected 是被拒
+      // key → 被拒當下的 updatedAt 映射。
+      marksCursor: optionalString(raw.marksCursor),
+      marksPushedAt: optionalFiniteNumber(raw.marksPushedAt),
+      marksEvicted: optionalFiniteNumber(raw.marksEvicted),
+      marksRejected: normalizeMarksRejected(raw.marksRejected),
     };
+  }
+
+  // D38:被拒警示的映射(key → 被拒當下的 updatedAt)。逐項夾擠成「字串鍵 →
+  // 有限數字」,形狀不對的整項剝除;非物件一律回 null。**每次回傳新物件**
+  // ——與整包 syncState 同一條紀律,回傳輸入的參照會讓呼叫端就地改到 storage
+  // 讀回來的那份。
+  function normalizeMarksRejected(value) {
+    if (!isPlainObject(value)) return null;
+    var out = {};
+    var keys = Object.keys(value);
+    for (var i = 0; i < keys.length; i++) {
+      if (isUnsafeMapKey(keys[i])) continue;
+      if (typeof value[keys[i]] === 'number' && isFinite(value[keys[i]])) out[keys[i]] = value[keys[i]];
+    }
+    return out;
   }
 
   // UUID v4 生成器。三種載入環境(service worker、擴充頁面、Node 測試)的全域
