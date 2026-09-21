@@ -964,20 +964,28 @@
     function planMarkBatches(list, state) {
       var rejected = state.marksRejected || {};
       var pushedAt = state.marksPushedAt;
-      var batches = [];
-      var current = null;
+      var pending = [];
       Object.keys(list.entries).forEach(function (userId) {
         var entry = list.entries[userId];
         var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
         if (pushedAt !== null && updatedAt <= pushedAt) return;
         var mark = TCLCoreRef.toScamMark(userId, entry);
         if (rejected[mark.key] === updatedAt) return;
-        if (!current || current.length >= MAX_MARK_UPSERTS) {
-          current = [];
-          batches.push(current);
-        }
-        current.push({ mark: mark, updatedAt: updatedAt });
+        pending.push({ mark: mark, updatedAt: updatedAt });
       });
+      // 【切批前先排序】entries 的鍵是作者數字 id，與 updatedAt 的先後無關;照
+      // Object.keys 的順序切，第一批可能裝著一整包最新的條目，水位線一推就越過
+      // 後面那些比較舊、還沒送出去的條目，中途失敗時它們永久不推。依 updatedAt
+      // 升冪(同值以 key 決勝，排序穩定)排過再塞批，批次就單調遞增:失敗時水位線
+      // 最多停在上一個完整成功的批，沒送出去的一律還在水位線之上。
+      pending.sort(function (a, b) {
+        if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
+        return a.mark.key < b.mark.key ? -1 : a.mark.key > b.mark.key ? 1 : 0;
+      });
+      var batches = [];
+      for (var i = 0; i < pending.length; i += MAX_MARK_UPSERTS) {
+        batches.push(pending.slice(i, i + MAX_MARK_UPSERTS));
+      }
       return batches;
     }
 
