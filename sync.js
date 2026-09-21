@@ -513,10 +513,13 @@
         pendingCount: pending,
         lastError: ctx.state.lastError,
         apiBase: ctx.apiBase,
-        // D38 的 marks 四格**不進這包**:計劃 5.2 的廣播形狀是封閉的八個鍵
-        // （test/sync.test.js T7 逐字釘住），UI 端真的要用 marksEvicted 提示
-        // 「雲端額度滿了、最舊的幾筆已被淘汰」時再一併放行。水位線本身照常
-        // 落在 storage 的 syncState。
+        // D38:marks 通道的四格原樣帶出。marksEvicted 是 UI 出「雲端額度滿
+        // 了，最舊的幾筆已被淘汰」提示的唯一來源——不帶這一格，那張提示就
+        // 讀不到筆數。其餘三格是診斷用的水位線。
+        marksCursor: ctx.state.marksCursor,
+        marksPushedAt: ctx.state.marksPushedAt,
+        marksEvicted: ctx.state.marksEvicted,
+        marksRejected: ctx.state.marksRejected,
       };
     }
 
