@@ -675,6 +675,75 @@ test('M1 推：只送 updatedAt 晚於 marksPushedAt 的條目', async () => {
   assert.equal(env.storage.syncState().marksPushedAt, T0 - DAY);
 });
 
+test('M1 推：多批中途失敗時，marksPushedAt 不得越過沒送出去的條目', async () => {
+  const TCLSync = loadSync();
+  // 61 筆切成兩批（50 ＋ 11）。entries 的鍵是作者數字 id，與 updatedAt 的先後
+  // 完全無關——這裡刻意讓 id 升冪對上 updatedAt 降冪。若切批照 Object.keys 的
+  // 順序走，第一批裝的就是一整包**最新**的條目，水位線一推就越過第二批那些比
+  // 較舊、卻根本還沒送出去的條目;第二批一斷線，它們就再也不會被推上去。
+  const total = 61;
+  const entries = {};
+  for (let i = 0; i < total; i += 1) {
+    const id = String(5001 + i);
+    entries[id] = localEntry({
+      handle: `bulk${id}`,
+      updatedAt: T0 - DAY - i,
+      addedAt: T0 - 5 * DAY,
+    });
+  }
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    syncState: { marksCursor: '0', marksPushedAt: null },
+    blocklist: blocklist(entries),
+  });
+  // 第一個 POST 照常（空的故障物件是佔位，被取走但不生效），第二個斷在網路上。
+  env.failPath('/api/v1/marks/sync', {});
+  env.failPath('/api/v1/marks/sync', { kind: 'network' });
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.equal(env.storage.syncState().lastError, 'network_error', '第二批斷線，這一輪算失敗');
+  const landed = {};
+  env.server.marks.snapshot().forEach((mark) => {
+    landed[mark.key] = true;
+  });
+  assert.equal(Object.keys(landed).length, 50, '只有第一批落地');
+
+  // 水位線的意義是「這個時間點以前的都推上去了」。沒落地的條目一旦落在水位線
+  // 底下，下一輪的 updatedAt > marksPushedAt 就再也選不到它們。
+  const pushedAt = env.storage.syncState().marksPushedAt;
+  const missing = Object.keys(entries).filter((id) => !landed[`threads:${id}`]);
+  assert.equal(missing.length, 11, '11 筆沒送出去');
+  missing.forEach((id) => {
+    assert.ok(
+      pushedAt === null || pushedAt < entries[id].updatedAt,
+      `threads:${id} 沒上雲，水位線 ${pushedAt} 不得高到蓋過它的 ${entries[id].updatedAt}`
+    );
+  });
+
+  // 下一輪要把它們補推上去，雲端才會齊 61 筆。
+  const before = env.marksPosts().length;
+  env.advance(6 * 60_000);
+  await engine.syncNow();
+  await settle();
+
+  const resent = {};
+  env.marksPosts()
+    .slice(before)
+    .forEach((req) => {
+      ((req.body && req.body.upserts) || []).forEach((mark) => {
+        resent[mark.key] = true;
+      });
+    });
+  missing.forEach((id) => {
+    assert.ok(resent[`threads:${id}`], `threads:${id} 必須在下一輪補推`);
+  });
+  assert.equal(env.server.marks.count(), total, '兩輪走完雲端要齊 61 筆');
+});
+
 // ============================================================================
 // M2 — 拉取與合併
 // ============================================================================
