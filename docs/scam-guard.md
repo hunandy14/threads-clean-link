@@ -157,7 +157,7 @@ v1 的頂層 `allowlist` 在 v2 **不再是儲存狀態**：「已解除」不�
 | 證據片段 | 120 字 | 儲存與顯示同一道天花板 |
 | 整包軟預算 | 2 MB | 以序列化後的 UTF-8 **位元組**計，超出即續裁最舊的條目。分母是 `chrome.storage.local` 的配額：Chrome 114 起為 10 MB，2 MB 約佔兩成；更早的版本為 5 MB，此時約佔四成。manifest 的下限 Chrome 103 落在 5 MB 配額的那幾版，四成仍在安全水位。證據放滿時實際可容約 900–1,600 位作者（證據補上錨點貼文／串頭連結、錨點本體、訊號與貼文發布時間後，每筆條目約增 45%），筆數上限先到或預算先到都會觸發淘汰。`state: 'dismissed'` 的條目**一併計入**這 2 MB 預算——它們與 active 條目存在同一個物件裡，不算進來就會低估實際佔用 |
 
-正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛一份由 `state === 'dismissed'` 的條目**派生的唯讀 `allowlist` 視圖**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`），讓既有讀者不必同時改寫。這份視圖是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，下一次讀回又被當成 v1 的 `allowlist` 再遷移一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時**補 0**（不拿 `updatedAt` 充當——那是「最後一次動過」，不是「什麼時候解除的」，用它充當會讓一筆來歷不明的解除混進最近解除的那幾筆裡）：解除時間不明的條目寫 0，在「已解除」小節依時間降冪時自然排到最後；`updatedAt` 非有限數字時以 `addedAt` 補，兩者都不合法才丟棄整筆。
+正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛一份由 `state === 'dismissed'` 的條目**派生的唯讀 `allowlist` 視圖**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`），讓既有讀者不必同時改寫。這份視圖是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，下一次讀回又被當成 v1 的 `allowlist` 再遷移一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時**補 0**（不拿 `updatedAt` 充當——那是「最後一次動過」，不是「什麼時候解除的」，用它充當會讓一筆來歷不明的解除混進最近解除的那幾筆裡）：解除時間不明的條目寫 0，在「已解除」小節依時間降冪時自然排到最後；`addedAt`／`updatedAt` 只要有一個合法就以合法的那個補另一個缺失的欄位（例如 `updatedAt` 非有限數字時以 `addedAt` 補，反之亦然），兩者都不合法才丟棄整筆（R3-14）。
 
 單筆證據的七個選填欄位另有一組規則，**形狀不合只剝該欄、不剝整筆**——它們是加值資訊，不是證據成立的必要條件，為了一個壞掉的 `threadUrl` 丟掉整筆等於把使用者真的命中過的紀錄一起抹掉。`postUrl` 與 `at` 仍是必要欄位，不合法整筆丟棄。**缺席時輸出不帶該鍵**（不補 `null` 也不補空字串）：選項頁靠「鍵在不在」決定要不要畫那一行，補空值會讓舊證據畫出一排空連結。
 
@@ -180,11 +180,11 @@ v1 的頂層 `allowlist` 在 v2 **不再是儲存狀態**：「已解除」不�
 - **首次提示**：該次瀏覽階段第一次成功加入警示名單時跳一次 toast（`scamFirstHitToast`），告知已加入本機警示名單、可在設定頁管理；之後不再重複打擾。
 - **河道**：只標記已在警示名單裡的作者，靠帳號反查表比對，不做全文掃描。
 - **選項頁警示名單卡**（「警示名單」分頁，選項頁三分頁的最後一頁）：每位作者一張卡，**整張卡就排成一則貼文的樣子**（比照 Threads），使用者在名單裡看到的與當初在站上看到的是同一個形狀。
-  - **卡頭另有一則雲端額度提示**（`#scamEvictedHint`）：免費方案雲端保留額度用罄、有筆數因此被淘汰時（`syncState.marksEvicted > 0`）在卡頭計數旁常駐顯示「雲端已達免費額度，較舊的 N 筆只保留在本機」；`marksEvicted` 是插件端的累計筆數，不因為之後某一輪沒有新淘汰就歸零或收起，沒有淘汰過時整條隱藏。詳見 `docs/cloud-sync.md` §3.1「雲端淘汰」。
+  - **卡頭另有一則雲端額度提示**（`#scamEvictedHint`）：免費方案雲端保留額度用罄、有筆數因此被淘汰時（`syncState.marksEvicted > 0`）在卡頭計數旁常駐顯示「雲端已達免費額度，較舊的 N 筆只保留在本機」；`marksEvicted` 是插件端的累計筆數，沒有淘汰過時整條隱藏；歸零與夾上限的時機見 `docs/cloud-sync.md` §3.1「雲端淘汰」（R3 縱深）。
   - **卡頭標題右邊有一顆資訊鈕**（Lucide `info` 圖示），點開「這個功能怎麼運作」說明視窗：五段條列，講清楚「只在你點進貼文時掃描」「命中就掛標記並記下作者」「河道只查表不掃文」「名單跟著你的帳號走：預設留在本機，開啟雲端同步後作者帳號、顯示名與證據貼文網址會上傳到開發者後端，貼文文字片段留在本機」「判定是規則比對，可能誤判」。這是一份對真人帳號的負面標記，使用者有權知道它憑什麼下判斷、資料落在哪，以及它會出錯時該怎麼推翻。視窗沿用既有 overlay／modal，可由 ✕、點遮罩或 Esc 關閉，關閉後焦點回到資訊鈕，Tab 焦點鎖在框內。
   - **一筆證據 ＝ 一則貼文**，就作者列與本文兩列；由同一個建構函式產出，主卡那一筆與對話框裡的每一筆結構與樣式完全相同，不存在第二套渲染：
     - **作者列**：顯示名稱與 @帳號（整塊是連到作者頁的連結，新分頁開啟；沒有顯示名稱時只顯示帳號，不用帳號充當顯示名再重複一次）→ **時間**（緊接帳號之後的小字灰，**本身就是該篇的永久連結**，`anchorPostUrl ‖ postUrl`，新分頁開啟、`rel="noopener noreferrer"`）→ **標記 pill**（文案 `scamTagLabel`，與內容腳本掛在貼文上那顆相同）。
-    - **本文**：完整片段不截斷（儲存端已保證 ≤120 字），`anchorMatch` 以 `<mark>` 高亮（暖色淡底並繼承文字色，不吃瀏覽器預設的螢光黃）。
+    - **本文**：完整片段不截斷（儲存端已保證 ≤120 字），`anchorMatch` 以 `<mark>` 高亮（暖色淡底並繼承文字色，不吃瀏覽器預設的螢光黃）。雲端同步讀回的證據沒有 `snippet`（片段只留在掃到它的那台裝置，見 D40）時**不是留白不畫**，而是改掛 `span.scam-evidence-missing` 的灰字佔位說明（文案 `opScamEvidenceMissing`），作者列與時間、標記 pill 照常呈現。
     - 本文下方**沒有第三列**：回串頭的「整串 ↗」連結與訊號 chips 都不畫——證據貼文連的就是錨點那一篇，回串頭是 Threads 自己的事，卡上多一條連結只是把兩個去處擺在一起讓人猶豫；訊號則是判定的內部分類，使用者看片段本身就知道為什麼被標記。`threadUrl` 與 `signals` **照存不動**（它們是證據的一部分，也還有除錯與日後調參的價值），只是不畫。
   - **時間格式照 Threads**：未滿一分鐘「剛剛」、未滿一小時「38分鐘」、未滿一天「3小時」、未滿七天「5天」（數字與單位之間不留空白、不帶「前」字；en 為 `now`／`38m`／`3h`／`5d`），**滿七天改絕對日期 `YYYY-MM-DD`**——「400天」對使用者沒有意義。取的是該篇的 `postedAt`，缺席（舊證據）退回 `at`。絕對日期與貼文代碼尾 6 碼一律留在 `title` 上（相對時間看不出是哪一天，同一段招攬文案貼了好幾篇時也靠代碼分辨各篇）；連結文字只有一段時間，讀屏讀不出它連去哪，另補 `aria-label`。
   - **主卡只放最新一筆證據**：一張卡上同時擺三段完整片段太重。列的右上角、緊貼「⋯」鈕左邊有一段小字「命中 N 篇」，點下去開對話框逐筆列出全部證據（內容區可捲動）；**只有一筆時不畫**——對話框裡看到的就是卡上那一筆。篇數講的是整位作者，因此不進證據組件，對話框裡也不逐筆重複。對話框標題為「顯示名 @帳號 · 命中 N 篇」，可由 ✕、點遮罩或 Esc 關閉，關閉後焦點回到那顆按鈕，Tab 焦點鎖在框內。
@@ -205,7 +205,7 @@ content script 與選項頁都不直接寫名單，一律送訊息給 background
 
 | 訊息 | 方向 | 內容 | 回應 |
 |---|---|---|---|
-| `scam.hit` | content script → background | `{ userId｜null, handle, displayName, postUrl, snippet, anchorMatch, pitchMatches, at, anchorPostUrl?, threadUrl?, signals?, postedAt?, rulesVersion? }` | `{ ok: true, added, entry }`；作者已解除（`state: 'dismissed'`）時回 `{ ok: true, added: false, allowlisted: true }` |
+| `scam.hit` | content script → background | `{ userId｜null, handle, displayName, postUrl, snippet, anchorMatch, pitchMatches, at, anchorPostUrl?, threadUrl?, signals?, postedAt? }` | `{ ok: true, added, entry }`；作者已解除（`state: 'dismissed'`）時回 `{ ok: true, added: false, allowlisted: true }` |
 | `scam.blocklist.remove` | 選項頁 → background | `{ userId, handle?, displayName? }` | `{ ok: true }`，把該筆條目改成 `state: 'dismissed'`、寫 `dismissedAt`／`updatedAt` 並重建反查表。名單裡沒有這一筆時補建一筆空的 dismissed 條目，並寫入訊息帶來的 `handle`／`displayName`（`handle` 一律驗 `^[A-Za-z0-9._]{1,80}$`，形狀不合只忽略該欄位、解除照常成立）——缺 `handle` 的 mark 上雲會被後端整筆拒收，那次解除從此同步不出去 |
 | `scam.blocklist.restore` | 選項頁 → background | `{ userId }` | `{ ok: true }`，把該筆條目改回 `state: 'active'`、清掉 `dismissedAt`、更新 `updatedAt` |
 
@@ -213,12 +213,12 @@ content script 與選項頁都不直接寫名單，一律送訊息給 background
 
 | 回應碼 | 情境 |
 |---|---|
-| `bad_request` | 欄位形狀不合（帳號或貼文網址格式不對、片段超長、id 不是純數字字串、時間不是數字）；證據補強的六欄有帶但形狀不合亦同——`anchorPostUrl`／`threadUrl` 過不了貼文網址白名單、`anchorMatch` 非字串或超過 40 字、`signals` 非陣列或含白名單外的值、`postedAt` 非有限數字、`rulesVersion` 非有限數字 |
+| `bad_request` | 欄位形狀不合（帳號或貼文網址格式不對、片段超長、id 不是純數字字串、時間不是數字）；證據補強的五欄有帶但形狀不合亦同——`anchorPostUrl`／`threadUrl` 過不了貼文網址白名單、`anchorMatch` 非字串或超過 40 字、`signals` 非陣列或含白名單外的值、`postedAt` 非有限數字 |
 | `no_user_id` | 預載資料沒有作者 id，備援也取不到——頁面照樣掛標記，但不入名單 |
 | `disabled` | 總開關關閉，不寫入也不發請求 |
 | `internal_error` | 讀寫本機儲存失敗 |
 
-`anchorPostUrl`／`threadUrl`／`anchorMatch`／`signals`／`postedAt`／`rulesVersion` 六欄**一律可缺席**（舊版 content script 送來的三欄 payload 照常受理），但**有帶就驗形狀，不合格整筆回 `bad_request`**，而不是默默剝掉：payload 是自家 content script 送的，形狀不對代表兩端版本對不上，默默吞掉會讓錯誤晚好幾週才被發現。通過驗證的六欄一路寫進 `entry.evidence[0]`（`rulesVersion` 送的是數字，即 `SCAM_RULES.version`，不是版本字串）。證據的第七個選填欄位 `deviceId` **不由 content script 送**，而是 background 寫入當下從 `syncDevice.deviceId` 補上（未登入、還沒產生裝置識別碼時整個鍵不寫）——裝置身分是 background 的資料，讓頁面端送等於多開一條可被偽造的入口。`anchorMatch` 在送出端就先裁到 40 字——連結型錨點（`lin.ee`／`linktr.ee`／`line.me` 深連結）的帳號段沒有長度上限，不裁的話一次真的命中會整筆被擋下。
+`anchorPostUrl`／`threadUrl`／`anchorMatch`／`signals`／`postedAt` 五欄**一律可缺席**（舊版 content script 送來的三欄 payload 照常受理），但**有帶就驗形狀，不合格整筆回 `bad_request`**，而不是默默剝掉：payload 是自家 content script 送的，形狀不對代表兩端版本對不上，默默吞掉會讓錯誤晚好幾週才被發現。通過驗證的五欄一路寫進 `entry.evidence[0]`。證據的第六與第七個選填欄位 `rulesVersion`／`deviceId` **皆不由 content script 送**，而是 background 寫入當下補上——`rulesVersion` 取當下的 `SCAM_RULES.version`（數字，不是版本字串），`deviceId` 取 `syncDevice.deviceId`（未登入、還沒產生裝置識別碼時整個鍵不寫）——規則版本與裝置身分都是 background 的資料，讓頁面端送等於多開一條可被偽造的入口。`anchorMatch` 在送出端就先裁到 40 字——連結型錨點（`lin.ee`／`linktr.ee`／`line.me` 深連結）的帳號段沒有長度上限，不裁的話一次真的命中會整筆被擋下。
 
 `remove` 與 `restore` 在 v2 都不再搬家、也不刪資料：兩者都只改同一筆條目的 `state`，**證據原封保留**（`remove` 不清 `evidence`，`restore` 也不必重新累積）。條目只有在使用者清空整份名單、或撞到上限被淘汰時才真的消失。兩則訊息一律更新 `updatedAt`——它是雲端同步的 LWW 判準，漏更新會讓另一台裝置的舊狀態反過來蓋掉這次的決定（見 `docs/cloud-sync.md` 決策 D37）；總開關關閉期間照樣更新，重新開啟後才與雲端合併（D35）。
 
