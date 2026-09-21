@@ -1014,6 +1014,61 @@ test('M2 拉：讓位過的水位線不得被同一輪後面那批的 ack 推回
   assert.equal(env.server.marks.tombstoneCount(), 0, '墓碑被撤銷');
 });
 
+test('M2 拉：讓位要當場落地——同輪後面那批斷線時，水位線不得回到進這一輪之前的舊值', async () => {
+  const TCLSync = loadSync();
+  // 讓位只夾得住「這一輪推上去的」水位線，夾不到**進這一輪之前就已經存在**的
+  // 舊值——留存的條目本來就在它底下，這正是它沒被推上去的原因。整輪尾端才統一
+  // 套用的話，中途一斷線整條鏈就 reject，那一步根本輪不到跑，runSync 的失敗路
+  // 徑照樣把舊水位線落盤，留存的條目下一輪依舊選不到、墓碑永遠撤不掉。
+  const entries = {};
+  for (let i = 0; i < 51; i += 1) {
+    const id = String(7001 + i);
+    entries[id] = localEntry({ handle: `bulk${id}`, updatedAt: T0 - 5 * DAY + i, addedAt: T0 - 9 * DAY });
+  }
+  entries['9001'] = localEntry({ handle: 'carol', updatedAt: T0 - 20 * DAY, addedAt: T0 - 40 * DAY });
+
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    syncState: { marksCursor: '0', marksPushedAt: T0 - 10 * DAY },
+    blocklist: blocklist(entries),
+  });
+  env.server.marks.seedTombstone('threads:9001', T0 - 30 * DAY);
+  // 第一批照常（空的故障物件是佔位），第二批斷在網路上。
+  env.failPath('/api/v1/marks/sync', {});
+  env.failPath('/api/v1/marks/sync', { kind: 'network' });
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(60);
+
+  assert.equal(env.storage.syncState().lastError, 'network_error', '第二批斷線，這一輪算失敗');
+  assert.ok(env.storage.entries()['9001'], '比墓碑新，留在本機');
+
+  const pushedAt = env.storage.syncState().marksPushedAt;
+  assert.ok(
+    pushedAt === null || pushedAt < T0 - 20 * DAY,
+    `落盤的水位線 ${pushedAt} 必須已經讓到 threads:9001 的 ${T0 - 20 * DAY} 之下`
+  );
+
+  // 下一輪照樣要把它送上去。
+  const before = env.marksPosts().length;
+  env.advance(6 * 60_000);
+  await engine.syncNow();
+  await settle(60);
+
+  const resent = {};
+  env.marksPosts()
+    .slice(before)
+    .forEach((req) => {
+      ((req.body && req.body.upserts) || []).forEach((mark) => {
+        resent[mark.key] = true;
+      });
+    });
+  assert.ok(resent['threads:9001'], '下一輪必須重送這一筆');
+  assert.equal(env.server.marks.tombstoneCount(), 0, '較新的版本撤銷墓碑');
+});
+
 // ============================================================================
 // M3 — evicted
 // ============================================================================
