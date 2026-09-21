@@ -24,7 +24,8 @@
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   // 純本機開關:值存 chrome.storage.local，不進 SETTING_IDS(那三顆走 sync、
-  // 跟著帳號跨裝置同步)。詐騙警示的黑名單只存在這台裝置，開關跟著留在本機。
+  // 跟著帳號跨裝置同步)。名單本身雖然隨 marks 通道上雲(D35-D40)，這顆開關講
+  // 的是「這台裝置要不要掃描、要不要走這條通道」，因此跟著留在本機。
   // 缺席視為 true——「未設定」不等於「關閉」，首次安裝即生效。
   var LOCAL_SETTING_DEFAULTS = { scamGuardEnabled: true };
   var LOCAL_SETTING_IDS = ['scamGuardEnabled'];
@@ -2322,8 +2323,8 @@
 
     // ---- 投資詐騙黑名單卡(v1 計畫 §5 UI 段／§14 訊息協議)----
     //
-    // 資料是純本機的 chrome.storage.local.scamBlocklist:不上雲、不進 syncState。
-    // 寫入端只有 background，本頁只讀 storage ＋ 監聽 onChanged(見
+    // 資料是 chrome.storage.local.scamBlocklist，登入後隨 marks 通道雲端同步
+    // (D35-D40)。寫入端只有 background，本頁只讀 storage ＋ 監聽 onChanged(見
     // setLocalSettings)，解除/復原一律經 runtime 訊息請 background 代寫。
     // displayName 與證據片段都是他人貼文帶進來的字串:整張卡逐一
     // createElement ＋ textContent，不走 innerHTML。
@@ -3020,7 +3021,13 @@
     function submitScamRemove(userId) {
       var entry = scamBlocklist.entries[userId];
       if (!entry || entry.state === 'dismissed') return;
-      sendBackgroundMessage({ type: 'scam.blocklist.remove', userId: userId }).then(function (res) {
+      // 帶上這一列的帳號快照：名單裡沒有這一筆時 background 會補建一筆空的
+      // dismissed 條目，缺 handle 的 mark 上雲必被後端整筆拒收，那次解除從此
+      // 同步不出去。
+      var payload = { type: 'scam.blocklist.remove', userId: userId };
+      if (typeof entry.handle === 'string' && entry.handle) payload.handle = entry.handle;
+      if (typeof entry.displayName === 'string' && entry.displayName) payload.displayName = entry.displayName;
+      sendBackgroundMessage(payload).then(function (res) {
         if (!(res && res.ok === true)) {
           // 失敗不樂觀改:那一列留著，只用 toast 說明。
           toast(tt('opScamRemoveFailed'));

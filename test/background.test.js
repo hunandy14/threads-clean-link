@@ -6248,3 +6248,130 @@ test('L4 v2:v1 名單裡的 active 條目升版後照常補證據並落成 v2', 
   assert.equal(list.entries[SCAM_USER_ID].updatedAt, SCAM_AT + 60000);
   assert.equal(list.entries[SCAM_USER_ID].evidence.length, 2);
 });
+
+// ============================================================
+// R3-13：警示名單變更要觸發去抖同步（安全審查 2026-09-22）
+// ------------------------------------------------------------
+// marks 是與 links 並存的第二條同步通道，但只有 links 的寫入路徑
+// （recordHistory）掛了 notifySyncRecorded。名單這一側的三條寫入路徑寫完就
+// 沒了下文，使用者標記／解除／復原之後最久要等一輪週期 alarm（5 分鐘）才推
+// 得上去——期間換台裝置看到的是舊名單。三條路徑各自寫完都要掛一次去抖同步
+// （D12，2 秒內連續動作只同步一次）。
+// ============================================================
+
+// 已解除（dismissed）的單筆名單，供 restore 路徑備料：v2 形狀，handleIndex
+// 不收解除態，落盤物件不帶派生的 allowlist。
+function r3DismissedBlocklist() {
+  return {
+    version: 2,
+    entries: {
+      [SCAM_USER_ID]: {
+        state: 'dismissed',
+        dismissedAt: SCAM_AT,
+        handle: SCAM_HANDLE,
+        displayName: SCAM_DISPLAY_NAME,
+        evidence: [],
+        addedAt: SCAM_AT,
+        updatedAt: SCAM_AT,
+        source: 'auto',
+      },
+    },
+    handleIndex: {},
+  };
+}
+
+test('R3-13 scam.hit 寫入名單之後掛去抖同步(notifyRecorded)', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHit(), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await settle(400);
+
+  assert.ok(scamEntry(bg), '前置條件:這一次命中確實寫進名單');
+  assert.equal(
+    bg.sync.callsTo('notifyRecorded').length,
+    1,
+    '名單變更要觸發一次去抖同步，否則新標記的作者最久要等一輪週期 alarm 才上雲'
+  );
+});
+
+test('R3-13 scam.blocklist.remove 寫入之後掛去抖同步(notifyRecorded)', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
+  });
+
+  const res = await bg.send({ type: 'scam.blocklist.remove', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '前置條件:解除成功');
+  assert.equal(
+    bg.sync.callsTo('notifyRecorded').length,
+    1,
+    '解除是跨裝置要一致的狀態變更（state 翻成 dismissed），寫完就要掛同步'
+  );
+});
+
+test('R3-13 scam.blocklist.restore 寫入之後掛去抖同步(notifyRecorded)', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: r3DismissedBlocklist() },
+  });
+
+  const res = await bg.send({ type: 'scam.blocklist.restore', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '前置條件:復原成功');
+  assert.equal(scamEntry(bg).state, 'active', '前置條件:條目翻回 active');
+  assert.equal(
+    bg.sync.callsTo('notifyRecorded').length,
+    1,
+    '復原同樣是名單的狀態變更，不掛同步的話別台裝置還停在解除態'
+  );
+});
+
+// ============================================================
+// R3-15：解除時補建的空條目要帶 handle（staging 實測重現）
+// ------------------------------------------------------------
+// 名單裡沒有這一筆時（條目已被上限淘汰、或使用者在別台裝置標記過），
+// handleScamBlocklistRemove 會補一筆空的 dismissed 條目把之後的掃描擋住。那
+// 一筆沒有 handle，上雲時 toScamMark 送 handle:null，後端整筆拒收、key 進
+// marksRejected 永不重送——這次解除從此同步不出去（staging 已重現）。選項頁
+// 送訊息時會帶上該列的 handle／displayName，這裡把它寫進補建的條目。
+// handle 一律驗 ^[A-Za-z0-9._]{1,80}$（與 fromScamMark／伺服器同一把尺），
+// 不合就忽略該欄位，不讓訊息端的任意字串落進 entries 與 handleIndex。
+// ============================================================
+
+test('R3-15 blocklist.remove:名單裡沒有這一筆時，補建的 dismissed 條目要寫入訊息帶來的 handle', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(
+    { type: 'scam.blocklist.remove', userId: SCAM_USER_ID, handle: SCAM_HANDLE, displayName: SCAM_DISPLAY_NAME },
+    EXT_PAGE_SENDER
+  );
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '前置條件:解除成功');
+  const entry = scamEntry(bg);
+  assert.equal(entry.state, 'dismissed', '前置條件:補建的是解除態條目');
+  assert.equal(entry.handle, SCAM_HANDLE, '沒有 handle 的解除上雲時會被整筆拒收，那次解除永遠同步不出去');
+  assert.equal(entry.displayName, SCAM_DISPLAY_NAME, '有顯示名就一併寫入');
+});
+
+test('R3-15 blocklist.remove:訊息帶來的 handle 形狀不合時只忽略該欄位，解除照常成立', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(
+    { type: 'scam.blocklist.remove', userId: SCAM_USER_ID, handle: 'bad handle!' },
+    EXT_PAGE_SENDER
+  );
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '解除本身不因為一個壞欄位失敗:那會讓使用者按不掉標記');
+  const entry = scamEntry(bg);
+  assert.equal(entry.state, 'dismissed');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(entry, 'handle'),
+    false,
+    '形狀不合的 handle 不得落進 entries——handleIndex 是河道查表的依據'
+  );
+  const list = scamList(bg);
+  assertNoOrphanIndex(list);
+});

@@ -518,6 +518,8 @@ function createMockSyncServer(options = {}) {
     /** deviceId（小寫）→ { deviceId, name, platform, createdAt, lastSeenAt, removedAt } */
     devices: new Map(),
     clearedAt: null,
+    /** 警示名單的清空水位線（DELETE /api/v1/marks 寫下），與 links 的各自獨立 */
+    marksClearedAt: null,
     accountDeleted: false,
   };
 
@@ -949,6 +951,12 @@ function createMockSyncServer(options = {}) {
         applied.rejectedIds.push(key);
         return;
       }
+      // 清空水位線：不晚於它的版本一律拒收，與 links 的「早於 cleared_at 一律
+      // 拒收」同一條規則。插件端刪完雲端後本機名單留著也推不回去，靠的就是這裡。
+      if (state.marksClearedAt !== null && incoming.updatedAt <= state.marksClearedAt) {
+        applied.rejectedIds.push(key);
+        return;
+      }
       const tomb = state.markTombstones.get(key);
       if (tomb) {
         // 比墓碑舊的版本不復活；較新的版本撤銷墓碑。
@@ -1016,6 +1024,8 @@ function createMockSyncServer(options = {}) {
         marks: markPage.map((x) => markView(x.row)),
         deleted: tombPage.map((x) => ({ key: x.tomb.key, deletedAt: x.tomb.deletedAt })),
         hasMore,
+        // 其他裝置靠這一格得知雲端被清空；沒清空過時為 null，不缺鍵。
+        clearedAt: state.marksClearedAt,
       };
 
       if (hasMore) {
@@ -1110,6 +1120,17 @@ function createMockSyncServer(options = {}) {
     return jsonResponse(200, { ok: true, clearedAt: state.clearedAt });
   }
 
+  // ---- 端點：DELETE /api/v1/marks（警示名單契約 R3） ----
+  function handleDeleteMarks(headers, at) {
+    if (!authed(headers)) return unauthorized();
+    if (rateLimited(at)) return rateLimitedResponse();
+    state.marks.clear();
+    // 墓碑一併硬刪：留著會被其他裝置在下一輪當成刪除意圖再套用一次。
+    state.markTombstones.clear();
+    state.marksClearedAt = tick();
+    return jsonResponse(200, { ok: true, clearedAt: state.marksClearedAt });
+  }
+
   // ---- 端點：DELETE /api/v1/account（api-spec 4.6:520-540） ----
   function handleDeleteAccount(headers) {
     if (!authed(headers)) return unauthorized();
@@ -1119,6 +1140,7 @@ function createMockSyncServer(options = {}) {
     state.markTombstones.clear();
     state.devices.clear();
     state.clearedAt = null;
+    state.marksClearedAt = null;
     state.token = null;
     state.accountDeleted = true;
     return jsonResponse(200, { ok: true });
@@ -1181,6 +1203,7 @@ function createMockSyncServer(options = {}) {
     if (method === 'POST' && path === '/api/v1/marks/sync') return handleMarksSync(headers, body, at);
     if (method === 'GET' && path === '/api/v1/marks') return handleListMarks(url, headers, at);
     if (method === 'DELETE' && path === '/api/v1/links') return handleDeleteLinks(headers, at);
+    if (method === 'DELETE' && path === '/api/v1/marks') return handleDeleteMarks(headers, at);
     if (method === 'DELETE' && path === '/api/v1/account') return handleDeleteAccount(headers);
     if (method === 'GET' && path === '/api/v1/devices') return handleListDevices(headers, at);
     const deviceIdMatch = path.match(/^\/api\/v1\/devices\/([^/]+)$/);
@@ -1408,6 +1431,10 @@ function createMockSyncServer(options = {}) {
       },
       tombstoneCount() {
         return state.markTombstones.size;
+      },
+      /** 警示名單的清空水位線；沒清空過時為 null。 */
+      clearedAt() {
+        return state.marksClearedAt;
       },
       /** 切換方案（沿用 links 的 free／pro 開關）。 */
       setPlan(plan) {
