@@ -2338,8 +2338,8 @@
     }
 
     // 名單依 addedAt 降冪:最近被標記的在最前。只列 state==='active' 的條
-    // 目——v2 的 entries 把已解除的條目留在原地(state 翻成 dismissed),不
-    // 再整筆刪掉,名單列因此得自己篩掉它們(見 buildScamAllowRow 那份走
+    // 目——v2 的 entries 把已解除的條目留在原地(state 翻成 dismissed)，不
+    // 再整筆刪掉，名單列因此得自己篩掉它們(見 buildScamAllowRow 那份走
     // dismissed 的視圖)。
     function sortedScamEntries() {
       var map = scamBlocklist.entries;
@@ -2355,12 +2355,21 @@
         });
     }
 
-    // 已解除的清單依解除時間降冪;缺解除時間的紀錄 at 退成 0，一律排在最後。
+    // 已解除的清單依解除時間降冪;缺解除時間的紀錄 at 退成 0，一律排在最後
+    // (buildScamAllowRow 對 at<=0 另有「不明時不畫日期」的處理，見審查
+    // F1)。直接掃 entries 挑 state==='dismissed'(與 sortedScamEntries 挑
+    // active 對稱，「已解除小節由 state 產生」的語意本就要求如此)，不再另
+    // 讀 scamBlocklist.allowlist 那份衍生視圖——解除／復原兩處也就不必再
+    // 手工同步那張表(見 submitScamRemove/submitScamRestore，審查建議 3)。
     function sortedScamAllow() {
-      var map = scamBlocklist.allowlist;
+      var map = scamBlocklist.entries;
       return Object.keys(map)
+        .filter(function (userId) {
+          return map[userId].state === 'dismissed';
+        })
         .map(function (userId) {
-          return { userId: userId, at: map[userId].at, handle: map[userId].handle };
+          var entry = map[userId];
+          return { userId: userId, at: finiteOrNull(entry.dismissedAt) || 0, handle: entry.handle };
         })
         .sort(function (a, b) {
           return b.at - a.at;
@@ -2814,13 +2823,19 @@
       handleEl.textContent = scamHandleLabel(item.handle);
       info.appendChild(handleEl);
 
-      // 解除時間:格式與算式同證據列上的時間(formatScamDate),一週內相對
-      // 時間、滿七天改絕對日期;絕對日期另留在 title。
-      var dateEl = document.createElement('span');
-      dateEl.className = 'scam-allow-date';
-      dateEl.textContent = formatScamDate(item.at);
-      dateEl.title = formatDateOnly(item.at);
-      info.appendChild(dateEl);
+      // 解除時間:格式與算式同證據列上的時間(formatScamDate)，一週內相對
+      // 時間、滿七天改絕對日期;絕對日期另留在 title。dismissedAt 缺席時
+      // TCLCore 補成 0(見 finiteOr)，0 代表「解除時間不明」而非真的發生在
+      // 1970 年——formatScamDate(0) 會照樣算出一個滿七天前的絕對日期，誤
+      // 導使用者以為那是真實的解除時間，不明時乾脆不畫這個節點(審查 F1)。
+      var dismissedAt = finiteOrNull(item.at);
+      if (dismissedAt !== null && dismissedAt > 0) {
+        var dateEl = document.createElement('span');
+        dateEl.className = 'scam-allow-date';
+        dateEl.textContent = formatScamDate(dismissedAt);
+        dateEl.title = formatDateOnly(dismissedAt);
+        info.appendChild(dateEl);
+      }
 
       row.appendChild(info);
 
@@ -3000,8 +3015,8 @@
     }
 
     // v2 的解除不整筆刪掉:entry 留在 entries 裡，state 翻成 dismissed、
-    // dismissedAt 記下時間,證據原地保留(「已解除」小節要顯示 handle,復原
-    // 也要保留證據,見 submitScamRestore)。
+    // dismissedAt 記下時間，證據原地保留(「已解除」小節要顯示 handle，復原
+    // 也要保留證據，見 submitScamRestore)。
     function submitScamRemove(userId) {
       var entry = scamBlocklist.entries[userId];
       if (!entry || entry.state === 'dismissed') return;
@@ -3013,22 +3028,21 @@
         }
         // background 寫回 storage 後的 onChanged 才是權威;本地先做同一件事
         // (state 翻成 dismissed、退出 handleIndex)，畫面不必等一次 storage
-        // 往返。
+        // 往返。已解除小節直接掃 entries 的 state(見 sortedScamAllow)，這
+        // 裡不必再手工同步一份 allowlist 視圖。
         var handleKey = typeof entry.handle === 'string' ? entry.handle.toLowerCase() : null;
         if (handleKey !== null && scamBlocklist.handleIndex[handleKey] === userId) {
           delete scamBlocklist.handleIndex[handleKey];
         }
         entry.state = 'dismissed';
         entry.dismissedAt = now();
-        var handle = nonEmptyString(entry.handle);
-        scamBlocklist.allowlist[userId] = { at: entry.dismissedAt, handle: handle === null ? '' : handle };
         renderScamBlocklist();
       });
     }
 
     // 復原不做二次確認:它是「誤解除」的補救動作，本身不破壞任何資料。v2
-    // 的復原是把 state 翻回 active,entry 本體(含證據)原地留著——不像 v1
-    // 的 allowlist 只存 { at, handle },復原一次就把證據丟掉。
+    // 的復原是把 state 翻回 active，entry 本體(含證據)原地留著——不像 v1
+    // 的 allowlist 只存 { at, handle }，復原一次就把證據丟掉。
     function submitScamRestore(userId) {
       var entry = scamBlocklist.entries[userId];
       if (!entry || entry.state !== 'dismissed') return;
@@ -3039,9 +3053,12 @@
         }
         entry.state = 'active';
         delete entry.dismissedAt;
-        delete scamBlocklist.allowlist[userId];
-        var handleKey = typeof entry.handle === 'string' ? entry.handle.toLowerCase() : null;
-        if (handleKey !== null) scamBlocklist.handleIndex[handleKey] = userId;
+        // 手工把 handle 寫回 handleIndex 得自己重刻一份鍵安全檢查(擋
+        // `__proto__` 之類的髒鍵)，容易與 core 那把尺(isUnsafeMapKey／
+        // isScamUserIdKey)漂移;重跑一次 readScamBlocklist 讓 core 從
+        // entries 整份重建 handleIndex／allowlist 兩張衍生表，同一把尺，
+        // 也不留舊 allowlist 視圖的殘影(審查建議 2)。
+        scamBlocklist = readScamBlocklist(scamBlocklist);
         renderScamBlocklist();
       });
     }
