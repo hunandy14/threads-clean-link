@@ -32,8 +32,11 @@
 //      `deletes` 恆為空陣列。
 //   3. 拉：同一個 POST 帶位置參數（`marksCursor` 為 null 時不帶，依 §3.1 首輪
 //      回填走 GET、`changes` 為 null）；`changes.marks` 逐筆 `fromScamMark` 後
-//      以 `mergeScamEntry` 併進本機，`changes.deleted` 的 key 直接刪本機條目，
-//      `hasMore` 為 true 時同一輪續拉。`cursor` 恆寫回 `marksCursor`。
+//      以 `mergeScamEntry` 併進本機，`changes.deleted` 的每一筆以 `deletedAt`
+//      與本機 `updatedAt` 比對——不晚於墓碑的硬刪，**晚於**墓碑的留在本機並於
+//      下一輪重送（契約 §3.1 R2③「比墓碑舊不復活」的對稱面，伺服器會以較新
+//      的版本撤銷墓碑）。`hasMore` 為 true 時同一輪續拉，`cursor` 恆寫回
+//      `marksCursor`。
 //   4. `evicted` 只寫 `marksEvicted`，本機一筆不動。
 //
 // 【rejectedIds 的跳過機制】`rejectedIds` 同時要求「不推進 marksPushedAt」與
@@ -826,7 +829,7 @@ test('M2 拉：changes.marks 合併——遠端較新覆蓋 state、evidence 取
   assert.equal(stored.handleIndex.erin, '2001', 'handleIndex 由 entries 重建');
 });
 
-test('M2 拉：changes.deleted 的 key 刪掉本機條目（伺服器墓碑是帳號層級刪除）', async () => {
+test('M2 拉：本機不晚於墓碑 deletedAt 時硬刪（伺服器墓碑是帳號層級刪除）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
@@ -834,6 +837,7 @@ test('M2 拉：changes.deleted 的 key 刪掉本機條目（伺服器墓碑是�
     syncState: { marksCursor: '0', marksPushedAt: T0 - 2 * DAY },
     blocklist: blocklist({
       1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }),
+      // 墓碑（T0-DAY）晚於本機這一筆（T0-3DAY）：使用者刪掉之後沒再動過它。
       1002: localEntry({ handle: 'bob', updatedAt: T0 - 3 * DAY }),
     }),
   });
@@ -900,6 +904,59 @@ test('M2 拉：changes 為 null 時本機一筆不動，cursor 仍恆寫回 sync
   const entries = env.storage.entries();
   assert.deepEqual(Object.keys(entries), ['1001'], 'changes 為 null 時本機不動');
   assert.equal(entries['1001'].updatedAt, T0 - 3 * DAY);
+});
+
+test('M2 拉：本機 updatedAt 晚於墓碑 deletedAt 時留著，下一輪重送撤銷雲端墓碑', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    // 水位線在兩筆本機條目之後：這一輪不推，墓碑才進得了 changes。
+    syncState: { marksCursor: '0', marksPushedAt: T0 },
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }),
+      // 別台裝置在 T0-2DAY 刪掉了 bob，但使用者在那之後（T0-DAY）又在這台動過
+      // 同一筆。刪除比較舊，不該吃掉比較新的那份改動。
+      1002: localEntry({ handle: 'bob', updatedAt: T0 - DAY }),
+    }),
+  });
+  env.server.marks.seedTombstone('threads:1002', T0 - 2 * DAY);
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(
+    Object.keys(env.storage.entries()).sort(),
+    ['1001', '1002'],
+    '比墓碑新的條目留在本機'
+  );
+  assert.equal(
+    env.storage.entries()['1002'].updatedAt,
+    T0 - DAY,
+    '留下來的是本機那一份，不是被墓碑洗過的空殼'
+  );
+
+  // 留著卻推不出去等於兩端永遠不一致：水位線要讓回去，下一輪才選得到它。
+  const before = env.marksPosts().length;
+  env.advance(6 * 60_000);
+  await engine.syncNow();
+  await settle();
+
+  const resent = {};
+  env.marksPosts()
+    .slice(before)
+    .forEach((req) => {
+      ((req.body && req.body.upserts) || []).forEach((mark) => {
+        resent[mark.key] = true;
+      });
+    });
+  assert.ok(resent['threads:1002'], '下一輪必須重送這一筆');
+  assert.ok(
+    env.server.marks.byKey('threads:1002'),
+    '較新的版本撤銷墓碑，重新寫回雲端（契約 §3.1 R2③）'
+  );
+  assert.equal(env.server.marks.tombstoneCount(), 0, '墓碑被撤銷');
 });
 
 // ============================================================================

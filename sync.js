@@ -997,15 +997,30 @@
      * 寫前 normalize(readBlocklist)、寫後 cap——與 background 的三支寫入路徑
      * 同一套紀律，handleIndex 一律由 entries 重建，不留孤兒鍵。
      */
-    function applyMarkChanges(marks, deletedKeys) {
-      if (!marks.length && !deletedKeys.length) return Promise.resolve();
+    function applyMarkChanges(marks, deletions) {
+      if (!marks.length && !deletions.length) return Promise.resolve([]);
+      // 比墓碑新、因此留在本機的條目。回給呼叫端把推送水位線讓回去，下一輪
+      // 才推得到它們。
+      var kept = [];
       return writeChain(function () {
         return readBlocklist().then(function (list) {
-          // 伺服器墓碑是帳號層級的刪除，本機硬刪;留一個本機墓碑會在下一輪
-          // 被當成待推的條目再送一次。
-          deletedKeys.forEach(function (key) {
-            var userId = markUserId(key);
-            if (userId !== null) delete list.entries[userId];
+          // 【墓碑守衛】契約 §3.1 R2③「比墓碑舊不復活」的對稱面:本機
+          // updatedAt **晚於** deletedAt，代表使用者在別台裝置刪掉這一筆之後
+          // 又動過它，那份改動不該被一筆較舊的刪除吃掉。留著並於下一輪重送,
+          // 伺服器會以較新的版本撤銷墓碑(D37 的 LWW 在刪除這一側同樣成立)。
+          // 不晚於墓碑的才硬刪——留一個本機墓碑會在下一輪被當成待推的條目再
+          // 送一次。
+          deletions.forEach(function (row) {
+            var userId = markUserId(row.key);
+            if (userId === null) return;
+            var entry = list.entries[userId];
+            if (!entry) return;
+            var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
+            if (updatedAt > row.deletedAt) {
+              kept.push({ key: row.key, updatedAt: updatedAt });
+              return;
+            }
+            delete list.entries[userId];
           });
           marks.forEach(function (mark) {
             var parsed = TCLCoreRef.fromScamMark(mark);
@@ -1024,6 +1039,8 @@
             throw syncError(TCLCoreRef.isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
           });
         });
+      }).then(function () {
+        return kept;
       });
     }
 
@@ -1086,15 +1103,26 @@
       return call(ctx, 'POST', MARKS_SYNC_PATH, body).then(function (payload) {
         var changes = payload && payload.changes;
         var marks = changes && Array.isArray(changes.marks) ? changes.marks : [];
-        var deletedKeys = [];
+        var deletions = [];
         if (changes && Array.isArray(changes.deleted)) {
           changes.deleted.forEach(function (row) {
-            if (row && typeof row.key === 'string') deletedKeys.push(row.key);
+            if (!row || typeof row.key !== 'string') return;
+            // deletedAt 讀不出來時當成「無限早」，一律交給守衛留下本機那一份
+            // ——刪除是不可逆的，形狀不明時不動手。
+            deletions.push({ key: row.key, deletedAt: finiteNumber(row.deletedAt) ? row.deletedAt : -Infinity });
           });
         }
         // 【順序】游標必須等寫入真的落地才前進(比照 links)。
-        return applyMarkChanges(marks, deletedKeys).then(function () {
+        return applyMarkChanges(marks, deletions).then(function (kept) {
           settleMarkAck(ctx, payload, batch);
+          // 比墓碑新而留下來的條目要真的推得出去，否則「保留」只是讓兩端永遠
+          // 不一致。把水位線讓到它們之下，下一輪就選得到(順帶重推幾筆已經上
+          // 過雲的條目，upsert 本身冪等，代價只是一次多餘的寫入)。
+          kept.forEach(function (row) {
+            if (ctx.state.marksPushedAt !== null && ctx.state.marksPushedAt >= row.updatedAt) {
+              ctx.state.marksPushedAt = row.updatedAt - 1;
+            }
+          });
           if (payload && typeof payload.cursor === 'string') ctx.state.marksCursor = payload.cursor;
           return changes;
         });
