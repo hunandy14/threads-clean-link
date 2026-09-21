@@ -49,6 +49,7 @@
 | D38 | 名單走自己的端點 `POST /api/v1/marks/sync`／`GET /api/v1/marks`，請求與回應形狀比照連結同步（`upserts`／`deletes`／`since`／`cursor` → `cursor`／`applied`／`changes`／`evicted`，各欄語意以 §3.1 為準：2026-09-22 R1 修訂後 `cursor` 恆回、`applied` 拆成 `upserts`／`rejectedIds`／`deletedIds`、`changes` 可為 `null`、`evicted` 是筆數而非 key 清單）；登入態、`chrome.alarms` 排程、退避曲線、推送批次上限 50 筆與 cursor 續頁一律沿用連結同步那一套。每輪只推 `updatedAt` 晚於上次推送水位線的條目；回應的 `evicted` 只代表雲端不再保留那麼多筆，本機**一筆都不動**；首次登入的全量上傳與免費額度提示沿用 D3。免費方案雲端保留 1,000 筆、依 `updatedAt` 由舊到新淘汰且**不寫墓碑**；使用者真正刪除的條目才寫墓碑，保留 90 天 | 名單與連結的生命週期不同（名單會被解除、復原，連結不會），塞進同一個端點會讓兩種資料的合併規則互相牽制。共用排程與退避則是因為同步的節奏由網路與後端決定，與資料種類無關，各排各的只會讓兩套時鐘互相打架。`evicted` 不動本機，是因為雲端額度是雲端的事：使用者沒有刪掉任何東西，本機就不該替他刪 | 2026-09-22 |
 | D39 | 匯出／匯入檔仍**不含**警示名單，沿用 D30 的既有行為，不因名單可同步而改變 | 匯出檔是使用者會自己傳來傳去的檔案，落地之後就脫離插件的控制；名單是對真人帳號的負面標記，夾帶在一份可轉寄的 JSON 裡，與「這台裝置上的使用者自己的判斷」語意不合。雲端同步則是同一位使用者在自己帳號底下的跨裝置一致，兩者的風險不是同一回事 | 2026-09-22 |
 | D40 | 商店隱私揭露照名單上雲的事實重填：登入並啟用雲端同步後，名單會把作者數字 id、帳號與顯示名快照、證據貼文網址、掃到的時間與貼文發布時間、規則版本與回報裝置 id 上傳到開發者自營後端；**貼文文字片段（`snippet`／`anchorMatch`）與使用者當時開的那一頁網址（`postUrl`）不上傳**。揭露表的 Website content 與 Web history 兩列改為勾選，並註明僅在使用者主動登入雲端同步時才發生、登出即停止；Personal communications 維持不勾 | 揭露表描述的是資料實際流到哪裡，不是功能的初衷。作者帳號與貼文網址一旦離開這台裝置，在 CWS 的定義下就是 Website content 與 Web history 的傳輸，不勾等於漏報。反過來把貼文文字片段留在本機，是讓「使用者讀到的內容」完全不出裝置——判定要用的識別資訊與人在看的內容，本來就該切在不同邊 | 2026-09-22 |
+| D41 | 「刪除雲端資料」**涵蓋警示名單**：`deleteCloud` 在 `DELETE /api/v1/links` 之後續打 `DELETE /api/v1/marks`，伺服器寫下的 `clearedAt` 記進**獨立**的 `chrome.storage.local.syncMarksClearGuard`（形狀與 `syncClearGuard` 一比一鏡射，見 §4.2），並把 `marksCursor`／`marksPushedAt`／`marksRejected`／`marksEvicted` 四格重設為 `null`；**本機名單留在這台裝置**，與 D19 對本機紀錄的處理一致。下行 `changes.clearedAt` 的四態裁決（`purge`／`skip`／`claim`／`invalid`）沿用 D19，`purge` 另把已套用的水位線記進守衛。守衛的更新一律排在名單落盤之後 | 只刪連結等於把名單整份留在後端，二次確認框卻寫著「雲端資料將永久刪除」——使用者按下去得到的與他被告知的不是同一件事。守衛不放 `syncState` 的理由與 D19 完全相同（登出與 session 過期會把它整包重設）。`purge` 要記下水位線是 marks 獨有的：硬刪會一併重設四格，沒記下來的話下一輪拉回同一個 `clearedAt` 又判成一次新的清空，游標每兩輪歸零一次，通道永遠停在回填 | 2026-09-22 |
 
 ## 3. 插件端契約
 
@@ -79,6 +80,7 @@ LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結�
 - **下行墓碑（對稱處理，見 D37）**：回應 `changes.deleted` 的每一列 `{ key, deletedAt }` 是雲端（可能是另一台裝置）發動的刪除；插件逐筆比較本機該筆 entry 的 `updatedAt`：**本機 `updatedAt` ≤ `deletedAt`** 才真的把這一筆從 `entries` 刪掉；本機較新（代表使用者在別台裝置刪除之後、又在這台動過同一筆）或 `deletedAt` 讀不出來（形狀不明，一律當成「無限早」）時**保留**本機那一份，並把這一筆的 `updatedAt - 1` 記進本輪的讓位下限（多筆留存時取其中最小值；下限是**整輪**累積的一格，同一輪後面批次的 ack 不得把它蓋過去），輪末把 `marksPushedAt` 退讓到這個下限之下——不讓位，這筆留存的條目就會被卡在水位線之下，永遠選不進推送批次。下一輪因此會重新推送這一筆，伺服器收到比 `deletedAt` 新的 `updatedAt` 即撤銷墓碑。
 - **回填**：`marksCursor` 為 `null`（尚未回填過，或上一次沒回填到底）時，這一輪先整份回填：改走 `GET /api/v1/marks`，每頁固定 `limit=100`，以 `nextCursor` 續頁，單輪最多翻 **20 頁**。20 頁翻完仍沒到最後一頁（`nextCursor` 還不是 `null`）時，這一輪**整輪收手**：不推也不拉，`marksCursor` 維持 `null`；下一輪從第一頁重新開始（回填冪等，代價是重拉已經拿過的幾頁）。只有整份回填到底的那一輪，才會接著做推拉往返。
 - **墓碑（本機發動的刪除）**：使用者真正刪除的條目才進 `deletes`，墓碑保留 90 天。
+- **警示名單清空（D41）**：`DELETE /api/v1/marks` 硬刪該使用者的 marks 與墓碑並寫下 `clearedAt`，回 `{ ok: true, clearedAt }`（毫秒）；守門與錯誤碼沿用連結同步那一套。之後 `POST /api/v1/marks/sync` 對 `updatedAt <= clearedAt` 的 upsert 一律整筆退進 `applied.rejectedIds`（與 links 的「早於 `cleared_at` 一律拒收」同一條規則），留在本機的名單因此推不回雲端。`changes` 物件固定帶一格 `clearedAt`（`null` 或毫秒），`changes` 整個為 `null`（請求沒帶位置參數）時沒有這一格——插件只在帶位置參數的增量請求才得知清空。插件端讀到**有限正數**的 `clearedAt` 時交給自清守衛裁決（`0` 視同 `null`，那是序列化過的「沒有水位線」）：判 `purge` 才硬刪本機 `updatedAt <= clearedAt` 的條目、晚於的留著，並把四格重設成 `null` 由下一輪回填重新長回來。`DELETE /api/v1/links` 不碰 marks，兩條通道的清空各自獨立。
 - **雲端淘汰**：回應的 `evicted` 只是這一輪雲端淘汰的筆數，插件在 `syncState.marksEvicted` 做**累記**（跨輪加總，不是單輪快照），沒有發生過淘汰時維持 `null`；選項頁「警示名單」卡頭的提示在這個值 `> 0` 時**常駐顯示**，不因某一輪 `evicted` 是 0 就收起，詳見 `docs/scam-guard.md` 第 5 節。
 - **總開關**：`scamGuardEnabled` 關閉時這兩支端點一律不呼叫（D35）。
 
@@ -189,6 +191,13 @@ chrome.storage.local.syncAuth = {
 chrome.storage.local.syncClearGuard = {   // D19：本機自己發動的雲端清空
   userId: string | null,                 // 發動當下的帳號；換人之後守衛不沿用
   clearedAt: number | null,              // 伺服器回應的 clearedAt；缺席時為 null（待定）
+  pending?: true,                        // 待定：等下一次 changes.clearedAt 認領
+  sentAt?: number,                       // 待定時的 DELETE 發出時間，僅供診斷，不參與比較
+}
+
+chrome.storage.local.syncMarksClearGuard = {  // D41：警示名單那一側的同一件事
+  userId: string | null,                 // 發動當下的帳號；換人之後守衛不沿用
+  clearedAt: number | null,              // DELETE /api/v1/marks 回應的 clearedAt；缺席時為 null（待定）
   pending?: true,                        // 待定：等下一次 changes.clearedAt 認領
   sentAt?: number,                       // 待定時的 DELETE 發出時間，僅供診斷，不參與比較
 }
