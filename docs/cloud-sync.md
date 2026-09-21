@@ -38,11 +38,17 @@
 | D28 | 預設裝置名為 `Chrome on <OS>`，OS 由 `chrome.runtime.getPlatformInfo()` 映射（win→Windows、mac→macOS、linux→Linux、cros→ChromeOS、android→Android），拿不到或不在對照表時整個退成 `Chrome`（不寫 Unknown）。同名不加序號，也不在註冊前先讀清單消歧義；改以裝置列第二行的「新增於 <日期> · 最後同步 <相對時間>」讓使用者自行分辨。不做首次註冊的一次性改名提示，改名常駐於裝置對話框的行內編輯 | 調查十餘家同類產品：拿不到主機名的瀏覽器端，主流是「<瀏覽器>＋<OS>」的組合式敘述（敘述式或括號式），而且沒有任何一家消費級裝置清單為同名裝置加序號（唯一加序號的 Tailscale 是因為主機名要滿足 DNS 唯一性，與本案情境不同）。序號本身零資訊量，卻要多一次註冊前的清單讀取與隨之而來的競態；使用者實際用來分辨的線索是兩個時間，不是編號 | 2026-09-07 |
 | D29 | 裝置「移除」改為軟刪除：移除只在雲端把那一台標記成已移除（帶 `removedAt`），清單仍會把已移除的裝置一起回傳。管理對話框只列出活躍裝置，已移除的不再出現；但紀錄詳細視窗 join 裝置名稱時活躍與已移除都查，已移除者顯示**原本的名稱**並加上淡字「已移除」標記，兩邊都查不到才退成「未知裝置」。被移除的裝置若仍在登入狀態，下一次同步會讓它復活、重新出現在管理清單上，且保留使用者取過的自訂名稱。移除鈕保留，圖示由垃圾桶改為 circle-minus，與紀錄刪除的垃圾桶區隔；確認框補一句「紀錄上的裝置名稱會保留」。已移除的裝置不做自動過期；Gmail 式的「復原」toast 留待軟刪除上線後再評估 | 歷史紀錄的來源不該因為清單整理而變成「未知裝置」——使用者移除的是清單上的一列，不是那台裝置做過的事；真抹除等於讓既有紀錄的歸屬憑空消失，而且不可逆。社群慣例一致指向同一種做法：Slack、Jira 停用成員時保留實體與歷史上的顯示名稱，Apple 的「從帳號移除」也明講不會把該裝置登出、仍在登入的裝置下次連網會再出現。圖示區隔則是避免「移除裝置」被誤讀成與「刪除紀錄」同等的破壞性動作 | 2026-09-09 |
 | — | **D30–D34 為「LINE 群組引導警示」的決策。該功能純屬本機、與雲端同步無關，列於此表只是為了讓決策編號在單一序列上連續。** | 決策編號分散在多份文件會讓「下一號是幾號」無從判斷，重號的代價高於主題混列 | 2026-09-19 |
-| D30 | LINE 群組引導的警示名單（含證據與白名單）只寫 `chrome.storage.local`，備援請求的節流表只寫 `chrome.storage.session`（瀏覽器關閉即清），**皆不上雲**：不進同步佇列、不進 `syncState`、不進匯出／匯入檔，也不做任何跨使用者的共享名單 | 名單是對真人帳號的負面標記，誤判成本高且無從申訴；一旦上雲就等於由開發者代為散布指控，還會牽出審核責任與濫用風險。留在本機則始終是「這台裝置上的使用者自己的判斷」，隨時可整包清掉 | 2026-09-19 |
+| D30 | LINE 群組引導的警示名單（含證據與白名單）只寫 `chrome.storage.local`，備援請求的節流表只寫 `chrome.storage.session`（瀏覽器關閉即清），**皆不上雲**：不進同步佇列、不進 `syncState`、不進匯出／匯入檔，也不做任何跨使用者的共享名單 | 名單是對真人帳號的負面標記，誤判成本高且無從申訴；一旦上雲就等於由開發者代為散布指控，還會牽出審核責任與濫用風險。留在本機則始終是「這台裝置上的使用者自己的判斷」，隨時可整包清掉（2026-09-22 修訂：個人名單改為可隨雲端同步，見 D35–D40；仍不做跨使用者共享名單） | 2026-09-19（2026-09-22 修訂） |
 | D31 | 作者數字 id 主路徑取自貼文詳情頁的伺服器預載資料（零請求）；僅在該處缺席時，才對同一篇貼文的永久連結發一次匿名請求（不帶登入憑證）作備援。備援的採信條件為文件身分：回應裡 og:url／al:android:url 的永久連結，經 HTML entity 還原與正規化後必須等於請求的那一篇（帳號不分大小寫），且回應內的作者 id 候選必須全部同值；身分標籤指向另一篇時一律否決，此否決優先於任何其他判準。回應沒有任何可正規化的身分標籤時，才退回舊判準「作者 id 前後各 2000 字內找得到相符的帳號名稱」。非 2xx 回應一律不採信。同一篇貼文 24 小時只發一次、另有每分鐘全域上限，總開關關閉時一律不發。取不到 id 時頁面照樣掛標記，但不寫入名單 | 頁面本來就已經把作者 id 送到瀏覽器，再去問一次是多餘的網路行為。備援不可省是因為缺了 id 就只剩帳號可認，改名即失聯；但備援必須受限——交叉驗證擋的是張冠李戴，節流與開關擋的是被誤用成爬蟲，「沒有 id 就不入名單」擋的是主鍵語意被破壞。改以文件身分當主錨點，是因為登出態的永久連結回應整份不帶帳號名稱欄位，舊判準對真機貼文永遠落空；而「這份 HTML 自稱是哪一篇」比「頁面某處出現過誰的名字」更難偽造。 | 2026-09-19（2026-09-20 修訂） |
 | D32 | 使用者在選項頁「解除」某位作者，即把他寫進白名單，之後再掃到同一位作者**永不自動加回**；反悔可在「已解除」小節按「復原」 | 解除是使用者對誤判的明確否決，自動加回等於當場推翻他的判斷，使用者會一路解除到關掉整個功能。白名單同時是誤報的沉默回報管道——它記下了規則在這台裝置上出過什麼錯 | 2026-09-19 |
 | D33 | 命中走三條路：（a）LINE 加好友／群組深連結（`line.me` 的 `ti/p`／`ti/g`、`lin.ee`、`linktr.ee`）單獨成立；（b）LINE 提及＋群組詞或加入詞的行動呼籲；（c）錨點＋至少一個強話術詞（既有路徑保留）。話術詞從門檻降為證據，弱詞不構成任何路徑；單字型 LINE 只認主動招攬詞（進群、拉進、拉你進、小群、加我、私訊我），並對「賴」前的信／依／無／仰／倚設負向邊界 | 以行動呼籲詞取代話術詞當門檻：招攬串的共通動作是「把人帶進群組或私訊」而不是話術本身，軟性招攬整串可以一個話術詞都不放，綁話術詞就整類漏抓；反過來日常的 LINE 提及（公司公告改用 LINE 群組發布、商家會員貼文）缺了行動呼籲一律不命中，誤標真人帳號的代價仍高於漏抓。單字型 LINE 另外收緊到主動招攬詞，是因為「群組」「社群」「加入」是名詞，正當貼文本來就會跟 LINE 同框；而「信賴：」這類句子常同時帶投資詞，話術詞的二次確認擋不住，必須從錨點本身排除 | 2026-09-19（2026-09-20 修訂） |
 | D34 | `tcl-core.js` 加入 content_scripts 的 ISOLATED 陣列，載入順序為 `i18n.js` → `tcl-core.js` → `post-icon.js` → `scam-guard.js` | 偵測規則、名單正規化與裁切邏輯要由 content script、background、選項頁三邊共用同一份實作；複製一份到 content script 會讓規則隨時間分岔，而偵測與儲存形狀一旦不一致，寫進名單的東西就與頁面上標記的不是同一回事 | 2026-09-19 |
+| D35 | 總開關 `scamGuardEnabled` 關閉時，警示名單**不拉也不推**，本機那一份原封保留不動；「警示名單」分頁維持可見、可編輯，頂端加一條狀態列「LINE 群組引導警示已關閉——名單不會同步，也不會在河道掛標記」並附一顆「開啟」鈕；貼文頁不掛 pill、河道不查表。關閉期間在本機解除或復原照常更新 `updatedAt`，重新開啟後依 D37 與雲端做 LWW 合併 | 依 disabled-vs-hidden 原則，暫時關閉的功能該用停用態＋一句說明，而不是把介面整塊藏起來：名單藏起來，使用者會以為資料已被刪掉，也失去把誤判解除掉的機會。狀態列把「為什麼現在什麼都沒發生」擺在他看得到的位置，一顆按鈕就能改回來。書籤與稍後閱讀類產品在同步關閉時同樣保留本機清單的管理能力 | 2026-09-22 |
+| D36 | 本機名單升到 v2：`scamBlocklist = { version: 2, entries, handleIndex }`，每筆 entry 帶 `state`（`active`｜`dismissed`）、`dismissedAt?` 與 `updatedAt`；頂層 `allowlist` 不再獨立儲存，改由 `entries` 中 `state === "dismissed"` 的條目派生。已解除的條目**保留證據**。v1 遷移規則：原 `entries` 一律轉成 `state: "active"`；原 `allowlist` 的每一把鍵轉成 `state: "dismissed"` 的條目（沒有證據，`dismissedAt` 取原本的 `at`）；`updatedAt` 缺席時以 `addedAt`／`at` 補 | 「解除」是使用者對誤判的明確決定，跨裝置必須一致。名單與白名單各存一邊時，同一位作者在雲端是兩筆互不相干的資料，LWW 根本沒有共同的比較對象；狀態併進同一個物件之後，一筆 mark 的最後更新時間就足以決定勝負。證據留著則讓「復原」當下立刻有內容可看，不必等下一次命中才長回來 | 2026-09-22 |
+| D37 | 合併以一筆 mark 為單位：純量欄位（`state`／`dismissedAt`／`handle`／`displayName`／`source`／`addedAt`）取 `updatedAt` 較新的一邊，兩邊相等時取本機；`evidence` 不覆寫而是取**聯集**，以錨點貼文（`anchorPostUrl`）去重，再依 `at` 降冪保留 3 筆；本機有而雲端沒有的欄位（`snippet`／`anchorMatch`／`postUrl`）原封保留 | 兩台裝置各自在不同串命中同一位作者是常態，整筆覆蓋會讓後寫的一邊把另一邊的證據與命中篇數一起抹掉——而命中篇數正是使用者判斷「這個標記可不可信」的依據。純量欄位沒有這個問題：使用者最後一次的決定就是他現在的意思 | 2026-09-22 |
+| D38 | 名單走自己的端點 `POST /api/v1/marks/sync`／`GET /api/v1/marks`，請求與回應形狀比照連結同步（`upserts`／`deletes`／`since`／`cursor` → `applied`／`changes`／`cursor`／`evicted`）；登入態、`chrome.alarms` 排程、退避曲線、批次上限 50 筆與 cursor 續頁一律沿用連結同步那一套。每輪只推 `updatedAt` 晚於上次推送水位線的條目；回應的 `evicted` 只代表雲端不再保留那幾筆，本機**一筆都不動**；首次登入的全量上傳與免費額度提示沿用 D3。免費方案雲端保留 1,000 筆、依 `updatedAt` 由舊到新淘汰且**不寫墓碑**；使用者真正刪除的條目才寫墓碑，保留 90 天 | 名單與連結的生命週期不同（名單會被解除、復原，連結不會），塞進同一個端點會讓兩種資料的合併規則互相牽制。共用排程與退避則是因為同步的節奏由網路與後端決定，與資料種類無關，各排各的只會讓兩套時鐘互相打架。`evicted` 不動本機，是因為雲端額度是雲端的事：使用者沒有刪掉任何東西，本機就不該替他刪 | 2026-09-22 |
+| D39 | 匯出／匯入檔仍**不含**警示名單，沿用 D30 的既有行為，不因名單可同步而改變 | 匯出檔是使用者會自己傳來傳去的檔案，落地之後就脫離插件的控制；名單是對真人帳號的負面標記，夾帶在一份可轉寄的 JSON 裡，與「這台裝置上的使用者自己的判斷」語意不合。雲端同步則是同一位使用者在自己帳號底下的跨裝置一致，兩者的風險不是同一回事 | 2026-09-22 |
+| D40 | 商店隱私揭露照名單上雲的事實重填：登入並啟用雲端同步後，名單會把作者數字 id、帳號與顯示名快照、證據貼文網址、掃到的時間與貼文發布時間、規則版本與回報裝置 id 上傳到開發者自營後端；**貼文文字片段（`snippet`／`anchorMatch`）與使用者當時開的那一頁網址（`postUrl`）不上傳**。揭露表的 Website content 與 Web history 兩列改為勾選，並註明僅在使用者主動登入雲端同步時才發生、登出即停止；Personal communications 維持不勾 | 揭露表描述的是資料實際流到哪裡，不是功能的初衷。作者帳號與貼文網址一旦離開這台裝置，在 CWS 的定義下就是 Website content 與 Web history 的傳輸，不勾等於漏報。反過來把貼文文字片段留在本機，是讓「使用者讀到的內容」完全不出裝置——判定要用的識別資訊與人在看的內容，本來就該切在不同邊 | 2026-09-22 |
 
 ## 3. 插件端契約
 
@@ -61,6 +67,44 @@
   - `415 unsupported_media_type`：request 缺 `Content-Type: application/json`。
   - `429 rate_limited`：回應附 `Retry-After`，插件收到就退避到下一個時間窗，不立即重試。
   - `503 misconfigured`：後端設定問題，插件顯示錯誤狀態，不重試。
+
+### 3.1 警示名單（mark）同步
+
+LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結同步分開的一組端點：
+
+- **推送**：`POST /api/v1/marks/sync`，`Content-Type: application/json`（缺就回 415），body 帶 `upserts`／`deletes`／`since`／`cursor`，回應帶 `applied`／`changes`／`cursor`／`evicted`，各欄語意與連結同步同形。
+- **拉取**：`GET /api/v1/marks`，以 `since`／`cursor` 續頁。
+- **共用的部分**（D38）：Bearer 登入態、`credentials: "omit"`、只從 service worker 發請求、`chrome.alarms` 排程與退避曲線、批次上限 50 筆、cursor 續頁，以及第 3 節列出的共用錯誤碼（401／403／415／429／503），全部沿用連結同步那一套。
+- **推送水位線**：每輪只送 `updatedAt` 晚於上次成功推送時間的條目。
+- **`evicted`**：只代表雲端不再保留那幾把 key（免費方案 1,000 筆依 `updatedAt` 由舊到新淘汰、不寫墓碑），本機一筆都不動。
+- **墓碑**：使用者真正刪除的條目才進 `deletes`，墓碑保留 90 天。
+- **總開關**：`scamGuardEnabled` 關閉時這兩支端點一律不呼叫（D35）。
+
+mark 的線上形狀：
+
+```
+{
+  key: "threads:<作者數字 id>",   // 主鍵，與本機 entries 的鍵同源
+  state: "active" | "dismissed",  // dismissed 即使用者解除過（取代 v1 的 allowlist）
+  dismissedAt: number | null,     // state 為 active 時為 null
+  handle: string,                 // 帳號快照（不帶 @）
+  displayName: string,            // 顯示名快照，上限 80 字元
+  source: "auto" | "manual",
+  evidence: [{                    // 上限 3 筆，依 at 降冪
+    anchorPostUrl: string,        // 含錨點那一篇的永久連結
+    threadUrl?: string,           // 串頭永久連結
+    signals: string[],            // link｜line｜group｜join｜pitch
+    at: number,                   // 掃到的時間
+    postedAt?: number,            // 貼文發布時間
+    rulesVersion?: string,        // 命中當下的規則版本
+    deviceId?: string,            // 回報這筆證據的裝置（UUID 形狀）
+  }],
+  addedAt: number,
+  updatedAt: number,              // LWW 判準（D37）
+}
+```
+
+`snippet`、`anchorMatch` 與 `postUrl` 三個欄位**不在這份契約裡**，插件不送、後端也收不到（D40）。
 
 ## 4. 資料模型
 
@@ -164,6 +208,44 @@ chrome.storage.local.syncApiBase = string  // 可選，覆寫預設 production b
   - `bad_device_name`：`name` 正規化後為空。
   - 第 3 節的共用錯誤碼（401／403／415／429／503）同樣適用於這三個端點。
 - `seen[].deviceId` 上雲時同樣必須是 UUID 形狀，否則該事件被當成沒有裝置歸屬收下（整筆事件不會因此被拒）。
+
+### 4.5 警示名單（mark）資料模型
+
+本機形狀升到 v2（D36），欄位與上限的權威敘述在 `docs/scam-guard.md` 第 4 節，這裡只寫與雲端有關的部分：
+
+```
+chrome.storage.local.scamBlocklist = {
+  version: 2,
+  entries: {
+    [userId]: {                 // userId 為作者數字 id（純數字字串，1–20 位）
+      state: "active" | "dismissed",
+      dismissedAt?: number,     // state 為 active 時不寫這個鍵
+      handle, displayName, source, addedAt,
+      updatedAt: number,        // 任何欄位變動都更新，LWW 判準
+      evidence: [{ postUrl, snippet, at, anchorPostUrl?, threadUrl?, anchorMatch?, signals?, postedAt?, rulesVersion?, deviceId? }],
+    },
+  },
+  handleIndex: {},              // handle 小寫 → userId，一律由 entries 重建，不上雲
+}
+```
+
+v1 的頂層 `allowlist` 在 v2 消失，改由 `state === "dismissed"` 的條目派生；遷移規則見 D36。`handleIndex` 是本機派生的反查表，與 `version` 一樣不進同步。
+
+本機與雲端的差異只有三個欄位：本機的 `evidence` 多存 `snippet`（120 字證據片段）、`anchorMatch`（錨點本體，40 字）與 `postUrl`（使用者當時開的那一頁），這三項留在本機，永不上傳（D40）。反過來，`rulesVersion` 與 `deviceId` 兩欄本機與雲端都有，本機原有的舊證據可能缺席，缺席時整個鍵不寫。
+
+**欄位映射表（本機 entry → 雲端 mark）**
+
+| 雲端 mark | 本機 | 對齊方式 |
+|---|---|---|
+| `key`（必填） | `entries` 的鍵 | 前綴後送出：`threads:` ＋ userId |
+| `state`（必填） | `state` | 直接映射；v1 遷上來的條目依 D36 決定初值 |
+| `dismissedAt` | `dismissedAt?` | 本機缺席時送 `null` |
+| `handle`／`displayName`／`source`／`addedAt` | 同名 | 直接映射；`displayName` 送出前裁到 80 字元 |
+| `updatedAt`（必填） | `updatedAt` | 直接映射，同時是推送水位線與 LWW 判準 |
+| `evidence[].anchorPostUrl` | `anchorPostUrl ‖ postUrl` | 本機缺 `anchorPostUrl` 時以 `postUrl` 補位（去重鍵本來就是這個組合） |
+| `evidence[].threadUrl`／`signals`／`at`／`postedAt`／`rulesVersion`／`deviceId` | 同名 | 直接映射，缺席時整個鍵不送 |
+| — | `evidence[].snippet`／`anchorMatch`／`postUrl` | **不送**：貼文文字片段與使用者當時開的頁面網址一律留在本機（D40） |
+| — | `handleIndex`／`version` | 本機派生，不送 |
 
 ## 5. 模組介面
 
