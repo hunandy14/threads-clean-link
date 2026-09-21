@@ -29,6 +29,8 @@
 //   即丟該筆證據；`snippet`／`anchorMatch`／`postUrl` 一律不收，有帶即剝除。
 // - 合併：純量 LWW by `updatedAt`（大者勝，相等以伺服器既有為準）；evidence 以
 //   `anchorPostUrl` 去重取聯集、依 `at` 降冪留 3；dismissed 保留 evidence。
+//   既有列更新時 `addedAt` 由伺服器保管，傳入值一律忽略（但仍須合法，不合法整
+//   筆 reject）；新建列與墓碑後復活的列才採用傳入的 `addedAt`。
 // - 配額：free 方案滿額時依 `updatedAt` 最舊淘汰且**不寫墓碑**；pro 無上限。
 // - 墓碑保留 90 天，超過後不再出現在 `changes.deleted`。
 // - 守門沿用 links：Content-Type 早於解析 body、Bearer 未登入 401、批次上限、
@@ -532,6 +534,43 @@ test('marks sync：LWW — updatedAt 較大者覆蓋既有純量', async () => {
   assert.equal(mark.displayName, 'Alice 2');
   assert.equal(mark.updatedAt, T0 + MINUTE);
   assert.equal(mark.addedAt, T0, 'addedAt 是首見時間，不隨新版往後跳');
+});
+
+test('marks sync：既有列更新時保留原 addedAt，忽略傳入值', async () => {
+  const h = harness();
+  await h.push([markOf({ addedAt: T0 })]);
+
+  // 較晚的 addedAt 不得把首見時間往後推。
+  await h.push([markOf({ addedAt: T0 + 5 * MINUTE, updatedAt: T0 + MINUTE })]);
+  assert.equal(requireMark(h, KEY_A).addedAt, T0);
+
+  // 較早的也不採信：伺服器上那一列才是權威，各裝置算出來的首見時間不互相覆蓋。
+  await h.push([markOf({ addedAt: T0 - 5 * MINUTE, updatedAt: T0 + 2 * MINUTE })]);
+  assert.equal(requireMark(h, KEY_A).addedAt, T0);
+});
+
+test('marks sync：新建列採用傳入的 addedAt', async () => {
+  const h = harness();
+  await h.push([markOf({ addedAt: T0 - DAY, updatedAt: T0 })]);
+  assert.equal(requireMark(h, KEY_A).addedAt, T0 - DAY);
+});
+
+test('marks sync：更新既有列時 addedAt 不合法照樣整筆 reject', async () => {
+  const h = harness();
+  await h.push([markOf({ addedAt: T0 })]);
+  const body = await h.push([markOf({ addedAt: null, state: 'dismissed', updatedAt: T0 + MINUTE })]);
+  assert.deepEqual(body.applied, { upserts: [], rejectedIds: [KEY_A], deletedIds: [] });
+  const mark = requireMark(h, KEY_A);
+  assert.equal(mark.addedAt, T0, '既有列原封不動');
+  assert.equal(mark.state, 'active', '被 reject 的那一筆不得部分套用');
+});
+
+test('marks sync：墓碑後復活的列採用傳入的 addedAt', async () => {
+  const h = harness();
+  await h.push([markOf({ addedAt: T0 })]);
+  await h.syncJson({ upserts: [], deletes: [KEY_A] });
+  await h.push([markOf({ addedAt: T0 + 10 * MINUTE, updatedAt: T0 + 10 * MINUTE })]);
+  assert.equal(requireMark(h, KEY_A).addedAt, T0 + 10 * MINUTE, '伺服器上已無原列，沒有可保管的首見時間');
 });
 
 test('marks sync：LWW — updatedAt 較小者不覆蓋', async () => {
