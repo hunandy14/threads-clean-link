@@ -2322,8 +2322,8 @@
 
     // ---- 投資詐騙黑名單卡(v1 計畫 §5 UI 段／§14 訊息協議)----
     //
-    // 資料是純本機的 chrome.storage.local.scamBlocklist:不上雲、不進 syncState。
-    // 寫入端只有 background，本頁只讀 storage ＋ 監聽 onChanged(見
+    // 資料是 chrome.storage.local.scamBlocklist，登入後隨 marks 通道雲端同步
+    // (D35-D40)。寫入端只有 background，本頁只讀 storage ＋ 監聽 onChanged(見
     // setLocalSettings)，解除/復原一律經 runtime 訊息請 background 代寫。
     // displayName 與證據片段都是他人貼文帶進來的字串:整張卡逐一
     // createElement ＋ textContent，不走 innerHTML。
