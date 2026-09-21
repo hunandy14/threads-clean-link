@@ -1133,11 +1133,18 @@
      * 首次登入／首次啟用的回填:marksCursor 為 null 時先把雲端既有的警示整份
      * 抓回來(GET 分頁，以 nextCursor 續頁到 null 為止)。回填只講「現在有哪些
      * 警示」，墓碑不入這條路徑。
+     *
+     * @returns {Promise<boolean>} 這一輪有沒有回填到底。撞上 MAX_PULL_ROUNDS
+     *   的保險(雲端資料多於單輪拉得完的量)時回 false，呼叫端必須整輪收手:一旦
+     *   讓後面的 POST 把 marksCursor 寫下去，沒拉到的那些就永遠落在增量水位線
+     *   之前，再也回填不到。下一輪 marksCursor 仍是 null，回填從頭再走一次
+     *   (合併冪等，代價是重拉已經拿過的幾頁)。
      */
     function backfillMarks(ctx) {
       var rounds = 0;
       function page(cursor) {
-        if (rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+        // 只有「還有下一頁」才遞迴得到這裡，因此撞上限就代表沒拉完。
+        if (rounds >= MAX_PULL_ROUNDS) return Promise.resolve(false);
         rounds += 1;
         var path = MARKS_PATH + '?limit=' + MARKS_BACKFILL_LIMIT;
         if (cursor) path += '&cursor=' + encodeURIComponent(cursor);
@@ -1147,7 +1154,7 @@
             var next = payload && typeof payload.nextCursor === 'string' && payload.nextCursor
               ? payload.nextCursor
               : null;
-            if (next === null) return undefined;
+            if (next === null) return true;
             return page(next);
           });
         });
@@ -1155,40 +1162,50 @@
       return page(null);
     }
 
-    /** 一輪 marks:開關 → 回填 → 推 → 拉(hasMore 同輪續拉)。 */
+    /** 推拉往返本體:分批推完再把增量拉乾淨(hasMore 同輪續拉)。 */
+    function exchangeMarks(ctx, list) {
+      var batches = planMarkBatches(list, ctx.state);
+      // 推空的也要發一次:一次 POST 同時處理推與拉。
+      if (!batches.length) batches.push([]);
+      var lastChanges = null;
+      var step = Promise.resolve();
+      batches.forEach(function (batch) {
+        step = step.then(function () {
+          return postMarks(ctx, batch).then(function (changes) {
+            lastChanges = changes;
+          });
+        });
+      });
+      return step.then(function () {
+        // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
+        var rounds = 0;
+        function more() {
+          if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+          rounds += 1;
+          return postMarks(ctx, []).then(function (changes) {
+            lastChanges = changes;
+            return more();
+          });
+        }
+        return more();
+      });
+    }
+
+    /** 一輪 marks:開關 → 回填 → 推 → 拉。 */
     function runMarksRound(ctx) {
       return readScamEnabled().then(function (enabled) {
         // D35 開關 A:關閉時整條通道跳過，零請求、水位線一格不動。
         if (!enabled) return undefined;
-        var chain = ctx.state.marksCursor === null ? backfillMarks(ctx) : Promise.resolve();
-        return chain
-          .then(readBlocklist)
-          .then(function (list) {
-            var batches = planMarkBatches(list, ctx.state);
-            if (!batches.length) batches.push([]);
-            var lastChanges = null;
-            var step = Promise.resolve();
-            batches.forEach(function (batch) {
-              step = step.then(function () {
-                return postMarks(ctx, batch).then(function (changes) {
-                  lastChanges = changes;
-                });
-              });
-            });
-            return step.then(function () {
-              // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
-              var rounds = 0;
-              function more() {
-                if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
-                rounds += 1;
-                return postMarks(ctx, []).then(function (changes) {
-                  lastChanges = changes;
-                  return more();
-                });
-              }
-              return more();
-            });
+        var chain = ctx.state.marksCursor === null ? backfillMarks(ctx) : Promise.resolve(true);
+        return chain.then(function (backfilled) {
+          // 回填沒到底就整輪收手:不推也不拉，marksCursor 留在 null，下一輪接著
+          // 回填。先 POST 的話伺服器會發一個增量游標，沒回填到的條目從此落在水
+          // 位線之前，再也拉不回來。
+          if (!backfilled) return undefined;
+          return readBlocklist().then(function (list) {
+            return exchangeMarks(ctx, list);
           });
+        });
       });
     }
 

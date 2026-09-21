@@ -1154,6 +1154,36 @@ test('M5 回填：marksCursor 為 null 時走 GET /api/v1/marks 分頁（nextCur
   assert.equal(typeof env.storage.syncState().marksCursor, 'string', '回填完照樣把 POST 回應的 cursor 寫回');
 });
 
+test('M5 回填：一輪拉不完時不寫 cursor、不推，留待下一輪續填', async () => {
+  const TCLSync = loadSync();
+  // 單頁上限 100 × 一輪的續頁保險 20 = 2,000 筆；多一筆就拉不完。回填沒到底
+  // 卻讓 POST 把 marksCursor 寫下去的話，沒拉到的那些永遠落在增量水位線之前,
+  // 從此回填不到——靜默漏資料比慢一輪嚴重得多。
+  const total = 2001;
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    syncState: { marksCursor: null, marksPushedAt: T0 },
+    blocklist: blocklist({}),
+  });
+  env.server.marks.seed(bulkMarks(total, 6001));
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(200);
+
+  assert.equal(env.marksGets().length, 20, '一輪最多 20 頁');
+  assert.deepEqual(env.marksPosts(), [], '回填沒到底就整輪收手，連推都不推');
+  assert.equal(
+    env.storage.syncState().marksCursor,
+    null,
+    'marksCursor 留在 null，下一輪才會接著回填'
+  );
+  assert.equal(Object.keys(env.storage.entries()).length, 2000, '拉到的那 2,000 筆照樣落地');
+  // 下一輪接著回填是 marksCursor 仍為 null 的結構保證（runMarksRound 以它決定走
+  // 不走回填），再跑一輪只是把這 2,000 筆重合併一次，不值那幾秒。
+});
+
 // ============================================================================
 // M6 — 錯誤語意（沿用 links）
 // ============================================================================
