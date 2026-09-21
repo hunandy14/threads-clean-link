@@ -1622,7 +1622,9 @@
     return {
       anchorPostUrl: anchor,
       threadUrl: normalizePostUrl(item.threadUrl),
-      signals: Array.isArray(item.signals) ? item.signals.slice() : null,
+      // signals 的契約型別是 string[]:缺席送空陣列，讀取端永遠可以直接走
+      // 訪。純量欄位才以 null 表缺席。
+      signals: Array.isArray(item.signals) ? item.signals.slice() : [],
       at: scamMarkNumber(item.at),
       postedAt: scamMarkNumber(item.postedAt),
       rulesVersion: scamMarkNumber(item.rulesVersion),
@@ -1727,9 +1729,14 @@
     return out;
   }
 
-  // 同一篇錨點的兩筆證據合成一筆:以 at 較新者為底(平手取本機)，再把本機有
-  // 而遠端沒有的三欄補回去——snippet／anchorMatch／postUrl 不上雲，遠端那筆
-  // 永遠缺它們，讓它整筆勝出等於把本機的證據卡洗成空的。
+  // 同一篇錨點的兩筆證據合成一筆:以 at 較新者為底(平手取本機)，再把本機的
+  // 三欄蓋回去——snippet／anchorMatch／postUrl 不上雲，遠端那一筆永遠不帶真
+  // 值，讓它勝出等於把本機的證據卡洗成空的。
+  //
+  // 判準是「本機有沒有值」而不是「遠端有沒有鍵」:遠端條目是雲端 mark 經
+  // fromScamMark 落回本機形狀的，而本機形狀要求 postUrl 必填、snippet 至少
+  // 是空字串，正規化因此會補出 snippet:'' 與 postUrl＝錨點篇。兩欄都有鍵、
+  // 都是空殼，看鍵在不在的守衛會放行它們。
   var SCAM_LOCAL_ONLY_EVIDENCE_FIELDS = ['snippet', 'anchorMatch', 'postUrl'];
 
   function mergeScamEvidencePair(localItem, remoteItem) {
@@ -1739,7 +1746,7 @@
     var out = copyScamEvidence(newer);
     for (var i = 0; i < SCAM_LOCAL_ONLY_EVIDENCE_FIELDS.length; i++) {
       var field = SCAM_LOCAL_ONLY_EVIDENCE_FIELDS[i];
-      if (out[field] === undefined && localItem[field] !== undefined) out[field] = localItem[field];
+      if (localItem[field] !== undefined && localItem[field] !== '') out[field] = localItem[field];
     }
     return out;
   }
