@@ -3020,7 +3020,13 @@
     function submitScamRemove(userId) {
       var entry = scamBlocklist.entries[userId];
       if (!entry || entry.state === 'dismissed') return;
-      sendBackgroundMessage({ type: 'scam.blocklist.remove', userId: userId }).then(function (res) {
+      // 帶上這一列的帳號快照：名單裡沒有這一筆時 background 會補建一筆空的
+      // dismissed 條目，缺 handle 的 mark 上雲必被後端整筆拒收，那次解除從此
+      // 同步不出去。
+      var payload = { type: 'scam.blocklist.remove', userId: userId };
+      if (typeof entry.handle === 'string' && entry.handle) payload.handle = entry.handle;
+      if (typeof entry.displayName === 'string' && entry.displayName) payload.displayName = entry.displayName;
+      sendBackgroundMessage(payload).then(function (res) {
         if (!(res && res.ok === true)) {
           // 失敗不樂觀改:那一列留著，只用 toast 說明。
           toast(tt('opScamRemoveFailed'));
