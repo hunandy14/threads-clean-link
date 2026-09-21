@@ -186,7 +186,7 @@
       // 三件事講清楚:無法復原、本機紀錄保留、這些紀錄不會再上傳到雲端
       // (伺服器對早於 cleared_at 的紀錄一律拒收，見 api-spec 4.4；之後
       // 新清理的連結則不受影響，仍會正常上傳)。
-      opSyncDeleteConfirmDesc: '雲端保存的紀錄將永久刪除，無法復原。這台裝置上的紀錄不受影響，但不會再上傳到雲端；之後新清理的連結仍會正常同步。',
+      opSyncDeleteConfirmDesc: '雲端保存的紀錄與警示名單將永久刪除，無法復原。這台裝置上的資料不受影響，但不會再上傳到雲端；之後新清理的連結仍會正常同步。',
       opSyncDeleteConfirmDo: '確定刪除',
       // 使用者在瀏覽器的權限對話框按了拒絕:登入流程就此中止，需要讓他知道
       // 為什麼什麼都沒發生。
@@ -256,7 +256,7 @@
       // 的說法(scamTagLabel「LINE 群組引導」)，清單本身則一律叫警示名單。
       opScamGuardName: 'LINE 群組引導警示',
       opScamGuardDesc:
-        '偵測引導加入 LINE 群組的串文並把作者加入本機警示名單；名單只存在這台裝置，不上雲。',
+        '偵測引導加入 LINE 群組的串文並把作者加入警示名單；名單預設留在本機，登入雲端同步後會跟著你的帳號走，貼文文字片段則留在本機。',
       // 設定卡內指向警示名單分頁的同頁錨點(a#scamManageLink[href="#flags"])。
       opScamManageLink: '管理警示名單 →',
 
@@ -313,7 +313,7 @@
       opScamInfo3:
         '河道只查表不掃文。|之後在河道看到名單裡的作者，他的貼文會直接掛標記，不用點進去。',
       opScamInfo4:
-        '資料只在這台裝置。|名單與證據存在本機，不上傳、不同步、不與他人共享。頁面沒帶作者 ID 時，會對同一篇貼文發一次不帶登入的請求補查，24 小時內同一篇只發一次。',
+        '名單跟著你的帳號走。|名單與證據預設留在本機；開啟雲端同步後，作者帳號、顯示名與證據貼文網址會上傳到開發者後端，跟著你的帳號在裝置之間同步，貼文文字片段則留在本機，也不會與其他使用者共享。頁面沒帶作者 ID 時，會對同一篇貼文發一次不帶登入的請求補查，24 小時內同一篇只發一次。',
       opScamInfo5:
         '判定是規則比對，可能誤判。|遇到誤判按「⋯ → 解除」，該作者不會再被自動加入；在「已解除」可以復原。標記只是提醒，請自行判斷。',
       opScamRestore: '復原',
@@ -460,7 +460,7 @@
       // and these records will not be re-uploaded (the server rejects any
       // record older than clearedAt, see api-spec 4.4; newly cleared links
       // after this point still sync normally).
-      opSyncDeleteConfirmDesc: 'Records stored in the cloud will be permanently deleted and cannot be recovered. Your local history on this device is unaffected, but it will not be re-uploaded; links you clean afterward will still sync normally.',
+      opSyncDeleteConfirmDesc: 'Records and the warning list stored in the cloud will be permanently deleted and cannot be recovered. The data on this device is unaffected, but it will not be re-uploaded; links you clean afterward will still sync normally.',
       opSyncDeleteConfirmDo: 'Delete',
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opAccountSignInFailed: 'Sign-in failed, please try again later',
@@ -510,7 +510,7 @@
         'This account has posted threads that funnel readers to LINE. It is on your local warning list.',
       opScamGuardName: 'LINE group funnel warnings',
       opScamGuardDesc:
-        'Detects threads that funnel readers into LINE groups and adds the author to your local warning list. The list stays on this device only.',
+        'Detects threads that funnel readers into LINE groups and adds the author to your warning list. The list is local by default; once you sign in, cloud sync carries it with your account, while post text snippets stay local.',
       opScamManageLink: 'Manage warning list →',
 
       opScamListTitle: 'Warning list',
@@ -545,7 +545,7 @@
       opScamInfo3:
         'In the feed it only checks the list.|When an author already on the list shows up in your feed, their posts get the badge right away, with no scanning and no need to open them.',
       opScamInfo4:
-        'The data stays on this device.|The list and its evidence live in local storage only: never uploaded, never synced, never shared. If a page does not carry the author ID, one signed-out request is made for that same post to fill it in, at most once per post per 24 hours.',
+        'The list travels with your account.|The list and its evidence are local by default. Turn on cloud sync and the author handle, display name and evidence post links go to the developer backend and follow your account across devices; post text snippets stay local and are not shared with other users. If a page does not carry the author ID, one signed-out request is made for that same post to fill it in, at most once per post per 24 hours.',
       opScamInfo5:
         'It is rule matching, so it can be wrong.|If a call looks wrong, use “⋯ → Remove”; that author is never added automatically again, and you can undo it under “Removed”. A badge is a heads-up, not a verdict — judge for yourself.',
       opScamRestore: 'Undo',
