@@ -90,6 +90,24 @@
   // 共用，開一次帳號選單再開一次裝置對話框不該是兩次往返。
   var DEVICES_TTL_MS = 30000;
 
+  // 警示名單(marks)通道(D38)。與 links 並存的第二條通道:共用登入態、
+  // alarm 排程、退避曲線與錯誤語意，水位線(marksCursor／marksPushedAt)各自
+  // 獨立，存在同一包 syncState 裡。
+  var BLOCKLIST_KEY = 'scamBlocklist';
+  // 詐騙警示總開關(D35 開關 A)。缺席視為開啟，與 background 的
+  // isScamGuardEnabled 同一把尺;關閉時整條通道零請求。
+  var SCAM_ENABLED_KEY = 'scamGuardEnabled';
+  var MARKS_PATH = '/api/v1/marks';
+  var MARKS_SYNC_PATH = '/api/v1/marks/sync';
+  // 契約 §3.1 的單批上限;超過一律 422，不截斷、不部分處理。
+  var MAX_MARK_UPSERTS = 50;
+  // 回填分頁的單頁筆數(伺服器夾擠後的最大值)。
+  var MARKS_BACKFILL_LIMIT = 100;
+  // 雲端 mark 的主鍵前綴，與 tcl-core 的 SCAM_MARK_KEY_PREFIX 同源。
+  var MARK_KEY_PREFIX = 'threads:';
+  // entries 的鍵形狀(Threads 作者數字主鍵)，與 tcl-core 同一把尺。
+  var MARK_USER_ID_PATTERN = /^\d{1,20}$/;
+
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
   var INFLIGHT_KEY = 'syncInflight';
@@ -495,6 +513,13 @@
         pendingCount: pending,
         lastError: ctx.state.lastError,
         apiBase: ctx.apiBase,
+        // D38:marks 通道的四格原樣帶出。marksEvicted 是 UI 出「雲端額度滿
+        // 了，最舊的幾筆已被淘汰」提示的唯一來源——不帶這一格，那張提示就
+        // 讀不到筆數。其餘三格是診斷用的水位線。
+        marksCursor: ctx.state.marksCursor,
+        marksPushedAt: ctx.state.marksPushedAt,
+        marksEvicted: ctx.state.marksEvicted,
+        marksRejected: ctx.state.marksRejected,
       };
     }
 
@@ -887,9 +912,339 @@
             });
           }
           return more();
+        })
+        .then(function () {
+          // marks 是並存的第二條通道:links 這一輪收完才輪到它。擺在後面是為
+          // 了讓 links 的推拉不受警示名單的成敗影響——marks 失敗時 links 這一
+          // 輪已經落地，只是 lastError 記在同一格。
+          return runMarksRound(ctx);
         });
 
       return chain;
+    }
+
+    // ---- 警示名單(marks)通道(D38) ----
+
+    /** 總開關(D35 開關 A)。缺席或非 false 一律視為開啟。 */
+    function readScamEnabled() {
+      var defaults = {};
+      defaults[SCAM_ENABLED_KEY] = true;
+      return localGet(defaults).then(function (got) {
+        return got[SCAM_ENABLED_KEY] !== false;
+      });
+    }
+
+    /** 讀出本機警示名單，一律先過正規化(storage 是使用者可編輯的地方)。 */
+    function readBlocklist() {
+      var defaults = {};
+      defaults[BLOCKLIST_KEY] = null;
+      return localGet(defaults).then(function (got) {
+        return TCLCoreRef.normalizeScamBlocklist(got[BLOCKLIST_KEY]);
+      });
+    }
+
+    /** mark 主鍵 → entries 的鍵;前綴或形狀不對回 null(呼叫端整筆忽略)。 */
+    function markUserId(key) {
+      if (typeof key !== 'string' || key.indexOf(MARK_KEY_PREFIX) !== 0) return null;
+      var userId = key.slice(MARK_KEY_PREFIX.length);
+      return MARK_USER_ID_PATTERN.test(userId) ? userId : null;
+    }
+
+    /**
+     * 這一輪要推的批次(每批 ≤ MAX_MARK_UPSERTS)。兩道過濾:
+     *
+     * - 水位線:只送 updatedAt **嚴格大於** marksPushedAt 的條目(水位線為
+     *   null 即全部，首次登入的全量上傳走的就是這一條)。
+     * - 被拒映射:上一輪被伺服器拒收的那一版不重送。單靠水位線擋不住——被拒
+     *   條目的 updatedAt 照樣大於水位線，原樣重送只會每一輪再撞一次。本機真
+     *   的改動過(updatedAt 前進)才再送，那時兩端版本才對得上。
+     *
+     * @returns {{mark: object, updatedAt: number}[][]}
+     */
+    function planMarkBatches(list, state) {
+      var rejected = state.marksRejected || {};
+      var pushedAt = state.marksPushedAt;
+      var pending = [];
+      Object.keys(list.entries).forEach(function (userId) {
+        var entry = list.entries[userId];
+        var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
+        if (pushedAt !== null && updatedAt <= pushedAt) return;
+        var mark = TCLCoreRef.toScamMark(userId, entry);
+        if (rejected[mark.key] === updatedAt) return;
+        pending.push({ mark: mark, updatedAt: updatedAt });
+      });
+      // 【切批前先排序】entries 的鍵是作者數字 id，與 updatedAt 的先後無關;照
+      // Object.keys 的順序切，第一批可能裝著一整包最新的條目，水位線一推就越過
+      // 後面那些比較舊、還沒送出去的條目，中途失敗時它們永久不推。依 updatedAt
+      // 升冪(同值以 key 決勝，排序穩定)排過再塞批，批次就單調遞增:失敗時水位線
+      // 最多停在上一個完整成功的批，沒送出去的一律還在水位線之上。
+      pending.sort(function (a, b) {
+        if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
+        return a.mark.key < b.mark.key ? -1 : a.mark.key > b.mark.key ? 1 : 0;
+      });
+      var batches = [];
+      for (var i = 0; i < pending.length; i += MAX_MARK_UPSERTS) {
+        batches.push(pending.slice(i, i + MAX_MARK_UPSERTS));
+      }
+      return batches;
+    }
+
+    /**
+     * 把一頁雲端 mark(與墓碑)併進本機名單。整段讀改寫包在注入的 writeChain
+     * 內，與 background 的 recordHistory／handleScamHit 串行:scamBlocklist 只
+     * 有 background 寫得到，兩邊的 read-modify-write 會互相覆蓋。
+     *
+     * 寫前 normalize(readBlocklist)、寫後 cap——與 background 的三支寫入路徑
+     * 同一套紀律，handleIndex 一律由 entries 重建，不留孤兒鍵。
+     */
+    function applyMarkChanges(marks, deletions) {
+      if (!marks.length && !deletions.length) return Promise.resolve([]);
+      // 比墓碑新、因此留在本機的條目。回給呼叫端把推送水位線讓回去，下一輪
+      // 才推得到它們。
+      var kept = [];
+      return writeChain(function () {
+        return readBlocklist().then(function (list) {
+          // 【墓碑守衛】契約 §3.1 R2③「比墓碑舊不復活」的對稱面:本機
+          // updatedAt **晚於** deletedAt，代表使用者在別台裝置刪掉這一筆之後
+          // 又動過它，那份改動不該被一筆較舊的刪除吃掉。留著並於下一輪重送，
+          // 伺服器會以較新的版本撤銷墓碑(D37 的 LWW 在刪除這一側同樣成立)。
+          // 不晚於墓碑的才硬刪——留一個本機墓碑會在下一輪被當成待推的條目再
+          // 送一次。
+          deletions.forEach(function (row) {
+            var userId = markUserId(row.key);
+            if (userId === null) return;
+            var entry = list.entries[userId];
+            if (!entry) return;
+            var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
+            if (updatedAt > row.deletedAt) {
+              kept.push({ key: row.key, updatedAt: updatedAt });
+              return;
+            }
+            delete list.entries[userId];
+          });
+          marks.forEach(function (mark) {
+            var parsed = TCLCoreRef.fromScamMark(mark);
+            // key 形狀不對的整筆丟棄:落進 entries 就是一筆永遠查不到的條目。
+            if (!parsed) return;
+            var local = list.entries[parsed.userId];
+            list.entries[parsed.userId] = local
+              ? TCLCoreRef.mergeScamEntry(local, parsed.entry)
+              : parsed.entry;
+          });
+          var items = {};
+          items[BLOCKLIST_KEY] = TCLCoreRef.capScamBlocklist(list);
+          return localSet(items).catch(function (err) {
+            // 比照 links:配額爆掉時游標不得前進，否則這一頁的增量再也拉不回
+            // 來(伺服器只認游標，不會重送)。
+            throw syncError(TCLCoreRef.isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
+          });
+        });
+      }).then(function () {
+        return kept;
+      });
+    }
+
+    /**
+     * 本輪的「讓位下限」。墓碑守衛留下比墓碑新的條目之後，水位線必須退到它們
+     * 之下，下一輪才選得到、推得出去——否則「保留」只是讓兩端永遠不一致。
+     *
+     * 水位線是整輪共用的一格，讓位卻發生在某一批，因此 floor 必須是**整輪**的
+     * 累積值:同一輪後面每一批的 ack 都要守同一條線，不然前面讓出來的空間會被
+     * 後面那批推回去。取最小的一個，同時照顧到多筆留存。
+     */
+    function noteMarkFloor(floor, kept) {
+      kept.forEach(function (row) {
+        var candidate = row.updatedAt - 1;
+        if (floor.value === null || candidate < floor.value) floor.value = candidate;
+      });
+    }
+
+    /**
+     * 整輪結算完的最後一步。settleMarkAck 只夾得住「這一輪推上去的」水位線;
+     * 進這一輪之前就已經高於 floor 的舊值(留存的條目本來就在水位線底下，這正
+     * 是它沒被推上去的原因)得在這裡退回去。
+     *
+     * marksPushedAt 為 null 時不動:那代表「全部都要推」，本來就選得到。
+     */
+    function applyMarkFloor(ctx, floor) {
+      if (floor.value === null) return;
+      if (ctx.state.marksPushedAt !== null && ctx.state.marksPushedAt > floor.value) {
+        ctx.state.marksPushedAt = floor.value;
+      }
+    }
+
+    /**
+     * 一次 POST 的回應結算(只動記憶體裡的 ctx.state，落盤由 runSync 收尾):
+     *
+     * - marksPushedAt 只吃 applied.upserts:被拒那筆的 updatedAt 不算數，否則
+     *   水位線會跨過一筆根本沒上雲的條目，從此再也不補送。
+     * - applied.rejectedIds 記進 marksRejected 映射(key → 被拒當下的
+     *   updatedAt);推送成功就把該 key 拿掉，映射不無限成長。
+     * - evicted 只累記筆數供 UI 提示，本機一筆不動(被淘汰的 key 由下一次回
+     *   填自行對帳)。
+     */
+    function settleMarkAck(ctx, payload, batch, floor) {
+      var applied = (payload && payload.applied) || {};
+      var sentAt = {};
+      batch.forEach(function (row) {
+        sentAt[row.mark.key] = row.updatedAt;
+      });
+      var rejected = Object.assign({}, ctx.state.marksRejected || {});
+      var touched = false;
+      var high = null;
+      (applied.upserts || []).forEach(function (key) {
+        if (typeof key !== 'string') return;
+        if (Object.prototype.hasOwnProperty.call(rejected, key)) {
+          delete rejected[key];
+          touched = true;
+        }
+        if (finiteNumber(sentAt[key]) && (high === null || sentAt[key] > high)) high = sentAt[key];
+      });
+      (applied.rejectedIds || []).forEach(function (key) {
+        if (typeof key !== 'string' || !finiteNumber(sentAt[key])) return;
+        rejected[key] = sentAt[key];
+        touched = true;
+      });
+      if (touched) ctx.state.marksRejected = rejected;
+      // 本輪讓位的上限:墓碑守衛留下來的條目必須留在水位線之上，這一批的 ack
+      // 再高也不能蓋過去（同一輪後面每一批都要守同一條線）。
+      if (high !== null && floor.value !== null && high > floor.value) high = floor.value;
+      if (high !== null && (ctx.state.marksPushedAt === null || high > ctx.state.marksPushedAt)) {
+        ctx.state.marksPushedAt = high;
+      }
+      var evicted = payload && finiteNumber(payload.evicted) ? payload.evicted : 0;
+      if (evicted > 0) ctx.state.marksEvicted = (ctx.state.marksEvicted || 0) + evicted;
+    }
+
+    /**
+     * 一次推拉往返。推空的也要發:一次 POST 同時處理推與拉，少發這一次就拉不
+     * 到別台裝置的新資料(與 links 同一個取向)。
+     *
+     * 【位置參數】marksCursor 為 null 時不帶——契約 §3.1 的首輪回填走 GET，不
+     * 帶位置參數時伺服器回 changes: null，這一次 POST 只是把水位線領回來。
+     */
+    function postMarks(ctx, batch, floor) {
+      var body = {
+        upserts: batch.map(function (row) {
+          return row.mark;
+        }),
+        // 本機沒有「刪除」動作:解除是 state 翻成 dismissed，不是刪條目。
+        deletes: [],
+      };
+      if (ctx.state.marksCursor !== null) body.since = ctx.state.marksCursor;
+      return call(ctx, 'POST', MARKS_SYNC_PATH, body).then(function (payload) {
+        var changes = payload && payload.changes;
+        var marks = changes && Array.isArray(changes.marks) ? changes.marks : [];
+        var deletions = [];
+        if (changes && Array.isArray(changes.deleted)) {
+          changes.deleted.forEach(function (row) {
+            if (!row || typeof row.key !== 'string') return;
+            // deletedAt 讀不出來時當成「無限早」，一律交給守衛留下本機那一份
+            // ——刪除是不可逆的，形狀不明時不動手。
+            deletions.push({ key: row.key, deletedAt: finiteNumber(row.deletedAt) ? row.deletedAt : -Infinity });
+          });
+        }
+        // 【順序】游標必須等寫入真的落地才前進(比照 links)。
+        return applyMarkChanges(marks, deletions).then(function (kept) {
+          // 【順序】先記讓位再結算:settleMarkAck 要拿這一輪的 floor 夾住自己
+          // 推上去的水位線，floor 晚一步記就夾不到本批的 ack。
+          noteMarkFloor(floor, kept);
+          settleMarkAck(ctx, payload, batch, floor);
+          // 【當場落地】讓位不能等到整輪尾端才統一套用:後面那批一斷線，整條鏈
+          // 就 reject，尾端那一步輪不到跑，runSync 的失敗路徑會把**進這一輪之前
+          // 就存在**的舊水位線原封不動落盤(夾擠只擋得住這一輪推上去的值，擋不到
+          // 舊值)，留存的條目下一輪依舊選不到。整輪尾端那次保留著，重複套用冪等。
+          applyMarkFloor(ctx, floor);
+          if (payload && typeof payload.cursor === 'string') ctx.state.marksCursor = payload.cursor;
+          return changes;
+        });
+      });
+    }
+
+    /**
+     * 首次登入／首次啟用的回填:marksCursor 為 null 時先把雲端既有的警示整份
+     * 抓回來(GET 分頁，以 nextCursor 續頁到 null 為止)。回填只講「現在有哪些
+     * 警示」，墓碑不入這條路徑。
+     *
+     * @returns {Promise<boolean>} 這一輪有沒有回填到底。撞上 MAX_PULL_ROUNDS
+     *   的保險(雲端資料多於單輪拉得完的量)時回 false，呼叫端必須整輪收手:一旦
+     *   讓後面的 POST 把 marksCursor 寫下去，沒拉到的那些就永遠落在增量水位線
+     *   之前，再也回填不到。下一輪 marksCursor 仍是 null，回填從頭再走一次
+     *   (合併冪等，代價是重拉已經拿過的幾頁)。
+     */
+    function backfillMarks(ctx) {
+      var rounds = 0;
+      function page(cursor) {
+        // 只有「還有下一頁」才遞迴得到這裡，因此撞上限就代表沒拉完。
+        if (rounds >= MAX_PULL_ROUNDS) return Promise.resolve(false);
+        rounds += 1;
+        var path = MARKS_PATH + '?limit=' + MARKS_BACKFILL_LIMIT;
+        if (cursor) path += '&cursor=' + encodeURIComponent(cursor);
+        return call(ctx, 'GET', path).then(function (payload) {
+          var items = payload && Array.isArray(payload.items) ? payload.items : [];
+          return applyMarkChanges(items, []).then(function () {
+            var next = payload && typeof payload.nextCursor === 'string' && payload.nextCursor
+              ? payload.nextCursor
+              : null;
+            if (next === null) return true;
+            return page(next);
+          });
+        });
+      }
+      return page(null);
+    }
+
+    /** 推拉往返本體:分批推完再把增量拉乾淨(hasMore 同輪續拉)。 */
+    function exchangeMarks(ctx, list) {
+      var batches = planMarkBatches(list, ctx.state);
+      // 推空的也要發一次:一次 POST 同時處理推與拉。
+      if (!batches.length) batches.push([]);
+      var lastChanges = null;
+      // 整輪共用一份讓位下限:任何一批留下來的條目都要守到這一輪結束。
+      var floor = { value: null };
+      var step = Promise.resolve();
+      batches.forEach(function (batch) {
+        step = step.then(function () {
+          return postMarks(ctx, batch, floor).then(function (changes) {
+            lastChanges = changes;
+          });
+        });
+      });
+      return step
+        .then(function () {
+          // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
+          var rounds = 0;
+          function more() {
+            if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+            rounds += 1;
+            return postMarks(ctx, [], floor).then(function (changes) {
+              lastChanges = changes;
+              return more();
+            });
+          }
+          return more();
+        })
+        .then(function () {
+          applyMarkFloor(ctx, floor);
+        });
+    }
+
+    /** 一輪 marks:開關 → 回填 → 推 → 拉。 */
+    function runMarksRound(ctx) {
+      return readScamEnabled().then(function (enabled) {
+        // D35 開關 A:關閉時整條通道跳過，零請求、水位線一格不動。
+        if (!enabled) return undefined;
+        var chain = ctx.state.marksCursor === null ? backfillMarks(ctx) : Promise.resolve(true);
+        return chain.then(function (backfilled) {
+          // 回填沒到底就整輪收手:不推也不拉，marksCursor 留在 null，下一輪接著
+          // 回填。先 POST 的話伺服器會發一個增量游標，沒回填到的條目從此落在水
+          // 位線之前，再也拉不回來。
+          if (!backfilled) return undefined;
+          return readBlocklist().then(function (list) {
+            return exchangeMarks(ctx, list);
+          });
+        });
+      });
     }
 
     // ---- 單飛旗標 ----
