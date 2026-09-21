@@ -52,18 +52,18 @@ Restore Threads /share/ links to clean post URLs, and auto-clean tracking codes 
 
 • 貼文互動列新增「複製原始連結」按鈕:在 Threads 每篇貼文的互動列(分享按鈕旁)多一顆鏈節圖示，點一下就把該貼文的乾淨網址複製到剪貼簿——不含追蹤參數、也不是短碼。外觀比照原生按鈕(顏色自動跟隨、hover 提示採原生 tooltip)，文字支援中英文並跟隨介面語言設定。
 
-【LINE 群組引導警示】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的招攬串文。命中有三條路:(1)貼文裡出現 LINE 加好友／加群組的深連結(line.me、lin.ee、linktr.ee)即成立;(2)出現 LINE 帳號或「加 LINE」這類字句，且同時有群組或加入的行動呼籲(例如拉你進群、加入、私訊我);(3)出現 LINE 帳號並搭配投資話術詞(黑馬股、報明牌、代操等)。命中就在貼文上掛一枚標記，並把該作者記進警示名單，之後在首頁時間軸上再遇到同一位作者也會標記。判定為規則比對，正當的社團或商家招攬也可能被標記，使用者可一鍵解除，解除後不再自動標記。頁面本身沒帶作者識別碼時，會對同一篇貼文發一次不帶登入的請求補查。警示名單可在「紀錄與設定」頁管理(附證據連結)，只存在你這台裝置、不會上傳，也不與其他使用者共享;不想用可以用總開關整個關掉。
+【LINE 群組引導警示】點進貼文詳情頁時，會就地辨識「長篇投資心得＋末篇引導加 LINE」的招攬串文。命中有三條路:(1)貼文裡出現 LINE 加好友／加群組的深連結(line.me、lin.ee、linktr.ee)即成立;(2)出現 LINE 帳號或「加 LINE」這類字句，且同時有群組或加入的行動呼籲(例如拉你進群、加入、私訊我);(3)出現 LINE 帳號並搭配投資話術詞(黑馬股、報明牌、代操等)。命中就在貼文上掛一枚標記，並把該作者記進警示名單，之後在首頁時間軸上再遇到同一位作者也會標記。判定為規則比對，正當的社團或商家招攬也可能被標記，使用者可一鍵解除，解除後不再自動標記。頁面本身沒帶作者識別碼時，會對同一篇貼文發一次不帶登入的請求補查。警示名單可在「紀錄與設定」頁管理(附證據連結)，預設只存在你這台裝置、不會上傳;登入下方的「雲端同步」之後，警示名單會跟著你的帳號一起同步到其他裝置(只同步作者帳號、證據貼文的連結與時間，貼文文字不會上傳)，登出即停止。無論是否登入，都不與其他使用者共享;不想用可以用總開關整個關掉。
 
 【Popup 設定面板】點擊工具列圖示即可開關兩項設定，即時生效:「自動淨化分享按鈕」(預設開啟)、「成功時顯示通知」(預設關閉，關閉後失敗通知仍會照常顯示)。
 
 【紀錄與設定頁】每次淨化成功可留下一筆紀錄(可搜尋、篩選來源、JSON 匯出/匯入、一鍵清除)，並有累計統計與近 14 天活動圖。紀錄預設僅保存在你的裝置上(chrome.storage.local)，不會上傳(除非另行啟用「雲端同步」並以 Google 帳號登入)，上限 1,000 筆自動汰舊，也可以用「保存淨化紀錄」開關整個停用。介面、通知與右鍵選單支援繁體中文與英文，預設跟隨瀏覽器語言，可手動切換。
 
-【雲端同步(選用)】在「紀錄與設定」頁使用 Google 帳號登入後，清理紀錄可額外同步到雲端、並與手機版 App 互通;不登入則完全不受影響，行為與現在一樣。已登入時，設定頁會從 Google 載入你的帳號大頭照(僅顯示，不儲存於伺服器)。紀錄的詳細資料會顯示每筆紀錄來自哪台裝置，裝置名稱可自行修改，也可把不再使用的裝置從清單移除。
+【雲端同步(選用)】在「紀錄與設定」頁使用 Google 帳號登入後，清理紀錄可額外同步到雲端、並與手機版 App 互通;LINE 群組引導警示的名單同樣會跟著同步(不含貼文文字)。不登入則完全不受影響，行為與現在一樣。已登入時，設定頁會從 Google 載入你的帳號大頭照(僅顯示，不儲存於伺服器)。紀錄的詳細資料會顯示每筆紀錄來自哪台裝置，裝置名稱可自行修改，也可把不再使用的裝置從清單移除。
 
 【誠實隱私聲明(節錄，完整版請見下方 GitHub README)】
 兩個功能只要攔到的是 /share/ 短碼，都會向 threads.com / threads.net 發出一次不帶 cookie 的匿名 GET 請求，藉此把短碼換成乾淨網址——這是短碼問題「必須向伺服器問一次」的技術本質決定的，沒有繞過的辦法。這次請求不帶登入憑證，但仍會讓 Threads 看到你的來源 IP 與瀏覽器特徵，在意這點的話，請優先使用右鍵方式手動處理，或搭配 VPN。若攔到的內容已經是完整貼文網址、只帶追蹤參數，則是純文字處理，零網路請求。
 
-未啟用雲端同步時，本擴充功能不蒐集、不儲存、不上傳任何使用者資料；啟用並登入後，只同步你自己的清理紀錄與 Google 帳號的基本身分（email、名稱、大頭照網址）到開發者自營伺服器，詳見 README。無論是否登入，都不讀取剪貼簿裡原本的內容，不含任何遠端程式碼，也不會取得 <all_urls> 這種瀏覽所有網站的權限。
+未啟用雲端同步時，本擴充功能不蒐集、不儲存、不上傳任何使用者資料；啟用並登入後，只同步你自己的清理紀錄、警示名單（作者帳號與證據貼文的連結、時間，不含貼文文字）與 Google 帳號的基本身分（email、名稱、大頭照網址）到開發者自營伺服器，詳見 README。無論是否登入，都不讀取剪貼簿裡原本的內容，不含任何遠端程式碼，也不會取得 <all_urls> 這種瀏覽所有網站的權限。
 
 開源(MIT License)，原始碼與完整說明:
 https://github.com/hunandy14/threads-clean-link
@@ -80,7 +80,7 @@ THREE FEATURES
 • "Copy original link" button on every post: A link icon is added to each Threads post's action row (next to the share button). One click copies that post's clean URL — no tracking parameters, no short code — to your clipboard. It matches the native buttons in appearance (color follows the page, native hover tooltip), and its label follows your interface language.
 
 LINE GROUP FUNNEL FLAGS
-When you open a Threads post, the extension checks on-device whether the thread follows the "long investment story, then add me on LINE" solicitation pattern. A post is flagged on any one of three paths: (1) it carries a LINE add-friend or add-group deep link (line.me, lin.ee, linktr.ee); (2) it shows a LINE account or an "add me on LINE" phrase together with a group-or-join call to action (for example "I'll pull you into the group", "join", "DM me"); (3) it shows a LINE account alongside investment pitch wording (hot stock tips, paid stock picks, managed trading and the like). On a match it flags the post and adds that author to your flagged list, so the same author is flagged on your feed too. The check is plain rule matching, so a legitimate club, study group or shop solicitation can be flagged too — one click unflags it, and it is never flagged automatically again. When the page itself does not carry the author's identifier, one logged-out request is sent for that same post to look it up. The flagged list lives in the History & Settings page (with evidence links). It stays on this device only, is never uploaded, and is never shared with other users; a single switch turns the whole feature off.
+When you open a Threads post, the extension checks on-device whether the thread follows the "long investment story, then add me on LINE" solicitation pattern. A post is flagged on any one of three paths: (1) it carries a LINE add-friend or add-group deep link (line.me, lin.ee, linktr.ee); (2) it shows a LINE account or an "add me on LINE" phrase together with a group-or-join call to action (for example "I'll pull you into the group", "join", "DM me"); (3) it shows a LINE account alongside investment pitch wording (hot stock tips, paid stock picks, managed trading and the like). On a match it flags the post and adds that author to your flagged list, so the same author is flagged on your feed too. The check is plain rule matching, so a legitimate club, study group or shop solicitation can be flagged too — one click unflags it, and it is never flagged automatically again. When the page itself does not carry the author's identifier, one logged-out request is sent for that same post to look it up. The flagged list lives in the History & Settings page (with evidence links). By default it stays on this device only and is never uploaded; if you sign in for Cloud Sync (see below), the flagged list syncs to your other devices along with your account — only the author handle and the evidence posts' links and timestamps, never the post text — and signing out stops it. Either way it is never shared with other users; a single switch turns the whole feature off.
 
 POPUP SETTINGS
 Click the toolbar icon to toggle two settings that take effect instantly: "Auto-clean the share button" (on by default) and "Notify on success" (off by default; failure notifications always show regardless of this setting).
@@ -89,12 +89,12 @@ HISTORY & SETTINGS PAGE
 Every successful cleaning can leave a local history entry (searchable, filterable by source, JSON export/import, one-click clear), with totals and a 14-day activity chart. History is stored only on your device (chrome.storage.local) by default and never uploaded unless you separately sign in with Google to enable Cloud Sync on the History & Settings page, capped at 1,000 entries, and can be disabled entirely with the "Keep cleaning history" switch. The UI, notifications and context menu support Traditional Chinese and English — following your browser language by default, switchable manually.
 
 CLOUD SYNC (OPTIONAL)
-Sign in with Google on the History & Settings page to additionally sync your cleaning history to the cloud and across your other devices running the companion app; if you don't sign in, nothing changes. Once signed in, the settings page loads your Google account avatar to display it (it is not stored on the server). Each history entry also shows which device it came from; devices can be renamed or removed from the same page.
+Sign in with Google on the History & Settings page to additionally sync your cleaning history to the cloud and across your other devices running the companion app; your LINE group funnel flagged list syncs too (never the post text). If you don't sign in, nothing changes. Once signed in, the settings page loads your Google account avatar to display it (it is not stored on the server). Each history entry also shows which device it came from; devices can be renamed or removed from the same page.
 
 HONEST PRIVACY NOTE
 Whenever either feature has to resolve a /share/ short code, it sends one anonymous GET request (no cookies) to threads.com/threads.net to look up the real destination — that's the only way to resolve a short code, and it's disclosed in full on the project README. This request carries no login credentials, but Threads will still see your source IP and browser fingerprint; if that matters to you, prefer the manual right-click flow or use a VPN. When the content is already a full post URL with only tracking parameters attached, cleaning is pure local string processing with zero network requests.
 
-Unless Cloud Sync is enabled, this extension collects no user data. Once enabled and signed in, it syncs only your own cleaning history and basic Google account identity (email, name, avatar URL) to the developer's own backend — see the README for details. Either way, it never reads existing clipboard contents, contains no remote code, and never requests <all_urls>.
+Unless Cloud Sync is enabled, this extension collects no user data. Once enabled and signed in, it syncs only your own cleaning history, your flagged list (author handles plus the evidence posts' links and timestamps — never the post text) and basic Google account identity (email, name, avatar URL) to the developer's own backend — see the README for details. Either way, it never reads existing clipboard contents, contains no remote code, and never requests <all_urls>.
 
 Open source (MIT). Source & full details:
 https://github.com/hunandy14/threads-clean-link
@@ -252,9 +252,11 @@ Optional host permissions, off by default and never requested at install time �
 
 Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「資料類型」核取清單與三個認證聲明，逐題對照本擴充功能的實際行為填寫如下。
 
+> **送審時需以本版 §7 重填隱私分頁**:警示名單改為可隨雲端同步之後，Website content 與 Web history 兩列由「不勾」改為「勾選」。CWS 的隱私分頁只有勾選框、沒有逐項說明欄位，勾選異動不會自動沿用上一版的填答，下一次送審必須依本節逐列重新確認一次(見 `docs/cws-publish-setup.md` 的送審流程)。
+
 ### 資料類型清單
 
-0.6.0 起「雲端同步」隨插件出貨(預設關閉，需使用者主動登入才會啟用)，下表已反映這個現況，而非只反映未登入時的行為。
+0.6.0 起「雲端同步」隨插件出貨(預設關閉，需使用者主動登入才會啟用)，下表已反映這個現況，而非只反映未登入時的行為。警示名單自 `docs/cloud-sync.md` 決策 D35–D40 起也納入同步範圍，同屬「登入後才發生」的那一類。
 
 | 資料類型 | 是否勾選 | 用途說明 |
 |---|---|---|
@@ -262,17 +264,22 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 | Health information | 不勾 | 無關 |
 | Financial and payment information | 不勾 | 無關 |
 | Authentication information | **勾選** | 僅在使用者主動點擊「使用 Google 帳號登入」後才會取得(Google OAuth 身分權杖)，唯一用途是向開發者自營後端建立/維持雲端同步的登入工作階段(App functionality)。不用於廣告或分析，不轉讓、不出售給第三方，不取得或儲存使用者的 Google 密碼。<br>Obtained only after the user actively clicks "Sign in with Google" (a Google OAuth identity token); its sole purpose is establishing/maintaining the cloud-sync login session with the developer's own backend (App functionality). Not used for ads or analytics, not shared or sold to third parties; the user's Google password is never obtained or stored. |
-| Personal communications | 不勾 | 不讀取剪貼簿既有內容;LINE 群組引導警示讀取的是使用者自己開啟的**公開貼文內文**，不是收件匣、私訊或任何私人通訊，且只在本機判定、不傳輸 |
+| Personal communications | 不勾 | 不讀取剪貼簿既有內容;LINE 群組引導警示讀取的是使用者自己開啟的**公開貼文內文**，不是收件匣、私訊、電子郵件或任何私人通訊。該內文只在本機判定，命中時留下的 120 字證據片段(`snippet`)與錨點字串(`anchorMatch`)**只寫在這台裝置、一律不上傳**——啟用雲端同步後也不上傳，因此本項維持不勾。<br>No existing clipboard content is read. The LINE group funnel check reads public post content the user opened themselves — not an inbox, DM, email or any private communication. That content is evaluated on-device, and the 120-character evidence snippet it stores never leaves the device, including when Cloud Sync is enabled. |
 | Location | 不勾 | 不存取地理位置 |
-| Web history | 不勾 | 不記錄、不上傳瀏覽紀錄;送出的請求對象一律是使用者自己觸發的那一條 Threads 連結本身(還原/複製為手動觸發;LINE 群組引導警示的作者識別碼備援請求由使用者開啟貼文頁自動觸發，對象仍只限使用者當下正在看的那一篇貼文)，且不回傳給開發者，只在本機使用。「淨化紀錄」同理:只記本擴充功能自己產出的乾淨網址，未登入時預設只存 chrome.storage.local、不傳輸給任何一方(含開發者)，依 CWS 定義不構成蒐集;登入後的同步行為改列於本表 User activity 一列 |
+| Web history | **勾選**(僅在使用者主動登入雲端同步時) | 未登入時不勾的理由不變:不記錄、不上傳瀏覽紀錄;送出的請求對象一律是使用者自己觸發的那一條 Threads 連結本身(還原/複製為手動觸發;LINE 群組引導警示的作者識別碼備援請求由使用者開啟貼文頁自動觸發，對象仍只限使用者當下正在看的那一篇貼文)，且不回傳給開發者，只在本機使用。**使用者主動以 Google 帳號登入雲端同步後**，警示名單會把命中的**證據貼文網址**(`anchorPostUrl`／`threadUrl`，即被標記的那一篇公開貼文的永久連結)上傳到開發者自營後端——這是使用者在 Threads 上造訪過的頁面網址，依 CWS 對 Web history 的定義屬於本類，因此改為勾選。用途只有一個:讓同一位使用者在另一台裝置上點得回證據來源(App functionality)。**不上傳**使用者當時開的那一頁網址(`postUrl`)、也不上傳任何非 Threads 網域的瀏覽紀錄或分頁清單。不登入即不發生;隨時可在「紀錄與設定」頁登出停止，登出後不再上傳。「淨化紀錄」的網址同理:未登入時只存 chrome.storage.local、不傳輸給任何一方，登入後的同步行為另見本表 User activity 一列。<br>Not applicable unless the user signs in. Once the user actively signs in with Google to enable Cloud Sync, the flagged list uploads the permanent links of the flagged public posts (the evidence posts) to the developer's own backend, so the same user can open the evidence from another device (App functionality). The URL of the page the user happened to be viewing is not uploaded, and no browsing history outside Threads is ever collected. Signing out stops it. |
 | User activity | **勾選** | 僅登入後才會發生:同步使用者自己觸發的清理動作所產生的紀錄(貼文網址、被移除的參數、貼文作者與摘要、清理時間)，唯一用途是讓同一使用者的清理紀錄跨裝置(含手機版 App)保持一致(App functionality)。登入後另同步一組隨機裝置識別碼與可自訂的裝置名稱，用於標示紀錄來源裝置。不用於分析全體使用者行為、不用於廣告、不轉讓、不出售給第三方。<br>Occurs only after sign-in: syncs the cleaning-history records the user's own actions generate (post URL, removed tracking parameters, post author and summary, cleaning timestamp), solely to keep that user's own cleaning history consistent across devices, including the companion mobile app (App functionality). Signing in also syncs a randomly generated device identifier and a user-editable device name, used to label which device a record came from. Not used to analyze aggregate user behavior, not used for ads, not shared or sold to third parties. |
-| Website content | 不勾 | 連結淨化的 content script 只「寫入」剪貼簿寫入呼叫的攔截與改寫。LINE 群組引導警示會讀取使用者當下開啟的貼文內文做判定，但讀取與留存都只發生在這台裝置上(命中時只留一段 120 字的證據片段與貼文網址，寫入 `chrome.storage.local`)，不傳輸給開發者或任何第三方——依 CWS 定義，未傳輸即不構成蒐集 |
+| Website content | **勾選**(僅在使用者主動登入雲端同步時) | 連結淨化的 content script 只做剪貼簿寫入呼叫的攔截與改寫。LINE 群組引導警示會讀取使用者當下開啟的貼文內文做判定，**判定與片段留存都只發生在這台裝置上**(120 字證據片段寫 `chrome.storage.local`，不上傳)。但**使用者主動登入雲端同步後**，警示名單會把取自 Threads 頁面的**作者帳號與顯示名稱快照**，連同命中的貼文網址一併上傳到開發者自營後端;這些欄位取自網站頁面內容，依 CWS 對 Website content 的定義屬於本類，因此改為勾選。用途只有一個:讓同一位使用者的警示名單在自己的裝置之間保持一致(App functionality)。**不上傳貼文內文**(證據片段與錨點字串一律留在本機)，不上傳頁面截圖、DOM 或任何未經判定的頁面內容;不用於廣告或分析，不轉讓、不出售給第三方。不登入即不發生，登出即停止。<br>Not applicable unless the user signs in. Once the user actively signs in with Google to enable Cloud Sync, the flagged list uploads the author handle and display-name snapshot taken from the Threads page, together with the flagged posts' links, to the developer's own backend, solely to keep that user's own flagged list consistent across their own devices (App functionality). Post text is never uploaded — the evidence snippet stays on the device — and no page screenshots, DOM or other page content is collected. Not used for ads or analytics, not shared or sold to third parties. Signing out stops it. |
 
-**LINE 群組引導警示(0.8.0)對本表的影響**:無須新增任何勾選項，也無須改動既有勾選。該功能的偵測全在使用者自己的瀏覽器完成:它會讀取使用者當下主動開啟的那一頁貼文內文，命中時留下作者資料與一段證據片段——**讀取與留存都只在本機(`chrome.storage.local`；備援請求的節流表寫 `chrome.storage.session`，瀏覽器關閉即清)，不傳輸給開發者或第三方，依 CWS 定義不構成蒐集**(與「淨化紀錄」同一道理，見上表 Web history 一列)，因此 Website content 與 Personal communications 維持不勾。
+**LINE 群組引導警示對本表的影響**:功能剛上線(0.8.0)時名單純屬本機，三列皆維持不勾;名單改為可隨雲端同步之後(見 `docs/cloud-sync.md` 決策 D35–D40)，**Website content 與 Web history 兩列改為勾選**，Personal communications 維持不勾。分界點是「資料有沒有離開這台裝置」:
 
-少數情況下(貼文頁本身沒帶作者識別碼)，會對**使用者當下正在看的同一篇貼文**發一次匿名請求取得該識別碼:不帶 cookie 與登入憑證、同一篇 24 小時內只發一次、資料不經過也不回傳給開發者，總開關關閉即完全不發。這與上表 Web history 一列既有的敘述是同一型態——請求對象就是使用者自己觸發的那一條 Threads 連結本身，因此該列維持不勾。
+- **偵測本身仍全在本機**:讀取使用者當下主動開啟的那一頁貼文內文，命中時留下作者資料與一段證據片段，未登入時一律只寫 `chrome.storage.local`(備援請求的節流表寫 `chrome.storage.session`，瀏覽器關閉即清)，不傳輸給任何一方，依 CWS 定義不構成蒐集。
+- **登入雲端同步後才會上傳**、且只上傳這些欄位:作者數字 id、帳號與顯示名快照、證據貼文網址、掃到的時間與貼文發布時間、規則版本、回報裝置 id。其中帳號與顯示名屬 Website content，證據貼文網址屬 Web history，兩列因此勾選。
+- **貼文文字片段(`snippet`)、錨點字串(`anchorMatch`)與使用者當時開的那一頁網址(`postUrl`)一律不上傳**，留在本機。Personal communications 據此維持不勾——上傳的欄位裡沒有任何一項是通訊內容。
+- **全程以使用者的主動行為為條件**:不登入就不會發生，登出即停止上傳;總開關關閉時名單既不拉也不推。
 
-功能本身也屬既有單一用途的延伸——同樣是針對使用者正在看的這一則 Threads 貼文提供保護，沒有引入無關目的。
+少數情況下(貼文頁本身沒帶作者識別碼)，會對**使用者當下正在看的同一篇貼文**發一次匿名請求取得該識別碼:不帶 cookie 與登入憑證、同一篇 24 小時內只發一次、資料不經過也不回傳給開發者，總開關關閉即完全不發。這一項與登入與否無關，也不改變上述任何一列的勾選。
+
+功能本身也屬既有單一用途的延伸——同樣是針對使用者正在看的這一則 Threads 貼文提供保護，沒有引入無關目的;名單改為可同步之後仍然是「同一位使用者的同一份判斷在自己的裝置之間保持一致」，與雲端同步既有的定位相同。
 
 **「單一用途」聲明相容性說明**:雲端同步是既有「保存清理紀錄」子功能的延伸——把原本只存在本機的同一份紀錄，改為選用地額外存一份到使用者自己的雲端帳號，讓同一位使用者可以跨裝置(含手機版 App)看到同一份紀錄;沒有新增與「Threads 連結淨化」無關的目的，因此第 5 節的單一用途聲明文字不需要修改。
 
@@ -284,7 +291,7 @@ Chrome Web Store 開發者主控台的 Privacy practices 分頁通常包含「�
 
 ### 為什麼「發網路請求」不等於「蒐集資料」
 
-這裡容易被誤解，先講清楚:①右鍵還原與②淨化功能攔到短碼時，都會對 Threads 發出一次匿名 GET——但這是「擴充功能代替使用者向 Threads 詢問一條連結指向哪裡」，資料流向是「使用者瀏覽器 → Threads 伺服器」，不會經過開發者的任何伺服器，開發者端沒有蒐集、沒有留存、也沒有能力事後查詢任何一次請求。因此在 Chrome 的資料揭露定義裡，這兩個匿名 GET 請求本身不構成蒐集使用者資料;上表 Web history 維持不勾是正確的，也與 Personally identifiable information、Authentication information、User activity 三項的勾選互不影響——那三項對應的是使用者主動登入雲端同步後的行為，與這裡未登入即可用的匿名短碼解析請求是兩回事。
+這裡容易被誤解，先講清楚:①右鍵還原與②淨化功能攔到短碼時，都會對 Threads 發出一次匿名 GET——但這是「擴充功能代替使用者向 Threads 詢問一條連結指向哪裡」，資料流向是「使用者瀏覽器 → Threads 伺服器」，不會經過開發者的任何伺服器，開發者端沒有蒐集、沒有留存、也沒有能力事後查詢任何一次請求。因此在 Chrome 的資料揭露定義裡，這兩個匿名 GET 請求本身不構成蒐集使用者資料;警示名單的作者識別碼備援請求同理。上表 Website content 與 Web history 兩列會勾選，是因為**登入雲端同步後名單確實把作者帳號與證據貼文網址送到開發者的後端**，與這裡的匿名 GET 無關——後者未登入即可用，資料流向是「使用者瀏覽器 → Threads 伺服器」，不經過開發者。Personally identifiable information、Authentication information、User activity 三項同屬前者那一類:對應的都是使用者主動登入之後的行為。
 
 ---
 
