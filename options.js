@@ -24,7 +24,8 @@
   var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
 
   // 純本機開關:值存 chrome.storage.local，不進 SETTING_IDS(那三顆走 sync、
-  // 跟著帳號跨裝置同步)。詐騙警示的黑名單只存在這台裝置，開關跟著留在本機。
+  // 跟著帳號跨裝置同步)。名單本身雖然隨 marks 通道上雲(D35-D40)，這顆開關講
+  // 的是「這台裝置要不要掃描、要不要走這條通道」，因此跟著留在本機。
   // 缺席視為 true——「未設定」不等於「關閉」，首次安裝即生效。
   var LOCAL_SETTING_DEFAULTS = { scamGuardEnabled: true };
   var LOCAL_SETTING_IDS = ['scamGuardEnabled'];
