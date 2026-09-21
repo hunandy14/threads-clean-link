@@ -1663,7 +1663,7 @@ test('R3-2 下行：別台裝置清空（purge）→ 不晚於水位線的本機
       1002: localEntry({ handle: 'bob', updatedAt: T0 + 5 * DAY }),
     }),
     // marksCursor 非 null:跳過回填，這一輪直接走增量（POST 帶 since）。
-    // marksPushedAt 壓在兩筆之上,這一輪沒有要推的東西,只拉。
+    // marksPushedAt 壓在兩筆之上，這一輪沒有要推的東西，只拉。
     syncState: { marksCursor: '0', marksPushedAt: T0 + 10 * DAY, marksEvicted: 3 },
   });
   const cleared = await clearCloudMarks(env);
