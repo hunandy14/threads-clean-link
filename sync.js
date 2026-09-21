@@ -1004,9 +1004,11 @@
         var entry = list.entries[userId];
         var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
         if (pushedAt !== null && updatedAt <= pushedAt) return;
-        // handle 形狀不合的條目不進批:送上去必被伺服器退回 rejectedIds，白佔一
-        // 次往返，還把 key 記進 marksRejected——在本機又動過那一筆之前不再重送。
-        if (entry.handle !== undefined && !TCLCoreRef.isScamMarkHandle(entry.handle)) return;
+        // handle 缺席或形狀不合的條目都不進批:後端視 handle 為必填(staging 實
+        // 測，送 null 整筆進 rejectedIds)，送上去白佔一次往返，還把 key 記進
+        // marksRejected——被拒映射要等本機 updatedAt 前進才會再送，而補建的空
+        // dismissed 條目根本不會再被動到，那次解除從此同步不出去。
+        if (!TCLCoreRef.isScamMarkHandle(entry.handle)) return;
         var mark = TCLCoreRef.toScamMark(userId, entry);
         if (rejected[mark.key] === updatedAt) return;
         pending.push({ mark: mark, updatedAt: updatedAt });
