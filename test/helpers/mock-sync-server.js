@@ -51,6 +51,28 @@
 // - 裝置三端點與 `/api/v1/links` 共用同一個 per-user 限流桶。
 //
 // ============================================================================
+// 警示名單（marks）——契約由 PM 凍結，逐條形狀見 test/mock-marks-server.test.js
+// ============================================================================
+// - `POST /api/v1/marks/sync` body `{ upserts, deletes, since?, cursor? }` →
+//   `{ cursor, applied:{upserts:[key], rejectedIds:[key], deletedIds:[key]},
+//   changes, evicted:n }`。`applied` 的子欄位沿用 links 命名，值是 key 字串；
+//   `rejectedIds` 三種來源：整筆驗證不過、同批被 delete 撞掉、比墓碑舊不復活
+//   （evidence 單筆不合法只剝那一筆，不影響該 mark）。
+//   `changes` 為 `null`（沒帶 `since`／`cursor` 時，首次回填走 GET）或
+//   `{ marks:[mark], deleted:[{key, deletedAt}], hasMore }`，單頁 200 筆。
+// - `GET /api/v1/marks?since=&cursor=&limit=` → `{ items, nextCursor }`，依
+//   `updatedAt` 升冪分頁，`limit` 預設 50、上限 100。
+// - mark 固定九欄、evidence 固定七欄，可空者一律輸出 `null`（缺席與 null 是兩
+//   回事，客戶端靠欄位齊備直接覆寫本機列）。
+// - 合併：純量 LWW by `updatedAt`（大者勝、相等以伺服器既有為準）；evidence 以
+//   `anchorPostUrl`（缺則 `threadUrl`）去重取聯集、依 `at` 降冪留 3；轉
+//   dismissed 不清 evidence。
+// - 配額：free 滿額時依 `updatedAt` 最舊淘汰，`evicted` 回筆數且不寫墓碑（寫了
+//   會讓其他裝置跟著刪）；pro 無上限。墓碑保留 90 天。
+// - 守門、限流桶與游標工具一律沿用 links；批次上限也是 50，但錯誤碼另立
+//   `too_many_mark_upserts`／`too_many_mark_deletes`（422），與連結那邊分得開。
+//
+// ============================================================================
 // 契約備註（PM 已裁決）
 // ============================================================================
 // - api-spec 4.3 的 `SyncRequest` **沒有** `clearedAt` 欄位。「清空全部」的
@@ -61,7 +83,7 @@
 //   預設行為照此；要模擬 401 請用 `failNext({ status: 401 })`。
 'use strict';
 
-const { postKeyOf } = require('../../tcl-core.js');
+const { postKeyOf, normalizePostUrl } = require('../../tcl-core.js');
 
 // ---- 協定常數（api-spec 7.2:719-732、7.1:687-718、7.4:758-770） ----
 const MAX_SYNC_UPSERTS = 50;
@@ -84,6 +106,19 @@ const MAX_DEVICES = 6; // mock 的每帳號裝置上限（測試專用小值；�
 const DEVICE_LAST_SEEN_THROTTLE_MS = 30 * 60_000; // 只套用在 sync 內嵌路徑
 // UUID 形狀：大小寫不敏感、不驗版本／變體位，全零亦合法。
 const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ---- 警示名單（marks）常數 ----
+// key 是 Threads 的數字作者主鍵，與 storage 側黑名單的鍵同一把尺。
+const MARK_KEY_PATTERN = /^threads:\d{1,20}$/;
+const MARK_HANDLE_PATTERN = /^[A-Za-z0-9._]{1,80}$/;
+const MARK_STATES = ['active', 'dismissed'];
+const MARK_SOURCES = ['auto', 'manual'];
+// 與 detectScamPitch 產出的訊號同一份詞彙，輸出固定順序。
+const MARK_SIGNALS = ['link', 'line', 'group', 'join', 'pitch'];
+const MARK_DISPLAY_NAME_MAX = 80; // code point，emoji 算 1
+const MARK_EVIDENCE_MAX = 3;
+const MARK_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const MARKS_FREE_QUOTA = 1000;
 
 // ---- 小工具 ----
 
@@ -290,6 +325,147 @@ function publicItem(row) {
   return item;
 }
 
+// ---- 警示名單（marks）的純函式 ----
+
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * 單筆證據正規化。`anchorPostUrl`（含錨點那一篇）與 `at` 是證據成立的必要條
+ * 件，任一不符回 null（呼叫端逐筆剝除，整筆 mark 照留）；其餘欄位形狀不對時
+ * 只剝該欄。
+ *
+ * `snippet`／`anchorMatch`／`postUrl` 三欄雲端不收：貼文原文與使用者當時開的
+ * 那一頁留在本機就好，上雲的證據只要指得到那一篇。輸出走白名單，有帶即剝除。
+ */
+function normalizeMarkEvidence(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const anchorPostUrl = normalizePostUrl(raw.anchorPostUrl);
+  if (anchorPostUrl === null) return null;
+  if (!isFiniteNumber(raw.at)) return null;
+  const out = { anchorPostUrl, at: raw.at };
+  const threadUrl = normalizePostUrl(raw.threadUrl);
+  if (threadUrl !== null) out.threadUrl = threadUrl;
+  // 逐項過白名單、去重、輸出固定順序；全被剝光時整欄不輸出。
+  const signals = Array.isArray(raw.signals)
+    ? MARK_SIGNALS.filter((name) => raw.signals.indexOf(name) !== -1)
+    : [];
+  if (signals.length) out.signals = signals;
+  if (isFiniteNumber(raw.postedAt)) out.postedAt = raw.postedAt;
+  if (isFiniteNumber(raw.rulesVersion)) out.rulesVersion = raw.rulesVersion;
+  if (typeof raw.deviceId === 'string' && raw.deviceId !== '') out.deviceId = raw.deviceId;
+  return out;
+}
+
+// 證據的去重鍵：同一篇錨點貼文只算一筆，anchorPostUrl 缺席時退回 threadUrl。
+function markEvidenceKey(item) {
+  if (typeof item.anchorPostUrl === 'string') return item.anchorPostUrl;
+  if (typeof item.threadUrl === 'string') return item.threadUrl;
+  return null;
+}
+
+// 取聯集：同一去重鍵留 `at` 較大者，依 `at` 降冪留最新 MARK_EVIDENCE_MAX 筆。
+function mergeMarkEvidence(existing, incoming) {
+  const byKey = new Map();
+  existing.concat(incoming).forEach((item) => {
+    const key = markEvidenceKey(item);
+    if (key === null) return;
+    const prev = byKey.get(key);
+    if (!prev || item.at > prev.at) byKey.set(key, item);
+  });
+  return [...byKey.values()].sort((a, b) => b.at - a.at).slice(0, MARK_EVIDENCE_MAX);
+}
+
+/**
+ * 單筆 mark 正規化。`key`／`state`／`handle`／`addedAt`／`updatedAt` 任一不符
+ * 即回 null，整筆退回 `applied.rejectedIds`（不擋整批）；`source` 不在枚舉內
+ * 退回 auto、不算驗證失敗；`displayName` 以 code point 截斷；`dismissedAt` 只
+ * 在 dismissed 狀態下留存（active 一律輸出 null）。未知欄位不輸出。
+ */
+function normalizeMark(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (typeof raw.key !== 'string' || !MARK_KEY_PATTERN.test(raw.key)) return null;
+  if (MARK_STATES.indexOf(raw.state) === -1) return null;
+  if (typeof raw.handle !== 'string' || !MARK_HANDLE_PATTERN.test(raw.handle)) return null;
+  if (!isFiniteNumber(raw.addedAt) || !isFiniteNumber(raw.updatedAt)) return null;
+
+  const evidence = (Array.isArray(raw.evidence) ? raw.evidence : [])
+    .map(normalizeMarkEvidence)
+    .filter((item) => item !== null);
+  const mark = {
+    key: raw.key,
+    state: raw.state,
+    handle: raw.handle,
+    source: MARK_SOURCES.indexOf(raw.source) === -1 ? 'auto' : raw.source,
+    addedAt: raw.addedAt,
+    updatedAt: raw.updatedAt,
+    evidence: mergeMarkEvidence([], evidence),
+  };
+  if (typeof raw.displayName === 'string') {
+    mark.displayName = Array.from(raw.displayName).slice(0, MARK_DISPLAY_NAME_MAX).join('');
+  }
+  if (mark.state === 'dismissed' && isFiniteNumber(raw.dismissedAt)) mark.dismissedAt = raw.dismissedAt;
+  return mark;
+}
+
+/**
+ * 兩筆 mark 合併：純量 LWW（`updatedAt` 大者勝；相等以既有為準，重送同一版不
+ * 翻盤），evidence 取聯集。`addedAt` 取較小者——那是首見時間，不隨新版往後
+ * 跳。轉 dismissed 照樣保留 evidence：使用者要看得到當初憑什麼掛上警示。
+ */
+function mergeMark(existing, incoming) {
+  const winner = incoming.updatedAt > existing.updatedAt ? incoming : existing;
+  const loser = winner === incoming ? existing : incoming;
+  const merged = {
+    key: existing.key,
+    state: winner.state,
+    handle: winner.handle,
+    source: winner.source,
+    addedAt: Math.min(existing.addedAt, incoming.addedAt),
+    updatedAt: winner.updatedAt,
+    evidence: mergeMarkEvidence(existing.evidence, incoming.evidence),
+  };
+  const displayName = winner.displayName !== undefined ? winner.displayName : loser.displayName;
+  if (displayName !== undefined) merged.displayName = displayName;
+  if (merged.state === 'dismissed') {
+    const dismissedAt = winner.dismissedAt !== undefined ? winner.dismissedAt : loser.dismissedAt;
+    if (dismissedAt !== undefined) merged.dismissedAt = dismissedAt;
+  }
+  return merged;
+}
+
+// 對外視圖：證據固定七欄，缺席的選填欄位輸出 null。`signals` 是清單，沒有訊號
+// 時輸出空陣列（與 mark 的 evidence 同一種寫法），陣列一併複製，呼叫端拿去改
+// 動不會動到伺服器狀態。
+function markEvidenceView(item) {
+  return {
+    anchorPostUrl: item.anchorPostUrl,
+    threadUrl: item.threadUrl === undefined ? null : item.threadUrl,
+    signals: Array.isArray(item.signals) ? item.signals.slice() : [],
+    at: item.at,
+    postedAt: item.postedAt === undefined ? null : item.postedAt,
+    rulesVersion: item.rulesVersion === undefined ? null : item.rulesVersion,
+    deviceId: item.deviceId === undefined ? null : item.deviceId,
+  };
+}
+
+// 對外視圖：mark 固定九欄，可空者輸出 null；不外流內部的 serverAt（游標用的邏
+// 輯時戳）。
+function markView(row) {
+  return {
+    key: row.key,
+    state: row.state,
+    dismissedAt: row.dismissedAt === undefined ? null : row.dismissedAt,
+    handle: row.handle,
+    displayName: row.displayName === undefined ? null : row.displayName,
+    source: row.source,
+    evidence: row.evidence.map(markEvidenceView),
+    addedAt: row.addedAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function eventTimeOf(item) {
   const seenMax = (item.seen || []).reduce((max, rec) => (rec.at > max ? rec.at : max), 0);
   return Math.max(item.receivedAt, seenMax);
@@ -325,6 +501,8 @@ function createMockSyncServer(options = {}) {
     plan: options.plan || 'free',
   };
   const quota = options.quota || FREE_QUOTA;
+  // 警示名單另有一組配額（測試要塞滿時用小值覆寫），方案開關沿用 user.plan。
+  let marksQuota = options.marksQuota || MARKS_FREE_QUOTA;
 
   const state = {
     token: options.token || null,
@@ -332,6 +510,10 @@ function createMockSyncServer(options = {}) {
     links: new Map(),
     /** postKey → { id, postKey, deletedAt } */
     tombstones: new Map(),
+    /** mark key → row（row 另帶 serverAt 游標時戳，不外流） */
+    marks: new Map(),
+    /** mark key → { key, deletedAt } */
+    markTombstones: new Map(),
     /** deviceId（小寫）→ { deviceId, name, platform, createdAt, lastSeenAt, removedAt } */
     devices: new Map(),
     clearedAt: null,
@@ -711,6 +893,174 @@ function createMockSyncServer(options = {}) {
     return jsonResponse(200, { cursor, applied, changes, evicted });
   }
 
+  // ---- 端點：POST /api/v1/marks/sync（警示名單契約） ----
+  function handleMarksSync(headers, body, at) {
+    // 守門順序與 links 一致：Content-Type → body 形狀 → 認證 → 限流。
+    if (!isJsonContentType(headers['content-type'])) {
+      return jsonResponse(415, { error: 'unsupported_media_type' });
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return jsonResponse(400, { error: 'bad_request' });
+    }
+    if (!authed(headers)) return unauthorized();
+    if (rateLimited(at)) return rateLimitedResponse();
+
+    const upserts = Array.isArray(body.upserts) ? body.upserts : [];
+    const deletes = [...new Set(Array.isArray(body.deletes) ? body.deletes : [])].filter(
+      (key) => typeof key === 'string' && MARK_KEY_PATTERN.test(key)
+    );
+    if (upserts.length > MAX_SYNC_UPSERTS) {
+      return jsonResponse(422, { error: 'too_many_mark_upserts', max: MAX_SYNC_UPSERTS });
+    }
+    if (deletes.length > MAX_SYNC_DELETES) {
+      return jsonResponse(422, { error: 'too_many_mark_deletes', max: MAX_SYNC_DELETES });
+    }
+
+    // `cursor` 是續傳位置、`since` 是起點，兩者同一種編碼；同時帶時以 cursor
+    // 為準，錯誤碼各自對應，客戶端才知道是哪一個參數壞掉。
+    const usingCursor = body.cursor !== undefined && body.cursor !== null && body.cursor !== '';
+    const since = decodeSince(usingCursor ? body.cursor : body.since);
+    if (since === undefined) {
+      return jsonResponse(400, { error: usingCursor ? 'bad_cursor' : 'bad_since' });
+    }
+
+    const applied = { upserts: [], rejectedIds: [], deletedIds: [] };
+
+    // 批內先依 key 合併，同一輪只寫一次。整筆驗證不過的退回 rejectedIds（不擋
+    // 整批）：客戶端得知道哪一筆別再送，光是靜默丟棄會讓它每輪重送同一筆髒資
+    // 料。`key` 不是字串時沒有可回報的識別，只能丟掉。
+    const batch = new Map();
+    upserts.forEach((raw) => {
+      const mark = normalizeMark(raw);
+      if (!mark) {
+        const key = raw && typeof raw === 'object' && typeof raw.key === 'string' ? raw.key : null;
+        if (key !== null && applied.rejectedIds.indexOf(key) === -1) applied.rejectedIds.push(key);
+        return;
+      }
+      const prev = batch.get(mark.key);
+      batch.set(mark.key, prev ? mergeMark(prev, mark) : mark);
+    });
+
+    const deleteSet = new Set(deletes);
+    batch.forEach((incoming, key) => {
+      // 同批 delete 撞 upsert：刪除勝，這筆連寫都不寫。
+      if (deleteSet.has(key)) {
+        applied.rejectedIds.push(key);
+        return;
+      }
+      const tomb = state.markTombstones.get(key);
+      if (tomb) {
+        // 比墓碑舊的版本不復活；較新的版本撤銷墓碑。
+        if (incoming.updatedAt <= tomb.deletedAt) {
+          applied.rejectedIds.push(key);
+          return;
+        }
+        state.markTombstones.delete(key);
+      }
+      const existing = state.marks.get(key);
+      const merged = existing ? mergeMark(existing, incoming) : incoming;
+      state.marks.set(key, Object.assign({}, merged, { serverAt: tick() }));
+      applied.upserts.push(key);
+    });
+
+    // 刪除一律寫墓碑（含原本就不存在的 key，冪等）。
+    deletes.forEach((key) => {
+      applied.deletedIds.push(key);
+      state.marks.delete(key);
+      state.markTombstones.set(key, { key, deletedAt: tick() });
+    });
+
+    // 配額淘汰：free 方案、且這一輪真的有寫入時才結算；依 updatedAt 最舊者先
+    // 走，**不寫墓碑**——寫了會被其他裝置當成刪除跟著清掉。回應只帶筆數，被淘
+    // 汰的 key 靠客戶端下次回填自行對帳。
+    let evicted = 0;
+    if (applied.upserts.length > 0 && user.plan === 'free' && state.marks.size > marksQuota) {
+      const overflow = state.marks.size - marksQuota;
+      [...state.marks.values()]
+        .sort((a, b) => a.updatedAt - b.updatedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+        .slice(0, overflow)
+        .forEach((row) => state.marks.delete(row.key));
+      evicted = overflow;
+    }
+
+    // 增量段（沒帶 since／cursor 時 changes 為 null，首次回填走 GET）。兩條時
+    // 間線各自分頁，游標停在本頁最後一筆位置的較小者，續傳才不會跳過另一條。
+    let changes = null;
+    let cursor = String(tick());
+    if (since !== null) {
+      const markRows = [...state.marks.values()]
+        .map((row) => ({ pos: { at: row.serverAt, id: row.key }, row }))
+        .filter((x) => afterPosition(x.pos, since))
+        .sort((a, b) => comparePosition(a.pos, b.pos));
+      const tombRows = [...state.markTombstones.values()]
+        // 保留期外的墓碑不再出現在 changes：早就沒裝置需要靠它補刪除。
+        .filter((tomb) => at - tomb.deletedAt < MARK_TOMBSTONE_TTL_MS)
+        .map((tomb) => ({ pos: { at: tomb.deletedAt, id: tomb.key }, tomb }))
+        .filter((x) => afterPosition(x.pos, since))
+        .sort((a, b) => comparePosition(a.pos, b.pos));
+
+      const markPage = markRows.slice(0, CHANGES_LIMIT);
+      const tombPage = tombRows.slice(0, CHANGES_LIMIT);
+      const hasMore = markRows.length > CHANGES_LIMIT || tombRows.length > CHANGES_LIMIT;
+
+      changes = {
+        marks: markPage.map((x) => markView(x.row)),
+        deleted: tombPage.map((x) => ({ key: x.tomb.key, deletedAt: x.tomb.deletedAt })),
+        hasMore,
+      };
+
+      if (hasMore) {
+        const ends = [];
+        if (markPage.length) ends.push(markPage[markPage.length - 1].pos);
+        if (tombPage.length) ends.push(tombPage[tombPage.length - 1].pos);
+        const min = ends.sort(comparePosition)[0];
+        cursor = encodeCursor(min.at, min.id);
+      }
+    }
+
+    return jsonResponse(200, { cursor, applied, changes, evicted });
+  }
+
+  // ---- 端點：GET /api/v1/marks（回填分頁，形狀比照 GET /api/v1/links） ----
+  function handleListMarks(url, headers, at) {
+    if (!authed(headers)) return unauthorized();
+    if (rateLimited(at)) return rateLimitedResponse();
+    const params = url.searchParams;
+    let limit = Number(params.get('limit'));
+    if (!Number.isInteger(limit) || limit <= 0) limit = PAGE_SIZE_DEFAULT;
+    limit = Math.min(limit, PAGE_SIZE_MAX);
+
+    const cursorRaw = params.get('cursor');
+    let cursor = null;
+    if (cursorRaw !== null && cursorRaw !== '') {
+      const m = cursorRaw.match(/^(\d+)~(.*)$/);
+      if (!m) return jsonResponse(400, { error: 'bad_cursor' });
+      cursor = { at: Number(m[1]), id: m[2] };
+    }
+    const sinceRaw = params.get('since');
+    let since = null;
+    if (sinceRaw !== null && sinceRaw !== '') {
+      since = decodeSince(sinceRaw);
+      if (since === undefined) return jsonResponse(400, { error: 'bad_since' });
+    }
+
+    // updatedAt ASC, key ASC；墓碑不入回填，回填只講「現在有哪些警示」。升冪
+    // 讓 `since` 與 `cursor` 是同一種「停在哪裡」的語意，續頁只要往後走。
+    const rows = [...state.marks.values()].sort(
+      (a, b) => a.updatedAt - b.updatedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+    );
+    const fresh = since
+      ? rows.filter((row) => afterPosition({ at: row.updatedAt, id: row.key }, since))
+      : rows;
+    const after = cursor
+      ? fresh.filter((row) => afterPosition({ at: row.updatedAt, id: row.key }, cursor))
+      : fresh;
+    const page = after.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor = after.length > limit && last ? encodeCursor(last.updatedAt, last.key) : null;
+    return jsonResponse(200, { items: page.map(markView), nextCursor });
+  }
+
   // ---- 端點：GET /api/v1/links（api-spec 4.2:346-368） ----
   function handleList(url, headers, at) {
     if (!authed(headers)) return unauthorized();
@@ -756,6 +1106,8 @@ function createMockSyncServer(options = {}) {
     if (!authed(headers)) return unauthorized();
     state.links.clear();
     state.tombstones.clear();
+    state.marks.clear();
+    state.markTombstones.clear();
     state.devices.clear();
     state.clearedAt = null;
     state.token = null;
@@ -817,6 +1169,8 @@ function createMockSyncServer(options = {}) {
     if (method === 'POST' && path === '/api/auth/sign-out') return handleSignOut(headers);
     if (method === 'POST' && path === '/api/v1/links/sync') return handleSync(headers, body, at);
     if (method === 'GET' && path === '/api/v1/links') return handleList(url, headers, at);
+    if (method === 'POST' && path === '/api/v1/marks/sync') return handleMarksSync(headers, body, at);
+    if (method === 'GET' && path === '/api/v1/marks') return handleListMarks(url, headers, at);
     if (method === 'DELETE' && path === '/api/v1/links') return handleDeleteLinks(headers, at);
     if (method === 'DELETE' && path === '/api/v1/account') return handleDeleteAccount(headers);
     if (method === 'GET' && path === '/api/v1/devices') return handleListDevices(headers, at);
@@ -1007,6 +1361,60 @@ function createMockSyncServer(options = {}) {
       return state.clearedAt;
     },
 
+    /**
+     * 警示名單的測試輔助 API（單一使用者，帳號由 `setUser` 決定）。備料一律走
+     * 這裡，不繞過 API 直接動 Map。
+     */
+    marks: {
+      /** 直接種雲端警示（不經 API），供拉取／配額測試備料。 */
+      seed(list) {
+        list.forEach((raw) => {
+          const mark = normalizeMark(raw);
+          if (!mark) throw new Error('mock-sync-server.marks.seed: 資料不符 mark 必填欄位');
+          state.marks.delete(mark.key);
+          state.markTombstones.delete(mark.key);
+          state.marks.set(mark.key, Object.assign({}, mark, { serverAt: tick() }));
+        });
+        return this;
+      },
+      /** 直接種墓碑（不經 API）。 */
+      seedTombstone(key, deletedAt) {
+        state.marks.delete(key);
+        state.markTombstones.set(key, { key, deletedAt: deletedAt === undefined ? tick() : deletedAt });
+        return this;
+      },
+      /** 單筆查詢，不存在回 null。 */
+      byKey(key) {
+        const row = state.marks.get(key);
+        return row ? markView(row) : null;
+      },
+      /** 目前雲端警示（依 key 升冪），回的是副本。 */
+      snapshot() {
+        return [...state.marks.values()]
+          .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+          .map(markView);
+      },
+      count() {
+        return state.marks.size;
+      },
+      tombstoneCount() {
+        return state.markTombstones.size;
+      },
+      /** 切換方案（沿用 links 的 free／pro 開關）。 */
+      setPlan(plan) {
+        user.plan = plan;
+        return this;
+      },
+      /** 覆寫警示名單配額（測試用小值）。 */
+      setQuota(value) {
+        marksQuota = value;
+        return this;
+      },
+      quota() {
+        return marksQuota;
+      },
+    },
+
     /** 側錄查詢：最後一次請求／依路徑過濾。 */
     lastRequest() {
       return requests[requests.length - 1] || null;
@@ -1034,6 +1442,18 @@ module.exports = {
   DEVICE_NAME_MAX,
   MAX_DEVICES,
   DEVICE_LAST_SEEN_THROTTLE_MS,
+  MARK_KEY_PATTERN,
+  MARK_HANDLE_PATTERN,
+  MARK_STATES,
+  MARK_SOURCES,
+  MARK_SIGNALS,
+  MARK_DISPLAY_NAME_MAX,
+  MARK_EVIDENCE_MAX,
+  MARK_TOMBSTONE_TTL_MS,
+  MARKS_FREE_QUOTA,
+  normalizeMark,
+  normalizeMarkEvidence,
+  mergeMark,
   isJsonContentType,
   normalizeDeviceId,
   normalizeDeviceName,
