@@ -4966,11 +4966,14 @@ test('L4 審查:handle 形狀只准 [A-Za-z0-9._]{1,80}——@ 前綴與控制�
   }
 });
 
+// settle 給 600ms（與同檔備援類測試一致）：這支一個測試內連開三個沙箱，而
+// v2 的 scam.hit 比改版前多一次 storage.local 讀取（證據要記的 deviceId），
+// 全套併發時 400ms 會偶發不夠用。
 test('L4 審查:handle 形狀對照組——底線與句點合法，恰 80 字放行', async () => {
   for (const good of ['example_author.1', 'a'.repeat(80), 'A1']) {
     const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
     const res = await bg.send(scamHit({ handle: good }), SCAM_TAB_SENDER);
-    await settle(400);
+    await settle(600);
 
     const response = deep(res.response);
     assert.equal(response && response.ok, true, 'handle「' + good + '」是合法帳號形狀，不得誤殺');
