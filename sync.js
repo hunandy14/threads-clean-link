@@ -1150,6 +1150,11 @@
           // 推上去的水位線，floor 晚一步記就夾不到本批的 ack。
           noteMarkFloor(floor, kept);
           settleMarkAck(ctx, payload, batch, floor);
+          // 【當場落地】讓位不能等到整輪尾端才統一套用:後面那批一斷線，整條鏈
+          // 就 reject，尾端那一步輪不到跑，runSync 的失敗路徑會把**進這一輪之前
+          // 就存在**的舊水位線原封不動落盤(夾擠只擋得住這一輪推上去的值，擋不到
+          // 舊值)，留存的條目下一輪依舊選不到。整輪尾端那次保留著，重複套用冪等。
+          applyMarkFloor(ctx, floor);
           if (payload && typeof payload.cursor === 'string') ctx.state.marksCursor = payload.cursor;
           return changes;
         });
