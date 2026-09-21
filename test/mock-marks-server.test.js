@@ -792,7 +792,13 @@ test('marks sync：帶 since 回增量，cursor 可續傳且不重發舊資料',
   assert.equal(first.changes.hasMore, false);
 
   const second = (await h.syncJson({ upserts: [], deletes: [], cursor: first.cursor })).body;
-  assert.deepEqual(second.changes, { marks: [], deleted: [], hasMore: false }, '同一個游標續傳不重發');
+  // 【技術修正｜R3-4】changes 物件多了一格 clearedAt（沒清空過時為 null），
+  // 整包 deepEqual 跟著補上；這一條釘的是「同一個游標續傳不重發」，其餘不變。
+  assert.deepEqual(
+    second.changes,
+    { marks: [], deleted: [], hasMore: false, clearedAt: null },
+    '同一個游標續傳不重發'
+  );
 
   const third = (await h.syncJson({ upserts: [markOf({ key: KEY_B })], deletes: [], cursor: second.cursor })).body;
   assert.deepEqual(
