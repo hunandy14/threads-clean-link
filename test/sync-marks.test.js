@@ -1509,6 +1509,25 @@ function depsWithoutMarksDeleteClearedAt(env) {
   });
 }
 
+/** 把 `DELETE /api/v1/marks` 回應裡的 `clearedAt` 改寫成指定值（後端降級）。 */
+function depsWithMarksDeleteClearedAt(env, value) {
+  const inner = env.deps.fetch;
+  return Object.assign({}, env.deps, {
+    fetch(url, init) {
+      return Promise.resolve(inner(url, init)).then((res) => {
+        const method = ((init && init.method) || 'GET').toUpperCase();
+        if (method !== 'DELETE' || new URL(String(url)).pathname !== '/api/v1/marks') return res;
+        return {
+          status: res.status,
+          ok: res.ok,
+          headers: res.headers,
+          json: () => Promise.resolve({ ok: true, clearedAt: value }),
+        };
+      });
+    },
+  });
+}
+
 /** 把 `POST /api/v1/marks/sync` 回應裡的 `changes.clearedAt` 改寫成指定值。 */
 function depsWithMarksClearedAt(env, value) {
   const inner = env.deps.fetch;
@@ -1887,6 +1906,38 @@ test('R3-3 守衛：DELETE 回應缺 clearedAt 記成待定，下一輪認領且
 
   assert.deepEqual(Object.keys(env.storage.entries()), ['1001'], '待定守衛要把拉回來的 clearedAt 認領成自己那一次，本機一筆不刪');
   assert.equal(marksGuard(env).clearedAt, env.server.marks.clearedAt(), '認領後守衛記下伺服器真正的水位線');
+});
+
+// 【R3-3 補】下行閘門把 `clearedAt: 0` 當成「沒有水位線」（序列化過的 null），
+// 記守衛那一側必須對稱：記成水位線 0 的守衛是「已認領且涵蓋 0」，下一輪拉回真
+// 正的 clearedAt 就比它新，整份本機名單會被當成別台裝置清的硬刪。
+test('R3-3 守衛：DELETE 回應的 clearedAt 為 0 視同缺席，記成待定而不是水位線 0', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }) }),
+    syncState: { marksCursor: '0' },
+  });
+  const engine = TCLSync.create(depsWithMarksDeleteClearedAt(env, 0));
+
+  await engine.deleteCloud();
+  await settle();
+
+  const guard = requireMarksGuard(env);
+  assert.equal(guard.pending, true, '0 不是水位線:記成已認領會讓下一輪拉回真正的 clearedAt 判成別台裝置清的');
+  assert.equal(guard.clearedAt, null);
+  assert.equal(env.storage.syncState().marksCursor, null, '四格照樣重設:雲端那一份確實刪掉了');
+
+  // 首輪回填（changes 為 null），第二輪才帶 since、拉得回伺服器真正的水位線。
+  await engine.syncNow();
+  await settle();
+  env.advance(10 * 60000);
+  await engine.syncNow();
+  await settle();
+
+  assert.deepEqual(Object.keys(env.storage.entries()), ['1001'], '待定守衛認領那個水位線，本機一筆不刪');
+  assert.equal(marksGuard(env).clearedAt, env.server.marks.clearedAt(), '認領後記下伺服器真正的水位線');
 });
 
 test('R3-3 守衛：讀不懂時本輪不清本機、記錯誤碼廣播，並重置成待定', async () => {
