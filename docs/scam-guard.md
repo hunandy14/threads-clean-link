@@ -130,11 +130,12 @@ DOM 取值只認**使用者看得到的貼文容器**：由河道以 SPA 進入�
       source,        // 'auto'（掃描命中）；'manual' 為保留值，本版不產出
     },
   },
-  handleIndex: {},   // handle 小寫 → userId 的反查表，一律由 entries 重建
+  handleIndex: {},   // handle 小寫 → userId 的反查表，一律由 entries 重建，
+                     //   且只收 state === 'active' 的條目（已解除的不進索引）
 }
 ```
 
-v1 的頂層 `allowlist` 在 v2 消失：「已解除」不再是另一張表，而是同一筆條目的 `state`，**證據照樣保留**——復原當下立刻有內容可看，不必等下一次命中才長回來。選項頁的「已解除」小節改由 `entries` 中 `state === 'dismissed'` 的條目派生，河道與詳情頁的查表則只認 `state === 'active'`。狀態併進同一個物件也是雲端同步的前提：名單與白名單各存一邊時，同一位作者在雲端會是兩筆互不相干的資料，最後寫入者勝（LWW）沒有共同的比較對象（見 `docs/cloud-sync.md` 決策 D36）。
+v1 的頂層 `allowlist` 在 v2 **不再是儲存狀態**：「已解除」不再是另一張表，而是同一筆條目的 `state`，**證據照樣保留**——復原當下立刻有內容可看，不必等下一次命中才長回來。選項頁的「已解除」小節改由 `entries` 中 `state === 'dismissed'` 的條目派生（讀者可直接用 `normalizeScamBlocklist` 掛出來的唯讀 `allowlist` 視圖，見下方正規化規則），河道與詳情頁的查表則只認 `state === 'active'`。狀態併進同一個物件也是雲端同步的前提：名單與白名單各存一邊時，同一位作者在雲端會是兩筆互不相干的資料，最後寫入者勝（LWW）沒有共同的比較對象（見 `docs/cloud-sync.md` 決策 D36）。
 
 **v1 → v2 遷移**：原 `entries` 的每一筆轉成 `state: 'active'`；原 `allowlist` 的每一把鍵轉成 `state: 'dismissed'` 的條目（沒有證據，`dismissedAt` 取原本的 `at`，`addedAt` 同值）；同一位作者在兩邊都出現時以 `allowlist` 為準（解除是較晚、較明確的決定），證據保留。`updatedAt` 缺席時以 `addedAt`／`at` 補。遷移後的筆數一樣受下方上限約束。
 
@@ -151,13 +152,12 @@ v1 的頂層 `allowlist` 在 v2 消失：「已解除」不再是另一張表，
 
 | 上限 | 值 | 說明 |
 |---|---|---|
-| 名單筆數 | 5,000 位作者 | 依加入時間降冪保留，最舊的先淘汰 |
+| 名單筆數 | 5,000 位作者 | 依 `updatedAt` 降冪保留，最舊的先淘汰（**v2 起不看 `addedAt`**：解除、復原與證據補寫都會推進 `updatedAt`，用它淘汰才會留下使用者最近真的碰過的條目）。`state: 'active'` 與 `state: 'dismissed'` **共用同一個 5,000 名額**，不分開計數——v1 的 `MAX_ALLOWLIST` 廢止（常數保留，不再作為獨立天花板） |
 | 每位作者的證據 | 3 筆 | 依時間降冪保留最新的；同一篇**錨點貼文**不重複記（去重鍵 `anchorPostUrl ‖ postUrl`）——同一串被從不同篇重新打開時 `postUrl` 是不同的一頁，錨點篇卻是同一篇，綁 `postUrl` 會讓同一次招攬吃掉三筆額度 |
 | 證據片段 | 120 字 | 儲存與顯示同一道天花板 |
-| 整包軟預算 | 2 MB | 以序列化後的 UTF-8 **位元組**計，超出即續裁最舊的條目。分母是 `chrome.storage.local` 的配額：Chrome 114 起為 10 MB，2 MB 約佔兩成；更早的版本為 5 MB，此時約佔四成。manifest 的下限 Chrome 103 落在 5 MB 配額的那幾版，四成仍在安全水位。證據放滿時實際可容約 900–1,600 位作者（證據補上錨點貼文／串頭連結、錨點本體、訊號與貼文發布時間後，每筆條目約增 45%），筆數上限先到或預算先到都會觸發淘汰 |
-| 已解除條目筆數 | 5,000 位作者 | `state: 'dismissed'` 的條目與上方的名單筆數**分別計數**（沿用 v1 名單／白名單各 5,000 的既有天花板），同樣依時間淘汰 |
+| 整包軟預算 | 2 MB | 以序列化後的 UTF-8 **位元組**計，超出即續裁最舊的條目。分母是 `chrome.storage.local` 的配額：Chrome 114 起為 10 MB，2 MB 約佔兩成；更早的版本為 5 MB，此時約佔四成。manifest 的下限 Chrome 103 落在 5 MB 配額的那幾版，四成仍在安全水位。證據放滿時實際可容約 900–1,600 位作者（證據補上錨點貼文／串頭連結、錨點本體、訊號與貼文發布時間後，每筆條目約增 45%），筆數上限先到或預算先到都會觸發淘汰。`state: 'dismissed'` 的條目**一併計入**這 2 MB 預算——它們與 active 條目存在同一個物件裡，不算進來就會低估實際佔用 |
 
-正規化規則：從 storage 讀回時一律重算成上述 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移，遷完不留這把鍵），未知欄位不保留；`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵）；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時以 `updatedAt` 補；`updatedAt` 非有限數字時以 `addedAt` 補，兩者都不合法才丟棄整筆。
+正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛一份由 `state === 'dismissed'` 的條目**派生的唯讀 `allowlist` 視圖**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`），讓既有讀者不必同時改寫。這份視圖是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，下一次讀回又被當成 v1 的 `allowlist` 再遷移一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時以 `updatedAt` 補；`updatedAt` 非有限數字時以 `addedAt` 補，兩者都不合法才丟棄整筆。
 
 單筆證據的七個選填欄位另有一組規則，**形狀不合只剝該欄、不剝整筆**——它們是加值資訊，不是證據成立的必要條件，為了一個壞掉的 `threadUrl` 丟掉整筆等於把使用者真的命中過的紀錄一起抹掉。`postUrl` 與 `at` 仍是必要欄位，不合法整筆丟棄。**缺席時輸出不帶該鍵**（不補 `null` 也不補空字串）：選項頁靠「鍵在不在」決定要不要畫那一行，補空值會讓舊證據畫出一排空連結。
 
