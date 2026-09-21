@@ -157,7 +157,7 @@ v1 的頂層 `allowlist` 在 v2 **不再是儲存狀態**：「已解除」不�
 | 證據片段 | 120 字 | 儲存與顯示同一道天花板 |
 | 整包軟預算 | 2 MB | 以序列化後的 UTF-8 **位元組**計，超出即續裁最舊的條目。分母是 `chrome.storage.local` 的配額：Chrome 114 起為 10 MB，2 MB 約佔兩成；更早的版本為 5 MB，此時約佔四成。manifest 的下限 Chrome 103 落在 5 MB 配額的那幾版，四成仍在安全水位。證據放滿時實際可容約 900–1,600 位作者（證據補上錨點貼文／串頭連結、錨點本體、訊號與貼文發布時間後，每筆條目約增 45%），筆數上限先到或預算先到都會觸發淘汰。`state: 'dismissed'` 的條目**一併計入**這 2 MB 預算——它們與 active 條目存在同一個物件裡，不算進來就會低估實際佔用 |
 
-正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛一份由 `state === 'dismissed'` 的條目**派生的唯讀 `allowlist` 視圖**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`），讓既有讀者不必同時改寫。這份視圖是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，下一次讀回又被當成 v1 的 `allowlist` 再遷移一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時以 `updatedAt` 補；`updatedAt` 非有限數字時以 `addedAt` 補，兩者都不合法才丟棄整筆。
+正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛一份由 `state === 'dismissed'` 的條目**派生的唯讀 `allowlist` 視圖**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`），讓既有讀者不必同時改寫。這份視圖是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，下一次讀回又被當成 v1 的 `allowlist` 再遷移一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時**補 0**（不拿 `updatedAt` 充當——那是「最後一次動過」，不是「什麼時候解除的」，用它充當會讓一筆來歷不明的解除混進最近解除的那幾筆裡）：解除時間不明的條目寫 0，在「已解除」小節依時間降冪時自然排到最後；`updatedAt` 非有限數字時以 `addedAt` 補，兩者都不合法才丟棄整筆。
 
 單筆證據的七個選填欄位另有一組規則，**形狀不合只剝該欄、不剝整筆**——它們是加值資訊，不是證據成立的必要條件，為了一個壞掉的 `threadUrl` 丟掉整筆等於把使用者真的命中過的紀錄一起抹掉。`postUrl` 與 `at` 仍是必要欄位，不合法整筆丟棄。**缺席時輸出不帶該鍵**（不補 `null` 也不補空字串）：選項頁靠「鍵在不在」決定要不要畫那一行，補空值會讓舊證據畫出一排空連結。
 
@@ -169,7 +169,7 @@ v1 的頂層 `allowlist` 在 v2 **不再是儲存狀態**：「已解除」不�
 | `anchorMatch` | 錨點本體，供選項頁做片段高亮 | 非字串剝欄；剝控制／bidi 字元後硬裁 **40 字**（上限在儲存端保證，顯示端不再截） |
 | `signals` | 這次踩到哪幾類訊號 | 逐項過白名單 `link｜line｜group｜join｜pitch`，去重並輸出固定順序；非陣列或全被剝光時**整欄剝除，不留空陣列**（留空陣列會讓證據卡畫出一排沒有 chip 的空白） |
 | `postedAt` | 貼文發布時間（毫秒；`at` 是掃到的時間，兩者語意不同） | 非有限數字剝欄——補 0 會在證據卡上畫成 1970 |
-| `rulesVersion` | 命中當下的規則版本，跨裝置看得出這筆是哪一版規則判的 | 非字串或超過 32 字剝欄 |
+| `rulesVersion` | 命中當下的規則版本（`SCAM_RULES.version`，**數字**），跨裝置看得出這筆是哪一版規則判的 | 非有限數字剝欄 |
 | `deviceId` | 回報這筆證據的裝置（沿用 `syncDevice.deviceId`，未登入時缺席） | 只認 UUID 形狀、一律存小寫，形狀不對剝欄 |
 
 寫入權集中在 background：只有 background 寫 `scamBlocklist`，content script 與選項頁一律直接讀 storage 並監聽變更事件，避免多處併寫互相覆蓋。
@@ -212,12 +212,12 @@ content script 與選項頁都不直接寫名單，一律送訊息給 background
 
 | 回應碼 | 情境 |
 |---|---|
-| `bad_request` | 欄位形狀不合（帳號或貼文網址格式不對、片段超長、id 不是純數字字串、時間不是數字）；證據補強的六欄有帶但形狀不合亦同——`anchorPostUrl`／`threadUrl` 過不了貼文網址白名單、`anchorMatch` 非字串或超過 40 字、`signals` 非陣列或含白名單外的值、`postedAt` 非有限數字、`rulesVersion` 非字串或超過 32 字 |
+| `bad_request` | 欄位形狀不合（帳號或貼文網址格式不對、片段超長、id 不是純數字字串、時間不是數字）；證據補強的六欄有帶但形狀不合亦同——`anchorPostUrl`／`threadUrl` 過不了貼文網址白名單、`anchorMatch` 非字串或超過 40 字、`signals` 非陣列或含白名單外的值、`postedAt` 非有限數字、`rulesVersion` 非有限數字 |
 | `no_user_id` | 預載資料沒有作者 id，備援也取不到——頁面照樣掛標記，但不入名單 |
 | `disabled` | 總開關關閉，不寫入也不發請求 |
 | `internal_error` | 讀寫本機儲存失敗 |
 
-`anchorPostUrl`／`threadUrl`／`anchorMatch`／`signals`／`postedAt`／`rulesVersion` 六欄**一律可缺席**（舊版 content script 送來的三欄 payload 照常受理），但**有帶就驗形狀，不合格整筆回 `bad_request`**，而不是默默剝掉：payload 是自家 content script 送的，形狀不對代表兩端版本對不上，默默吞掉會讓錯誤晚好幾週才被發現。通過驗證的六欄一路寫進 `entry.evidence[0]`。證據的第七個選填欄位 `deviceId` **不由 content script 送**，而是 background 寫入當下從 `syncDevice.deviceId` 補上（未登入、還沒產生裝置識別碼時整個鍵不寫）——裝置身分是 background 的資料，讓頁面端送等於多開一條可被偽造的入口。`anchorMatch` 在送出端就先裁到 40 字——連結型錨點（`lin.ee`／`linktr.ee`／`line.me` 深連結）的帳號段沒有長度上限，不裁的話一次真的命中會整筆被擋下。
+`anchorPostUrl`／`threadUrl`／`anchorMatch`／`signals`／`postedAt`／`rulesVersion` 六欄**一律可缺席**（舊版 content script 送來的三欄 payload 照常受理），但**有帶就驗形狀，不合格整筆回 `bad_request`**，而不是默默剝掉：payload 是自家 content script 送的，形狀不對代表兩端版本對不上，默默吞掉會讓錯誤晚好幾週才被發現。通過驗證的六欄一路寫進 `entry.evidence[0]`（`rulesVersion` 送的是數字，即 `SCAM_RULES.version`，不是版本字串）。證據的第七個選填欄位 `deviceId` **不由 content script 送**，而是 background 寫入當下從 `syncDevice.deviceId` 補上（未登入、還沒產生裝置識別碼時整個鍵不寫）——裝置身分是 background 的資料，讓頁面端送等於多開一條可被偽造的入口。`anchorMatch` 在送出端就先裁到 40 字——連結型錨點（`lin.ee`／`linktr.ee`／`line.me` 深連結）的帳號段沒有長度上限，不裁的話一次真的命中會整筆被擋下。
 
 `remove` 與 `restore` 在 v2 都不再搬家、也不刪資料：兩者都只改同一筆條目的 `state`，**證據原封保留**（`remove` 不清 `evidence`，`restore` 也不必重新累積）。條目只有在使用者清空整份名單、或撞到上限被淘汰時才真的消失。兩則訊息一律更新 `updatedAt`——它是雲端同步的 LWW 判準，漏更新會讓另一台裝置的舊狀態反過來蓋掉這次的決定（見 `docs/cloud-sync.md` 決策 D37）；總開關關閉期間照樣更新，重新開啟後才與雲端合併（D35）。
 

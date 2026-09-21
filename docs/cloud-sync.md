@@ -73,7 +73,7 @@
 LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結同步分開的一組端點：
 
 - **推送**：`POST /api/v1/marks/sync`，`Content-Type: application/json`（缺就回 415），body 的 `upserts`／`deletes` **必帶**（沒有東西要推時送空陣列，不可省略鍵），`since`／`cursor` 選填（首次同步兩者都不帶即為全量）；回應形狀見下。
-- **拉取**：`GET /api/v1/marks`，依 `updatedAt` **升冪**分頁，`limit` 預設 50、最多 100（超出即夾到 100）；以 `since`／`cursor` 續頁。升冪是為了讓中斷後的續傳有意義——水位線只會往前推，重跑一次不會漏掉中間那幾筆。
+- **拉取**：`GET /api/v1/marks`，依 `updatedAt` **升冪**分頁，`limit` 預設 50、最多 100（超出即夾到 100）；以 `since`／`cursor` 續頁，回應形狀 `{ items: [Mark], nextCursor }`（`items` 為固定九欄的 Mark；`nextCursor` 為 `null` 即最後一頁）。升冪是為了讓中斷後的續傳有意義——水位線只會往前推，重跑一次不會漏掉中間那幾筆。
 - **共用的部分**（D38）：Bearer 登入態、`credentials: "omit"`、只從 service worker 發請求、`chrome.alarms` 排程與退避曲線、推送批次上限 50 筆、cursor 續頁，以及第 3 節列出的共用錯誤碼（401／403／415／429／503），全部沿用連結同步那一套。
 - **推送水位線**：每輪只送 `updatedAt` 晚於上次成功推送時間的條目。
 - **墓碑**：使用者真正刪除的條目才進 `deletes`，墓碑保留 90 天。
@@ -109,9 +109,10 @@ LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結�
 
 - **批次上限**：`upserts` 或 `deletes` 超過 50 筆一律回 `422`，形狀為 `{ "error": "too_many_mark_upserts" | "too_many_mark_deletes", "max": 50 }`。不截斷、不部分處理——截斷會讓插件以為整批都送成功，水位線推過頭就再也補不回來。
 - **`signals` 恆為陣列**：伺服器一律回陣列，輸入的 `null` 視同 `[]`；插件端不必分辨「沒有訊號」與「欄位缺席」。
-- **`rejectedIds` 的三個來源**：①mark 本身驗證不過（key 形狀、必填欄位、枚舉值）；②同批被 `deletes` 撞掉（見上）；③比墓碑舊——`updatedAt` 早於該 key 的 `deletedAt` 時**不復活**，整筆拒收。三者都是整筆進 `rejectedIds`。
+- **`rejectedIds` 的三個來源**：①mark 本身驗證不過（key 是字串但形狀不合、必填欄位缺漏或不合法、枚舉值不對）——唯 `key` **非字串**時無識別可回報，該筆**整筆靜默丟棄、不進任何陣列**（`rejectedIds` 回的是 key，連 key 都不成立就沒有東西可回報，硬塞只會讓插件拿到一個對不上任何本機條目的值；這種 payload 代表客戶端送出前就壞了，該在本機正規化那一關擋下）；②同批被 `deletes` 撞掉（見上）；③**不晚於**墓碑——`updatedAt <= deletedAt` 時**不復活**（相等同樣不復活：同一毫秒的刪除與更新分不出先後，往「不復活」倒才不會讓一筆背景寫入把明確的刪除翻回來），整筆拒收。以上都是整筆進 `rejectedIds`。
 - **evidence 的拒收粒度不同**：`evidence` 陣列裡單筆不合法**只剝那一筆**，mark 照常寫入；一個壞掉的 `threadUrl` 不該讓整位作者的標記進不了雲端（與本機正規化「形狀不合只剝該欄」同一個取向）。
 - **欄位補值**：`displayName` 缺席一律回 `null`（不以 `handle` 充當）；`dismissedAt` 在 `state === "active"` 時由**伺服器強制寫成 `null`**，不信任客戶端送上來的殘值；`source` 落在枚舉外時退回 `"auto"`，不拒收整筆。
+- **`addedAt`**：**必填且須合法**，不合法整筆進 `rejectedIds`（它不是可補值的欄位——猜一個時間等於竄改「這位作者是什麼時候被記下的」）。更新既有列時伺服器一律**保留原本的 `addedAt`、忽略傳入值**：加入時間只在第一次寫入時決定，之後每一輪同步都帶著它上來，讓後到的裝置有機會把它往後改就等於讓最晚同步的那一台改寫歷史。
 
 **Mark 固定九欄**（`key`／`state`／`dismissedAt`／`handle`／`displayName`／`source`／`evidence`／`addedAt`／`updatedAt`）：九個鍵一律出現，**可空的以 `null` 表示，不省略鍵**。
 
@@ -138,7 +139,7 @@ LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結�
   signals: string[],              // link｜line｜group｜join｜pitch；沒有就空陣列
   at: number,                     // 掃到的時間
   postedAt: number | null,        // 貼文發布時間
-  rulesVersion: string | null,    // 命中當下的規則版本
+  rulesVersion: number | null,    // 命中當下的規則版本（`SCAM_RULES.version`，數字）
   deviceId: string | null,        // 回報這筆證據的裝置（UUID 形狀）
 }
 ```
