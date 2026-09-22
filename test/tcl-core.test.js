@@ -931,7 +931,7 @@ test.describe('詐騙偵測:LINE 提及 ＋ 群組／加入詞', () => {
       assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
     }
     const withCopula = C.detectScamPitch('想來的朋友，我的賴是：ab12cd，加入後傳訊「63」，我拉你進群組。');
-    // 【斷言翻轉｜D43】繫詞照舊要吃得下(命中就是證明),但標亮位置改成 ID 本體。
+    // 【斷言翻轉｜D43】繫詞照舊要吃得下(命中就是證明)，但標亮位置改成 ID 本體。
     assert.equal(withCopula.anchorMatch, 'ab12cd', 'anchorMatch 取 ID 本體(D43)');
   });
 
@@ -3507,7 +3507,7 @@ test.describe('CR-1 toScamMark：本機專有的推送提示欄位不上雲', ()
 // ID 本體、ID 進派生索引，下一位用同一個 ID 招攬的作者不必再湊行動呼籲或話
 // 術詞就認得出來。
 //
-// 【欄位】detectScamPitch 多回一個 lineId(小寫、尾端 ._- 剝掉、3-20 字,抓
+// 【欄位】detectScamPitch 多回一個 lineId(小寫、尾端 ._- 剝掉、3-20 字，抓
 // 不到為 null);證據多一個本機專有的 lineId(不上雲);黑名單多一張派生的唯讀
 // lineIdIndex(不落盤)。
 //
@@ -3515,7 +3515,7 @@ test.describe('CR-1 toScamMark：本機專有的推送提示欄位不上雲', ()
 // 1000000x 那組——本區塊不得出現任何真實 LINE ID 或真實帳號。
 // ============================================================
 
-// 帳號型錨點的六種真實寫法(全形空白、大小寫 id、繫詞在前),帳號本體都是
+// 帳號型錨點的六種真實寫法(全形空白、大小寫 id、繫詞在前)，帳號本體都是
 // kw0000。
 const V4_ACCOUNT_FORMS = [
   '賴：kw0000',
@@ -3539,7 +3539,7 @@ test.describe('D42 規則 v4:帳號型錨點放寬', () => {
       assert.equal(
         res.signals.includes('account'),
         true,
-        JSON.stringify(text) + ' 應被認成帳號型錨點(signals 含 account),實得 ' + JSON.stringify(res.signals)
+        JSON.stringify(text) + ' 應被認成帳號型錨點(signals 含 account)，實得 ' + JSON.stringify(res.signals)
       );
     }
   });
@@ -3647,11 +3647,11 @@ test.describe('D43 規則 v4:lineId 抓取與標亮', () => {
     assert.equal(C.detectScamPitch('黑馬股筆記，LINE ID：abc123-').lineId, 'abc123');
     const long = C.detectScamPitch('黑馬股筆記，LINE ID：' + 'a'.repeat(25)).lineId;
     assert.equal(typeof long, 'string', '超長帳號段仍要抓得到');
-    assert.equal(long.length <= 20, true, 'lineId 上限 20 字(LINE ID 的官方上限),實得 ' + long.length);
+    assert.equal(long.length <= 20, true, 'lineId 上限 20 字(LINE ID 的官方上限)，實得 ' + long.length);
   });
 
   test('D43 detectScamPitch:未命中時 lineId 照樣回報(D46 跨帳號比對的唯一來源)', () => {
-    // 「LINE ID：xxx」單獨不成立(計畫已裁決不採),但 D46 的跨帳號比對就是
+    // 「LINE ID：xxx」單獨不成立(計畫已裁決不採)，但 D46 的跨帳號比對就是
     // 靠這條路拿到 ID——未命中就不回報的話，D46 整條路永遠走不到。
     const res = C.detectScamPitch('LINE ID：ex01abc');
     assert.equal(res.hit, false, '帳號型錨點單獨不構成命中(維持 v3 的門檻)');
