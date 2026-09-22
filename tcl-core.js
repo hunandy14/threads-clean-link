@@ -230,12 +230,15 @@
     lastSyncedAt: null,
     clearedAt: null,
     lastError: null,
-    // D38:警示名單(marks)通道的四格水位線。與 links 的 cursor 並存於同一
-    // 包 syncState，兩條通道各自獨立推進。
+    // D38:警示名單(marks)通道的水位線。與 links 的 cursor 並存於同一包
+    // syncState，兩條通道各自獨立推進。
     marksCursor: null,
     marksPushedAt: null,
     marksEvicted: null,
     marksRejected: null,
+    // 回填的續填位置。單輪翻不完時記下停在哪一頁，下一輪從這裡接著填;回填到
+    // 底後清回 null。
+    marksBackfillCursor: null,
   };
 
   // chrome.storage.local.syncAuth 的預設形狀(D10:bearer token 明文存 local)。
@@ -319,13 +322,14 @@
       lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
       clearedAt: optionalFiniteNumber(raw.clearedAt),
       lastError: optionalString(raw.lastError),
-      // D38:marks 通道的四格。cursor 是伺服器發的不透明字串、pushedAt 是本
-      // 機推送水位線、evicted 是雲端淘汰筆數(純 UI 提示)、rejected 是被拒
-      // key → 被拒當下的 updatedAt 映射。
+      // D38:marks 通道的水位線。cursor 是伺服器發的不透明字串、pushedAt 是
+      // 本機推送水位線、evicted 是雲端淘汰筆數(純 UI 提示)、rejected 是被拒
+      // key → 被拒當下的 updatedAt 映射、backfillCursor 是回填的續填位置。
       marksCursor: optionalString(raw.marksCursor),
       marksPushedAt: optionalFiniteNumber(raw.marksPushedAt),
       marksEvicted: optionalFiniteNumber(raw.marksEvicted),
       marksRejected: normalizeMarksRejected(raw.marksRejected),
+      marksBackfillCursor: optionalString(raw.marksBackfillCursor),
     };
   }
 
@@ -1192,10 +1196,6 @@
   // 40 字足以涵蓋最長的連結型錨點;上限在儲存端保證，選項頁不再自行截斷。
   var SCAM_ANCHOR_MATCH_MAX = 40;
 
-  // 證據裡 deviceId 的硬上限。本機寫入的是 UUID(36 字)，雲端讀回的可能是別
-  // 台裝置寫的任意字串，64 字足夠容納各平台的識別碼又不讓單筆證據被撐大。
-  var SCAM_DEVICE_ID_MAX = 64;
-
   // 本機警示名單的儲存版本。v1 把「已封鎖」與「已解除」拆成 entries 與
   // allowlist 兩張表;v2 收斂成單一張 entries，以 state 分 active／dismissed
   // 兩態，解除只翻狀態、證據照留。讀回時一律就地升版。
@@ -1204,6 +1204,17 @@
   // 雲端 mark 的主鍵前綴。mark 是跨平台的形狀，前綴標出這把 id 是哪個站的
   // 作者主鍵。
   var SCAM_MARK_KEY_PREFIX = 'threads:';
+
+  // 雲端 mark 主鍵 → entries 的鍵(作者數字 id)。前綴不在開頭、id 不是合法的
+  // entries 鍵形狀、或落在擋鍵名單裡一律回 null，呼叫端整筆丟棄。mark key 的
+  // 解析只有這一把尺:sync.js 的墓碑比對與 fromScamMark 的落地合併各自帶一份
+  // 樣板時，兩邊認得的 key 只要分岔就是一條靜默的資料裂縫。
+  function scamMarkUserId(key) {
+    if (typeof key !== 'string' || key.indexOf(SCAM_MARK_KEY_PREFIX) !== 0) return null;
+    var userId = key.slice(SCAM_MARK_KEY_PREFIX.length);
+    if (isUnsafeMapKey(userId) || !isScamUserIdKey(userId)) return null;
+    return userId;
+  }
 
   // signals 正規化:逐項過白名單、去重、輸出固定順序。非陣列或全被剝光時回
   // undefined(呼叫端整欄不寫入)——留一個空陣列會讓證據卡畫出一排沒有 chip
@@ -1263,7 +1274,7 @@
     return typeof value === 'number' && isFinite(value) ? value : fallback;
   }
 
-  // 單筆黑名單條目正規化:非物件回 null(呼叫端逐項剝除),其餘欄位逐一消
+  // 單筆黑名單條目正規化:非物件回 null(呼叫端逐項剝除)，其餘欄位逐一消
   // 毒。evidence 非陣列退成空陣列而非整筆丟棄——條目本身(handle/addedAt)仍
   // 是有效的封鎖資訊。handle 走 sanitizeDisplayName，與 v1 allowlist 的 handle
   // 同一把尺(摺疊連續空白、trim、截長、代理對保護)，兩側比對才不會因空白差
@@ -1296,6 +1307,11 @@
     entry.addedAt = addedAt === null ? updatedAt : addedAt;
     entry.updatedAt = updatedAt === null ? entry.addedAt : updatedAt;
     entry.source = raw.source === 'manual' ? 'manual' : 'auto';
+    // 本機專有的推送提示。被動再掃到已列名的作者時只併證據、不推進
+    // updatedAt，新證據靠這一格讓下一輪的推送批選得到(選批水位線取 updatedAt
+    // 與它的較大者)。不上雲:toScamMark 不送、fromScamMark 不讀回。形狀不是有
+    // 限數字時整個鍵不落。
+    if (typeof raw.pushAfter === 'number' && isFinite(raw.pushAfter)) entry.pushAfter = raw.pushAfter;
     return entry;
   }
 
@@ -1715,10 +1731,9 @@
   // 回 null(呼叫端整筆丟棄):形狀對不上的 mark 落進 entries 就是一筆永遠查
   // 不到的殭屍條目。其餘欄位走與本機同一套正規化，髒證據逐筆剝除。
   function fromScamMark(mark) {
-    if (!isPlainObject(mark) || typeof mark.key !== 'string') return null;
-    if (mark.key.indexOf(SCAM_MARK_KEY_PREFIX) !== 0) return null;
-    var userId = mark.key.slice(SCAM_MARK_KEY_PREFIX.length);
-    if (isUnsafeMapKey(userId) || !isScamUserIdKey(userId)) return null;
+    if (!isPlainObject(mark)) return null;
+    var userId = scamMarkUserId(mark.key);
+    if (userId === null) return null;
     // handle 驗伺服器那把尺，不合整筆丟棄(null 是契約允許的缺席，不算不合)。
     // 摺空白後照收會讓雲端的任意字串落進 entries 與 handleIndex，而那張反查表
     // 是河道「只查表不掃文」的依據——混進帶空白／標點的假 handle 就是一條跨裝
@@ -1830,6 +1845,10 @@
   //
   // 純量欄位整組 LWW by updatedAt(平手取本機):state 與 dismissedAt 必須同進
   // 同出，各自 LWW 會合出「active 卻帶著解除時間」這種自相矛盾的條目。
+  // handle／displayName 另加一層缺值回退:勝方那一欄缺席(雲端寫 null、本機不
+  // 落鍵)時保留另一方的值。缺值不是「使用者把名字清空了」，拿它蓋掉另一邊的
+  // 快照會讓名單變成一排沒有名字的數字 id;handle 更是推送的必填欄位，被洗掉
+  // 的條目連推送批都進不了。
   // addedAt 取較小——首見時間不得往後跳;updatedAt 取較大。證據不走 LWW 而是
   // 聯集:它是兩台裝置各自看到的事實，純量落敗的那一邊照樣留著(解除不等於刪
   // 證據，復原後卡片要畫得出來)。
@@ -1837,10 +1856,13 @@
     var a = isPlainObject(local) ? local : {};
     var b = isPlainObject(remote) ? remote : {};
     var winner = finiteOr(b.updatedAt, 0) > finiteOr(a.updatedAt, 0) ? b : a;
+    var loser = winner === b ? a : b;
     var out = { state: winner.state === 'dismissed' ? 'dismissed' : 'active' };
     if (out.state === 'dismissed') out.dismissedAt = finiteOr(winner.dismissedAt, 0);
-    if (typeof winner.handle === 'string') out.handle = winner.handle;
-    if (typeof winner.displayName === 'string') out.displayName = winner.displayName;
+    var handle = typeof winner.handle === 'string' ? winner.handle : loser.handle;
+    if (typeof handle === 'string') out.handle = handle;
+    var displayName = typeof winner.displayName === 'string' ? winner.displayName : loser.displayName;
+    if (typeof displayName === 'string') out.displayName = displayName;
     out.source = winner.source === 'manual' ? 'manual' : 'auto';
     out.evidence = mergeScamEvidenceLists(a.evidence, b.evidence);
     out.addedAt = scamEarlier(a.addedAt, b.addedAt);
@@ -1906,6 +1928,7 @@
     scamEntryBytes: scamEntryBytes,
     makeBlocklistEntry: makeBlocklistEntry,
     mergeBlocklistEvidence: mergeBlocklistEvidence,
+    scamMarkUserId: scamMarkUserId,
     toScamMark: toScamMark,
     fromScamMark: fromScamMark,
     isScamMarkHandle: isScamMarkHandle,
