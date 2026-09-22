@@ -1191,6 +1191,24 @@ test('T3 拉：cursor 為 null 的首輪也要拉增量（隱藏案例）', asyn
   assert.equal(env.storage.history().length, 1, '首輪就該把雲端既有卡片拉下來');
 });
 
+// R6（後端把 since 改成嚴格驗證）：空字串 since 與空白、負數一樣回 400
+// bad_since。cursor 為空字串與「沒有 cursor」語意上是同一件事，兩者一律退回
+// 首輪的 '0'（純數字字串，api-spec 4.3 的合法舊格式游標）。
+test('R6 拉：cursor 為空字串時退回 since:"0"，不送空 since', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, syncState: { cursor: '' }, history: [] });
+  env.server.seed([
+    { id: 'srv-b', original: POST_B, cleaned: POST_B, receivedAt: T0 - 20_000, seen: [{ at: T0 - 20_000 }] },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const body = env.syncPosts()[0].body;
+  assert.equal(body.since, '0', '空字串游標視同缺席，比照首輪送 "0"');
+  assert.equal(env.storage.history().length, 1, '退回 "0" 之後首輪照樣拉得到雲端既有卡片');
+});
+
 test('T3 拉：同 postKey 合併成一筆，墓碑復活', async () => {
   const TCLSync = loadSync();
   const local = entry({ id: 'loc-a', url: POST_A, dirty: false, serverUpdatedAt: T0 - 9000, deletedAt: T0 - 9000 });
@@ -1772,12 +1790,27 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
     'email',
     'lastError',
     'lastSyncedAt',
+    // D38（車道 B）：警示名單 marks 通道的四格。C 車道的「雲端額度滿了」提示
+    // 讀的是 marksEvicted，不隨廣播帶出來那張提示就沒有筆數可顯示。
+    // CR-2：回填續填位置也隨 state 帶出（封閉鍵集 12 → 13）。它與其餘三格一樣
+    // 是診斷用的水位線，UI 不直接顯示，但 state 是唯一的對外形狀，少一格就沒有
+    // 任何管道看得出「這個帳號卡在回填第幾頁」。
+    'marksBackfillCursor',
+    'marksCursor',
+    'marksEvicted',
+    'marksPushedAt',
+    'marksRejected',
     'pendingCount',
     'status',
   ]);
+  assert.equal(state.marksBackfillCursor, null, 'CR-2：未登入時續填位置也是預設值');
   assert.equal(state.status, 'signed_out');
   assert.equal(state.email, null);
   assert.equal(state.apiBase, PRODUCTION_BASE);
+  assert.equal(state.marksCursor, null, '未登入時四格一律是預設值');
+  assert.equal(state.marksPushedAt, null);
+  assert.equal(state.marksEvicted, null);
+  assert.equal(state.marksRejected, null);
 });
 
 // ============================================================================

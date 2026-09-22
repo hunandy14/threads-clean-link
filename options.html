@@ -451,16 +451,30 @@
   .setting-row .txt { min-width: 0; }
   .setting-row .name { font-size: 13px; font-weight: 550; }
   .setting-row .desc { font-size: 12px; color: var(--ink-3); }
-  /* 設定列內的同頁導覽連結(目前只有「管理警示名單 →」)，另起一行接在說明之下。 */
+  /* 標題列(名稱 + 同頁導覽連結)。space-between 讓連結貼齊標題右側;寬度不
+     夠時 flex-wrap 讓連結整個換到下一行(此時只剩它一個 item，
+     space-between 退化成靠左)，不會推動同一 label 內右側的開關。 */
+  .name-row {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    column-gap: 10px;
+    row-gap: 2px;
+  }
+  /* 設定列內的同頁導覽連結(目前只有「管理警示名單」)。 */
   .setting-link {
-    display: inline-block;
-    margin-top: 2px;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
     font-size: 12px;
     font-weight: 600;
     color: var(--accent);
     text-decoration: none;
+    white-space: nowrap;
   }
   .setting-link:hover { text-decoration: underline; }
+  .setting-link .icon { width: 14px; height: 14px; }
   .switch {
     appearance: none;
     -webkit-appearance: none;
@@ -1157,6 +1171,9 @@
     margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-2);
     white-space: pre-wrap; overflow-wrap: anywhere;
   }
+  /* 雲端同步來的證據沒有片段(片段只留在掃到它的那台裝置)時的灰字說明:
+     灰階＋斜體，一眼就分得出這不是真的片段內容。 */
+  .scam-evidence-missing { color: var(--ink-3); font-style: italic; }
   /* 錨點高亮:<mark> 的瀏覽器預設是螢光黃底黑字，深色主題下刺眼且文字色不跟
      著主題走;改用暖色淡底並繼承文字色。 */
   mark.scam-anchor {
@@ -1214,6 +1231,23 @@
   .scam-allow-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
   .scam-allow-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .scam-allow-row .scam-handle { font-size: 12.5px; }
+  .scam-allow-info { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .scam-allow-date { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+  /* 總開關關閉時的狀態列:與 .scam-list 同寬(左右 16px)，暖色淡底與作者列
+     上的標記 pill(.scam-post-tag)同一套警示色票，跟著主題走。 */
+  .scam-disabled-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    margin: 0 16px 8px; padding: 8px 12px; border-radius: 10px;
+    font-size: 12.5px; line-height: 1.5; color: var(--warn); background: var(--warn-soft);
+  }
+  .scam-enable-btn {
+    appearance: none; border: none; border-radius: 8px; cursor: pointer;
+    padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
+    color: var(--warn); background: var(--surface); white-space: nowrap;
+  }
+  .scam-enable-btn:hover { background: var(--plane); }
+  /* 淘汰提示緊接在計數 hint 之後，同一列小字，不搶主標題的視覺份量。 */
+  .scam-evicted-hint { margin-left: 4px; }
   .modal {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1513,7 +1547,7 @@
           <label class="setting-row" for="autoClean">
             <span class="txt">
               <span class="name" data-i18n="opAutoCleanName">自動淨化分享按鈕</span>
-              <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址；關閉仍照常寫入紀錄。</div>
+              <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址</div>
             </span>
             <input type="checkbox" id="autoClean" class="switch" />
           </label>
@@ -1529,7 +1563,7 @@
           <label class="setting-row" for="saveHistory">
             <span class="txt">
               <span class="name" data-i18n="opSaveName">保存紀錄</span>
-              <div class="desc" data-i18n="opSaveDesc">僅存於本機</div>
+              <div class="desc" data-i18n="opSaveDesc">儲存淨化或複製過的連結</div>
             </span>
             <input type="checkbox" id="saveHistory" class="switch" />
           </label>
@@ -1538,13 +1572,19 @@
                LOCAL_SETTING_IDS)。 -->
           <label class="setting-row" for="scamGuardEnabled">
             <span class="txt">
-              <span class="name" data-i18n="opScamGuardName">LINE 群組引導警示</span>
-              <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文並標記作者；名單只存在這台裝置，不上雲。</div>
-              <!-- 名單本體搬到警示名單分頁，設定卡只留這條同頁錨點。原生 <a
-                   href="#flags"> 改 hash 後由 hashchange 接手切分頁，不需另外
-                   攔截 click;錨點是 interactive content，點它不會連帶觸發外層
-                   label 的開關切換。 -->
-              <a class="setting-link" id="scamManageLink" href="#flags" data-i18n="opScamManageLink">管理警示名單 →</a>
+              <span class="name-row">
+                <span class="name" data-i18n="opScamGuardName">LINE 群組引導警示</span>
+                <!-- 名單本體搬到警示名單分頁，這裡只留這條同頁錨點，與標題同一
+                     行、靠右對齊(見下面 .name-row 的 CSS)。原生 <a href="#flags">
+                     改 hash 後由 hashchange 接手切分頁，不需另外攔截 click;
+                     錨點是 interactive content，點它不會連帶觸發外層 label 的
+                     開關切換。箭頭字元換成 Lucide arrow-right inline SVG。 -->
+                <a class="setting-link" id="scamManageLink" href="#flags">
+                  <span data-i18n="opScamManageLink">管理警示名單</span>
+                  <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                </a>
+              </span>
+              <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文，並在貼文上標記</div>
             </span>
             <input type="checkbox" id="scamGuardEnabled" class="switch" />
           </label>
@@ -1624,8 +1664,9 @@
 
   <!-- 警示名單分頁:警示名單卡(名單 ＋ 已解除)。 -->
   <section role="tabpanel" data-panel="flags" hidden>
-    <!-- 警示名單:純本機名單(chrome.storage.local.scamBlocklist)，不上雲、
-         不進 syncState。名單列、證據連結與「已解除」小節都由 options.js 逐一
+    <!-- 警示名單:chrome.storage.local.scamBlocklist，登入後隨 marks 通道雲端
+         同步(D35-D40)，水位線在 syncState 的 marks 四格。名單列、證據連結與
+         「已解除」小節都由 options.js 逐一
          createElement 產生——displayName 與證據片段是他人貼文帶進來的字串，一律
          走 textContent，不得 innerHTML。寫入端只有 background，本頁讀 storage
          ＋監聽 onChanged，解除/復原經 runtime 訊息請 background 代寫。 -->
@@ -1636,7 +1677,14 @@
           <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
         </button>
         <span class="hint" id="scamCount"></span>
+        <!-- 雲端配額用罄而被淘汰的筆數(syncState.marksEvicted)，卡頭小字，
+             預設收起。內容由 renderScamEvictedHint 逐次補上(文案帶 {n})。 -->
+        <span class="hint scam-evicted-hint" id="scamEvictedHint" hidden></span>
       </div>
+      <!-- 總開關(#scamGuardEnabled)關閉時的狀態列:說明「關了會怎樣」＋就地
+           開啟鈕。內容由 renderScamDisabledBar 逐一 createElement，關閉時整條
+           hidden。 -->
+      <div class="scam-disabled-bar" id="scamDisabledBar" role="status" hidden></div>
       <div class="scam-list" id="scamList"></div>
       <div class="empty scam-empty" id="scamEmpty" hidden></div>
       <div class="scam-allow" id="scamAllowlist" hidden></div>
