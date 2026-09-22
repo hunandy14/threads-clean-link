@@ -4074,6 +4074,22 @@ test.describe('F4-F5 審查修訂:lineId 抓取收緊', () => {
     }
   });
 
+  // 英文標籤走的是同一條誤判面：電商、客服、票務系統給的單號說明常寫成
+  // 「Order ID: xxx」，而那種句子裡本來就常有一句「加我 LINE」。中文標籤擋掉
+  // 了、英文標籤照抓的話，等於只擋了半邊。
+  test('F4 detectScamPitch:Order／Invoice／Ticket 等英文標籤的 ID 與 LINE 同框也不算 lineId', () => {
+    for (const label of ['Order', 'Invoice', 'Ticket', 'Member', 'Customer', 'Case', 'Serial']) {
+      const text = '加我 LINE 進群，' + label + ' ID: A12345 請附上';
+      assert.equal(
+        C.detectScamPitch(text).lineId,
+        null,
+        JSON.stringify(text) + ' 的單號有自己的歸屬，不是 LINE 帳號'
+      );
+    }
+    // 大小寫不敏感：標籤是使用者手打的，不會照著我們的字面寫。
+    assert.equal(C.detectScamPitch('加我 LINE 進群，order id: A12345 請附上').lineId, null);
+  });
+
   test('F4 detectScamPitch:「LINE Pay ID：abc123」除了不命中，也不得抓出 lineId', () => {
     const res = C.detectScamPitch('付款用 LINE Pay ID：abc123 就可以');
     assert.equal(res.signals.includes('account'), false);
