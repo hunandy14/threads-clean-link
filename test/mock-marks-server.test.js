@@ -852,7 +852,43 @@ test('GET /api/v1/marks：空清單回 items 空陣列與 nextCursor null', asyn
   const h = harness();
   const { res, body } = await h.listJson();
   assert.equal(res.status, 200);
-  assert.deepEqual(body, { items: [], nextCursor: null });
+  assert.deepEqual(body.items, []);
+  assert.equal(body.nextCursor, null);
+  // CR-10：`cursor` 在 R4 之後是回填回應的固定一欄，空清單同樣要帶——插件靠它
+  // 把回填的終點接上增量的起點，沒有資料不代表沒有位置。
+  assert.equal(typeof body.cursor, 'string', 'CR-10：每一頁都帶頂層 cursor');
+});
+
+// CR-10：回填的分頁走 `updatedAt` 時間線，增量走伺服器寫入位置，兩條線不同源。
+// 回填到底時只有這一格能把插件放到「伺服器此刻的位置」上；少了它，插件只能靠
+// 回填後那一次 POST 領一個**更晚**的游標，回填期間別台裝置推上來、updatedAt 又
+// 比回填位置舊的條目就永遠落在兩條線的接縫裡，再也拉不回來。
+test('CR-10 GET /api/v1/marks：每一頁都帶頂層 cursor，最後一頁帶的是伺服器當下位置', async () => {
+  const h = harness();
+  const seeds = [];
+  for (let i = 0; i < PAGE_SIZE_DEFAULT + 10; i += 1) {
+    seeds.push(markOf({ key: `threads:51${String(i).padStart(5, '0')}`, updatedAt: T0 + i }));
+  }
+  h.server.marks.seed(seeds);
+
+  const first = (await h.listJson()).body;
+  assert.equal(typeof first.cursor, 'string', '未到底的那一頁同樣要帶 cursor');
+  assert.notEqual(first.cursor, first.nextCursor, 'cursor 與 nextCursor 是兩條時間線上的兩個位置');
+
+  const second = (await h.listJson(`?cursor=${encodeURIComponent(first.nextCursor)}`)).body;
+  assert.equal(second.nextCursor, null, '前置條件：第二頁就是最後一頁');
+  assert.equal(typeof second.cursor, 'string', 'nextCursor 為 null 時照樣帶 cursor');
+});
+
+test('CR-10 GET /api/v1/marks：listCursor(false) 代言舊後端，整個 cursor 鍵不出現', async () => {
+  const h = harness();
+  h.server.marks.listCursor(false);
+  const { body } = await h.listJson();
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(body, 'cursor'),
+    false,
+    '舊後端沒有這一欄，插件端必須退回原本「不帶 since」的行為而不是拋錯'
+  );
 });
 
 test('GET /api/v1/marks：依 updatedAt 升冪，預設頁大小與 nextCursor 續頁', async () => {

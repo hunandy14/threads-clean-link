@@ -504,6 +504,10 @@ function createMockSyncServer(options = {}) {
   const quota = options.quota || FREE_QUOTA;
   // 警示名單另有一組配額（測試要塞滿時用小值覆寫），方案開關沿用 user.plan。
   let marksQuota = options.marksQuota || MARKS_FREE_QUOTA;
+  // CR-10（後端 R4）：`GET /api/v1/marks` 每頁多回一個頂層 `cursor`，指出這一頁
+  // 送出當下的伺服器位置，讓回填到底的插件把它當增量起點。`false` 時整個鍵不
+  // 出現，用來代言「還沒升上 R4 的舊後端」。
+  let marksListCursor = options.marksListCursor !== false;
 
   const state = {
     token: options.token || null,
@@ -1077,7 +1081,13 @@ function createMockSyncServer(options = {}) {
     const page = after.slice(0, limit);
     const last = page[page.length - 1];
     const nextCursor = after.length > limit && last ? encodeCursor(last.updatedAt, last.key) : null;
-    return jsonResponse(200, { items: page.map(markView), nextCursor });
+    const body = { items: page.map(markView), nextCursor };
+    // CR-10：`items`／`nextCursor` 走的是 `updatedAt` 那條時間線，回填到底之後
+    // 的增量卻要從**伺服器寫入位置**接手——兩者不同源，缺了這一格，回填期間別
+    // 台裝置推上來、`updatedAt` 又比回填位置舊的條目就掉進接縫裡。每一頁都帶，
+    // 到底那一頁帶的就是當下的伺服器 now 位置。
+    if (marksListCursor) body.cursor = String(tick());
+    return jsonResponse(200, body);
   }
 
   // ---- 端點：GET /api/v1/links（api-spec 4.2:346-368） ----
@@ -1448,6 +1458,11 @@ function createMockSyncServer(options = {}) {
       },
       quota() {
         return marksQuota;
+      },
+      /** CR-10：切掉 `GET /api/v1/marks` 的頂層 `cursor`（代言舊後端）。 */
+      listCursor(on) {
+        marksListCursor = on !== false;
+        return this;
       },
     },
 
