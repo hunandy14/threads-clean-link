@@ -6691,3 +6691,62 @@ test('CR-6 scam.hit:已解除作者的命中不得讀 storage 的 syncDevice', a
     'deviceId 只有在真的要寫一筆證據時才用得到。早退分支一個位元都不寫，先讀它就是白花一次 storage 往返——河道一次捲動派出幾十則 scam.hit，全都落在這條路徑上'
   );
 });
+
+// CR-1 縱深：`at` 是**頁面端送來的**數字。只驗有限數字不夾上限的話，偽造一個
+// `at = 1e15`（西元 33658 年）的 scam.hit 就會一路流進 pushAfter；那一筆推成功
+// 之後 marksPushedAt 被推到同一個天文數字，此後整份名單的 updatedAt 全都落在水
+// 位線之下，marks 通道**靜默停推**——沒有錯誤碼、沒有提示，使用者只會發現換台裝
+// 置就看不到新標記了。水位線只能往前推，回不去。
+test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter 不得越過 now', async () => {
+  const FORGED_AT = 1e15;
+
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_ENABLED_KEY]: true,
+      [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }),
+    },
+  });
+
+  const before = Date.now();
+  const res = await bg.send(
+    scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: FORGED_AT }),
+    SCAM_TAB_SENDER,
+    SCAM_SEND_OPTS
+  );
+  assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
+  await settle(600);
+  const after = Date.now();
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.evidence.length, 2, '前置條件：這是一筆新證據（夾上限不等於整筆丟掉）');
+  assert.ok(
+    entry.evidence[0].at >= before && entry.evidence[0].at <= after,
+    '證據的 at 要夾到現在（實得 ' + entry.evidence[0].at + '）'
+  );
+  assert.ok(
+    entry.pushAfter >= before && entry.pushAfter <= after,
+    'pushAfter 會變成推送成功後的 marksPushedAt，越過 now 的那一刻起整份名單都推不出去了（實得 ' +
+      entry.pushAfter +
+      '）'
+  );
+  assert.equal(entry.updatedAt, SCAM_AT, 'CR-1：被動再掃到照樣不推進 updatedAt');
+
+  // 新建條目那一條路徑同樣要夾：addedAt／updatedAt 直接取這次命中的 at，一個
+  // 偽造的未來時戳會讓這筆在跨裝置 LWW 裡永遠勝出，別台裝置的解除從此無效。
+  const fresh = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_ENABLED_KEY]: true },
+  });
+  const freshBefore = Date.now();
+  const created = await fresh.send(scamHit({ at: FORGED_AT }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  assert.equal(created.responded, true, '前置條件：scam.hit 有人接手');
+  await settle(600);
+  const freshAfter = Date.now();
+
+  const born = scamEntry(fresh);
+  assert.ok(born.addedAt >= freshBefore && born.addedAt <= freshAfter, '新建條目的 addedAt 夾到現在');
+  assert.ok(
+    born.updatedAt >= freshBefore && born.updatedAt <= freshAfter,
+    '新建條目的 updatedAt 夾到現在——它是跨裝置 LWW 的判準，一個未來時戳等於讓這台裝置永遠勝出'
+  );
+});
