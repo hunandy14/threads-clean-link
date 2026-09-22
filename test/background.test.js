@@ -6750,3 +6750,92 @@ test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter
     '新建條目的 updatedAt 夾到現在——它是跨裝置 LWW 的判準，一個未來時戳等於讓這台裝置永遠勝出'
   );
 });
+
+// ============================================================
+// 規則 v4:scam.hit 的 lineId 與新的 signals 類別(D45／D46)
+//
+// content script 多送一個 lineId(這一串抓到的 LINE 帳號本體)。它與其他選填
+// 欄位的驗證規則**刻意不同**:形狀不對只丟該欄位、整筆照收，不回
+// bad_request——lineId 是加值資訊(標亮與跨帳號索引),不是證據成立的必要條
+// 件，為了它把一次真的命中整筆退掉是賠本生意。
+//
+// signals 白名單同步擴張:account／phrase／id／id-match 都要收得下。後端對
+// 未知值自己會剝(契約不變),但本機證據卡要畫得出這幾顆 chip。
+// ============================================================
+
+const V4_HIT_LINE_ID = 'ex01abc';
+
+test('D46 scam.hit:payload 帶 lineId 時寫進 entry.evidence[0].lineId', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich({ lineId: V4_HIT_LINE_ID }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, '帶 lineId 的命中必須受理');
+  assert.equal(
+    scamEntry(bg).evidence[0].lineId,
+    V4_HIT_LINE_ID,
+    'lineId 要落盤——它是 lineIdIndex 的唯一真相來源，不落盤等於跨帳號比對永遠查不到人'
+  );
+});
+
+test('D46 scam.hit:lineId 大寫送來時以小寫落盤', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich({ lineId: 'EX01ABC' }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true);
+  assert.equal(scamEntry(bg).evidence[0].lineId, V4_HIT_LINE_ID, '索引以小寫為鍵，落盤就得先對齊');
+});
+
+test('D46 scam.hit:lineId 形狀不合只丟該欄位、整筆照收(不回 bad_request)', async () => {
+  for (const bad of [42, {}, [], true, '']) {
+    const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+    const label = 'lineId=' + JSON.stringify(String(bad));
+    const res = await bg.send(scamHitRich({ lineId: bad }), SCAM_TAB_SENDER);
+    await settle(400);
+
+    assert.equal(deep(res.response).ok, true, label + ' 不得讓一次真的命中整筆被退掉');
+    const evidence = scamEntry(bg).evidence[0];
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(evidence, 'lineId'),
+      false,
+      label + ' 應只丟這一欄，且缺席不補空字串'
+    );
+  }
+});
+
+test('D46 scam.hit:lineId 超過 20 字裁到 20 字落盤', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const res = await bg.send(scamHitRich({ lineId: 'a'.repeat(30) }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true);
+  assert.equal(scamEntry(bg).evidence[0].lineId, 'a'.repeat(20), 'LINE ID 官方上限 20 字');
+});
+
+test('D45 scam.hit:signals 白名單收得下 account／phrase／id／id-match，且一路落盤', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  const signals = ['line', 'account', 'phrase', 'id', 'id-match'];
+  const res = await bg.send(scamHitRich({ signals }), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(deep(res.response).ok, true, 'v4 的新訊號類別不得被當成壞 payload 退回');
+  assert.deepEqual(scamEntry(bg).evidence[0].signals, signals, '新類別要落盤，證據卡才畫得出 chip');
+});
+
+test('D45 scam.hit:證據記下的 rulesVersion 是 v4', async () => {
+  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
+
+  await bg.send(scamHitRich(), SCAM_TAB_SENDER);
+  await settle(400);
+
+  assert.equal(
+    scamEntry(bg).evidence[0].rulesVersion,
+    4,
+    'rulesVersion 由寫入端記下，升版後新證據一律是 4（跨裝置對帳與調參靠它分新舊）'
+  );
+});
