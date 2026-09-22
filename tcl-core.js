@@ -1867,6 +1867,11 @@
     out.evidence = mergeScamEvidenceLists(a.evidence, b.evidence);
     out.addedAt = scamEarlier(a.addedAt, b.addedAt);
     out.updatedAt = Math.max(finiteOr(a.updatedAt, 0), finiteOr(b.updatedAt, 0));
+    // pushAfter 與 snippet 同屬本機專有:它記的是「這台裝置還有一筆新證據沒推
+    // 上去」，與雲端那一份的新舊無關。純量落敗就把它洗掉的話，遠端對同一條目
+    // 的變更只要比本機的推送早一步到，那筆新證據就再也選不進推送批。
+    var pushAfter = Math.max(finiteOr(a.pushAfter, 0), finiteOr(b.pushAfter, 0));
+    if (pushAfter > 0) out.pushAfter = pushAfter;
     return out;
   }
 
