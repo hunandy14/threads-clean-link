@@ -31,6 +31,8 @@
 
 規則的詞表與正則集中在 `tcl-core.js` 的 **`SCAM_RULES`** 物件，`detectScamPitch(text, rules)` 的第二參數可選、預設就是它：規則是資料、判定是邏輯，後續可改為由後端下發規則包而判定邏輯不動。
 
+**目前規則版本：`SCAM_RULES.version = 4`。** v4 把「對方的 LINE ID」升成第一級證據：帳號型錨點的繫詞放寬（`賴號ID：`／`LINE 帳號 : `／全形空白）、新增暗號型行動呼籲（`傳「177」給我`／`留言【18】`／「暗號」一類的加入詞）、`detectScamPitch` 多回一個 `lineId`（命中時連帶把標亮位置改成 ID 本體），並由警示名單派生一張 `lineId → userId` 的反查表，讓同一個 ID 換一個帳號再招攬一次照樣認得出來（訊號類別因此補上 `account`／`phrase`／`id`／`id-match`）。
+
 ### 2.1 LINE 提及（mention）
 
 | 類型 | 樣式 | 可走哪幾條路 |
