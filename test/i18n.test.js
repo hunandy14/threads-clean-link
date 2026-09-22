@@ -216,8 +216,8 @@ test('警示名單 v2:淘汰提示在 zh 與 en 都保留 {n} 佔位符', () => 
 
 // R3-8（阻擋）：警示名單已經有雲端同步通道（marks），`opScamGuardDesc` 與
 // `opScamInfo4` 卻仍寫著「名單只存在這台裝置，不上雲／不上傳、不同步」。那是
-// 對使用者的不實陳述，也直接違背隱私說明。兩語系一律改成「會隨帳號同步到雲
-// 端」的說法；本測試只擋住舊說法並要求新說法的關鍵字，實際遣詞由實作者定。
+// 對使用者的不實陳述，也直接違背隱私說明。禁詞斷言兩顆 key 都要擋；本測試只
+// 擋住舊說法並要求新說法的關鍵字，實際遣詞由實作者定。
 const R3_PRIVACY_CLAIM_KEYS = ['opScamGuardDesc', 'opScamInfo4'];
 const R3_FORBIDDEN_ZH = ['不上雲', '不上傳', '不同步', '只存在這台裝置', '只在這台裝置'];
 const R3_FORBIDDEN_EN = ['stays on this device only', 'never uploaded', 'never synced'];
@@ -238,8 +238,15 @@ test('R3-8 文案不實:警示名單的說明不得再宣稱「不上雲／不�
   }
 });
 
-test('R3-8 文案不實:兩顆說明改為講明會同步到雲端', () => {
-  for (const key of R3_PRIVACY_CLAIM_KEYS) {
+// 【斷言翻轉｜設定卡文案定稿 2026-09-22】設定卡文案定稿後，`opScamGuardDesc`
+// 只講功能本身（偵測並標記），雲端同步的揭露收斂到警示名單卡「這個功能怎麼
+// 運作」說明視窗的第四段 `opScamInfo4`（PM 授權）。R3-8 原本要求兩顆 key 都
+// 講明同步，改為只斷言 `opScamInfo4`；`opScamGuardDesc` 的禁詞斷言不動——它
+// 一樣不得宣稱「不上雲／不上傳／不同步」，只是不再要求它主動提同步。
+const R3_SYNC_DISCLOSURE_KEYS = ['opScamInfo4'];
+
+test('R3-8 文案不實:雲端同步的揭露收斂在 opScamInfo4，兩語系都講明會同步到雲端', () => {
+  for (const key of R3_SYNC_DISCLOSURE_KEYS) {
     assert.ok(
       i18n.STRINGS.zh[key].includes('雲端同步'),
       `zh.${key} 應講明名單會雲端同步，實得:${i18n.STRINGS.zh[key]}`
