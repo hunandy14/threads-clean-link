@@ -3984,3 +3984,173 @@ test.describe('D46 規則 v4:lineIdIndex 派生索引', () => {
     );
   });
 });
+
+// ============================================================
+// 審查修訂:誤判面收緊(F1-F5)與 D46 來源側門檻(B1)
+//
+// 【為什麼】v4 第一版把「暗號」與「ID 欄位」認得太寬:留言抽獎、傳 email 給
+// 我、加密語音、訂單／會員／銀行／Apple ID 全都踩得到，而且那些誤抓的 ID 還
+// 會進跨帳號索引，把毫不相干的人拖下水。這一區塊逐條釘住負例。
+//
+// 【合成資料】帳號沿用 ex01abc／kw0000，userId 沿用 1000000x 那組。
+// ============================================================
+
+test.describe('F1-F3 審查修訂:暗號型行動呼籲收緊', () => {
+  test('F1 detectScamPitch:「留言 1 抽獎」「留言【1】索取」不是暗號——必須有括號且是 2-8 位數字', () => {
+    assert.equal(
+      C.detectScamPitch('品牌 LINE 官方帳號上線，留言 1 抽獎').hit,
+      false,
+      '沒有括號的「留言 1」是抽獎活動的日常寫法，不是把人帶走的暗號'
+    );
+    assert.equal(
+      C.detectScamPitch('新書 LINE 社群開張，留言【1】索取懶人包').hit,
+      false,
+      '括號裡只有一位數字的多半是選項編號，不是暗號代碼'
+    );
+    assert.equal(
+      C.detectScamPitch('想拿資料的在我 LINE 底下留言【18】').hit,
+      true,
+      '【正例維持】括號 ＋ 2 位數字的暗號照舊命中'
+    );
+  });
+
+  test('F2 detectScamPitch:「傳 email 給我」「傳 LINE 給我」不是暗號——裸代碼分支只認數字', () => {
+    assert.equal(
+      C.detectScamPitch('檔案太大，請用 LINE 傳 email 給我').hit,
+      false,
+      '「傳 email 給我」是日常請求，email 不是暗號代碼'
+    );
+    assert.equal(
+      C.detectScamPitch('報名表請傳 LINE 給我，我再轉給窗口').hit,
+      false,
+      '「傳 LINE 給我」要的是對方的 LINE，不是暗號代碼'
+    );
+    assert.equal(
+      C.detectScamPitch('可以到 LINE 傳「177」給我，我把資料分享給你').hit,
+      true,
+      '【正例維持】括號 ＋ 數字代碼照舊命中'
+    );
+    assert.equal(
+      C.detectScamPitch('到我的 LINE 傳訊「63」我就回你').hit,
+      true,
+      '【正例維持】傳訊「63」照舊命中'
+    );
+  });
+
+  test('F3 detectScamPitch:「加密語音」不是加入詞——詞表只留「暗號」「通關密語」', () => {
+    assert.equal(
+      C.detectScamPitch('公司的 LINE 支援加密語音通話').hit,
+      false,
+      '「密語」是「加密語音」的子字串，當加入詞會把資安介紹整批誤判'
+    );
+    assert.equal(
+      C.detectScamPitch('想看完整資料的到我的 LINE 傳送暗號【246】').hit,
+      true,
+      '【正例維持】暗號照舊命中'
+    );
+    assert.equal(
+      C.detectScamPitch('到我的 LINE 傳送通關密語').hit,
+      true,
+      '【正例維持】通關密語照舊命中'
+    );
+  });
+});
+
+test.describe('F4-F5 審查修訂:lineId 抓取收緊', () => {
+  test('F4 detectScamPitch:訂單／會員／銀行／手機／Apple 的 ID 欄位與 LINE 同框也不算 lineId', () => {
+    const cases = [
+      '有 LINE 的朋友請對一下 訂單 ID：A12345',
+      '加我的 LINE 之後回報 會員 ID：vip0088',
+      '請用 LINE 回覆 銀行 帳號：012345678',
+      '用 LINE 聯絡前請先確認 Apple ID：user01a',
+      '有 LINE 再傳 手機 號碼：0912345678',
+    ];
+    for (const text of cases) {
+      assert.equal(
+        C.detectScamPitch(text).lineId,
+        null,
+        JSON.stringify(text) + ' 的 ID 欄位有自己的歸屬，不是 LINE 帳號'
+      );
+    }
+  });
+
+  test('F4 detectScamPitch:「LINE Pay ID：abc123」除了不命中，也不得抓出 lineId', () => {
+    const res = C.detectScamPitch('付款用 LINE Pay ID：abc123 就可以');
+    assert.equal(res.signals.includes('account'), false);
+    assert.equal(res.hit, false);
+    assert.equal(res.lineId, null, 'LINE Pay 的收款 ID 不是加好友帳號，抓進來就會進跨帳號索引');
+  });
+
+  test('F4 detectScamPitch:正例維持——一般的「ID：xxx」在 LINE 提及之後照樣抓得到', () => {
+    assert.equal(C.detectScamPitch('加我的賴，傳送暗號【04】>> ID：ry0000').lineId, 'ry0000');
+  });
+
+  test('F5 detectScamPitch:ID 欄位落在視窗邊界時，帳號段不得被切片截斷', () => {
+    const text = '加我的賴' + '。'.repeat(C.SCAM_LIMITS.ID_WINDOW - 2) + 'ID：ex01abc';
+    assert.equal(
+      C.detectScamPitch(text).lineId,
+      'ex01abc',
+      '視窗管的是「ID 欄位起點離提及多遠」,切片得放寬到足以吃完整個帳號段'
+    );
+  });
+
+  test('B2 SCAM_LIMITS.ID_WINDOW:視窗 24 字釘住——隔得太遠的 ID 欄位與 LINE 無關', () => {
+    assert.equal(
+      C.SCAM_LIMITS.ID_WINDOW,
+      24,
+      '視窗放寬等於把整段貼文裡的任何 ID 欄位都當成 LINE 帳號'
+    );
+    const far = '加我的賴' + '。'.repeat(40) + 'ID：ex01abc';
+    assert.equal(C.detectScamPitch(far).lineId, null, '隔 40 字的 ID 欄位講的是別的東西');
+  });
+});
+
+test.describe('B1 審查修訂:lineIdIndex 的來源側門檻', () => {
+  // 一筆帶指定 lineId 與 signals 的條目。
+  const b1Entry = (lineId, signals) =>
+    mkEntry({ evidence: [mkEvidence({ lineId: lineId, signals: signals })] });
+
+  test('B1 normalizeScamBlocklist:證據沒踩到行動呼籲/話術/連結訊號時，它的 lineId 不進索引', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: b1Entry('ex01abc', ['line', 'account', 'id']) },
+    });
+    assert.equal(
+      out.entries[MK_ID].evidence[0].lineId,
+      'ex01abc',
+      '證據照留——標亮與人工複核還用得到'
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out.lineIdIndex, 'ex01abc'),
+      false,
+      '只貼了一個帳號、沒有任何招攬動作的條目，不該讓同一個 ID 把別人也標上(同店兩位員工貼同一支客服 LINE 是常態)'
+    );
+  });
+
+  test('B1 normalizeScamBlocklist:證據踩到 join／group／pitch／link 任一時，lineId 照樣進索引', () => {
+    for (const signal of ['join', 'group', 'pitch', 'link']) {
+      const out = C.normalizeScamBlocklist({
+        version: 2,
+        entries: { [MK_ID]: b1Entry('ex01abc', ['line', 'account', 'id', signal]) },
+      });
+      assert.equal(
+        out.lineIdIndex.ex01abc,
+        MK_ID,
+        'signals 含 ' + signal + ' 就是一次真的招攬，ID 要進索引'
+      );
+    }
+  });
+
+  test('F4 normalizeScamBlocklist:純數字的 lineId 留在證據裡，但不進索引', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: b1Entry('0912345678', ['line', 'account', 'id', 'join']) },
+    });
+    assert.equal(out.entries[MK_ID].evidence[0].lineId, '0912345678', '證據照留');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out.lineIdIndex, '0912345678'),
+      false,
+      '純數字多半是電話或訂單號，拿它跨帳號比對是在賭撞號'
+    );
+  });
+});

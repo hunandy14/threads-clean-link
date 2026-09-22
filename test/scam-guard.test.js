@@ -4207,7 +4207,10 @@ function buildLineIdBlocklist(options) {
         snippet: `之前那一篇也是同一組人:LINE ID：${V4_LINE_ID}`,
         anchorMatch: V4_LINE_ID,
         lineId: V4_LINE_ID,
-        signals: ['line', 'account', 'id'],
+        // 【B1】來源側門檻：只有帶行動呼籲／話術／連結訊號的證據，它的 lineId
+        // 才進 lineIdIndex。這筆代表「一次真的招攬」，預設就要過得了門檻；
+        // ownerSignals 可覆寫成純客服帳號那種形狀（同店兩員工的負例）。
+        signals: settings.ownerSignals || ['line', 'account', 'id', 'join'],
         at: 1758280000000,
         rulesVersion: 4,
       },
@@ -4309,4 +4312,161 @@ test('D46 ID 跨帳號：本篇作者已解除封鎖時照舊早退，不掛 tag
     0,
     '使用者解除過的作者不得因為一條新的命中路徑又長回警示（allowlist 早退照舊）'
   );
+});
+
+// ============================================================
+// 審查修訂:id-match 的定位(F6)與兩側門檻(B1)
+//
+// F6 純 id-match 那條路上 detectScamPitch 不產 anchorMatch，第一版拿小寫化過
+// 的 lineId 直接去原文裡找——原文大寫時一個字都對不上，錨點退回串頭、卡片也
+// 標不亮。
+//
+// B1 這條命中路徑的兩側各補一道門檻:來源側只認「真的招攬過」的那些 ID，目標
+// 側只認「這一篇自己也貼了帳號或深連結」。兩道都是為了擋同一件事——同一間店
+// 的兩位員工各貼一次同一支客服 LINE ID，不是同一組詐騙換帳號。
+// ============================================================
+
+// 原文大寫的 LINE ID，靶在第二篇。
+const V4_UPPER_POSTS = [
+  {
+    code: 'DxUpPeR0001',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 1,
+    selfThreadLength: 2,
+    captionText: '入行十年，這些年踩過的坑我整理成了一份筆記。',
+  },
+  {
+    code: 'DxUpPeR0002',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 2,
+    selfThreadLength: 2,
+    captionText: `想聊的朋友可以找我。\nLINE ID：${V4_LINE_ID.toUpperCase()}`,
+  },
+];
+const V4_UPPER_PATH = `/@${AUTHOR}/post/${V4_UPPER_POSTS[0].code}`;
+
+// 只靠「LINE 提及 ＋ 視窗內的 ID 欄位」拿到帳號，整串沒有帳號型錨點、也沒有
+// 深連結：目標側門檻要擋的就是這種形狀。
+const V4_WEAK_POSTS = [
+  {
+    code: 'DxWeAk00001',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 1,
+    selfThreadLength: 2,
+    captionText: '週末把倉庫整理了一遍，翻出好多舊東西。',
+  },
+  {
+    code: 'DxWeAk00002',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 2,
+    selfThreadLength: 2,
+    captionText: `有事的話我的 LINE 在下面，ID：${V4_LINE_ID}`,
+  },
+];
+const V4_WEAK_PATH = `/@${AUTHOR}/post/${V4_WEAK_POSTS[0].code}`;
+
+// 帳號段剛好是 Object.prototype 上的鍵名。
+const V4_PROTO_POSTS = [
+  {
+    code: 'DxPrOtO0001',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 1,
+    selfThreadLength: 2,
+    captionText: '最近在讀一本講工廠管理的書，做了不少筆記。',
+  },
+  {
+    code: 'DxPrOtO0002',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 2,
+    selfThreadLength: 2,
+    captionText: '想討論的找我。\nLINE ID：constructor',
+  },
+];
+const V4_PROTO_PATH = `/@${AUTHOR}/post/${V4_PROTO_POSTS[0].code}`;
+
+test('F6 ID 跨帳號：原文大寫的 ID 照樣定位得到——錨點指向帶 ID 那一篇，標亮保留原文大小寫', async () => {
+  const env = loadEnv({
+    pathname: V4_UPPER_PATH,
+    page: [createSsrScript(V4_UPPER_POSTS[0]), createScanDom(V4_UPPER_POSTS)],
+    local: { scamBlocklist: buildLineIdBlocklist() },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.waitFor(() => env.hits().length === 1, { label: '大寫 ID 的跨帳號命中' });
+
+  const payload = env.hits()[0];
+  assert.equal(payload.lineId, V4_LINE_ID, 'lineId 一律小寫（索引以小寫為鍵）');
+  assert.equal(
+    payload.anchorPostUrl,
+    `${ORIGIN}/@${AUTHOR}/post/${V4_UPPER_POSTS[1].code}`,
+    '錨點要指向帶 ID 那一篇，不是退回串頭'
+  );
+  assert.equal(
+    payload.anchorMatch,
+    V4_LINE_ID.toUpperCase(),
+    '標亮字串取原文切片：卡片上要標得出使用者實際看到的那一段'
+  );
+  assert.ok(payload.snippet.includes(V4_LINE_ID.toUpperCase()), 'snippet 也要含原文那一段');
+});
+
+test('B1 ID 跨帳號（目標側）：本篇只有 LINE 提及＋ID 欄位、沒有帳號型錨點或深連結時不成立', async () => {
+  const env = loadEnv({
+    pathname: V4_WEAK_PATH,
+    page: [createSsrScript(V4_WEAK_POSTS[0]), createScanDom(V4_WEAK_POSTS)],
+    local: { scamBlocklist: buildLineIdBlocklist() },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    env.hits().length,
+    0,
+    '「我的 LINE 在下面，ID：xxx」這種形狀連自己都沒貼出帳號型錨點，不該只憑一次撞號就被標'
+  );
+  assert.equal(env.tags().length, 0);
+});
+
+test('B1 ID 跨帳號（來源側）：名單上那筆只是貼過帳號、沒有任何招攬動作時不成立', async () => {
+  const env = loadEnv({
+    pathname: V4_ID_ONLY_PATH,
+    page: [createSsrScript(V4_ID_ONLY_POSTS[0]), createScanDom(V4_ID_ONLY_POSTS)],
+    // 同一間店的另一位員工：名單上那筆的 signals 只有 line／account／id，
+    // 沒踩到任何行動呼籲、話術詞或深連結。
+    local: { scamBlocklist: buildLineIdBlocklist({ ownerSignals: ['line', 'account', 'id'] }) },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    env.hits().length,
+    0,
+    '同店兩位員工各貼一次同一支客服 LINE 是常態，不是同一組人換帳號再來一次'
+  );
+  assert.equal(env.tags().length, 0);
+});
+
+test('B2 ID 跨帳號：索引查表走 hasOwnProperty——「LINE ID：constructor」不得撞上原型鏈', async () => {
+  const env = loadEnv({
+    pathname: V4_PROTO_PATH,
+    page: [createSsrScript(V4_PROTO_POSTS[0]), createScanDom(V4_PROTO_POSTS)],
+    local: { scamBlocklist: buildLineIdBlocklist() },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    env.hits().length,
+    0,
+    'lineIdIndex 是普通物件，直接取值會把 Object.prototype 上的鍵名當成「名單上有這個 ID」'
+  );
+  assert.equal(env.tags().length, 0);
 });
