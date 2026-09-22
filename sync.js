@@ -1044,18 +1044,51 @@
     }
 
     /**
+     * 逐欄深比對，物件鍵序不計。mergeScamEntry 的輸出鍵序與正規化後的條目不
+     * 同，拿 JSON.stringify 比會把一筆沒改的條目判成改過。
+     */
+    function sameShape(a, b) {
+      if (a === b) return true;
+      if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false;
+      var isArray = Array.isArray(a);
+      if (isArray !== Array.isArray(b)) return false;
+      var i;
+      if (isArray) {
+        if (a.length !== b.length) return false;
+        for (i = 0; i < a.length; i++) {
+          if (!sameShape(a[i], b[i])) return false;
+        }
+        return true;
+      }
+      var keys = Object.keys(a);
+      if (keys.length !== Object.keys(b).length) return false;
+      for (i = 0; i < keys.length; i++) {
+        if (!Object.prototype.hasOwnProperty.call(b, keys[i])) return false;
+        if (!sameShape(a[keys[i]], b[keys[i]])) return false;
+      }
+      return true;
+    }
+
+    /**
      * 把一頁雲端 mark(與墓碑)併進本機名單。整段讀改寫包在注入的 writeChain
      * 內，與 background 的 recordHistory／handleScamHit 串行:scamBlocklist 只
      * 有 background 寫得到，兩邊的 read-modify-write 會互相覆蓋。
      *
      * 寫前 normalize(readBlocklist)、寫後 cap——與 background 的三支寫入路徑
      * 同一套紀律，handleIndex 一律由 entries 重建，不留孤兒鍵。
+     *
+     * 【重送即 no-op】伺服器對同毫秒併發寫入的列會在下一次增量重送一次(後端
+     * R5 的 now-1 游標)。逐欄相同的重送合併出來與本機現存那一份一模一樣，這時
+     * 整段不寫 storage:白寫一次除了燒配額，還會讓所有 storage.onChanged 的讀
+     * 者(選項頁的名單)為一件沒發生的事重畫一次。
      */
     function applyMarkChanges(marks, deletions, purgeBefore) {
       if (!marks.length && !deletions.length && purgeBefore === null) return Promise.resolve([]);
       // 比墓碑新、因此留在本機的條目。回給呼叫端把推送水位線讓回去，下一輪
       // 才推得到它們。
       var kept = [];
+      // 這一頁有沒有真的改到本機那一份。一筆都沒改就不落盤(見函式註解)。
+      var changed = false;
       return writeChain(function () {
         return readBlocklist().then(function (list) {
           // 【雲端清空】別台裝置打過 DELETE /api/v1/marks:不晚於水位線的本機條
@@ -1065,7 +1098,10 @@
             Object.keys(list.entries).forEach(function (userId) {
               var current = list.entries[userId];
               var at = finiteNumber(current.updatedAt) ? current.updatedAt : 0;
-              if (at <= purgeBefore) delete list.entries[userId];
+              if (at <= purgeBefore) {
+                delete list.entries[userId];
+                changed = true;
+              }
             });
           }
           // 【墓碑守衛】契約 §3.1 R2③「比墓碑舊不復活」的對稱面:本機
@@ -1085,16 +1121,20 @@
               return;
             }
             delete list.entries[userId];
+            changed = true;
           });
           marks.forEach(function (mark) {
             var parsed = TCLCoreRef.fromScamMark(mark);
             // key 形狀不對的整筆丟棄:落進 entries 就是一筆永遠查不到的條目。
             if (!parsed) return;
             var local = list.entries[parsed.userId];
-            list.entries[parsed.userId] = local
-              ? TCLCoreRef.mergeScamEntry(local, parsed.entry)
-              : parsed.entry;
+            var merged = local ? TCLCoreRef.mergeScamEntry(local, parsed.entry) : parsed.entry;
+            // 逐欄相同的重送不算改動(鍵序不計:合併出來的鍵序與正規化後的不同)。
+            if (local && sameShape(local, merged)) return;
+            list.entries[parsed.userId] = merged;
+            changed = true;
           });
+          if (!changed) return undefined;
           var items = {};
           items[BLOCKLIST_KEY] = TCLCoreRef.capScamBlocklist(list);
           return localSet(items).catch(function (err) {

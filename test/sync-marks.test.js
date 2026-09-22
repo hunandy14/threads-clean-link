@@ -2482,3 +2482,94 @@ test('CR-10 接縫：舊後端沒回 cursor 時退回原本行為（不帶 since
   assert.equal(Object.keys(env.storage.entries()).length, 3, '回填照常落地');
   assert.equal(typeof env.storage.syncState().marksCursor, 'string', '仍以 POST 回應的 cursor 建立增量游標');
 });
+
+// ---- CR-1 補強：本機推送提示不得被增量拉取洗掉 ----
+
+test('CR-1 合併：遠端較新的純量先到，本機待推的 pushAfter 仍在，這一輪照樣推得出去', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    // 水位線壓在本機 updatedAt 之上：這一筆能不能被選進推送批，只看 pushAfter。
+    syncState: { marksCursor: null, marksPushedAt: T0 },
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY, pushAfter: T0 + DAY }),
+    }),
+  });
+  // 別台裝置對同一位作者做過一次純量更新（updatedAt 比本機新）。回填走在選批
+  // 之前，合併出來的那一份就是這一輪拿去選批的輸入。
+  env.server.marks.seed([
+    {
+      key: 'threads:1001',
+      state: 'active',
+      dismissedAt: null,
+      handle: 'alice',
+      displayName: 'Cloud Name',
+      source: 'auto',
+      evidence: [],
+      addedAt: T0 - 5 * DAY,
+      updatedAt: T0 - DAY,
+    },
+  ]);
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const entry = env.storage.entries()['1001'];
+  assert.equal(entry.displayName, 'Cloud Name', '前置條件：遠端較新，純量由它勝出（合併真的跑過）');
+  assert.equal(
+    entry.pushAfter,
+    T0 + DAY,
+    'pushAfter 與 snippet 同屬本機專有：它記的是「這台還有一筆新證據沒推上去」，與雲端那份的新舊無關。純量落敗就把它洗掉的話，遠端的變更只要比本機的推送早一步到，那筆新證據就再也選不進推送批'
+  );
+  assert.ok(
+    env.upsertsByKey()['threads:1001'],
+    '合併之後這一筆仍要進得了推送批——選批水位線取 updatedAt 與 pushAfter 的較大者'
+  );
+});
+
+// ---- 後端 R5：同毫秒併發寫入的列會在下一次增量重送一次 ----
+
+test('R5 重送：逐欄相同的一筆重新下來時不寫 storage（no-op）', async () => {
+  const TCLSync = loadSync();
+  const cloudMark = {
+    key: 'threads:1001',
+    state: 'active',
+    dismissedAt: null,
+    handle: 'alice',
+    displayName: null,
+    source: 'auto',
+    evidence: [],
+    addedAt: T0 - 5 * DAY,
+    updatedAt: T0 - 3 * DAY,
+  };
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    // 走增量（不回填），水位線壓在本機那筆之上：這一輪不推，只拉。
+    syncState: { marksCursor: '0', marksPushedAt: T0 },
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }) }),
+  });
+  env.server.marks.seed([cloudMark]);
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const pulled = env.marksPosts()[0];
+  assert.ok(
+    ((pulled.body && pulled.body.since) || null) !== null,
+    '前置條件：這一輪帶 since 走增量'
+  );
+  assert.deepEqual(
+    Object.keys(env.storage.entries()),
+    ['1001'],
+    '前置條件：本機那一筆與雲端逐欄相同，合併出來一個位元都沒變'
+  );
+  assert.deepEqual(
+    env.storage.writesTo('scamBlocklist'),
+    [],
+    'R5 的游標是 now-1，同毫秒併發寫入的列每一輪都會再下來一次。逐欄相同的重送合併出來與本機那份一模一樣，再寫一次除了燒 storage 配額，還會讓所有 storage.onChanged 的讀者為一件沒發生的事重畫一次'
+  );
+});
