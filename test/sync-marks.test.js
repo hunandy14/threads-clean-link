@@ -876,7 +876,7 @@ test('M2 拉：hasMore 為 true 時同一輪續拉，不等下一個 alarm', asy
   );
 });
 
-test('M2 拉：changes 為 null 時本機一筆不動，cursor 仍恆寫回 syncState.marksCursor', async () => {
+test('M2 拉：changes 為 null 時本機一筆不動，cursor 仍恆寫回 syncState.marksCursor（舊後端無 cursor）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
@@ -885,6 +885,9 @@ test('M2 拉：changes 為 null 時本機一筆不動，cursor 仍恆寫回 sync
     syncState: { marksCursor: null, marksPushedAt: T0 },
     blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }) }),
   });
+  // 舊後端（R4 之前）的 GET 不回頂層 cursor，回填到底也建立不出增量游標，首輪
+  // POST 因此不帶 since。這條路徑要一直留著：插件不能因為少一欄就掛掉。
+  env.server.marks.listCursor(false);
   const engine = TCLSync.create(env.deps);
   await engine.syncNow();
   await settle();
@@ -1741,7 +1744,7 @@ test('R3-2 下行：同一個 clearedAt 不得每一輪重清一次（游標反�
   );
 });
 
-test('R3-2 下行：changes 為 null（請求沒帶位置參數）不得被當成清空', async () => {
+test('R3-2 下行：changes 為 null（請求沒帶位置參數）不得被當成清空（舊後端無 cursor）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
@@ -1752,6 +1755,9 @@ test('R3-2 下行：changes 為 null（請求沒帶位置參數）不得被當�
     syncState: { marksCursor: null },
   });
   await clearCloudMarks(env);
+  // 舊後端（R4 之前）：GET 不回頂層 cursor，回填到底也建立不出增量游標。新後端
+  // 這一輪就會拉到 changes.clearedAt 而依 D41 判 purge，那是另一條既有路徑。
+  env.server.marks.listCursor(false);
   const engine = TCLSync.create(env.deps);
   await engine.syncNow();
   await settle();

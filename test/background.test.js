@@ -6103,7 +6103,7 @@ test('L4 v2 scam.hit:deviceId 一律讀 storage 的 syncDevice，不得自己生
   assert.equal(scamEntry(bg).evidence[0].deviceId, OTHER_DEVICE_ID, 'deviceId 必須與 syncDevice.deviceId 一致');
 });
 
-test('L4 v2 scam.hit:既有條目再次命中把 updatedAt 推到這次的 at,addedAt 不動', async () => {
+test('L4 v2 scam.hit:既有條目再次命中 updatedAt 不動，addedAt 也不動', async () => {
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklistV2() },
   });
@@ -6118,7 +6118,7 @@ test('L4 v2 scam.hit:既有條目再次命中把 updatedAt 推到這次的 at,ad
   const entry = scamEntry(bg);
   assert.equal(entry.state, 'active');
   assert.equal(entry.addedAt, SCAM_AT, 'addedAt 是首見時間，不隨新證據往後跳');
-  assert.equal(entry.updatedAt, SCAM_AT + 60000, 'updatedAt 要推到這次命中的 at(它是合併的判準)');
+  assert.equal(entry.updatedAt, SCAM_AT, 'CR-1：被動再掃到不推進 updatedAt(它是跨裝置 LWW 的判準)');
   assert.equal(entry.evidence.length, 2, '證據併成兩筆');
 });
 
@@ -6220,7 +6220,7 @@ test('L4 v2:讀到 v1 的舊名單時就地升版，已解除的作者變成 dis
   );
 });
 
-test('L4 v2:v1 名單裡的 active 條目升版後照常補證據並落成 v2', async () => {
+test('L4 v2:v1 名單裡的 active 條目升版後照常補證據並落成 v2（updatedAt 不動）', async () => {
   const v1 = {
     version: 1,
     entries: {
@@ -6245,7 +6245,7 @@ test('L4 v2:v1 名單裡的 active 條目升版後照常補證據並落成 v2', 
   const list = scamList(bg);
   assert.equal(list.version, 2);
   assert.equal(list.entries[SCAM_USER_ID].state, 'active', 'v1 的 entries 一律升成 active');
-  assert.equal(list.entries[SCAM_USER_ID].updatedAt, SCAM_AT + 60000);
+  assert.equal(list.entries[SCAM_USER_ID].updatedAt, SCAM_AT, 'CR-1：被動再掃到不推進 updatedAt');
   assert.equal(list.entries[SCAM_USER_ID].evidence.length, 2);
 });
 
