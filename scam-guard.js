@@ -896,15 +896,37 @@
       function snippetAroundLineId(text, lineId, core) {
         if (typeof text !== 'string' || !lineId) return '';
         var clean = core.stripControlChars(text);
-        var probe = clean.replace(/[A-Z]/g, function (ch) {
-          return String.fromCharCode(ch.charCodeAt(0) + 32);
-        });
-        var index = probe.indexOf(lineId);
+        var index = lowerAscii(clean).indexOf(lineId);
         if (index === -1) return '';
         var limits = core.SCAM_LIMITS || {};
         var context = limits.SNIPPET_CONTEXT || 40;
         var max = limits.SNIPPET_MAX || 120;
         return clean.slice(Math.max(0, index - context), index + context).slice(0, max);
+      }
+
+      // 只平移 ASCII 大寫的小寫化。String#toLowerCase 在少數字元上會改變長度
+      // （U+0130 等），拿它算出來的位置套回原文會錯位。
+      function lowerAscii(text) {
+        return text.replace(/[A-Z]/g, function (ch) {
+          return String.fromCharCode(ch.charCodeAt(0) + 32);
+        });
+      }
+
+      // 逐篇找出第一篇帶這個 lineId 的貼文，回 { index, match }，都沒有回
+      // null。lineId 一律是小寫，原文卻可能是大寫（「LINE ID：EX01ABC」），
+      // 因此比對前兩邊都平移成小寫；**標亮字串取原文切片**，卡片上要標得出使
+      // 用者實際看到的那一段。
+      //
+      // 純 id-match 那條路沒有 anchorMatch 可用（判定本身沒命中），錨點定位只
+      // 能靠這支：找不到就會退回串頭，使用者點進證據連結看不到那句話。
+      function findLineIdAnchor(items, lineId, strip) {
+        if (!Array.isArray(items) || !lineId) return null;
+        for (var i = 0; i < items.length; i++) {
+          var clean = strip(typeof items[i].text === 'string' ? items[i].text : '');
+          var at = lowerAscii(clean).indexOf(lineId);
+          if (at !== -1) return { index: i, match: clean.slice(at, at + lineId.length) };
+        }
+        return null;
       }
 
       // ---- 一輪掃描 ----
@@ -995,8 +1017,13 @@
         // 再等行動呼籲或話術詞。索引指回本篇作者自己時不算——自己貼自己的
         // LINE ID 是常態，算了的話名單上每個人的每一篇都會被自己的 ID 再標一
         // 次。作者主鍵取不到時也不算：比不出「是不是同一人」就不該據此判定。
+        //
+        // 目標側門檻：本篇自己也要貼出帳號型錨點或深連結。只有「LINE 提及 ＋
+        // 視窗內的 ID 欄位」那種形狀（「我的 LINE 在下面，ID：xxx」）撞上索引
+        // 時不算——那是店家留客服帳號的寫法，一次撞號就標人太重。
         var idOwner = lineIdOwner(lineId);
-        var idMatched = !!idOwner && !!authorId && idOwner !== authorId;
+        var idMatched =
+          !!idOwner && !!authorId && idOwner !== authorId && hasIdMatchAnchor(detection.signals);
         if (!detection.hit && !idMatched) return;
 
         // 同步認領主文卡：同一輪稍後跑的查表要讓位給這一顆。
@@ -1010,10 +1037,12 @@
         // 方，光有 postUrl 做不到。
         // 判定沒命中（純靠 ID 跨帳號成立）時 detectScamPitch 不產 anchorMatch
         // 與 snippet——那兩欄只在命中時有意義。證據卡仍要指得出是哪一串的哪一
-        // 段，這裡改以抓到的 ID 當定位與標亮位置。
-        var anchorText = detection.anchorMatch || (idMatched && lineId ? lineId : '');
+        // 段，這裡改以抓到的 ID 逐篇定位（大小寫不敏感），標亮取原文切片。
+        var idAnchor = detection.hit ? null : findLineIdAnchor(items, lineId, core.stripControlChars);
+        var anchorText = detection.anchorMatch || (idAnchor ? idAnchor.match : '');
         var snippet = detection.snippet || (idMatched ? snippetAroundLineId(threadText, lineId, core) : '');
-        var anchorItem = items[findAnchorIndex(items, anchorText, core.stripControlChars)];
+        var anchorItem =
+          items[idAnchor ? idAnchor.index : findAnchorIndex(items, anchorText, core.stripControlChars)];
         // 錨點本體送出前先裁到上限：連結型錨點（lin.ee／linktr.ee／line.me
         // 深連結）的帳號段沒有長度上限，超長時 background 會整筆判
         // bad_request，連帶讓一次真的命中寫不進黑名單。裁在送出端，驗證端
@@ -1171,8 +1200,20 @@
         return !!map && typeof map === 'object' && Object.keys(map).length > 0;
       }
 
+      // ID 跨帳號命中的目標側門檻：本篇自己也要貼出帳號型錨點或深連結，光有
+      // 「LINE 提及 ＋ ID 欄位」不夠。
+      function hasIdMatchAnchor(signals) {
+        if (!Array.isArray(signals)) return false;
+        return signals.indexOf('account') !== -1 || signals.indexOf('link') !== -1;
+      }
+
       // ID 跨帳號查表：這串抓到的 LINE ID 已在名單上時回持有它的 userId。索
-      // 引只含 active 條目（使用者解除過的作者不再把別人拖下水），查到就算數。
+      // 引只含 active 條目、而且只含真的招攬過的那些 ID（來源側門檻在 TCLCore
+      // 的 indexScamLineIds），查到就算數。
+      //
+      // 一律走 hasOwnProperty：lineIdIndex 是普通物件，直接取值會讓
+      // 「LINE ID：constructor」之類的帳號段撞上 Object.prototype 的鍵名，拿
+      // 回一個函式當成「名單上有這個 ID」。
       function lineIdOwner(lineId) {
         if (!blocklist || !lineId || !blocklist.lineIdIndex) return null;
         if (!Object.prototype.hasOwnProperty.call(blocklist.lineIdIndex, lineId)) return null;

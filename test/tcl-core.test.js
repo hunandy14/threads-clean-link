@@ -4090,7 +4090,7 @@ test.describe('F4-F5 審查修訂:lineId 抓取收緊', () => {
     assert.equal(
       C.detectScamPitch(text).lineId,
       'ex01abc',
-      '視窗管的是「ID 欄位起點離提及多遠」,切片得放寬到足以吃完整個帳號段'
+      '視窗管的是「ID 欄位起點離提及多遠」，切片得放寬到足以吃完整個帳號段'
     );
   });
 

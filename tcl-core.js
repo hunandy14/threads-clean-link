@@ -904,8 +904,9 @@
     LINE_ID_MAX: 20,
     LINE_ID_MIN: 3,
     // 「LINE／賴提及之後多少字以內的 ID 欄位算是這個提及的帳號」。視窗自提及
-    // 本體的結尾起算，超出的 ID 欄位視為與 LINE 無關(訂單 ID、會員 ID)。
-    ID_WINDOW: 80,
+    // 本體的結尾起算，以 ID 欄位的**起點**設限，超出的視為與 LINE 無關(訂單
+    // ID、會員 ID)。24 字約是一句話的長度——再遠就不是同一句在講的事了。
+    ID_WINDOW: 24,
     SOFT_BUDGET: 2 * 1024 * 1024,
   };
 
@@ -976,39 +977,52 @@
   // 群組詞與加入詞:招攬串的行動呼籲。這兩類詞單獨出現在任何社團、讀書會、
   // Discord 貼文裡都很常見，必須與 LINE 提及並存才構成命中。
   //
-  // 暗號類(暗號／通關密語／密語)是同一種行動呼籲的另一種寫法:招攬者不寫
-  // 「加入群組」,改叫人帶著一組代碼私訊過來，好在對話一開始就分辨得出來人
-  // 是從哪一篇來的。
+  // 暗號類(暗號／通關密語)是同一種行動呼籲的另一種寫法，招攬者不寫「加入群
+  // 組」，改叫人帶著一組代碼私訊過來，好在對話一開始就分辨得出來人是從哪一
+  // 篇來的。
+  //
+  // 【負例是本體】「密語」不列入——它是「加密語音」的子字串，列進去會把講資
+  // 安、講通訊軟體功能的貼文整批誤判。
   var SCAM_GROUP_WORDS = ['群組', '社群', '群裡', '進群', '拉進', '拉你進', '小群'];
-  var SCAM_JOIN_WORDS = ['加入', '加我', '私訊我', '暗號', '通關密語', '密語'];
+  var SCAM_JOIN_WORDS = ['加入', '加我', '私訊我', '暗號', '通關密語'];
 
   // 主動招攬詞:上面兩張表裡描述「把你帶走」這個動作的子集，單字型提及只認
   // 這一組。「群組」「社群」「加入」是名詞，公司公告、社區公告、讀書會、商
   // 家會員貼文本來就會跟 LINE 同框(「公司公告改用 LINE 群組發布」),配單字
   // 型提及遠不足以構成招攬;錨點型提及(連結/帳號/片語)已經帶著帳號或祈使
   // 句，才吃完整詞表。
-  var SCAM_ACTIVE_JOIN_WORDS = ['進群', '拉進', '拉你進', '小群', '加我', '私訊我', '暗號', '通關密語', '密語'];
+  var SCAM_ACTIVE_JOIN_WORDS = ['進群', '拉進', '拉你進', '小群', '加我', '私訊我', '暗號', '通關密語'];
 
-  // 暗號型行動呼籲的樣式:詞表認不出「傳「177」給我」「留言【18】」這種把代
-  // 碼包在引號/括號裡的祈使句，只能用樣式抓。兩種形狀:
-  //   (a) 代碼被引號或括號包住——「傳訊「63」」本身就是暗號句，不必再有「給
-  //       我」。
-  //   (b) 裸代碼後面接「給我」——「傳 177 給我」。
-  // 代碼上限 8 位:再長就不是人記得住的暗號，而是識別碼或網址片段。
+  // 暗號型行動呼籲的樣式，詞表認不出「傳「177」給我」「留言【18】」這種把代
+  // 碼包在引號／括號裡的祈使句，只能用樣式抓。
   //
-  // 【負例是本體】「傳訊息給我」「把檔案傳給我」沒有代碼，兩種形狀都踩不到
-  // ——單獨的「給我」不是行動呼籲，是日常用語。
+  // 代碼一律限 **2-8 位數字**，「留言」那一條另外**強制要有括號**。這兩道限
+  // 制都是誤判面來的:
+  //   - 代碼放行英數時，「傳 email 給我」「傳 LINE 給我」這種日常請求會被當
+  //     成暗號句。
+  //   - 一位數字不是暗號，是選項編號(「留言【1】索取懶人包」)。
+  //   - 「留言」不強制括號時，「留言 1 抽獎」這種抽獎活動整批誤判。
+  // 上限 8 位:再長就不是人記得住的暗號，而是識別碼或網址片段。
+  //
+  // 「傳」那一條收兩種形狀:代碼被引號／括號包住時本身就是暗號句(「傳訊
+  // 「63」」)，不必再有「給我」;裸代碼則要接「給我」(「傳 177 給我」)。
   var SCAM_CODE_WORD_RES = [
-    /傳(?:送|訊)?\s*(?:[「【(\[]\s*[A-Za-z0-9]{1,8}\s*[」】)\]]|[A-Za-z0-9]{1,8}\s*給我)/,
-    /留言\s*[「【(\[]?\s*[A-Za-z0-9]{1,8}\s*[」】)\]]?/,
+    /傳(?:送|訊)?\s*(?:[「【(\[]\s*[0-9]{2,8}\s*[」】)\]]|[0-9]{2,8}\s*給我)/,
+    /留言\s*[「【(\[]\s*[0-9]{2,8}\s*[」】)\]]/,
   ];
 
   // lineId 抓取第二段的兩把尺。idMention 是「這段文字在講 LINE」的起點(單字
   // 型 LINE 或 賴／籟，負向邊界與錨點同一套);idLabelled 是視窗內的「ID／帳號
   // ＋冒號＋帳號段」。兩者必須並存:沒有 LINE 提及時，任何貼文的「訂單 ID：
   // A12345」都不是 LINE 帳號。
+  //
+  // 【負例是本體】ID／帳號／號碼這三個標籤自己不挑歸屬，前面掛什麼詞就是誰
+  // 的 ID。前置的負向 lookbehind 列出有自己歸屬的那些:訂單、會員、銀行、手
+  // 機、員工、編號、訂位、取件、付款，以及 Apple／Pay／Google／Meta。容 0-2
+  // 個空白，「訂單 ID：」「訂單　ID：」都擋得下。
   var SCAM_ID_MENTION_RE = /(?<![A-Za-z])LINE(?![A-Za-z])|(?<![信依無仰倚])[賴籟]/i;
-  var SCAM_ID_LABELLED_RE = /(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
+  var SCAM_ID_LABELLED_RE =
+    /(?<!(?:訂單|會員|銀行|手機|員工|編號|訂位|取件|付款|Apple|Pay|Google|Meta)\s{0,2})(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
 
   // lineId 抓取第三段:加好友深連結的路徑段。只認 ti/p 與 lin.ee——ti/g 的路
   // 徑段是群組邀請 token，不是 LINE 帳號，進索引只會用一串對不上任何帳號的
@@ -1089,8 +1103,16 @@
     var mention = cfg.idMention.exec(probe);
     if (mention) {
       var from = mention.index + mention[0].length;
-      found = scamIdCapture(cfg.idLabelled.exec(probe.slice(from, from + SCAM_LIMITS.ID_WINDOW)), from);
-      if (found) return found;
+      // 切片放寬到視窗再加「一個帳號段 ＋ 標籤與冒號」的長度，**限制改由匹配
+      // 起點來把關**:切片剛好切在視窗邊界時，落在邊界上的 ID 欄位會被攔腰截
+      // 斷，樣式在半截字串上照樣匹配得出一個短帳號——抓回半截帳號比抓不到更
+      // 糟，它會用一個錯的鍵進跨帳號索引。
+      var slice = probe.slice(from, from + SCAM_LIMITS.ID_WINDOW + SCAM_LIMITS.LINE_ID_MAX + 8);
+      var labelled = cfg.idLabelled.exec(slice);
+      if (labelled && labelled.index < SCAM_LIMITS.ID_WINDOW) {
+        found = scamIdCapture(labelled, from);
+        if (found) return found;
+      }
     }
 
     return scamIdCapture(cfg.idDeepLink.exec(probe), 0);
@@ -1403,7 +1425,7 @@
     // 字串放行的話，拿它去 join 裝置清單永遠落空，時間軸上就顯示成未知裝置。
     var deviceId = normalizeDeviceId(raw.deviceId);
     if (deviceId !== undefined) out.deviceId = deviceId;
-    // lineId 是本機專有欄位(不上雲:toScamMark 不送、fromScamMark 不讀),也是
+    // lineId 是本機專有欄位(不上雲:toScamMark 不送、fromScamMark 不讀)，也是
     // lineIdIndex 的唯一真相來源。驗證刻意比其他欄位寬鬆——形狀不合只丟這一
     // 欄、超長裁切而不整欄丟棄:它是加值資訊，為了它把一次真的命中整筆退掉是
     // 賠本生意。
@@ -1485,7 +1507,7 @@
   //
   // allowlist 與 lineIdIndex 都是普通的可列舉鍵，與其他三把一視同仁:派生視
   // 圖的「不落盤」由 capScamBlocklist 挑鍵保證(它只寫 version／entries／
-  // handleIndex),不靠屬性描述子把鍵藏起來——藏起來的鍵在 structured clone、
+  // handleIndex)，不靠屬性描述子把鍵藏起來——藏起來的鍵在 structured clone、
   // 物件展開與 Object.assign 之下會被默默丟掉，之後誰把名單傳一手，靠它的那
   // 條命中路徑就無聲失效。
   //
@@ -1563,20 +1585,44 @@
     }
   }
 
-  // 把一筆條目每一格證據上的 lineId 都寫進反查表。同一位作者換過幾個 ID 就
-  // 佔幾個鍵——換帳號再招攬一次時，任何一個 ID 都要查得回他。鍵一律小寫(比照
-  // handleIndex),`__proto__` 照三張表的規矩擋下:反查表被換掉原型之後，查表
-  // 會拿到一筆撈不出來的條目。
+  // ID 跨帳號比對的來源側門檻:一筆證據要踩到行動呼籲、話術詞或深連結其中之
+  // 一，它的 lineId 才夠格進索引。
+  //
+  // 「這個人貼過這個帳號」離「這個帳號是一組人的招攬工具」還有一段距離:同一
+  // 間店的兩位員工各貼一次同一支客服 LINE 是常態，餐廳、工作室、社團的公務帳
+  // 號也一樣。只有 line／account／id 的條目就是這種形狀——它本身可能是被別的
+  // 路徑判進名單的，但不足以拿它的 ID 去標第二個人。
+  var SCAM_ID_INDEX_SIGNALS = ['join', 'group', 'pitch', 'link'];
+
+  function isIndexableScamEvidence(item) {
+    if (!Array.isArray(item.signals)) return false;
+    for (var i = 0; i < SCAM_ID_INDEX_SIGNALS.length; i++) {
+      if (item.signals.indexOf(SCAM_ID_INDEX_SIGNALS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  // 把一筆條目每一格夠格的證據上的 lineId 寫進反查表。同一位作者換過幾個 ID
+  // 就佔幾個鍵——換帳號再招攬一次時，任何一個 ID 都要查得回他。鍵一律小寫
+  // (比照 handleIndex)，`__proto__` 照三張表的規矩擋下:反查表被換掉原型之
+  // 後，查表會拿到一筆撈不出來的條目。
+  //
+  // 純數字的 lineId 一律不進索引(證據照留，標亮與人工複核還用得到):電話號
+  // 碼、訂單號、會員編號都是純數字，拿它們跨帳號比對是在賭撞號。
   function indexScamLineIds(list, id, entry) {
     if (!list.lineIdIndex) return;
     for (var i = 0; i < entry.evidence.length; i++) {
       var raw = entry.evidence[i].lineId;
       if (typeof raw !== 'string' || raw.length === 0) continue;
+      if (!isIndexableScamEvidence(entry.evidence[i])) continue;
+      if (SCAM_DIGITS_ONLY_PATTERN.test(raw)) continue;
       var key = raw.toLowerCase();
       if (isUnsafeMapKey(key)) continue;
       list.lineIdIndex[key] = id;
     }
   }
+
+  var SCAM_DIGITS_ONLY_PATTERN = /^[0-9]+$/;
 
   // v1 allowlist 單筆值正規化(升版的入口，v2 不再存這張表)。值是一筆「解除
   // 紀錄」:at 為解除時間，handle 為解除當下的帳號。`true` 視為
