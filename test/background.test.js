@@ -6103,7 +6103,7 @@ test('L4 v2 scam.hit:deviceId 一律讀 storage 的 syncDevice，不得自己生
   assert.equal(scamEntry(bg).evidence[0].deviceId, OTHER_DEVICE_ID, 'deviceId 必須與 syncDevice.deviceId 一致');
 });
 
-test('L4 v2 scam.hit:既有條目再次命中把 updatedAt 推到這次的 at,addedAt 不動', async () => {
+test('L4 v2 scam.hit:既有條目再次命中 updatedAt 不動，addedAt 也不動', async () => {
   const bg = loadBackgroundForDevices({
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklistV2() },
   });
@@ -6118,7 +6118,7 @@ test('L4 v2 scam.hit:既有條目再次命中把 updatedAt 推到這次的 at,ad
   const entry = scamEntry(bg);
   assert.equal(entry.state, 'active');
   assert.equal(entry.addedAt, SCAM_AT, 'addedAt 是首見時間，不隨新證據往後跳');
-  assert.equal(entry.updatedAt, SCAM_AT + 60000, 'updatedAt 要推到這次命中的 at(它是合併的判準)');
+  assert.equal(entry.updatedAt, SCAM_AT, 'CR-1：被動再掃到不推進 updatedAt(它是跨裝置 LWW 的判準)');
   assert.equal(entry.evidence.length, 2, '證據併成兩筆');
 });
 
@@ -6220,7 +6220,7 @@ test('L4 v2:讀到 v1 的舊名單時就地升版，已解除的作者變成 dis
   );
 });
 
-test('L4 v2:v1 名單裡的 active 條目升版後照常補證據並落成 v2', async () => {
+test('L4 v2:v1 名單裡的 active 條目升版後照常補證據並落成 v2（updatedAt 不動）', async () => {
   const v1 = {
     version: 1,
     entries: {
@@ -6245,7 +6245,7 @@ test('L4 v2:v1 名單裡的 active 條目升版後照常補證據並落成 v2', 
   const list = scamList(bg);
   assert.equal(list.version, 2);
   assert.equal(list.entries[SCAM_USER_ID].state, 'active', 'v1 的 entries 一律升成 active');
-  assert.equal(list.entries[SCAM_USER_ID].updatedAt, SCAM_AT + 60000);
+  assert.equal(list.entries[SCAM_USER_ID].updatedAt, SCAM_AT, 'CR-1：被動再掃到不推進 updatedAt');
   assert.equal(list.entries[SCAM_USER_ID].evidence.length, 2);
 });
 
@@ -6374,4 +6374,379 @@ test('R3-15 blocklist.remove:訊息帶來的 handle 形狀不合時只忽略該�
   );
   const list = scamList(bg);
   assertNoOrphanIndex(list);
+});
+
+// ============================================================================
+// CR — 官方 code review（2026-09-22，整合分支 agent/feature/marks-sync）的修補
+// ----------------------------------------------------------------------------
+// CR-1 被動重新掃到已列名的作者時，`handleScamHit` 只做證據聯集：不動
+//      `updatedAt`、不動 `state`。推進 `updatedAt` 等於在跨裝置 LWW 裡讓「這台
+//      機器又掃到一次」勝過別台裝置早一點做的解除——使用者按掉的標記會被一次
+//      背景掃描悄悄復活。有新證據時改以一個**本機專有、不上雲**的欄位讓下一輪
+//      推送選得到它；沒有新證據時連 storage 都不寫、也不觸發同步。
+// CR-6 已解除作者的命中不得讀 storage 的 `syncDevice`：那一筆命中最後什麼都不
+//      寫，先讀裝置身分只是白花一次 storage 往返，而河道一次捲動就會派出幾十則
+//      scam.hit。
+// ============================================================================
+
+const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
+
+const CR_API_BASE = 'https://api.metalinkclearer.workers.dev';
+const CR_TOKEN = 'tok-cr-marks';
+const CR_MARK_KEY = 'threads:' + SCAM_USER_ID;
+// 雲端 Mark 的固定九欄（docs/cloud-sync.md §3.1 R1）。
+const CR_MARK_KEYS = [
+  'addedAt',
+  'dismissedAt',
+  'displayName',
+  'evidence',
+  'handle',
+  'key',
+  'source',
+  'state',
+  'updatedAt',
+];
+
+/** v2 形狀的本機名單（handleIndex 只收 active）。 */
+function crBlocklist(entries) {
+  const handleIndex = {};
+  Object.keys(entries).forEach((id) => {
+    const entry = entries[id];
+    if (entry.state !== 'dismissed' && typeof entry.handle === 'string') {
+      handleIndex[entry.handle.toLowerCase()] = id;
+    }
+  });
+  return { version: 2, entries, handleIndex };
+}
+
+/** 已有一篇證據的 active 條目。 */
+function crSeededEntry(over) {
+  return Object.assign(
+    {
+      state: 'active',
+      handle: SCAM_HANDLE,
+      displayName: SCAM_DISPLAY_NAME,
+      source: 'auto',
+      addedAt: SCAM_AT,
+      updatedAt: SCAM_AT,
+      evidence: [
+        {
+          postUrl: SCAM_POST_URL,
+          anchorPostUrl: SCAM_POST_URL,
+          snippet: SCAM_SNIPPET,
+          at: SCAM_AT,
+        },
+      ],
+    },
+    over || {}
+  );
+}
+
+/** 某一次 storage.local.get 有沒有問到這把鍵（字串／陣列／預設值物件三種寫法都算）。 */
+function crGetMentions(keys, key) {
+  if (typeof keys === 'string') return keys === key;
+  if (Array.isArray(keys)) return keys.indexOf(key) !== -1;
+  if (keys && typeof keys === 'object') return Object.prototype.hasOwnProperty.call(keys, key);
+  return false;
+}
+
+/** background ＋ 真 sync.js ＋ 假後端：marks 通道的端到端佈線。 */
+function loadBackgroundWithMarksServer(opts = {}) {
+  const server = createMockSyncServer({ now: () => Date.now() });
+  server.grantToken(CR_TOKEN);
+  const bg = loadBackgroundForDevices({
+    syncApi: REAL_SYNC,
+    fetch: (url, init) => server.fetch(url, init),
+    localSeed: Object.assign(
+      {
+        [DEVICE_KEY]: SEEDED_DEVICE,
+        history: [],
+        [SCAM_ENABLED_KEY]: true,
+        syncAuth: { token: CR_TOKEN },
+        syncVerifiedAt: Date.now(),
+        syncState: Object.assign(
+          {
+            userId: 'user-abc',
+            email: 'someone@example.com',
+            cursor: '0',
+            marksCursor: '0',
+            marksPushedAt: null,
+          },
+          opts.syncState || {}
+        ),
+      },
+      opts.localSeed || {}
+    ),
+  });
+  bg.server = server;
+  bg.marksPosts = () => server.requestsTo('/api/v1/marks/sync', 'POST');
+  bg.upsertsByKey = () => {
+    const out = {};
+    server.requestsTo('/api/v1/marks/sync', 'POST').forEach((req) => {
+      ((req.body && req.body.upserts) || []).forEach((mark) => {
+        out[mark.key] = mark;
+      });
+    });
+    return out;
+  };
+  bg.syncNow = () => bg.send({ type: 'sync.now' }, EXT_PAGE_SENDER, { timeoutMs: 3000 });
+  return bg;
+}
+
+test('CR-1 scam.hit:既有 active 條目被動重新掃到時，updatedAt 與 state 一格不動', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_ENABLED_KEY]: true,
+      [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }),
+    },
+  });
+
+  // 另一篇貼文、晚一小時：這是一筆新證據，但使用者什麼都沒做。
+  const res = await bg.send(
+    scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: SCAM_AT + 3600000 }),
+    SCAM_TAB_SENDER,
+    SCAM_SEND_OPTS
+  );
+  assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
+  await settle(600);
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.evidence.length, 2, '前置條件：新證據照樣併進去');
+  assert.equal(
+    entry.updatedAt,
+    SCAM_AT,
+    'updatedAt 是跨裝置 LWW 的唯一判準。「這台機器又掃到一次」不是使用者的意思表示，推進它等於讓一次背景掃描勝過別台裝置更早做的解除，那個標記會自己復活'
+  );
+  assert.equal(entry.state, 'active', '被動掃描不得改 state');
+});
+
+test('CR-1 scam.hit:重複證據（同一篇錨點）不寫 storage、不觸發同步', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_ENABLED_KEY]: true,
+      [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }),
+    },
+  });
+
+  // 同一篇貼文重新打開一次：去重鍵（anchorPostUrl ‖ postUrl）撞上既有那一筆。
+  const res = await bg.send(scamHit({ at: SCAM_AT + 3600000 }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
+  assert.equal(deep(res.response).ok, true, '重複證據不是錯誤，照常回 ok');
+  await settle(600);
+
+  const writes = bg.storage.localCalls.set.filter((items) =>
+    Object.prototype.hasOwnProperty.call(items, SCAM_KEY)
+  );
+  assert.deepEqual(
+    writes,
+    [],
+    '去重之後沒有新證據，整筆條目一個位元都沒變。河道一次捲動就派出幾十則 scam.hit，每一則都回寫一次整份名單，是白花的 storage 配額與一整輪同步'
+  );
+  assert.deepEqual(
+    bg.sync.callsTo('notifyRecorded'),
+    [],
+    '沒有東西要推就別掛去抖同步：那一輪推上去的是一份跟雲端一模一樣的資料'
+  );
+});
+
+test('CR-1 scam.hit:別台裝置較早的解除不得被本機的被動掃描蓋掉', async () => {
+  const dismissedAt = SCAM_AT + 1800000;
+  const bg = loadBackgroundWithMarksServer({
+    localSeed: { [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }) },
+  });
+  // 裝置 B 在 t1 解除了這位作者（本機那一份還停在 t0 的 active）。
+  bg.server.marks.seed([
+    {
+      key: CR_MARK_KEY,
+      state: 'dismissed',
+      dismissedAt: dismissedAt,
+      handle: SCAM_HANDLE,
+      displayName: SCAM_DISPLAY_NAME,
+      source: 'auto',
+      evidence: [],
+      addedAt: SCAM_AT,
+      updatedAt: dismissedAt,
+    },
+  ]);
+
+  // 本機在 t2 > t1 被動又掃到一次（使用者沒有按任何東西）。
+  const hit = await bg.send(
+    scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: dismissedAt + 600000 }),
+    SCAM_TAB_SENDER,
+    SCAM_SEND_OPTS
+  );
+  assert.equal(hit.responded, true, '前置條件：scam.hit 有人接手');
+  await settle(600);
+  assert.equal(scamEntry(bg).updatedAt, SCAM_AT, '前置條件（CR-1）：被動掃描不推進 updatedAt');
+
+  const synced = await bg.syncNow();
+  assert.equal(synced.responded, true, '前置條件：sync.now 有人接手');
+  await settle(900);
+
+  assert.equal(
+    scamEntry(bg).state,
+    'dismissed',
+    '別台裝置的解除比本機這筆新，LWW 應判它勝出。本機一推進 updatedAt，使用者按掉的標記就會在下一次捲到同一位作者時自己長回來'
+  );
+});
+
+test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位不得上雲', async () => {
+  const bg = loadBackgroundWithMarksServer({
+    // 水位線已經越過這一筆：靠 updatedAt 是選不到它的，要有別的管道。
+    syncState: { marksPushedAt: SCAM_AT },
+    localSeed: { [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }) },
+  });
+
+  const hit = await bg.send(
+    scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: SCAM_AT + 3600000 }),
+    SCAM_TAB_SENDER,
+    SCAM_SEND_OPTS
+  );
+  assert.equal(hit.responded, true, '前置條件：scam.hit 有人接手');
+  await settle(600);
+  assert.equal(scamEntry(bg).updatedAt, SCAM_AT, '前置條件（CR-1）：被動掃描不推進 updatedAt');
+
+  const synced = await bg.syncNow();
+  assert.equal(synced.responded, true, '前置條件：sync.now 有人接手');
+  await settle(900);
+
+  const sent = bg.upsertsByKey()[CR_MARK_KEY];
+  assert.ok(
+    sent,
+    '不推進 updatedAt 之後，選批不能只看 updatedAt：新證據得靠本機那個推送提示欄位被選進來，否則這一篇命中永遠留在本機，別台裝置看到的命中篇數從此對不上'
+  );
+  assert.deepEqual(
+    Object.keys(sent).sort(),
+    CR_MARK_KEYS,
+    'mark 是固定九欄的跨端契約，本機自用的推送提示欄位一個都不得跟著上雲'
+  );
+  assert.equal(sent.updatedAt, SCAM_AT, '送出去的 updatedAt 就是本機那個沒被動過的值');
+
+  const cloud = bg.server.marks.byKey(CR_MARK_KEY);
+  assert.ok(cloud, '這一筆要真的落到雲端');
+  assert.equal(cloud.evidence.length, 2, '雲端那一份是兩邊證據的聯集');
+});
+
+test('CR-1 scam.hit:推成功之後水位線要蓋過那筆新證據，下一輪不得重送', async () => {
+  const bg = loadBackgroundWithMarksServer({
+    syncState: { marksPushedAt: SCAM_AT },
+    localSeed: { [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }) },
+  });
+
+  await bg.send(
+    scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: SCAM_AT + 3600000 }),
+    SCAM_TAB_SENDER,
+    SCAM_SEND_OPTS
+  );
+  await settle(600);
+  await bg.syncNow();
+  await settle(900);
+  const firstRound = bg.marksPosts().length;
+  assert.ok(bg.upsertsByKey()[CR_MARK_KEY], '前置條件：第一輪推出去了');
+
+  await bg.syncNow();
+  await settle(900);
+
+  const resent = {};
+  bg.marksPosts()
+    .slice(firstRound)
+    .forEach((req) => {
+      ((req.body && req.body.upserts) || []).forEach((mark) => {
+        resent[mark.key] = true;
+      });
+    });
+  assert.equal(
+    resent[CR_MARK_KEY],
+    undefined,
+    '水位線要以「updatedAt 與推送提示欄位的較大者」推進，只推到 updatedAt 的話這一筆每一輪都會被重新選中，整份名單變成每輪重傳'
+  );
+});
+
+test('CR-6 scam.hit:已解除作者的命中不得讀 storage 的 syncDevice', async () => {
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_ENABLED_KEY]: true,
+      [SCAM_KEY]: crBlocklist({
+        [SCAM_USER_ID]: crSeededEntry({ state: 'dismissed', dismissedAt: SCAM_AT + 60000 }),
+      }),
+    },
+  });
+
+  const res = await bg.send(scamHit({ at: SCAM_AT + 3600000 }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
+  assert.deepEqual(
+    deep(res.response),
+    { ok: true, added: false, allowlisted: true },
+    '前置條件：走的是已解除作者的早退分支'
+  );
+  await settle(600);
+
+  const asked = bg.storage.localCalls.get.filter((keys) => crGetMentions(keys, DEVICE_KEY));
+  assert.deepEqual(
+    asked,
+    [],
+    'deviceId 只有在真的要寫一筆證據時才用得到。早退分支一個位元都不寫，先讀它就是白花一次 storage 往返——河道一次捲動派出幾十則 scam.hit，全都落在這條路徑上'
+  );
+});
+
+// CR-1 縱深：`at` 是**頁面端送來的**數字。只驗有限數字不夾上限的話，偽造一個
+// `at = 1e15`（西元 33658 年）的 scam.hit 就會一路流進 pushAfter；那一筆推成功
+// 之後 marksPushedAt 被推到同一個天文數字，此後整份名單的 updatedAt 全都落在水
+// 位線之下，marks 通道**靜默停推**——沒有錯誤碼、沒有提示，使用者只會發現換台裝
+// 置就看不到新標記了。水位線只能往前推，回不去。
+test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter 不得越過 now', async () => {
+  const FORGED_AT = 1e15;
+
+  const bg = loadBackgroundForDevices({
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      [SCAM_ENABLED_KEY]: true,
+      [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }),
+    },
+  });
+
+  const before = Date.now();
+  const res = await bg.send(
+    scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: FORGED_AT }),
+    SCAM_TAB_SENDER,
+    SCAM_SEND_OPTS
+  );
+  assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
+  await settle(600);
+  const after = Date.now();
+
+  const entry = scamEntry(bg);
+  assert.equal(entry.evidence.length, 2, '前置條件：這是一筆新證據（夾上限不等於整筆丟掉）');
+  assert.ok(
+    entry.evidence[0].at >= before && entry.evidence[0].at <= after,
+    '證據的 at 要夾到現在（實得 ' + entry.evidence[0].at + '）'
+  );
+  assert.ok(
+    entry.pushAfter >= before && entry.pushAfter <= after,
+    'pushAfter 會變成推送成功後的 marksPushedAt，越過 now 的那一刻起整份名單都推不出去了（實得 ' +
+      entry.pushAfter +
+      '）'
+  );
+  assert.equal(entry.updatedAt, SCAM_AT, 'CR-1：被動再掃到照樣不推進 updatedAt');
+
+  // 新建條目那一條路徑同樣要夾：addedAt／updatedAt 直接取這次命中的 at，一個
+  // 偽造的未來時戳會讓這筆在跨裝置 LWW 裡永遠勝出，別台裝置的解除從此無效。
+  const fresh = loadBackgroundForDevices({
+    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_ENABLED_KEY]: true },
+  });
+  const freshBefore = Date.now();
+  const created = await fresh.send(scamHit({ at: FORGED_AT }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  assert.equal(created.responded, true, '前置條件：scam.hit 有人接手');
+  await settle(600);
+  const freshAfter = Date.now();
+
+  const born = scamEntry(fresh);
+  assert.ok(born.addedAt >= freshBefore && born.addedAt <= freshAfter, '新建條目的 addedAt 夾到現在');
+  assert.ok(
+    born.updatedAt >= freshBefore && born.updatedAt <= freshAfter,
+    '新建條目的 updatedAt 夾到現在——它是跨裝置 LWW 的判準，一個未來時戳等於讓這台裝置永遠勝出'
+  );
 });
