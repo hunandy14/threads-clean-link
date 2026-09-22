@@ -61,9 +61,9 @@
       // ---- options:設定 ----
       opSettingsTitle: '設定',
       opAutoCleanName: '自動淨化分享按鈕',
-      opAutoCleanDesc: '複製時自動換成乾淨網址；關閉仍照常寫入紀錄。',
+      opAutoCleanDesc: '複製時自動換成乾淨網址',
       opSaveName: '保存紀錄',
-      opSaveDesc: '僅存於本機',
+      opSaveDesc: '儲存淨化或複製過的連結',
       // 與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關說明(popup
       // 只留精簡標籤)。
       opPostCopyName: '貼文複製按鈕',
@@ -186,7 +186,7 @@
       // 三件事講清楚:無法復原、本機紀錄保留、這些紀錄不會再上傳到雲端
       // (伺服器對早於 cleared_at 的紀錄一律拒收，見 api-spec 4.4；之後
       // 新清理的連結則不受影響，仍會正常上傳)。
-      opSyncDeleteConfirmDesc: '雲端保存的紀錄將永久刪除，無法復原。這台裝置上的紀錄不受影響，但不會再上傳到雲端；之後新清理的連結仍會正常同步。',
+      opSyncDeleteConfirmDesc: '雲端保存的紀錄與警示名單將永久刪除，無法復原。這台裝置上的資料不受影響，但不會再上傳到雲端；之後新清理的連結仍會正常同步。',
       opSyncDeleteConfirmDo: '確定刪除',
       // 使用者在瀏覽器的權限對話框按了拒絕:登入流程就此中止，需要讓他知道
       // 為什麼什麼都沒發生。
@@ -255,10 +255,10 @@
       // 選項頁設定卡的總開關 #scamGuardEnabled。功能名沿用貼文上那顆 pill
       // 的說法(scamTagLabel「LINE 群組引導」)，清單本身則一律叫警示名單。
       opScamGuardName: 'LINE 群組引導警示',
-      opScamGuardDesc:
-        '偵測引導加入 LINE 群組的串文並把作者加入本機警示名單；名單只存在這台裝置，不上雲。',
+      opScamGuardDesc: '偵測引導加入 LINE 群組的串文，並在貼文上標記',
       // 設定卡內指向警示名單分頁的同頁錨點(a#scamManageLink[href="#flags"])。
-      opScamManageLink: '管理警示名單 →',
+      // 純文字，不含箭頭——箭頭改由後面接的 Lucide arrow-right inline SVG 呈現。
+      opScamManageLink: '管理警示名單',
 
       // ---- 選項頁:警示名單卡(警示名單分頁) ----
       opScamListTitle: '警示名單',
@@ -313,11 +313,21 @@
       opScamInfo3:
         '河道只查表不掃文。|之後在河道看到名單裡的作者，他的貼文會直接掛標記，不用點進去。',
       opScamInfo4:
-        '資料只在這台裝置。|名單與證據存在本機，不上傳、不同步、不與他人共享。頁面沒帶作者 ID 時，會對同一篇貼文發一次不帶登入的請求補查，24 小時內同一篇只發一次。',
+        '名單跟著你的帳號走。|名單與證據預設留在本機；開啟雲端同步後，作者帳號、顯示名與證據貼文網址會上傳到開發者後端，跟著你的帳號在裝置之間同步，貼文文字片段則留在本機，也不會與其他使用者共享。頁面沒帶作者 ID 時，會對同一篇貼文發一次不帶登入的請求補查，24 小時內同一篇只發一次。',
       opScamInfo5:
         '判定是規則比對，可能誤判。|遇到誤判按「⋯ → 解除」，該作者不會再被自動加入；在「已解除」可以復原。標記只是提醒，請自行判斷。',
       opScamRestore: '復原',
       opScamRestoreFailed: '復原失敗，請稍後再試',
+
+      // ---- 警示名單 v2(D35 ＋ 顯示;車道 C) ----
+      // 總開關關閉時卡頭下方的狀態列文案，與就地開啟鈕。
+      opScamDisabledBar: 'LINE 群組引導警示已關閉——名單不會同步，也不會在河道掛標記',
+      opScamEnable: '開啟',
+      // 雲端同步來的證據沒有 snippet(片段只留在掃到它的那台裝置)時，片段
+      // 位置改畫這句灰字說明。
+      opScamEvidenceMissing: '證據片段只存在掃到它的裝置',
+      // 雲端配額用罄而被淘汰的筆數，卡頭小字說明。{n} 代入淘汰筆數。
+      opScamEvictedHint: '雲端已達免費額度，較舊的 {n} 筆只保留在本機',
     },
     en: {
       bgMenuTitle: 'Copy clean Threads post link',
@@ -357,9 +367,9 @@
 
       opSettingsTitle: 'Settings',
       opAutoCleanName: 'Auto-clean the share button',
-      opAutoCleanDesc: 'Cleans copied links automatically; recording continues either way.',
+      opAutoCleanDesc: 'Swaps in the clean URL when you copy.',
       opSaveName: 'Keep history',
-      opSaveDesc: 'Local only',
+      opSaveDesc: 'Keeps the links you cleaned or copied.',
       opPostCopyName: 'Post copy button',
       opPostCopyDesc: 'Show a copy-link button on posts’ action row',
 
@@ -450,7 +460,7 @@
       // and these records will not be re-uploaded (the server rejects any
       // record older than clearedAt, see api-spec 4.4; newly cleared links
       // after this point still sync normally).
-      opSyncDeleteConfirmDesc: 'Records stored in the cloud will be permanently deleted and cannot be recovered. Your local history on this device is unaffected, but it will not be re-uploaded; links you clean afterward will still sync normally.',
+      opSyncDeleteConfirmDesc: 'Records and the warning list stored in the cloud will be permanently deleted and cannot be recovered. The data on this device is unaffected, but it will not be re-uploaded; links you clean afterward will still sync normally.',
       opSyncDeleteConfirmDo: 'Delete',
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opAccountSignInFailed: 'Sign-in failed, please try again later',
@@ -499,9 +509,8 @@
       scamBlockedByList:
         'This account has posted threads that funnel readers to LINE. It is on your local warning list.',
       opScamGuardName: 'LINE group funnel warnings',
-      opScamGuardDesc:
-        'Detects threads that funnel readers into LINE groups and adds the author to your local warning list. The list stays on this device only.',
-      opScamManageLink: 'Manage warning list →',
+      opScamGuardDesc: 'Detects threads that steer people into LINE groups and tags the post.',
+      opScamManageLink: 'Manage warning list',
 
       opScamListTitle: 'Warning list',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
@@ -535,11 +544,18 @@
       opScamInfo3:
         'In the feed it only checks the list.|When an author already on the list shows up in your feed, their posts get the badge right away, with no scanning and no need to open them.',
       opScamInfo4:
-        'The data stays on this device.|The list and its evidence live in local storage only: never uploaded, never synced, never shared. If a page does not carry the author ID, one signed-out request is made for that same post to fill it in, at most once per post per 24 hours.',
+        'The list travels with your account.|The list and its evidence are local by default. Turn on cloud sync and the author handle, display name and evidence post links go to the developer backend and follow your account across devices; post text snippets stay local and are not shared with other users. If a page does not carry the author ID, one signed-out request is made for that same post to fill it in, at most once per post per 24 hours.',
       opScamInfo5:
         'It is rule matching, so it can be wrong.|If a call looks wrong, use “⋯ → Remove”; that author is never added automatically again, and you can undo it under “Removed”. A badge is a heads-up, not a verdict — judge for yourself.',
       opScamRestore: 'Undo',
       opScamRestoreFailed: 'Undo failed. Please try again later.',
+
+      // ---- Warning list v2 (D35 + display; lane C) ----
+      opScamDisabledBar:
+        'LINE group funnel warnings are off — the list will not sync and no badges will show in the feed',
+      opScamEnable: 'Turn on',
+      opScamEvidenceMissing: 'The evidence snippet only exists on the device that detected it',
+      opScamEvictedHint: 'Cloud quota reached; the oldest {n} entries stay on this device only',
     },
   };
 

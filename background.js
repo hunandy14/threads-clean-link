@@ -48,7 +48,7 @@ const NOTIFICATION_ICON = 'icons/icon128.png';
 // 路徑改頁內 toast，見 bridge.js／post-icon.js)。saveHistory(只有
 // background 記錄時把關，guard/bridge 不下放)與 autoClean 的預設值須
 // 與 popup.js／bridge.js／clipboard-guard.js 同步。
-// 預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威),background 只挑
+// 預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威)，background 只挑
 // 自己把關的兩顆(autoClean/saveHistory;postCopyEnabled 是 popup/post-icon 的
 // 事，background 不讀)。
 const DEFAULT_SETTINGS = {
@@ -699,6 +699,12 @@ function validateScamHit(message) {
   if (postUrl === null) return null;
   if (typeof message.snippet !== 'string' || message.snippet.length > TCLCore.SCAM_LIMITS.SNIPPET_MAX) return null;
   if (typeof message.at !== 'number' || !isFinite(message.at)) return null;
+  // at 是頁面端送來的數字，夾在「現在」以內。這個值一路流進證據的 at、新建條
+  // 目的 addedAt／updatedAt，以及補證據時的 pushAfter——推送成功後 pushAfter
+  // 會成為 marksPushedAt，一個偽造的未來時戳就讓此後整份名單都落在水位線之
+  // 下，marks 通道靜默停推（沒有錯誤碼，水位線也只能往前推）。往回的時戳不夾：
+  // 補送舊命中是正常情形，太舊只會讓它排在證據清單後面。
+  const at = Math.min(message.at, Date.now());
 
   let userId = null;
   if (message.userId !== null && message.userId !== undefined) {
@@ -749,7 +755,7 @@ function validateScamHit(message) {
     displayName: typeof message.displayName === 'string' ? message.displayName : undefined,
     postUrl,
     snippet: message.snippet,
-    at: message.at,
+    at,
     anchorPostUrl,
     threadUrl,
     anchorMatch,
@@ -979,9 +985,26 @@ async function resolveScamAuthorId(postUrl, handle) {
   }
 }
 
+// 證據要記下的本機裝置 id。直接讀 storage 而不走 ensureDevice：ensureDevice
+// 自己佔一段 historyWriteChain（在鏈上的工作裡呼叫等於等自己），而且沒有身分
+// 時會生一組新的——證據記的是「哪一台寫的」，還沒有身分就該缺席，不值得為它
+// 生一組 deviceId 出來。讀不到（缺席、形狀不合、storage 抽風）一律回
+// undefined 讓證據不帶這一欄，絕不因此擋下整次寫入。
+async function readLocalDeviceId() {
+  if (!hasStorageLocal()) return undefined;
+  try {
+    const stored = await chrome.storage.local.get(DEVICE_KEY);
+    const device = stored && stored[DEVICE_KEY];
+    return device && typeof device === 'object' ? TCLCore.normalizeDeviceId(device.deviceId) : undefined;
+  } catch (err) {
+    console.warn('[threads-clean-link] 證據取裝置 id 失敗', err);
+    return undefined;
+  }
+}
+
 // content script 掃到詐騙串文：建條目或替既有作者補一筆證據。
 // 順序刻意如此：驗 payload → 總開關（關閉時連備援請求都不發）→ 缺 id 才走
-// 匿名備援（allowlist 以 userId 為鍵，沒有 id 就無從判斷解除與否）→ 讀改寫。
+// 匿名備援（解除與否以 userId 為準，沒有 id 就無從判斷）→ 讀改寫。
 async function handleScamHit(message) {
   const hit = validateScamHit(message);
   if (!hit) return { ok: false, code: 'bad_request' };
@@ -998,48 +1021,73 @@ async function handleScamHit(message) {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
 
-    // 使用者解除過的作者不得被下一次掃描復活，且整條路徑不留任何寫入。
-    if (Object.prototype.hasOwnProperty.call(list.allowlist, userId)) {
+    // 使用者解除過的作者不得被下一次掃描復活，且整條路徑不留任何寫入——連
+    // updatedAt 都不推新，否則這筆會在跨裝置合併時無端勝出。
+    const existing = list.entries[userId];
+    if (existing && existing.state === 'dismissed') {
       return { ok: true, added: false, allowlisted: true };
     }
 
-    const existing = list.entries[userId];
+    // deviceId 只有真的要寫一筆證據時才用得到，因此排在早退分支之後才讀：河道
+    // 一次捲動就派出幾十則 scam.hit，早退的那些先讀一次 storage 是白花的往返。
+    const deviceId = await readLocalDeviceId();
+
+    // 證據帶判定規則版本與寫入裝置：兩者是日後跨裝置對帳與規則調參的依據，
+    // 由寫入端記下，與 content script 送來的 payload 無關。
+    const evidence = {
+      postUrl: hit.postUrl,
+      snippet: hit.snippet,
+      at: hit.at,
+      anchorPostUrl: hit.anchorPostUrl,
+      threadUrl: hit.threadUrl,
+      anchorMatch: hit.anchorMatch,
+      signals: hit.signals,
+      postedAt: hit.postedAt,
+      rulesVersion: TCLCore.SCAM_RULES.version,
+      deviceId: deviceId,
+    };
+
     const added = !existing;
-    list.entries[userId] = added
-      ? TCLCore.makeBlocklistEntry({
-          handle: hit.handle,
-          displayName: hit.displayName,
-          postUrl: hit.postUrl,
-          snippet: hit.snippet,
-          at: hit.at,
-          anchorPostUrl: hit.anchorPostUrl,
-          threadUrl: hit.threadUrl,
-          anchorMatch: hit.anchorMatch,
-          signals: hit.signals,
-          postedAt: hit.postedAt,
-          source: 'auto',
-        })
-      : TCLCore.mergeBlocklistEvidence(existing, {
-          postUrl: hit.postUrl,
-          snippet: hit.snippet,
-          at: hit.at,
-          anchorPostUrl: hit.anchorPostUrl,
-          threadUrl: hit.threadUrl,
-          anchorMatch: hit.anchorMatch,
-          signals: hit.signals,
-          postedAt: hit.postedAt,
-        });
+    if (added) {
+      list.entries[userId] = TCLCore.makeBlocklistEntry(
+        Object.assign({ handle: hit.handle, displayName: hit.displayName, source: 'auto' }, evidence)
+      );
+    } else {
+      const merged = TCLCore.mergeBlocklistEvidence(existing, evidence);
+      // 去重之後一筆都沒多，整筆條目一個位元都沒變：不寫 storage 也不掛去抖
+      // 同步。河道一次捲動就派出幾十則 scam.hit，每一則都回寫一次整份名單、
+      // 再推一輪跟雲端一模一樣的資料，是白花的配額。
+      if (merged.evidence.length === existing.evidence.length) {
+        return { ok: true, added: false, entry: existing };
+      }
+      // 【被動掃描不動 updatedAt／state】updatedAt 是跨裝置 LWW 的唯一判準，
+      // 「這台機器又掃到一次」不是使用者的意思表示。推進它等於讓一次背景掃描
+      // 勝過別台裝置更早做的解除，使用者按掉的標記會在下一次捲到同一位作者時
+      // 自己長回來。新證據改以本機專有的 pushAfter 讓下一輪的推送批選得到
+      // （選批水位線取 updatedAt 與它的較大者），這一格不上雲。
+      merged.pushAfter = Math.max(
+        typeof existing.pushAfter === 'number' && isFinite(existing.pushAfter) ? existing.pushAfter : 0,
+        hit.at
+      );
+      list.entries[userId] = merged;
+    }
 
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
     // entries 重建，孤兒鍵沒有任何機會留下。
     const next = TCLCore.capScamBlocklist(list);
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: next });
+    // 名單是與紀錄並存的第二條同步通道(D38)：不掛去抖同步的話，新標記的作者
+    // 最久要等一輪週期 alarm 才推得上去，期間別台裝置看到的是舊名單。
+    notifySyncRecorded();
     return { ok: true, added, entry: next.entries[userId] };
   });
 }
 
-// 選項頁的「解除」：條目移出 entries，userId 記進 allowlist（附解除時間與
-// 當下的 handle，供「已解除」小節顯示），下次掃到同一位作者不再入名單。
+// 選項頁的「解除」：條目留在 entries，state 翻成 dismissed 並記下解除時間，
+// 下次掃到同一位作者不再入名單。證據一律保留——復原後卡片要畫得出來，跨裝置
+// 對帳也還需要它。名單裡沒有這一筆時補一筆空的解除條目：使用者按過解除就得
+// 擋得住之後的掃描，哪怕條目已被上限淘汰；補建的那一筆要帶上訊息送來的帳號
+// 快照，handle 為 null 的 mark 會被後端整筆拒收，那次解除就永遠同步不出去。
 async function handleScamBlocklistRemove(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
@@ -1049,19 +1097,30 @@ async function handleScamBlocklistRemove(message) {
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
-    const entry = list.entries[userId];
-    delete list.entries[userId];
-    list.allowlist[userId] = {
-      at: Date.now(),
-      handle: entry && typeof entry.handle === 'string' ? entry.handle : '',
-    };
+    const now = Date.now();
+    const existing = list.entries[userId];
+    const entry = existing || { evidence: [], addedAt: now, source: 'auto' };
+    const patch = { state: 'dismissed', dismissedAt: now, updatedAt: now };
+    if (!existing) {
+      // 補建的空條目：帳號快照只認伺服器那把尺(TCLCore.isScamMarkHandle)，形狀
+      // 不合就忽略該欄位——解除本身不因為一個壞欄位失敗(使用者會按不掉標記)，
+      // 但訊息端的任意字串也不得落進 entries 與 handleIndex。
+      if (TCLCore.isScamMarkHandle(message.handle)) patch.handle = message.handle;
+      const displayName = TCLCore.sanitizeDisplayName(message.displayName);
+      if (displayName) patch.displayName = displayName;
+    }
+    // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
+    // entries 重建，dismissed 不進反查表，孤兒鍵沒有任何機會留下。
+    list.entries[userId] = Object.assign({}, entry, patch);
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
+    notifySyncRecorded();
     return { ok: true };
   });
 }
 
-// 選項頁的「復原」（使用者反悔解除）：只把 userId 移出 allowlist，不負責把
-// 條目長回來——證據已經不在名單裡，得等下一次掃描重新命中。
+// 選項頁的「復原」（使用者反悔解除）：把同一筆條目翻回 active 並刪掉
+// dismissedAt，證據一路留著——復原後不必等下一次掃描，卡片就畫得出來。名單裡
+// 沒有這一筆時無事可做（沒有條目可復原）。
 async function handleScamBlocklistRestore(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
@@ -1071,8 +1130,14 @@ async function handleScamBlocklistRestore(message) {
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
-    delete list.allowlist[userId];
+    const entry = list.entries[userId];
+    if (entry) {
+      const restored = Object.assign({}, entry, { state: 'active', updatedAt: Date.now() });
+      delete restored.dismissedAt;
+      list.entries[userId] = restored;
+    }
     await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
+    notifySyncRecorded();
     return { ok: true };
   });
 }
@@ -1194,10 +1259,10 @@ async function getSettings() {
 // 處理 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
 // POST_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
 // 任何紀錄;紀錄只用驗證通過的字串，不夾帶原文的任何其餘部分。
-// kind 同屬頁面可控輸入，白名單驗證(自動路徑只可能是 share/strip/icon),
+// kind 同屬頁面可控輸入，白名單驗證(自動路徑只可能是 share/strip/icon)，
 // 非法即整則忽略——guard 與 background 同版本出貨，沒有相容性負擔，
 // 形狀不對就是偽造或損毀，fail-safe 丟棄。'menu' 刻意不在此白名單內:
-// 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
+// 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory，
 // 不透過本訊息通道，避免頁面腳本偽造 kind:'menu' 混充右鍵來源。收到合法
 // notice 就無條件記錄一筆，author/handle/excerpt 為選填欄位一併寫入。
 //
@@ -1543,7 +1608,7 @@ function isEmptyOgFields(ogFields) {
 function cacheOgFields(cleanUrl, ogFields) {
   const empty = isEmptyOgFields(ogFields);
   // 真 LRU:set 前先 delete，讓「重新被碰到」的 key 移到 Map 迭代序尾端
-  // (最新),size 超限時淘汰的 keys().next()(最舊)才是真正最久沒用到的
+  // (最新)，size 超限時淘汰的 keys().next()(最舊)才是真正最久沒用到的
   // 那筆，而不是最早插入但可能剛被讀取過的那筆。
   ogFieldsCache.delete(cleanUrl);
   ogFieldsCache.set(cleanUrl, {

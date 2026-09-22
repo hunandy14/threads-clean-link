@@ -582,8 +582,61 @@ test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
     lastSyncedAt: null,
     clearedAt: null,
     lastError: null,
+    // D38（車道 B）:警示名單 marks 通道的四格水位線，見 sync-marks 契約。
+    marksCursor: null,
+    marksPushedAt: null,
+    marksEvicted: null,
+    marksRejected: null,
+    // CR-2：回填的續填位置。回填一輪最多翻 20 頁，翻不完時不記位置就只能下一輪
+    // 從第一頁重來——雲端筆數多到單輪翻不完的帳號因此永遠回填不到底，marks 通道
+    // 卡在回填、一筆都推不出去。
+    marksBackfillCursor: null,
   });
   assert.deepEqual(C.DEFAULT_SYNC_AUTH, { token: null });
+});
+
+// CR-2：新欄位要走 normalizeSyncState 的白名單，否則整包寫回 storage 時被當成
+// 未知鍵剝掉，續填位置撐不過一次落盤。
+test('CR-2 normalizeSyncState:marksBackfillCursor 放行字串、型別錯誤與缺席回 null', () => {
+  const kept = C.normalizeSyncState({ marksBackfillCursor: '1700000000000~threads:1001' });
+  assert.equal(kept.marksBackfillCursor, '1700000000000~threads:1001', '合法游標原樣保留');
+
+  assert.equal(C.normalizeSyncState({}).marksBackfillCursor, null, '缺席補預設 null');
+  [42, {}, [], true].forEach((bad) => {
+    assert.equal(
+      C.normalizeSyncState({ marksBackfillCursor: bad }).marksBackfillCursor,
+      null,
+      `型別錯誤（${JSON.stringify(bad)}）回 null`
+    );
+  });
+});
+
+// R6（後端把 since 改成嚴格驗證）：空字串／純空白的游標一律正規化成 null。
+// 空游標與「沒有游標」語意上是同一件事，但送出去就是 `since: ""`，伺服器回
+// 400 bad_since、整條通道卡死。在正規化這一層抹平，storage 裡就永遠留不下一
+// 個送得出空 since 的值。
+test('R6 normalizeSyncState:cursor／marksCursor／marksBackfillCursor 的空字串與純空白一律回 null', () => {
+  const out = C.normalizeSyncState({ cursor: '', marksCursor: '  ', marksBackfillCursor: '' });
+  assert.equal(out.cursor, null, '空字串游標視同缺席');
+  assert.equal(out.marksCursor, null, '純空白游標視同缺席');
+  assert.equal(out.marksBackfillCursor, null, '空字串續填位置視同缺席');
+
+  ['\t', '\n', ' \r\n '].forEach((blank) => {
+    assert.equal(
+      C.normalizeSyncState({ marksCursor: blank }).marksCursor,
+      null,
+      `純空白（${JSON.stringify(blank)}）視同缺席`
+    );
+  });
+
+  // '0' 是 links 首輪那個合法的純數字游標，不是空值；游標是伺服器發的不透明
+  // 字串，非空者一律原樣保留（不 trim），插件只判斷「是不是空的」。
+  assert.equal(C.normalizeSyncState({ cursor: '0' }).cursor, '0', "'0' 是合法游標，不是空值");
+  assert.equal(
+    C.normalizeSyncState({ marksCursor: ' 1700000000000~threads:1001 ' }).marksCursor,
+    ' 1700000000000~threads:1001 ',
+    '非空游標原樣保留，不 trim'
+  );
 });
 
 // S5：normalizeSyncState 缺欄位補預設、型別錯誤回預設。

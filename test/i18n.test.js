@@ -165,3 +165,111 @@ test('警示名單卡:帶插值的文案在 zh 與 en 都保留佔位符({n}/{d}
     }
   }
 });
+
+// ---- 警示名單 v2(D35 ＋ 顯示)新增的四顆 key ----
+//
+// 關閉狀態列的說明與開啟鈕、證據缺片段時的灰字說明、雲端配額淘汰提示。
+// 漏一顆的症狀同樣是 UI 上直接顯示裸 key，parity 測試擋不住，逐顆釘住。
+const SCAM_V2_KEYS = [
+  'opScamDisabledBar',
+  'opScamEnable',
+  'opScamEvidenceMissing',
+  'opScamEvictedHint',
+  // R3-8:名單已經會上雲了，這兩顆解說文案跟著進掃描清單（全形逗號、兩語系齊
+  // 備），免得下一次改寫又漏掉其中一份。
+  'opScamGuardDesc',
+  'opScamInfo4',
+];
+
+test('警示名單 v2:新文案 key 在 zh 與 en 兩份字典皆存在且非空', () => {
+  for (const locale of ['zh', 'en']) {
+    for (const key of SCAM_V2_KEYS) {
+      const value = i18n.STRINGS[locale][key];
+      assert.equal(typeof value, 'string', `${locale}.${key} 應為字串`);
+      assert.ok(value.length > 0, `${locale}.${key} 不得為空字串`);
+    }
+  }
+});
+
+test('警示名單 v2:zh 文案一律全形逗號「，」，不得出現半形 ","', () => {
+  for (const key of SCAM_V2_KEYS) {
+    const value = i18n.STRINGS.zh[key];
+    if (typeof value !== 'string') continue;
+    assert.ok(!value.includes(','), `zh.${key} 不得含半形逗號 ","，實際:${value}`);
+  }
+});
+
+test('警示名單 v2:淘汰提示在 zh 與 en 都保留 {n} 佔位符', () => {
+  for (const locale of ['zh', 'en']) {
+    const value = i18n.STRINGS[locale].opScamEvictedHint;
+    assert.equal(typeof value, 'string', `${locale}.opScamEvictedHint 應為字串`);
+    assert.ok(
+      value.includes('{n}'),
+      `${locale}.opScamEvictedHint 應含佔位符 {n}，實際:${value}`
+    );
+  }
+});
+
+// ============================================================================
+// R3 — 刪除雲端資料涵蓋警示名單之後的文案修正（安全審查 2026-09-22）
+// ============================================================================
+
+// R3-8（阻擋）：警示名單已經有雲端同步通道（marks），`opScamGuardDesc` 與
+// `opScamInfo4` 卻仍寫著「名單只存在這台裝置，不上雲／不上傳、不同步」。那是
+// 對使用者的不實陳述，也直接違背隱私說明。禁詞斷言兩顆 key 都要擋；本測試只
+// 擋住舊說法並要求新說法的關鍵字，實際遣詞由實作者定。
+const R3_PRIVACY_CLAIM_KEYS = ['opScamGuardDesc', 'opScamInfo4'];
+const R3_FORBIDDEN_ZH = ['不上雲', '不上傳', '不同步', '只存在這台裝置', '只在這台裝置'];
+const R3_FORBIDDEN_EN = ['stays on this device only', 'never uploaded', 'never synced'];
+
+test('R3-8 文案不實:警示名單的說明不得再宣稱「不上雲／不上傳／不同步」', () => {
+  for (const key of R3_PRIVACY_CLAIM_KEYS) {
+    const zh = i18n.STRINGS.zh[key];
+    assert.equal(typeof zh, 'string', `zh.${key} 應為字串`);
+    for (const bad of R3_FORBIDDEN_ZH) {
+      assert.ok(!zh.includes(bad), `zh.${key} 不得含「${bad}」——名單現在會同步到雲端，實得:${zh}`);
+    }
+    const en = i18n.STRINGS.en[key];
+    assert.equal(typeof en, 'string', `en.${key} 應為字串`);
+    const lower = en.toLowerCase();
+    for (const bad of R3_FORBIDDEN_EN) {
+      assert.ok(!lower.includes(bad), `en.${key} 不得含「${bad}」，實得:${en}`);
+    }
+  }
+});
+
+// 【斷言翻轉｜設定卡文案定稿 2026-09-22】設定卡文案定稿後，`opScamGuardDesc`
+// 只講功能本身（偵測並標記），雲端同步的揭露收斂到警示名單卡「這個功能怎麼
+// 運作」說明視窗的第四段 `opScamInfo4`（PM 授權）。R3-8 原本要求兩顆 key 都
+// 講明同步，改為只斷言 `opScamInfo4`；`opScamGuardDesc` 的禁詞斷言不動——它
+// 一樣不得宣稱「不上雲／不上傳／不同步」，只是不再要求它主動提同步。
+const R3_SYNC_DISCLOSURE_KEYS = ['opScamInfo4'];
+
+test('R3-8 文案不實:雲端同步的揭露收斂在 opScamInfo4，兩語系都講明會同步到雲端', () => {
+  for (const key of R3_SYNC_DISCLOSURE_KEYS) {
+    assert.ok(
+      i18n.STRINGS.zh[key].includes('雲端同步'),
+      `zh.${key} 應講明名單會雲端同步，實得:${i18n.STRINGS.zh[key]}`
+    );
+    assert.ok(
+      /sync/i.test(i18n.STRINGS.en[key]),
+      `en.${key} 應講明名單會同步，實得:${i18n.STRINGS.en[key]}`
+    );
+  }
+});
+
+// R3-5：「刪除雲端資料」的二次確認說明現在涵蓋兩種資料（紀錄與警示名單），
+// 不能只講紀錄——使用者按下去會連警示名單一起刪掉。
+test('R3-5 刪除雲端資料的確認說明要涵蓋警示名單', () => {
+  const zh = i18n.STRINGS.zh.opSyncDeleteConfirmDesc;
+  assert.equal(typeof zh, 'string', 'zh.opSyncDeleteConfirmDesc 應為字串');
+  assert.ok(zh.includes('警示名單'), `zh 的確認說明要提到警示名單，實得:${zh}`);
+  assert.ok(!zh.includes(','), `zh.opSyncDeleteConfirmDesc 不得含半形逗號 ","，實得:${zh}`);
+
+  const en = i18n.STRINGS.en.opSyncDeleteConfirmDesc;
+  assert.equal(typeof en, 'string', 'en.opSyncDeleteConfirmDesc 應為字串');
+  assert.ok(
+    /warning list/i.test(en),
+    `en 的確認說明要提到 warning list（與 opScamListTitle 同一個說法），實得:${en}`
+  );
+});
