@@ -611,6 +611,34 @@ test('CR-2 normalizeSyncState:marksBackfillCursor 放行字串、型別錯誤與
   });
 });
 
+// R6（後端把 since 改成嚴格驗證）：空字串／純空白的游標一律正規化成 null。
+// 空游標與「沒有游標」語意上是同一件事，但送出去就是 `since: ""`，伺服器回
+// 400 bad_since、整條通道卡死。在正規化這一層抹平，storage 裡就永遠留不下一
+// 個送得出空 since 的值。
+test('R6 normalizeSyncState:cursor／marksCursor／marksBackfillCursor 的空字串與純空白一律回 null', () => {
+  const out = C.normalizeSyncState({ cursor: '', marksCursor: '  ', marksBackfillCursor: '' });
+  assert.equal(out.cursor, null, '空字串游標視同缺席');
+  assert.equal(out.marksCursor, null, '純空白游標視同缺席');
+  assert.equal(out.marksBackfillCursor, null, '空字串續填位置視同缺席');
+
+  ['\t', '\n', ' \r\n '].forEach((blank) => {
+    assert.equal(
+      C.normalizeSyncState({ marksCursor: blank }).marksCursor,
+      null,
+      `純空白（${JSON.stringify(blank)}）視同缺席`
+    );
+  });
+
+  // '0' 是 links 首輪那個合法的純數字游標，不是空值；游標是伺服器發的不透明
+  // 字串，非空者一律原樣保留（不 trim），插件只判斷「是不是空的」。
+  assert.equal(C.normalizeSyncState({ cursor: '0' }).cursor, '0', "'0' 是合法游標，不是空值");
+  assert.equal(
+    C.normalizeSyncState({ marksCursor: ' 1700000000000~threads:1001 ' }).marksCursor,
+    ' 1700000000000~threads:1001 ',
+    '非空游標原樣保留，不 trim'
+  );
+});
+
 // S5：normalizeSyncState 缺欄位補預設、型別錯誤回預設。
 test('S5 normalizeSyncState:缺欄位補預設、型別錯誤回該欄預設、合法值原樣保留', () => {
   const out = C.normalizeSyncState({

@@ -2573,3 +2573,80 @@ test('R5 重送：逐欄相同的一筆重新下來時不寫 storage（no-op）'
     'R5 的游標是 now-1，同毫秒併發寫入的列每一輪都會再下來一次。逐欄相同的重送合併出來與本機那份一模一樣，再寫一次除了燒 storage 配額，還會讓所有 storage.onChanged 的讀者為一件沒發生的事重畫一次'
   );
 });
+
+// ============================================================================
+// R6 — since 的空字串縱深防護（後端把空 since 判成 400 bad_since）
+// ============================================================================
+
+test('R6 空字串 marksCursor 視同缺席：走回填，POST 不得帶 since', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    // 舊版本或被改過的 storage 留下空字串游標。語意上等同「沒有游標」，這一輪
+    // 該當成首輪走回填；照著送出去就是 since:""，伺服器回 400 bad_since。
+    syncState: { marksCursor: '', marksPushedAt: T0 },
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }) }),
+  });
+  // 舊後端的 GET 不回頂層 cursor，回填到底也建立不出增量游標，首輪 POST 因此
+  // 手上一個位置都沒有——正好把「空字串有沒有漏進 since」單獨照出來。
+  env.server.marks.listCursor(false);
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(40);
+
+  assert.ok(env.marksGets().length >= 1, '空字串游標視同缺席，這一輪走回填');
+  const posts = env.marksPosts();
+  assert.equal(posts.length, 1);
+  assert.equal(
+    'since' in (posts[0].body || {}),
+    false,
+    'since 一格都不得帶空字串出門，伺服器會回 400 bad_since'
+  );
+});
+
+test('R6 回填：頂層 cursor 為空字串時不採用，marksCursor 不得落下空字串', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    syncState: { marksCursor: null, marksPushedAt: T0 },
+    blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 3 * DAY }) }),
+  });
+  // 後端回了空字串當游標（欄位在、值是空的）。採信它的話 marksCursor 變成空字
+  // 串，下一輪的 POST 就送出 since:"" 撞 400 bad_since，通道從此卡死。GET 與
+  // POST 兩邊的頂層 cursor 一起抹成空字串，兩條寫回路徑一次照到底。
+  const inner = env.deps.fetch;
+  env.deps.fetch = function (input, init) {
+    const path = new URL(String(input)).pathname;
+    return Promise.resolve(inner(input, init)).then((res) => {
+      if (path !== '/api/v1/marks' && path !== '/api/v1/marks/sync') return res;
+      return Promise.resolve(res.json()).then((body) => {
+        const patched = Object.assign({}, body, { cursor: '' });
+        return Object.assign({}, res, {
+          json: () => Promise.resolve(patched),
+          text: () => Promise.resolve(JSON.stringify(patched)),
+        });
+      });
+    });
+  };
+
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(40);
+
+  assert.ok(env.marksGets().length >= 1, '前置條件：這一輪走回填');
+  const posts = env.marksPosts();
+  assert.equal(posts.length, 1);
+  assert.equal(
+    'since' in (posts[0].body || {}),
+    false,
+    'GET 的空字串游標不得被當成回填終點接上增量起點'
+  );
+  assert.equal(
+    env.storage.syncState().marksCursor,
+    null,
+    '空字串游標不採用：寧可下一輪重新回填，也不落下一個送得出空 since 的值'
+  );
+});
