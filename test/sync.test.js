@@ -1191,6 +1191,24 @@ test('T3 拉：cursor 為 null 的首輪也要拉增量（隱藏案例）', asyn
   assert.equal(env.storage.history().length, 1, '首輪就該把雲端既有卡片拉下來');
 });
 
+// R6（後端把 since 改成嚴格驗證）：空字串 since 與空白、負數一樣回 400
+// bad_since。cursor 為空字串與「沒有 cursor」語意上是同一件事，兩者一律退回
+// 首輪的 '0'（純數字字串，api-spec 4.3 的合法舊格式游標）。
+test('R6 拉：cursor 為空字串時退回 since:"0"，不送空 since', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, syncState: { cursor: '' }, history: [] });
+  env.server.seed([
+    { id: 'srv-b', original: POST_B, cleaned: POST_B, receivedAt: T0 - 20_000, seen: [{ at: T0 - 20_000 }] },
+  ]);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+
+  const body = env.syncPosts()[0].body;
+  assert.equal(body.since, '0', '空字串游標視同缺席，比照首輪送 "0"');
+  assert.equal(env.storage.history().length, 1, '退回 "0" 之後首輪照樣拉得到雲端既有卡片');
+});
+
 test('T3 拉：同 postKey 合併成一筆，墓碑復活', async () => {
   const TCLSync = loadSync();
   const local = entry({ id: 'loc-a', url: POST_A, dirty: false, serverUpdatedAt: T0 - 9000, deletedAt: T0 - 9000 });

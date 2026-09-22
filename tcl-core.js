@@ -250,6 +250,15 @@
   function optionalFiniteNumber(value) {
     return typeof value === 'number' && isFinite(value) ? value : null;
   }
+  // 游標欄位專用。游標是伺服器發的不透明字串，非空者一律原樣保留(不 trim，
+  // 內容由伺服器定義)；空字串與純空白則回 null——後端(R6)把 since 改成嚴格驗
+  // 證，空字串與「沒有游標」語意上是同一件事，照著送出去卻是 400 bad_since、
+  // 整條通道每一輪原地撞牆。抹在正規化這一層，storage 就永遠留不下一個送得出
+  // 空 since 的值。
+  function optionalCursor(value) {
+    if (typeof value !== 'string') return null;
+    return value.trim().length > 0 ? value : null;
+  }
 
   // D15:帳號入口的顯示名字。去頭尾空白、上限 DISPLAY_NAME_MAX 字元;非字串
   // 或去空白後為空字串一律回 null(空字串會讓 UI 誤判成「有名字但顯示空
@@ -318,18 +327,18 @@
       email: optionalString(raw.email),
       displayName: sanitizeDisplayName(raw.displayName),
       avatarUrl: sanitizeAvatarUrl(raw.avatarUrl),
-      cursor: optionalString(raw.cursor),
+      cursor: optionalCursor(raw.cursor),
       lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
       clearedAt: optionalFiniteNumber(raw.clearedAt),
       lastError: optionalString(raw.lastError),
       // D38:marks 通道的水位線。cursor 是伺服器發的不透明字串、pushedAt 是
       // 本機推送水位線、evicted 是雲端淘汰筆數(純 UI 提示)、rejected 是被拒
       // key → 被拒當下的 updatedAt 映射、backfillCursor 是回填的續填位置。
-      marksCursor: optionalString(raw.marksCursor),
+      marksCursor: optionalCursor(raw.marksCursor),
       marksPushedAt: optionalFiniteNumber(raw.marksPushedAt),
       marksEvicted: optionalFiniteNumber(raw.marksEvicted),
       marksRejected: normalizeMarksRejected(raw.marksRejected),
-      marksBackfillCursor: optionalString(raw.marksBackfillCursor),
+      marksBackfillCursor: optionalCursor(raw.marksBackfillCursor),
     };
   }
 

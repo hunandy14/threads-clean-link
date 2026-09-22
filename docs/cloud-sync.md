@@ -123,6 +123,7 @@ LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結�
 ```
 
 - **`cursor` 恆回**：插件一律把回應的 `cursor` 寫回本機水位線，不論 `changes` 是不是 `null`；游標是不透明字串，插件端不得從裡面推算時間或筆數。
+- **空字串游標視同缺席**（後端 R6）：`since` 與 `?cursor=` 改走嚴格驗證，空字串／純空白／負數一律回 `400 bad_since`。插件端把空游標與「沒有游標」當成同一件事：`normalizeSyncState` 讀進來時就把 `cursor`／`marksCursor`／`marksBackfillCursor` 的空字串與純空白抹成 `null`，伺服器回應裡的空游標也不寫回水位線；marks 只在游標為**非空字串**時帶 `since`／`?cursor=`，links 則比照首輪退回 `since: "0"`（`0` 是合法的純數字游標）。寧可下一輪重新回填，也不留下一個每輪原地撞 400 的值。
 - **`applied`**：只有出現在 `applied.upserts`／`applied.deletedIds` 的 key 才算推送成功、才可以清掉本機的待推標記；`rejectedIds` 不算成功，也**不無限重送**——那代表兩端版本對不上，重送只會每輪再撞一次。
 - **`changes` 與增量分頁**：增量**單頁 200 筆**（`marks` 與 `deleted` 合計），`hasMore` 為 `true` 時用同一輪回應的 `cursor` 續拉，直到 `hasMore` 為 `false`。
 - **`evicted`**：是**筆數**而非 key 清單，只說明雲端這一輪淘汰了幾筆（免費方案 1,000 筆依 `updatedAt` 由舊到新淘汰、不寫墓碑），**本機一筆都不動**；插件拿它做提示用，不得據以刪除本機條目。
