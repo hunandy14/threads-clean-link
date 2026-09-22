@@ -595,6 +595,17 @@
      * 有 body 才帶 application/json(否則後端回 415)。任何回應帶
      * set-auth-token 就覆寫本地 token(插件端契約第 3 點)。
      */
+    /**
+     * 這個值算不算一個游標。後端(R6)對 `since` 與 `?cursor=` 是嚴格驗證:空字
+     * 串／純空白／負數一律 400 bad_since。空游標與「沒有游標」是同一件事，一
+     * 律當成缺席——帶著空字串出門只會每一輪原地撞 400，通道從此推不動。
+     * TCLCore.normalizeSyncState 已在讀進來時抹過一次，這裡是同一條規則的第二
+     * 道:游標也會從伺服器回應直接落進 ctx.state，那條路徑不經正規化。
+     */
+    function isCursor(value) {
+      return typeof value === 'string' && value.trim().length > 0;
+    }
+
     function call(ctx, method, path, body) {
       // redirect:'error' — 後端不該對這些端點回 3xx。放任 fetch 自動跟隨，
       // 轉址後那一站的回應照樣會被下面當成後端回應處理（包含採信它的
@@ -910,9 +921,10 @@
               var body = {
                 upserts: batch.upserts,
                 deletes: batch.deletes,
-                // cursor 為 null 的首輪送 '0':api-spec 4.3 明訂不帶 since 就
-                // 不回增量，首次登入會永遠拉不到雲端既有資料。
-                since: ctx.state.cursor === null ? '0' : ctx.state.cursor,
+                // 沒有游標的首輪送 '0':api-spec 4.3 明訂不帶 since 就不回增
+                // 量，首次登入會永遠拉不到雲端既有資料。'0' 是合法的純數字
+                // 游標，空字串不是——後端(R6)把空 since 判成 400 bad_since。
+                since: isCursor(ctx.state.cursor) ? ctx.state.cursor : '0',
               };
               var block = deviceSent ? null : deviceBlockOf(ctx.device);
               if (block) {
@@ -925,7 +937,7 @@
                 // 前進的游標寫進去，這一頁的增量從此再也拉不回來——伺服器只認
                 // 游標，不會重送。
                 return applyResponse(payload, ctx).then(function () {
-                  if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
+                  if (payload && isCursor(payload.cursor)) ctx.state.cursor = payload.cursor;
                   lastChanges = payload ? payload.changes : null;
                 });
               });
@@ -942,7 +954,7 @@
             return call(ctx, 'POST', '/api/v1/links/sync', { since: ctx.state.cursor }).then(function (payload) {
               // 同上:先落地再前進游標。
               return applyResponse(payload, ctx).then(function () {
-                if (payload && typeof payload.cursor === 'string') ctx.state.cursor = payload.cursor;
+                if (payload && isCursor(payload.cursor)) ctx.state.cursor = payload.cursor;
                 lastChanges = payload ? payload.changes : null;
                 return more();
               });
@@ -1245,7 +1257,7 @@
         // 本機沒有「刪除」動作:解除是 state 翻成 dismissed，不是刪條目。
         deletes: [],
       };
-      if (ctx.state.marksCursor !== null) body.since = ctx.state.marksCursor;
+      if (isCursor(ctx.state.marksCursor)) body.since = ctx.state.marksCursor;
       return call(ctx, 'POST', MARKS_SYNC_PATH, body).then(function (payload) {
         var changes = payload && payload.changes;
         var marks = changes && Array.isArray(changes.marks) ? changes.marks : [];
@@ -1276,7 +1288,7 @@
           // 就存在**的舊水位線原封不動落盤(夾擠只擋得住這一輪推上去的值，擋不到
           // 舊值)，留存的條目下一輪依舊選不到。整輪尾端那次保留著，重複套用冪等。
           applyMarkFloor(ctx, floor);
-          if (payload && typeof payload.cursor === 'string') ctx.state.marksCursor = payload.cursor;
+          if (payload && isCursor(payload.cursor)) ctx.state.marksCursor = payload.cursor;
           // 【順序】守衛的更新排在名單落盤之後:名單沒寫成功就整輪失敗重來，守
           // 衛也不該先前進。
           return settleClearGuard(ctx, MARKS_GUARD, verdict, clearedAt).then(function () {
@@ -1331,14 +1343,12 @@
         }
         rounds += 1;
         var path = MARKS_PATH + '?limit=' + MARKS_BACKFILL_LIMIT;
-        if (cursor) path += '&cursor=' + encodeURIComponent(cursor);
+        if (isCursor(cursor)) path += '&cursor=' + encodeURIComponent(cursor);
         return call(ctx, 'GET', path).then(function (payload) {
-          if (payload && typeof payload.cursor === 'string' && payload.cursor) position = payload.cursor;
+          if (payload && isCursor(payload.cursor)) position = payload.cursor;
           var items = payload && Array.isArray(payload.items) ? payload.items : [];
           return applyMarkChanges(items, [], null).then(function () {
-            var next = payload && typeof payload.nextCursor === 'string' && payload.nextCursor
-              ? payload.nextCursor
-              : null;
+            var next = payload && isCursor(payload.nextCursor) ? payload.nextCursor : null;
             if (next === null) {
               ctx.state.marksBackfillCursor = null;
               if (position !== null) ctx.state.marksCursor = position;
