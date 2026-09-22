@@ -3343,3 +3343,150 @@ test.describe('警示名單 R3:形狀閘門與合併鍵', () => {
     assert.equal(out.entries[MK_ID_2].updatedAt, 100, 'updatedAt 壞掉時拿 addedAt 補');
   });
 });
+
+// ============================================================================
+// 官方 code review（2026-09-22，整合分支 agent/feature/marks-sync）的修補
+// ----------------------------------------------------------------------------
+// CR-1 `toScamMark`：本機專有的推送提示欄位一律不上雲（九欄契約）。
+// CR-4 `mergeScamEntry`：純量欄位取 updatedAt 勝方的值，勝方缺值時回退到另一
+//      方——鏡射伺服器 mergeMark 的同一條規則。
+// CR-7 mark key 的解析收斂成單一來源 `scamMarkUserId`，sync.js 不再自備前綴與
+//      形狀樣板。
+// ============================================================================
+
+test.describe('CR-4 mergeScamEntry：純量缺值回退', () => {
+  test('CR-4 mergeScamEntry:遠端較新但 displayName 為 null 時保留本機的值', () => {
+    const local = mkEntry({ displayName: 'Foo', updatedAt: 500 });
+    const remote = mkEntry({ displayName: null, updatedAt: 900 });
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(
+      out.displayName,
+      'Foo',
+      '勝方沒有值不等於「使用者把顯示名清空了」——雲端那一欄本來就可能是 null，拿它蓋掉本機快照只會讓名單變成一排沒有名字的數字 id'
+    );
+  });
+
+  test('CR-4 mergeScamEntry:遠端較新但 displayName 整個鍵缺席時同樣保留本機的值', () => {
+    const local = mkEntry({ displayName: 'Foo', updatedAt: 500 });
+    const remote = mkEntry({ updatedAt: 900 });
+    delete remote.displayName;
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(out.displayName, 'Foo', 'null 與缺鍵在本機形狀裡是同一件事');
+  });
+
+  test('CR-4 mergeScamEntry:本機較新但本機沒有 displayName 時回退到遠端的值', () => {
+    const local = mkEntry({ updatedAt: 900 });
+    delete local.displayName;
+    const remote = mkEntry({ displayName: 'Bar', updatedAt: 500 });
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(out.displayName, 'Bar', '回退是雙向的，不是只照顧遠端缺值那一邊');
+  });
+
+  test('CR-4 mergeScamEntry:handle 走同一條回退規則', () => {
+    const winnerless = C.mergeScamEntry(
+      mkEntry({ handle: 'Example_Author', updatedAt: 500 }),
+      mkEntry({ handle: null, updatedAt: 900 })
+    );
+    assert.equal(
+      winnerless.handle,
+      'Example_Author',
+      'handle 是推送的必填欄位：被一個 null 洗掉就再也選不進推送批，這台裝置上的那筆從此同步不出去'
+    );
+
+    const reverse = C.mergeScamEntry(mkEntry({ handle: null, updatedAt: 900 }), mkEntry({ handle: 'Example_Author', updatedAt: 500 }));
+    assert.equal(reverse.handle, 'Example_Author', '本機較新但沒有 handle 時回退到遠端的快照');
+  });
+
+  test('CR-4 mergeScamEntry:兩邊都沒有值時不得補出空字串或 null 鍵', () => {
+    const local = mkEntry({ updatedAt: 500 });
+    const remote = mkEntry({ updatedAt: 900 });
+    delete local.displayName;
+    delete remote.displayName;
+    const out = C.mergeScamEntry(local, remote);
+    assert.equal(
+      mkHas(out, 'displayName'),
+      false,
+      '本機形狀是「缺席就不寫鍵」——補一個 null 會讓選項頁畫出一行空白的顯示名'
+    );
+  });
+
+  test('CR-4 mergeScamEntry:勝方有值時照舊取勝方的（回退不得反過來壓過 LWW）', () => {
+    const out = C.mergeScamEntry(
+      mkEntry({ handle: 'Old_Handle', displayName: 'Old Name', updatedAt: 500 }),
+      mkEntry({ handle: 'New_Handle', displayName: 'New Name', updatedAt: 900 })
+    );
+    assert.equal(out.handle, 'New_Handle');
+    assert.equal(out.displayName, 'New Name');
+  });
+});
+
+test.describe('CR-7 scamMarkUserId：mark key 解析的單一來源', () => {
+  test('CR-7 scamMarkUserId:合法 key 剝掉前綴回 userId 字串', () => {
+    assert.equal(typeof C.scamMarkUserId, 'function', 'scamMarkUserId 應掛在 TCLCore 匯出（sync.js 與 fromScamMark 共用這一把尺）');
+    assert.equal(C.scamMarkUserId('threads:' + MK_ID), MK_ID);
+    assert.equal(C.scamMarkUserId('threads:1'), '1', '1 位數字是合法的作者 id');
+    assert.equal(C.scamMarkUserId('threads:' + '9'.repeat(20)), '9'.repeat(20), '20 位是上界，恰好放行');
+  });
+
+  test('CR-7 scamMarkUserId:前綴或形狀不合一律回 null', () => {
+    const bad = [
+      ['非字串', 42],
+      ['null', null],
+      ['undefined', undefined],
+      ['物件', { key: 'threads:1' }],
+      ['沒有前綴', MK_ID],
+      ['別站的前綴', 'ig:' + MK_ID],
+      ['前綴不在開頭', 'x-threads:' + MK_ID],
+      ['空 id', 'threads:'],
+      ['非數字 id', 'threads:abc'],
+      ['夾雜非數字', 'threads:100a2'],
+      ['21 位超出上界', 'threads:' + '9'.repeat(21)],
+      ['原型污染鍵', 'threads:__proto__'],
+      ['帶空白', 'threads: 100'],
+    ];
+    bad.forEach(([label, key]) => {
+      assert.equal(C.scamMarkUserId(key), null, label + ' 應回 null');
+    });
+  });
+
+  test('CR-7 scamMarkUserId:fromScamMark 對 key 的取捨與它逐字一致', () => {
+    ['threads:' + MK_ID, 'threads:abc', 'ig:' + MK_ID, 'threads:', 'threads:__proto__'].forEach((key) => {
+      const parsed = C.fromScamMark({
+        key,
+        state: 'active',
+        dismissedAt: null,
+        handle: MK_HANDLE,
+        displayName: null,
+        source: 'auto',
+        evidence: [],
+        addedAt: 100,
+        updatedAt: 900,
+      });
+      const userId = C.scamMarkUserId(key);
+      if (userId === null) {
+        assert.equal(parsed, null, key + '：scamMarkUserId 判不合法時 fromScamMark 也必須整筆丟棄');
+      } else {
+        assert.equal(parsed && parsed.userId, userId, key + '：兩者必須解出同一個 userId');
+      }
+    });
+  });
+});
+
+test.describe('CR-1 toScamMark：本機專有的推送提示欄位不上雲', () => {
+  test('CR-1 toScamMark:條目帶本機推送提示欄位時，輸出仍是固定九欄', () => {
+    // 欄位名由實作者定（pushAfter／evidenceAt 之類），這裡不指定名字，只釘住
+    // 「本機多出來的任何鍵都不得漏進 mark」——契約是固定九欄，多一欄後端整筆
+    // 拒收，那一筆從此同步不出去。
+    const entry = mkEntry({ addedAt: 100, updatedAt: 900 });
+    entry.pushAfter = 1700000200000;
+    entry.evidenceAt = 1700000200000;
+    entry.whateverLocalOnly = 'x';
+    const mark = C.toScamMark(MK_ID, entry);
+    assert.deepEqual(
+      Object.keys(mark).sort(),
+      ['addedAt', 'dismissedAt', 'displayName', 'evidence', 'handle', 'key', 'source', 'state', 'updatedAt'],
+      'mark 是固定九欄的跨端契約，本機自用的推送提示欄位一個都不得跟著上雲'
+    );
+    assert.equal(mark.updatedAt, 900, '本機提示欄位也不得頂替 updatedAt——它是 LWW 判準');
+  });
+});

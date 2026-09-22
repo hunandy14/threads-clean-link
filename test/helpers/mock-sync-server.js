@@ -504,6 +504,10 @@ function createMockSyncServer(options = {}) {
   const quota = options.quota || FREE_QUOTA;
   // 警示名單另有一組配額（測試要塞滿時用小值覆寫），方案開關沿用 user.plan。
   let marksQuota = options.marksQuota || MARKS_FREE_QUOTA;
+  // CR-10（後端 R4）：`GET /api/v1/marks` 每頁多回一個頂層 `cursor`，指出這一頁
+  // 末端的伺服器位置，讓回填到底的插件把它當增量起點。`false` 時整個鍵不
+  // 出現，用來代言「還沒升上 R4 的舊後端」。
+  let marksListCursor = options.marksListCursor !== false;
 
   const state = {
     token: options.token || null,
@@ -1063,21 +1067,31 @@ function createMockSyncServer(options = {}) {
       if (since === undefined) return jsonResponse(400, { error: 'bad_since' });
     }
 
-    // updatedAt ASC, key ASC；墓碑不入回填，回填只講「現在有哪些警示」。升冪
-    // 讓 `since` 與 `cursor` 是同一種「停在哪裡」的語意，續頁只要往後走。
+    // CR-10（後端 R4）：排序、`nextCursor` 與頂層 `cursor` 一律走**伺服器蓋章
+    // 的寫入位置**（`serverAt`），與增量同一條時間線。新寫入的位置必然落在時
+    // 間線末端，回填途中別台裝置推上來的條目不是出現在後面的頁，就是排在最後
+    // 一頁的 `cursor` 之後，兩段之間沒有縫隙。墓碑不入回填，回填只講「現在有
+    // 哪些警示」。
     const rows = [...state.marks.values()].sort(
-      (a, b) => a.updatedAt - b.updatedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+      (a, b) => a.serverAt - b.serverAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
     );
     const fresh = since
-      ? rows.filter((row) => afterPosition({ at: row.updatedAt, id: row.key }, since))
+      ? rows.filter((row) => afterPosition({ at: row.serverAt, id: row.key }, since))
       : rows;
     const after = cursor
-      ? fresh.filter((row) => afterPosition({ at: row.updatedAt, id: row.key }, cursor))
+      ? fresh.filter((row) => afterPosition({ at: row.serverAt, id: row.key }, cursor))
       : fresh;
     const page = after.slice(0, limit);
     const last = page[page.length - 1];
-    const nextCursor = after.length > limit && last ? encodeCursor(last.updatedAt, last.key) : null;
-    return jsonResponse(200, { items: page.map(markView), nextCursor });
+    const nextCursor = after.length > limit && last ? encodeCursor(last.serverAt, last.key) : null;
+    const body = { items: page.map(markView), nextCursor };
+    // 頂層 `cursor` 是這一頁的末端位置，插件靠它把回填的終點接上增量的起點。
+    // 最後一頁（`nextCursor` 為 null）帶的是伺服器當下的位置。`false` 時整個
+    // 鍵不出現，代言還沒升上 R4 的舊後端。
+    if (marksListCursor) {
+      body.cursor = nextCursor !== null && last ? String(last.serverAt) : String(tick());
+    }
+    return jsonResponse(200, body);
   }
 
   // ---- 端點：GET /api/v1/links（api-spec 4.2:346-368） ----
@@ -1448,6 +1462,11 @@ function createMockSyncServer(options = {}) {
       },
       quota() {
         return marksQuota;
+      },
+      /** CR-10：切掉 `GET /api/v1/marks` 的頂層 `cursor`（代言舊後端）。 */
+      listCursor(on) {
+        marksListCursor = on !== false;
+        return this;
       },
     },
 
