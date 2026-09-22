@@ -3886,7 +3886,7 @@ test('證據結構：七篇軟性招攬串的 anchorPostUrl 指向帶錨點的�
   );
 });
 
-test('證據結構：signals 原樣帶 detectScamPitch 的結果（軟性串是 line ＋ group，沒有話術詞）', async () => {
+test('證據結構：signals 原樣帶 detectScamPitch 的結果（軟性串沒有連結型錨點也沒有話術詞）', async () => {
   const env = loadEnv({
     pathname: SOFT_PATH,
     page: [createSsrScript(SOFT_POSTS[0]), createScanDom(SOFT_POSTS)],
@@ -3902,14 +3902,19 @@ test('證據結構：signals 原樣帶 detectScamPitch 的結果（軟性串是 
     SOFT_DETECTION.signals,
     'signals 原樣帶判定結果'
   );
+  // 【斷言翻轉｜D45】v3 這一串只踩得到 line ＋ group。v4 把錨點的形狀拆進
+  // signals（account／phrase）並記下抓到的帳號本體（id），同一串因此多三類。
+  // 這一翻與本檔上方 D43 的 anchorMatch／lineId 翻轉是同一件事：這串裡的
+  // 「LINE：ab12cd」就是帳號型錨點，標得出 ID 本體卻報不出 account／id 是自
+  // 相矛盾的。link 與 pitch 維持不在——沒有連結型錨點，也沒有話術詞。
   assert.deepEqual(
     Array.from(payload.signals),
-    ['line', 'group'],
-    '軟性招攬串踩到的是 LINE 提及與群組詞，沒有連結型錨點也沒有話術詞'
+    ['line', 'group', 'account', 'phrase', 'id'],
+    '軟性招攬串踩到的是 LINE 提及、群組詞、帳號型與片語型錨點，外加抓到的 lineId'
   );
   Array.from(payload.signals).forEach((signal) => {
     assert.ok(
-      ['link', 'line', 'group', 'join', 'pitch'].indexOf(signal) !== -1,
+      ['link', 'line', 'group', 'join', 'pitch', 'account', 'phrase', 'id', 'id-match'].indexOf(signal) !== -1,
       signal + ' 不在 signals 白名單內'
     );
   });
