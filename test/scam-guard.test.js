@@ -1994,7 +1994,9 @@ test('軟性招攬端到端：零話術詞的 LINE 群組招攬串照樣命中�
   assert.equal(hits[0].userId, SOFT_POSTS[0].userId);
   assert.equal(hits[0].handle, AUTHOR);
   assert.equal(hits[0].postUrl, ORIGIN + SOFT_PATH, 'postUrl 為正規化後的乾淨網址');
-  assert.ok(hits[0].anchorMatch.includes('LINE：ab12cd'), 'anchorMatch 取 LINE 提及本體');
+  // 【斷言翻轉｜D43】v3 標亮整段「LINE：ab12cd」;v4 改標 ID 本體。
+  assert.equal(hits[0].anchorMatch, 'ab12cd', 'anchorMatch 取 ID 本體(D43)');
+  assert.equal(hits[0].lineId, 'ab12cd', 'payload 一併帶 lineId(D43/D46)');
   assert.ok(hits[0].snippet.includes('LINE：ab12cd'), 'snippet 以 LINE 提及為中心');
   assert.deepEqual(Array.from(hits[0].pitchMatches), [], '沒有話術詞也要成立');
 
@@ -3962,7 +3964,8 @@ test('證據結構：錨點就在第一篇時，anchorPostUrl 與 threadUrl 相�
     payload.threadUrl,
     '錨點在串頭時兩者相同——實作不得「一律取末篇」'
   );
-  assert.ok(payload.anchorMatch.includes('LINE：zz11aa'), '前置：錨點取的是第一篇那一句');
+  // 【斷言翻轉｜D43】標亮位置改成 ID 本體，錨點落在哪一篇的定位不受影響。
+  assert.equal(payload.anchorMatch, 'zz11aa', '前置：錨點取的是第一篇那一句的 ID 本體(D43)');
 });
 
 test('證據結構：網址列帶 ?xmt= 時，兩個新網址一樣不得沾到 query／hash', async () => {
@@ -4113,5 +4116,192 @@ test('證據結構:錨點篇的 <time> 解析不出來時 payload 不帶 postedA
     Object.prototype.hasOwnProperty.call(payload, 'postedAt'),
     false,
     '取不到就整欄不帶——background 對這一欄的規則是「缺席通過」'
+  );
+});
+
+// ============================================================
+// 規則 v4:暗號型招攬與 ID 跨帳號命中的注入端(D45／D46)
+//
+// D45 端到端:合成的暗號型招攬串(LINE 提及＋「傳「177」給我」＋ LINE ID),
+// 零群組/加入詞、零強話術詞——v3 對它整串漏抓。
+//
+// D46 是新的一條命中路徑:這一串本身踩不到任何判定門檻，但作者貼出來的 LINE
+// ID 已經在警示名單上、而且掛在**另一位**作者名下。同一個 ID 換一個帳號再
+// 招攬一次就是同一組人，判定不必再等行動呼籲或話術詞。
+//   - 索引由 TCLCore 正規化名單時派生(lineIdIndex),content script 與
+//     handleIndex 走同一份 storage 讀取，不另外算一次。
+//   - 指向本篇作者自己時不算(自己貼自己的 ID 是常態)。
+//   - 使用者已解除封鎖的作者照舊早退，不掛警示。
+//
+// 合成資料:帳號 ex01abc，userId 沿用 fixture 的 10000000001 與另一位
+// 20000000002，不得出現真實 LINE ID 或真實帳號。
+// ============================================================
+
+const V4_OTHER_ID = '20000000002';
+const V4_OTHER_HANDLE = 'other_scam_author';
+const V4_LINE_ID = 'ex01abc';
+const V4_OTHER_ANCHOR_URL = `${ORIGIN}/@${V4_OTHER_HANDLE}/post/DxOtHeR0001`;
+
+// 暗號型招攬串:第一篇是鋪陳，第二篇是靶(暗號 CTA ＋ LINE ID)。
+const V4_CODE_WORD_POSTS = [
+  {
+    code: 'DxCoDeW0001',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 1,
+    selfThreadLength: 2,
+    captionText: '這幾年我把自己看盤的流程整理成一份表，很多人問我怎麼拿。',
+  },
+  {
+    code: 'DxCoDeW0002',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 2,
+    selfThreadLength: 2,
+    captionText: `可以到 LINE 傳「177」給我，我免費把整理好的資料分享給你！\nLINE ID：${V4_LINE_ID}`,
+  },
+];
+const V4_CODE_WORD_PATH = `/@${AUTHOR}/post/${V4_CODE_WORD_POSTS[0].code}`;
+
+// 只帶 LINE ID、沒有任何行動呼籲與話術詞的一串:判定本身不會命中，命中只能
+// 來自 ID 跨帳號比對。
+const V4_ID_ONLY_POSTS = [
+  {
+    code: 'DxIdOnL0001',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 1,
+    selfThreadLength: 2,
+    captionText: '昨天整理舊筆記，翻到十年前剛進廠時寫的第一本維修紀錄，感觸很深。',
+  },
+  {
+    code: 'DxIdOnL0002',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 2,
+    selfThreadLength: 2,
+    captionText: `有問題的朋友可以找我聊聊。\nLINE ID：${V4_LINE_ID}`,
+  },
+];
+const V4_ID_ONLY_PATH = `/@${AUTHOR}/post/${V4_ID_ONLY_POSTS[0].code}`;
+
+// 一份帶 lineId 證據的警示名單(storage 形狀)。owner 是這個 ID 掛在誰名下。
+//   ownerId／ownerHandle：持有 V4_LINE_ID 的那一筆
+//   dismissedAuthor：把本篇作者也放一筆已解除的條目
+function buildLineIdBlocklist(options) {
+  const settings = options || {};
+  const list = { version: 2, entries: {} };
+  list.entries[settings.ownerId || V4_OTHER_ID] = {
+    state: 'active',
+    handle: settings.ownerHandle || V4_OTHER_HANDLE,
+    displayName: 'Other Author',
+    evidence: [
+      {
+        postUrl: V4_OTHER_ANCHOR_URL,
+        anchorPostUrl: V4_OTHER_ANCHOR_URL,
+        snippet: `之前那一篇也是同一組人:LINE ID：${V4_LINE_ID}`,
+        anchorMatch: V4_LINE_ID,
+        lineId: V4_LINE_ID,
+        signals: ['line', 'account', 'id'],
+        at: 1758280000000,
+        rulesVersion: 4,
+      },
+    ],
+    addedAt: 1758280000000,
+    updatedAt: 1758280000000,
+    source: 'auto',
+  };
+  if (settings.dismissedAuthor) {
+    list.entries[POSTS[0].userId] = {
+      state: 'dismissed',
+      dismissedAt: 1758290000000,
+      handle: AUTHOR,
+      displayName: DISPLAY_NAME,
+      evidence: [],
+      addedAt: 1758270000000,
+      updatedAt: 1758290000000,
+      source: 'auto',
+    };
+  }
+  return list;
+}
+
+test('D45 端到端：暗號型招攬串（零群組詞、零話術詞）照樣命中、送 scam.hit、掛 tag', async () => {
+  const env = loadEnv({
+    pathname: V4_CODE_WORD_PATH,
+    page: [createSsrScript(V4_CODE_WORD_POSTS[0]), createScanDom(V4_CODE_WORD_POSTS)],
+  });
+  await env.flush();
+
+  assert.ok(
+    !/黑馬股|報明牌|代操|帶單|飆股|穩賺|獲利分享|群組|社群|加入/.test(env.detectCalls[0] || ''),
+    '前置：這串刻意不帶強話術詞，也不帶群組／加入詞'
+  );
+
+  const hits = env.hits();
+  assert.equal(hits.length, 1, '暗號型招攬串要通報一則 scam.hit');
+  assert.equal(hits[0].userId, POSTS[0].userId);
+  assert.ok(hits[0].signals.includes('account'), 'signals 應含 account（帳號型錨點）');
+  assert.equal(hits[0].lineId, V4_LINE_ID, 'payload 帶 lineId，background 才存得進證據');
+  assert.equal(hits[0].anchorMatch, V4_LINE_ID, '標亮 ID 本體（D43）');
+  assert.equal(env.tags().length, 1, '命中就要掛一顆警示');
+});
+
+test('D46 ID 跨帳號：ID 掛在另一位作者名下時命中（無行動呼籲、無話術詞），signals 含 id-match', async () => {
+  const env = loadEnv({
+    pathname: V4_ID_ONLY_PATH,
+    page: [createSsrScript(V4_ID_ONLY_POSTS[0]), createScanDom(V4_ID_ONLY_POSTS)],
+    local: { scamBlocklist: buildLineIdBlocklist() },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.waitFor(() => env.hits().length === 1, { label: 'ID 跨帳號命中的 scam.hit' });
+
+  const payload = env.hits()[0];
+  assert.equal(payload.userId, POSTS[0].userId, '通報的是本篇作者，不是名單上持有 ID 的那一位');
+  assert.equal(payload.lineId, V4_LINE_ID, 'payload 要帶 lineId');
+  assert.ok(
+    payload.signals.includes('id-match'),
+    'signals 要記下這一次是靠 ID 跨帳號比對成立的，實得 ' + JSON.stringify(payload.signals)
+  );
+  await env.waitFor(() => env.tags().length === 1, { label: 'ID 跨帳號命中的警示 tag' });
+});
+
+test('D46 ID 跨帳號：索引指向的就是本篇作者時，不因此命中', async () => {
+  const env = loadEnv({
+    pathname: V4_ID_ONLY_PATH,
+    page: [createSsrScript(V4_ID_ONLY_POSTS[0]), createScanDom(V4_ID_ONLY_POSTS)],
+    // 同一個 ID 掛在本篇作者自己名下：自己貼自己的 LINE ID 是常態，不是
+    // 「換帳號再來一次」。
+    local: { scamBlocklist: buildLineIdBlocklist({ ownerId: POSTS[0].userId, ownerHandle: AUTHOR }) },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.flush();
+
+  assert.equal(
+    env.hits().length,
+    0,
+    'ID 指回本篇作者自己時不得靠這條路成立——否則名單上每個人的每一篇都會被自己的 ID 再標一次'
+  );
+});
+
+test('D46 ID 跨帳號：本篇作者已解除封鎖時照舊早退，不掛 tag', async () => {
+  const env = loadEnv({
+    pathname: V4_ID_ONLY_PATH,
+    page: [createSsrScript(V4_ID_ONLY_POSTS[0]), createScanDom(V4_ID_ONLY_POSTS)],
+    local: { scamBlocklist: buildLineIdBlocklist({ dismissedAuthor: true }) },
+    // 已解除的作者，background 回的就是這一組（handleScamHit 的早退分支）。
+    respond: () => ({ ok: true, added: false, allowlisted: true }),
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.waitFor(() => env.hits().length === 1, { label: 'ID 跨帳號仍會問過 background' });
+  await env.flush();
+
+  assert.equal(
+    env.tags().length,
+    0,
+    '使用者解除過的作者不得因為一條新的命中路徑又長回警示（allowlist 早退照舊）'
   );
 });

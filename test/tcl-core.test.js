@@ -859,7 +859,9 @@ test.describe('詐騙偵測:LINE 提及 ＋ 群組／加入詞', () => {
     const res = C.detectScamPitch(SOFT_PITCH_TEXT);
     assert.equal(res.hit, true, '軟性招攬句必須命中:' + JSON.stringify(SOFT_PITCH_TEXT));
     assert.deepEqual(res.pitchMatches, [], '這句沒有任何話術詞，門檻不得再依賴它');
-    assert.equal(res.anchorMatch.includes('LINE：ab12cd'), true, 'anchorMatch 應取 LINE 提及本體');
+    // 【斷言翻轉｜D43】v3 標亮整段「LINE：ab12cd」;v4 改標 ID 本體——證據卡
+    // 要讓使用者一眼看到對方的 LINE 帳號，而不是「LINE：」那三個字。
+    assert.equal(res.anchorMatch, 'ab12cd', 'anchorMatch 取 ID 本體(D43)');
     assert.equal(res.snippet.includes('LINE：ab12cd'), true, 'snippet 以 LINE 提及為中心');
     // 回傳形狀不變:四個欄位照舊（signals 之類的新欄位可加，但不得少欄位）。
     for (const key of ['hit', 'anchorMatch', 'pitchMatches', 'snippet']) {
@@ -929,7 +931,8 @@ test.describe('詐騙偵測:LINE 提及 ＋ 群組／加入詞', () => {
       assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
     }
     const withCopula = C.detectScamPitch('想來的朋友，我的賴是：ab12cd，加入後傳訊「63」，我拉你進群組。');
-    assert.equal(withCopula.anchorMatch.includes('賴是：ab12cd'), true, 'anchorMatch 應涵蓋繫詞本體');
+    // 【斷言翻轉｜D43】繫詞照舊要吃得下(命中就是證明),但標亮位置改成 ID 本體。
+    assert.equal(withCopula.anchorMatch, 'ab12cd', 'anchorMatch 取 ID 本體(D43)');
   });
 
   // 【負例是本體】LINE 是英文詞的常見結尾:ONLINE／deadline／LINEUP 都不是
@@ -3488,5 +3491,473 @@ test.describe('CR-1 toScamMark：本機專有的推送提示欄位不上雲', ()
       'mark 是固定九欄的跨端契約，本機自用的推送提示欄位一個都不得跟著上雲'
     );
     assert.equal(mark.updatedAt, 900, '本機提示欄位也不得頂替 updatedAt——它是 LWW 判準');
+  });
+});
+
+// ============================================================
+// 規則 v4:LINE ID 錨點、暗號型行動呼籲、ID 跨帳號命中(D42-D46)
+//
+// 【為什麼】警示名單標亮的是片語而不是對方的 LINE ID;同一個 ID 換一個帳號
+// 再貼一次就完全認不出來。v4 把「抓到的那串 ID」升成第一級證據:命中時標亮
+// ID 本體、ID 進派生索引，下一位用同一個 ID 招攬的作者不必再湊行動呼籲或話
+// 術詞就認得出來。
+//
+// 【欄位】detectScamPitch 多回一個 lineId(小寫、尾端 ._- 剝掉、3-20 字,抓
+// 不到為 null);證據多一個本機專有的 lineId(不上雲);黑名單多一張派生的唯讀
+// lineIdIndex(不落盤)。
+//
+// 【合成資料】帳號一律 kw0000／ex01abc／ry0000 之類，userId 沿用
+// 1000000x 那組——本區塊不得出現任何真實 LINE ID 或真實帳號。
+// ============================================================
+
+// 帳號型錨點的六種真實寫法(全形空白、大小寫 id、繫詞在前),帳號本體都是
+// kw0000。
+const V4_ACCOUNT_FORMS = [
+  '賴：kw0000',
+  '賴是：kw0000',
+  'LINE ID：kw0000',
+  '加我賴號ID：kw0000',
+  'LINE 帳號 : kw0000',
+  '賴　id：kw0000',
+];
+
+// 「賴」在這兩句裡是信賴/無賴的一部分，後面的冒號是正常標點。負向 lookbehind
+// 在 v4 放寬繫詞之後必須原封不動。
+const V4_ACCOUNT_NEGATIVES = ['我一向信賴：Apple 的品質', '那個無賴：xx 又來了'];
+
+const v4Signals = (text) => C.detectScamPitch(text).signals;
+
+test.describe('D42 規則 v4:帳號型錨點放寬', () => {
+  test('D42 detectScamPitch:六種帳號型寫法都認得出帳號型錨點(signals 含 account)', () => {
+    for (const text of V4_ACCOUNT_FORMS) {
+      const res = C.detectScamPitch(text);
+      assert.equal(
+        res.signals.includes('account'),
+        true,
+        JSON.stringify(text) + ' 應被認成帳號型錨點(signals 含 account),實得 ' + JSON.stringify(res.signals)
+      );
+    }
+  });
+
+  test('D42 detectScamPitch:六種帳號型寫法配強話術詞一律命中，lineId 都是 kw0000', () => {
+    for (const form of V4_ACCOUNT_FORMS) {
+      const text = '我做黑馬股波段很多年，' + form + '，有興趣再聊。';
+      const res = C.detectScamPitch(text);
+      assert.equal(res.hit, true, JSON.stringify(text) + ' 錨點＋強話術詞應命中');
+      assert.equal(res.lineId, 'kw0000', JSON.stringify(text) + ' 的 lineId 應是帳號本體');
+    }
+  });
+
+  test('D42 detectScamPitch:信賴／無賴的負向 lookbehind 維持——不得冒出 account 訊號，也不得命中', () => {
+    for (const form of V4_ACCOUNT_NEGATIVES) {
+      const text = '我做黑馬股波段很多年，' + form;
+      const res = C.detectScamPitch(text);
+      assert.equal(
+        res.signals.includes('account'),
+        false,
+        JSON.stringify(text) + ' 的「賴」是信賴/無賴的一部分，不是帳號型錨點'
+      );
+      assert.equal(res.hit, false, JSON.stringify(text) + ' 不得命中');
+      assert.equal(res.lineId, null, JSON.stringify(text) + ' 不得抓出 lineId');
+    }
+  });
+});
+
+test.describe('D43 規則 v4:lineId 抓取與標亮', () => {
+  test('D43 detectScamPitch:回傳新增 lineId;命中且抓到 ID 時 anchorMatch 是 ID 本體、snippet 含該 ID', () => {
+    const res = C.detectScamPitch('我做黑馬股波段很多年，有興趣加我 賴：ex01abc，我把筆記傳給你。');
+    assert.equal(res.hit, true);
+    assert.equal(res.lineId, 'ex01abc', 'lineId 是抓到的 LINE 帳號本體');
+    assert.equal(res.anchorMatch, 'ex01abc', '標亮的是 ID 本體，不是「賴：ex01abc」這段片語');
+    assert.equal(res.snippet.includes('ex01abc'), true, 'snippet 以 ID 為中心');
+  });
+
+  test('D43 detectScamPitch:抓取順序——帳號型優先於提及後的 ID，ID 又優先於深連結路徑段', () => {
+    // 三種來源同時在場:帳號型(kw0000)、LINE 提及後的 ID(ry0000)、深連結
+    // 路徑段(ex01abc)。取值順序決定證據卡標亮哪一個。
+    const all = '加我的賴，傳送暗號 ID：ry0000，或點 lin.ee/ex01abc，賴：kw0000';
+    assert.equal(C.detectScamPitch(all).lineId, 'kw0000', '帳號型錨點的帳號段排第一順位');
+
+    const noAccount = '加我的賴，傳送暗號 ID：ry0000，或點 lin.ee/ex01abc';
+    assert.equal(C.detectScamPitch(noAccount).lineId, 'ry0000', '提及後的 ID 排第二順位，深連結墊底');
+  });
+
+  test('D43 detectScamPitch:LINE／賴提及後 80 字內的「ID／帳號＋冒號＋ID」抓得到(暗號夾在中間也不影響)', () => {
+    const res = C.detectScamPitch('加我的賴，傳送暗號【04】>> ID：ry0000');
+    assert.equal(res.lineId, 'ry0000', '提及後 80 字內的「ID：xxx」就是要抓的那一串');
+  });
+
+  test('D43 detectScamPitch:深連結的路徑段當 lineId(lin.ee 短網址與 line.me 加好友深連結)', () => {
+    assert.equal(C.detectScamPitch('全部資料點這 lin.ee/ex01abc').lineId, 'ex01abc');
+    assert.equal(
+      C.detectScamPitch('加好友請點 https://line.me/ti/p/~ex01abc').lineId,
+      'ex01abc',
+      'ti/p 的 ~ 前綴是 LINE 深連結的寫法，不屬於 ID 本體'
+    );
+  });
+
+  test('D43 detectScamPitch:抓不到 ID 時 lineId 為 null，anchorMatch 退回片語', () => {
+    const res = C.detectScamPitch('加入我的LINE，並傳送暗號【w23】');
+    assert.equal(res.hit, true, '暗號型行動呼籲＋片語型錨點應命中(D45)');
+    assert.equal(res.lineId, null, '這句沒有帳號本體，lineId 必須是 null 而不是暗號代碼');
+    assert.equal(res.anchorMatch.includes('LINE'), true, '抓不到 ID 就退回片語當標亮位置');
+  });
+
+  test('D43 detectScamPitch:暗號代碼不得成為 lineId', () => {
+    const res = C.detectScamPitch('可以到 LINE 傳「177」給我，我把資料分享給你');
+    assert.equal(res.lineId, null, '「177」是暗號代碼，不是 LINE 帳號');
+  });
+
+  test('D43 detectScamPitch:沒有 LINE 提及的「訂單 ID」不得被抓成 lineId', () => {
+    const res = C.detectScamPitch('出貨後請保留 訂單 ID：A12345 以便查詢');
+    assert.equal(res.lineId, null, '沒有任何 LINE 提及時，任何 ID 欄位都不該被當成 LINE 帳號');
+    assert.equal(res.hit, false);
+  });
+
+  test('D43 detectScamPitch:lineId 一律小寫、尾端 ._- 剝掉、長度落在 3-20', () => {
+    assert.equal(C.detectScamPitch('黑馬股筆記，LINE ID：ABC_123').lineId, 'abc_123', 'lineId 一律存小寫');
+    assert.equal(
+      C.detectScamPitch('黑馬股筆記，LINE ID：abc123.').lineId,
+      'abc123',
+      '尾端的 . _ - 是句讀不是帳號的一部分'
+    );
+    assert.equal(C.detectScamPitch('黑馬股筆記，LINE ID：abc123-').lineId, 'abc123');
+    const long = C.detectScamPitch('黑馬股筆記，LINE ID：' + 'a'.repeat(25)).lineId;
+    assert.equal(typeof long, 'string', '超長帳號段仍要抓得到');
+    assert.equal(long.length <= 20, true, 'lineId 上限 20 字(LINE ID 的官方上限),實得 ' + long.length);
+  });
+
+  test('D43 detectScamPitch:未命中時 lineId 照樣回報(D46 跨帳號比對的唯一來源)', () => {
+    // 「LINE ID：xxx」單獨不成立(計畫已裁決不採),但 D46 的跨帳號比對就是
+    // 靠這條路拿到 ID——未命中就不回報的話，D46 整條路永遠走不到。
+    const res = C.detectScamPitch('LINE ID：ex01abc');
+    assert.equal(res.hit, false, '帳號型錨點單獨不構成命中(維持 v3 的門檻)');
+    assert.equal(res.lineId, 'ex01abc', 'lineId 與 pitchMatches 同一個待遇:未命中照樣回報');
+    // 非字串/空字串的早退分支也要帶這一欄，呼叫端才能無條件走訪。
+    for (const bad of [null, undefined, 42, {}, '']) {
+      assert.equal(C.detectScamPitch(bad).lineId, null, JSON.stringify(String(bad)) + ' 應回 lineId:null');
+    }
+  });
+
+  test('D43 detectScamPitch:「LINE Pay ID：xx」維持 v3 的不命中', () => {
+    assert.equal(C.detectScamPitch('付款用 LINE Pay ID：xx 就可以').hit, false);
+  });
+});
+
+// 合成的暗號型樣本(比照 DdlMRmDmAak 那一篇的句型):LINE 提及＋暗號型行動呼
+// 籲(傳「177」給我)＋帳號型錨點，整串沒有群組/加入詞、沒有任何強話術詞。
+// v3 對它回 hit:false。
+const V4_CODE_WORD_SAMPLE =
+  '可以到 LINE 傳「177」給我，我免費把整理好的資料分享給你！\nLINE ID：ex01abc';
+
+test.describe('D45 規則 v4:暗號型行動呼籲', () => {
+  test('D45 detectScamPitch:合成 DdlMRmDmAak 樣本命中，signals 含 line／account 與行動呼籲類別', () => {
+    const res = C.detectScamPitch(V4_CODE_WORD_SAMPLE);
+    assert.equal(res.hit, true, '暗號型行動呼籲＋帳號型錨點必須命中(v3 對它整串漏抓)');
+    assert.equal(res.signals.includes('line'), true, 'signals 應含 line');
+    assert.equal(res.signals.includes('account'), true, 'signals 應含 account');
+    assert.equal(
+      res.signals.includes('join') || res.signals.includes('phrase'),
+      true,
+      '暗號型行動呼籲要落在 join(或新類別)上，實得 ' + JSON.stringify(res.signals)
+    );
+    assert.equal(res.lineId, 'ex01abc', '標亮的是 ID 本體');
+  });
+
+  test('D45 detectScamPitch:四種暗號型行動呼籲配 LINE 提及各自命中', () => {
+    const positives = [
+      '想看完整資料的到我的 LINE 傳送暗號【246】',
+      '加我的LINE，傳送暗號【04】就送你整理好的表',
+      '想拿資料的在我 LINE 底下留言【18】',
+      '到我的 LINE 傳訊「63」我就回你',
+    ];
+    for (const text of positives) {
+      assert.equal(C.detectScamPitch(text).hit, true, JSON.stringify(text) + ' 應命中');
+    }
+  });
+
+  test('D45 detectScamPitch:「傳訊息給我」「把檔案傳給我」不是暗號，配 LINE 提及也不得命中', () => {
+    const negatives = ['有問題可以用 LINE 傳訊息給我', '資料很大，用 LINE 把檔案傳給我就好'];
+    for (const text of negatives) {
+      assert.equal(
+        C.detectScamPitch(text).hit,
+        false,
+        JSON.stringify(text) + ' 沒有暗號代碼，單獨的「給我」不算行動呼籲'
+      );
+    }
+  });
+
+  test('D45 detectScamPitch:公司公告改用 LINE 群組維持不命中(v3 回歸)', () => {
+    assert.equal(C.detectScamPitch('公司公告:內部通知改用 LINE 群組發布，請同仁自行加入').hit, false);
+  });
+
+  test('D45 SCAM_RULES.version 升為 4;SCAM_SIGNALS 併入 account／phrase／id／id-match，既有五類順序不變', () => {
+    assert.equal(C.SCAM_RULES.version, 4, '規則版本 3 → 4(證據的 rulesVersion 靠它分辨新舊判定)');
+    assert.deepEqual(
+      C.SCAM_SIGNALS.slice(0, 5),
+      ['link', 'line', 'group', 'join', 'pitch'],
+      '既有五類的值與顯示順序不得動——證據卡的 chip 與已落盤的證據都吃這張表'
+    );
+    for (const name of ['account', 'phrase', 'id', 'id-match']) {
+      assert.equal(C.SCAM_SIGNALS.includes(name), true, 'signals 白名單應含 ' + name);
+    }
+  });
+
+  test('D45 signals:account／phrase／id 分別對應帳號型錨點、片語型錨點、抓到 lineId', () => {
+    const account = v4Signals('賴：kw0000');
+    assert.equal(account.includes('account'), true, '帳號型錨點 → account');
+    assert.equal(account.includes('phrase'), false, '帳號型錨點不是片語型');
+
+    const phrase = v4Signals('加入我的LINE');
+    assert.equal(phrase.includes('phrase'), true, '片語型錨點 → phrase');
+    assert.equal(phrase.includes('account'), false, '片語型錨點沒有帳號段');
+
+    assert.equal(v4Signals('LINE ID：kw0000').includes('id'), true, '抓到 lineId → id');
+    assert.equal(v4Signals('公司的 LINE 又改版了').includes('id'), false, '沒抓到 ID 就不得有 id 訊號');
+
+    const link = v4Signals('全部資料點這 lin.ee/ex01abc');
+    assert.equal(link.includes('link'), true, '連結型錨點的 link 語意不變');
+    assert.equal(link.includes('id'), true, '深連結的路徑段也是一個 lineId');
+
+    const notice = v4Signals('公司公告:內部通知改用 LINE 群組發布，請同仁自行加入');
+    assert.deepEqual(notice, ['line', 'group', 'join'], '既有五類的語意不得因為新類別而位移');
+  });
+});
+
+// D44:證據的本機專有欄位 lineId。
+const V4_LINE_ID = 'ex01abc';
+
+test.describe('D44 規則 v4:evidence.lineId 是本機專有欄位', () => {
+  test('D44 normalizeScamEvidence:lineId 是字串時放行並轉小寫', () => {
+    const out = C.normalizeScamEvidence(richEvidence({ lineId: 'EX01ABC' }));
+    assert.equal(out.lineId, V4_LINE_ID, 'lineId 一律小寫落盤(索引與比對都以小寫為鍵)');
+  });
+
+  test('D44 normalizeScamEvidence:lineId 非字串或空字串一律不落鍵，整筆證據照留', () => {
+    for (const bad of [42, null, {}, [], true, '']) {
+      const out = C.normalizeScamEvidence(richEvidence({ lineId: bad }));
+      assert.ok(out, 'lineId=' + JSON.stringify(String(bad)) + ' 不得讓整筆證據被丟掉');
+      assert.equal(
+        mkHas(out, 'lineId'),
+        false,
+        'lineId=' + JSON.stringify(String(bad)) + ' 應整欄不落鍵(缺席不補空字串)'
+      );
+    }
+    assert.equal(
+      mkHas(C.normalizeScamEvidence(richEvidence()), 'lineId'),
+      false,
+      '沒帶 lineId 的舊證據不得被補出這一欄'
+    );
+  });
+
+  test('D44 normalizeScamEvidence:lineId 超過 20 字裁到 20 字(不整欄丟棄)', () => {
+    const out = C.normalizeScamEvidence(richEvidence({ lineId: 'a'.repeat(30) }));
+    assert.equal(out.lineId, 'a'.repeat(20), 'LINE ID 官方上限 20 字，超長裁切而不是整欄丟掉');
+  });
+
+  test('D44 makeBlocklistEntry:新建條目的證據帶上 lineId', () => {
+    const entry = C.makeBlocklistEntry({
+      handle: MK_HANDLE,
+      postUrl: MK_PAGE_URL,
+      snippet: MK_SNIPPET,
+      at: 1700000100000,
+      anchorPostUrl: MK_ANCHOR_URL,
+      anchorMatch: V4_LINE_ID,
+      lineId: V4_LINE_ID,
+      source: 'auto',
+    });
+    assert.equal(entry.evidence[0].lineId, V4_LINE_ID, '首次命中就要把 ID 記進證據，之後才索引得到');
+  });
+
+  test('D44 toScamMark:證據仍是固定七欄，lineId 不上雲', () => {
+    const mark = C.toScamMark(MK_ID, mkEntry({ evidence: [mkEvidence({ lineId: V4_LINE_ID })] }));
+    assert.deepEqual(
+      Object.keys(mark.evidence[0]).sort(),
+      ['anchorPostUrl', 'at', 'deviceId', 'postedAt', 'rulesVersion', 'signals', 'threadUrl'],
+      '上雲的證據是固定七欄的契約，lineId 是本機專有欄位，一個都不得漏出去'
+    );
+  });
+
+  test('D44 fromScamMark:雲端 mark 夾帶 lineId 也不得讀進本機證據', () => {
+    const parsed = C.fromScamMark({
+      key: 'threads:' + MK_ID,
+      state: 'active',
+      dismissedAt: null,
+      handle: MK_HANDLE,
+      displayName: null,
+      source: 'auto',
+      evidence: [
+        {
+          anchorPostUrl: MK_ANCHOR_URL,
+          threadUrl: MK_THREAD_URL,
+          signals: ['line'],
+          at: 900,
+          postedAt: 800,
+          rulesVersion: 4,
+          deviceId: MK_DEVICE_ID_2,
+          lineId: 'cloudid01',
+        },
+      ],
+      addedAt: 100,
+      updatedAt: 900,
+    });
+    assert.ok(parsed, '多一欄不得讓整筆 mark 被丟掉');
+    assert.equal(
+      mkHas(parsed.entry.evidence[0], 'lineId'),
+      false,
+      'lineId 不在契約裡:雲端來的那一格一律不讀進本機(否則等於開了一條寫本機索引的後門)'
+    );
+  });
+
+  test('D44 mergeScamEvidencePair:遠端較新但沒有 lineId 時，本機的 lineId 保留', () => {
+    const local = mkEntry({
+      updatedAt: 100,
+      evidence: [mkEvidence({ anchorPostUrl: MK_ANCHOR_URL, at: 100, lineId: V4_LINE_ID })],
+    });
+    const remote = mkEntry({
+      updatedAt: 900,
+      evidence: [mkEvidence({ anchorPostUrl: MK_ANCHOR_URL, at: 900 })],
+    });
+    const ev = C.mergeScamEntry(local, remote).evidence[0];
+    assert.equal(
+      ev.lineId,
+      V4_LINE_ID,
+      'lineId 與 snippet／anchorMatch／postUrl 同屬本機專有，不得被較新的遠端洗掉'
+    );
+  });
+
+  test('D44 mergeScamEntry:真實往返(本機有 lineId、遠端走 toScamMark → fromScamMark)後 lineId 仍在', () => {
+    const remote = JSON.parse(
+      JSON.stringify(
+        C.fromScamMark(
+          C.toScamMark(
+            MK_ID,
+            C.makeBlocklistEntry({
+              handle: MK_HANDLE,
+              postUrl: MK_ANCHOR_URL,
+              snippet: '另一台裝置看到的原文，不上雲',
+              at: 900,
+              anchorPostUrl: MK_ANCHOR_URL,
+              threadUrl: MK_THREAD_URL,
+              anchorMatch: V4_LINE_ID,
+              lineId: V4_LINE_ID,
+              signals: ['line', 'account'],
+              rulesVersion: 4,
+              deviceId: MK_DEVICE_ID_2,
+              source: 'auto',
+            })
+          )
+        ).entry
+      )
+    );
+    assert.equal(mkHas(remote.evidence[0], 'lineId'), false, '前提:走一趟雲端往返之後，遠端那一筆沒有 lineId');
+
+    const local = mkEntry({
+      updatedAt: 100,
+      evidence: [mkEvidence({ anchorPostUrl: MK_ANCHOR_URL, at: 100, lineId: V4_LINE_ID })],
+    });
+    const ev = C.mergeScamEntry(local, remote).evidence[0];
+    assert.equal(ev.lineId, V4_LINE_ID, '同步一次就把本機的 ID 洗掉的話，跨帳號索引會在每次同步後失憶');
+  });
+
+  test('D44 capScamEvidence／capScamBlocklist:落盤裁切一路保留 lineId', () => {
+    const capped = C.capScamEvidence([mkEvidence({ lineId: V4_LINE_ID })]);
+    assert.equal(capped[0].lineId, V4_LINE_ID, 'capScamEvidence 逐欄帶過時不得漏掉 lineId');
+
+    const out = C.capScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: mkEntry({ evidence: [mkEvidence({ lineId: V4_LINE_ID })] }) },
+    });
+    assert.equal(out.entries[MK_ID].evidence[0].lineId, V4_LINE_ID, 'lineId 要落盤——它是索引的唯一真相來源');
+  });
+});
+
+test.describe('D46 規則 v4:lineIdIndex 派生索引', () => {
+  // 帶 N 筆證據的條目，每筆各自帶一個 lineId(錨點篇各不相同，才不會被證據
+  // 去重併成一筆)。
+  const v4Entry = (lineIds, patch) =>
+    mkEntry(
+      Object.assign(
+        {
+          evidence: lineIds.map((lineId, index) =>
+            mkEvidence({
+              lineId,
+              anchorPostUrl: 'https://www.threads.com/@example_author/post/DxSyNtH100' + index,
+              at: 1700000100000 + index,
+            })
+          ),
+        },
+        patch || {}
+      )
+    );
+
+  test('D46 normalizeScamBlocklist:派生唯讀 lineIdIndex——鍵是 lineId，值是 userId', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: v4Entry(['ex01abc']), [MK_ID_2]: v4Entry(['kw0000']) },
+    });
+    assert.ok(out.lineIdIndex, 'normalizeScamBlocklist 的輸出要多一張 lineIdIndex');
+    assert.deepEqual(
+      out.lineIdIndex,
+      { ex01abc: MK_ID, kw0000: MK_ID_2 },
+      'lineIdIndex 是 { lineId → userId } 的反查表，與 handleIndex 同一類派生視圖'
+    );
+  });
+
+  test('D46 normalizeScamBlocklist:同一條目的多筆證據各自帶 ID 時，每一個都進索引', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: v4Entry(['ex01abc', 'kw0000']) },
+    });
+    assert.equal(out.lineIdIndex.ex01abc, MK_ID);
+    assert.equal(out.lineIdIndex.kw0000, MK_ID, '同一個人換 ID 再招攬一次，兩個 ID 都要查得到他');
+  });
+
+  test('D46 normalizeScamBlocklist:lineIdIndex 一律小寫為鍵(髒資料的大小寫不得讓查表落空)', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: v4Entry(['EX01ABC']) },
+    });
+    assert.equal(out.lineIdIndex.ex01abc, MK_ID, '比照 handleIndex:鍵一律小寫');
+  });
+
+  test('D46 normalizeScamBlocklist:dismissed 條目的 lineId 不進索引', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: {
+        [MK_ID]: v4Entry(['ex01abc'], { state: 'dismissed', dismissedAt: 1700000200000 }),
+        [MK_ID_2]: v4Entry(['kw0000']),
+      },
+    });
+    assert.deepEqual(
+      out.lineIdIndex,
+      { kw0000: MK_ID_2 },
+      '使用者解除過的作者不該再靠一個 ID 把別人也拖下水(與 handleIndex 只含 active 同一條線)'
+    );
+  });
+
+  test('D46 normalizeScamBlocklist:lineIdIndex 拒收 __proto__ 鍵，原型不受污染', () => {
+    const out = C.normalizeScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: v4Entry(['__proto__']) },
+    });
+    assert.equal({}.ex01abc, undefined, '原型不得被污染');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(out.lineIdIndex, '__proto__'),
+      false,
+      '三張反查表拒收 __proto__ 的規矩，第四張照辦'
+    );
+  });
+
+  test('D46 capScamBlocklist:落盤只有 version／entries／handleIndex 三鍵，lineIdIndex 不持久化', () => {
+    const out = C.capScamBlocklist({
+      version: 2,
+      entries: { [MK_ID]: v4Entry(['ex01abc']) },
+    });
+    assert.deepEqual(
+      Object.keys(out).sort(),
+      ['entries', 'handleIndex', 'version'],
+      'lineIdIndex 與 allowlist 同類:記憶體裡的派生視圖，落盤等於讓 storage 存兩份真相'
+    );
   });
 });
