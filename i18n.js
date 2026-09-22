@@ -61,9 +61,9 @@
       // ---- options:設定 ----
       opSettingsTitle: '設定',
       opAutoCleanName: '自動淨化分享按鈕',
-      opAutoCleanDesc: '複製時自動換成乾淨網址；關閉仍照常寫入紀錄。',
+      opAutoCleanDesc: '複製時自動換成乾淨網址',
       opSaveName: '保存紀錄',
-      opSaveDesc: '僅存於本機',
+      opSaveDesc: '儲存淨化或複製過的連結',
       // 與 popup 的 postCopyEnabled 鏡像，設定頁保留完整開關說明(popup
       // 只留精簡標籤)。
       opPostCopyName: '貼文複製按鈕',
@@ -255,10 +255,10 @@
       // 選項頁設定卡的總開關 #scamGuardEnabled。功能名沿用貼文上那顆 pill
       // 的說法(scamTagLabel「LINE 群組引導」)，清單本身則一律叫警示名單。
       opScamGuardName: 'LINE 群組引導警示',
-      opScamGuardDesc:
-        '偵測引導加入 LINE 群組的串文並把作者加入警示名單；名單預設留在本機，登入雲端同步後會跟著你的帳號走，貼文文字片段則留在本機。',
+      opScamGuardDesc: '偵測引導加入 LINE 群組的串文，並在貼文上標記',
       // 設定卡內指向警示名單分頁的同頁錨點(a#scamManageLink[href="#flags"])。
-      opScamManageLink: '管理警示名單 →',
+      // 純文字，不含箭頭——箭頭改由後面接的 Lucide arrow-right inline SVG 呈現。
+      opScamManageLink: '管理警示名單',
 
       // ---- 選項頁:警示名單卡(警示名單分頁) ----
       opScamListTitle: '警示名單',
@@ -367,9 +367,9 @@
 
       opSettingsTitle: 'Settings',
       opAutoCleanName: 'Auto-clean the share button',
-      opAutoCleanDesc: 'Cleans copied links automatically; recording continues either way.',
+      opAutoCleanDesc: 'Swaps in the clean URL when you copy.',
       opSaveName: 'Keep history',
-      opSaveDesc: 'Local only',
+      opSaveDesc: 'Keeps the links you cleaned or copied.',
       opPostCopyName: 'Post copy button',
       opPostCopyDesc: 'Show a copy-link button on posts’ action row',
 
@@ -509,9 +509,8 @@
       scamBlockedByList:
         'This account has posted threads that funnel readers to LINE. It is on your local warning list.',
       opScamGuardName: 'LINE group funnel warnings',
-      opScamGuardDesc:
-        'Detects threads that funnel readers into LINE groups and adds the author to your warning list. The list is local by default; once you sign in, cloud sync carries it with your account, while post text snippets stay local.',
-      opScamManageLink: 'Manage warning list →',
+      opScamGuardDesc: 'Detects threads that steer people into LINE groups and tags the post.',
+      opScamManageLink: 'Manage warning list',
 
       opScamListTitle: 'Warning list',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。

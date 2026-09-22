@@ -6685,7 +6685,7 @@ function makeTabsDocumentStub() {
   });
 
   TABS_LOOSE_IDS.forEach((id) => doc.getElementById(id));
-  // 設定卡裡的「管理警示名單 →」連結:靜態 HTML 就帶 href 與 data-i18n。
+  // 設定卡裡的「管理警示名單」連結:靜態 HTML 就帶 href 與 data-i18n。
   const manage = doc.getElementById('scamManageLink');
   manage.tag = 'a';
   manage.setAttribute('href', '#flags');
@@ -6911,18 +6911,20 @@ test('分頁分配:統計磚與 section.duo 在 overview、紀錄卡在 posts、
   assert.doesNotMatch(
     parsed.slices.overview.body,
     /<section[^>]*class="[^"]*\bscam-blocklist\b[^"]*"/,
-    '警示名單卡不該出現在 overview(設定卡只放「管理警示名單 →」連結)'
+    '警示名單卡不該出現在 overview(設定卡只放「管理警示名單」連結)'
   );
 });
 
-test('分頁列 i18n:三顆 tab 與「管理警示名單 →」的文案 key 在 zh／en 兩份字典都齊備且逐字正確', () => {
+test('分頁列 i18n:三顆 tab 與「管理警示名單」的文案 key 在 zh／en 兩份字典都齊備且逐字正確', () => {
   TAB_NAMES.forEach((name) => {
     const key = TAB_I18N[name];
     assert.equal(i18n.t('zh', key), TAB_TEXT_ZH[name], key + ' 的 zh 文案');
     assert.equal(i18n.t('en', key), TAB_TEXT_EN[name], key + ' 的 en 文案');
   });
-  assert.equal(i18n.t('zh', 'opScamManageLink'), '管理警示名單 →', 'opScamManageLink 的 zh 文案');
-  assert.equal(i18n.t('en', 'opScamManageLink'), 'Manage warning list →', 'opScamManageLink 的 en 文案');
+  // 定稿文案不含箭頭字元——箭頭改由連結後面接的 Lucide arrow-right inline
+  // SVG 呈現(見 options.html 的 #scamManageLink)。
+  assert.equal(i18n.t('zh', 'opScamManageLink'), '管理警示名單', 'opScamManageLink 的 zh 文案');
+  assert.equal(i18n.t('en', 'opScamManageLink'), 'Manage warning list', 'opScamManageLink 的 en 文案');
 });
 
 test('分頁路由:hash 缺席時停在 overview，三顆 tab 文案由 i18n 字典套上', async () => {
@@ -7018,7 +7020,7 @@ test('分頁路由:切語言後留在原分頁，tab 文案換成英文(renderAl
   assert.equal(
     ctx.doc.ids.scamManageLink.textContent,
     i18n.t('en', 'opScamManageLink'),
-    '「管理警示名單 →」連結同樣走 data-i18n，切語言要跟著換'
+    '「管理警示名單」連結同樣走 data-i18n，切語言要跟著換'
   );
 });
 
@@ -7046,7 +7048,34 @@ test('管理警示名單連結:options.html 的設定卡內有 a#scamManageLink[
   const rowEnd = html.indexOf('</label>', toggleIdx);
   assert.ok(
     anchorIdx > rowStart && anchorIdx < rowEnd,
-    '「管理警示名單 →」要掛在 LINE 群組引導警示的開關那一列內，不另開區塊'
+    '「管理警示名單」要掛在 LINE 群組引導警示的開關那一列內，不另開區塊'
+  );
+});
+
+test('管理警示名單連結:定稿版面 —— 連結搬到標題(opScamGuardName)同一行、含 arrow-right svg，開關仍留在列尾', () => {
+  const html = readOptionsHtml();
+
+  // 標題與連結包在同一個 .name-row，連結緊接在標題右邊，箭頭字元「→」由
+  // Lucide arrow-right inline SVG(14px、stroke="currentColor"、
+  // aria-hidden="true")取代，接在連結文字後面，且早於下面的 .desc 說明。
+  const nameRowRe =
+    /<span class="name-row">\s*<span class="name"[^>]*data-i18n="opScamGuardName"[^>]*>[^<]*<\/span>[\s\S]{0,400}?<a[^>]*id="scamManageLink"[^>]*href="#flags"[^>]*>\s*<span[^>]*data-i18n="opScamManageLink"[^>]*>[^<]*<\/span>\s*<svg[^>]*width="14"[^>]*height="14"[^>]*stroke="currentColor"[^>]*aria-hidden="true"[^>]*>[\s\S]*?<\/svg>\s*<\/a>\s*<\/span>\s*<div class="desc"[^>]*data-i18n="opScamGuardDesc"/;
+  assert.match(
+    html,
+    nameRowRe,
+    '標題列應為:.name-row 內先標題、後連結(連結含 arrow-right svg)，緊接著才是 .desc 說明'
+  );
+  const rowStart = html.lastIndexOf('<label', html.indexOf('id="scamGuardEnabled"'));
+  const rowEnd = html.indexOf('</label>', html.indexOf('id="scamGuardEnabled"'));
+  const row = html.slice(rowStart, rowEnd);
+  assert.doesNotMatch(row, /→/, '箭頭字元「→」應由 svg 取代，這一列不得殘留');
+
+  // 開關仍緊接在 .txt 區塊之後、是這個 label 內最後一個互動元素(維持在最
+  // 右邊)，不被連結搬位置或推走。
+  assert.match(
+    row,
+    /<\/span>\s*<input type="checkbox" id="scamGuardEnabled" class="switch" \/>\s*$/,
+    '#scamGuardEnabled 開關應緊接在 .txt 區塊之後、是這個 label 內最後一個節點，不被連結推動位置'
   );
 });
 
