@@ -699,6 +699,12 @@ function validateScamHit(message) {
   if (postUrl === null) return null;
   if (typeof message.snippet !== 'string' || message.snippet.length > TCLCore.SCAM_LIMITS.SNIPPET_MAX) return null;
   if (typeof message.at !== 'number' || !isFinite(message.at)) return null;
+  // at 是頁面端送來的數字，夾在「現在」以內。這個值一路流進證據的 at、新建條
+  // 目的 addedAt／updatedAt，以及補證據時的 pushAfter——推送成功後 pushAfter
+  // 會成為 marksPushedAt，一個偽造的未來時戳就讓此後整份名單都落在水位線之
+  // 下，marks 通道靜默停推（沒有錯誤碼，水位線也只能往前推）。往回的時戳不夾：
+  // 補送舊命中是正常情形，太舊只會讓它排在證據清單後面。
+  const at = Math.min(message.at, Date.now());
 
   let userId = null;
   if (message.userId !== null && message.userId !== undefined) {
@@ -749,7 +755,7 @@ function validateScamHit(message) {
     displayName: typeof message.displayName === 'string' ? message.displayName : undefined,
     postUrl,
     snippet: message.snippet,
-    at: message.at,
+    at,
     anchorPostUrl,
     threadUrl,
     anchorMatch,
