@@ -1476,27 +1476,30 @@
     return typeof key === 'string' && SCAM_USER_ID_PATTERN.test(key);
   }
 
-  // storage 讀回的黑名單正規化成 { version, entries, handleIndex, allowlist }
-  // 這四把可列舉鍵的形狀，另加一張不可列舉的 lineIdIndex(見下方
-  // defineProperty)。未知欄位不留存，handleIndex 一律由 entries 重建——存下
+  // storage 讀回的黑名單正規化成
+  // { version, entries, handleIndex, allowlist, lineIdIndex } 這五把鍵的形
+  // 狀。未知欄位不留存，handleIndex 一律由 entries 重建——存下
   // 來的反查表可能指向已淘汰的條目。entries 的鍵不是 userId 形狀的整筆剝
   // 除;handleIndex 只由留下來的 active 條目寫入，因此不會殘留指向被剝除鍵的
   // 孤兒項。
+  //
+  // allowlist 與 lineIdIndex 都是普通的可列舉鍵，與其他三把一視同仁:派生視
+  // 圖的「不落盤」由 capScamBlocklist 挑鍵保證(它只寫 version／entries／
+  // handleIndex),不靠屬性描述子把鍵藏起來——藏起來的鍵在 structured clone、
+  // 物件展開與 Object.assign 之下會被默默丟掉，之後誰把名單傳一手，靠它的那
+  // 條命中路徑就無聲失效。
   //
   // v1(無 version 或 version 1，以及任何非 2 的值)的 allowlist 在這裡一併
   // 升成 entries 裡的 dismissed 條目。v2 輸入的 allowlist 則整個忽略:它是
   // 本函式自己掛上去的派生視圖(見 rebuildScamViews)，不是真相來源。
   function normalizeScamBlocklist(raw) {
-    var out = { version: SCAM_BLOCKLIST_VERSION, entries: {}, handleIndex: {}, allowlist: {} };
-    // lineIdIndex 掛成不可列舉的屬性:它是唯讀派生視圖，只活在記憶體。不可列
-    // 舉讓它在 JSON.stringify 與 Object.keys 之下一律隱形，「不落盤、不上雲」
-    // 因此由語言保證，而不是靠每個寫回 storage 的呼叫端自己記得挑鍵。
-    Object.defineProperty(out, 'lineIdIndex', {
-      value: {},
-      enumerable: false,
-      writable: true,
-      configurable: true,
-    });
+    var out = {
+      version: SCAM_BLOCKLIST_VERSION,
+      entries: {},
+      handleIndex: {},
+      allowlist: {},
+      lineIdIndex: {},
+    };
     if (!isPlainObject(raw)) return out;
     var ids = isPlainObject(raw.entries) ? Object.keys(raw.entries) : [];
     for (var i = 0; i < ids.length; i++) {
@@ -1542,7 +1545,8 @@
   // 圖，沿用 v1 的 { at, handle } 形狀讓既有讀者(content script 的解除比
   // 對、選項頁的「已解除」小節)零改動;它只活在記憶體，不跟著落盤。
   // lineIdIndex 是 { lineId → userId } 的反查表，與 handleIndex 同樣只含
-  // active:使用者解除過的作者不該再靠一個 ID 把別人也拖下水。
+  // active:使用者解除過的作者不該再靠一個 ID 把別人也拖下水。它與 allowlist
+  // 同款，只活在記憶體、不跟著落盤(capScamBlocklist 落盤只挑三把鍵)。
   function rebuildScamViews(list) {
     var ids = Object.keys(list.entries);
     for (var i = 0; i < ids.length; i++) {
