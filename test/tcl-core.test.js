@@ -3561,6 +3561,24 @@ test.describe('D42 規則 v4:帳號型錨點放寬', () => {
       assert.equal(res.lineId, null, JSON.stringify(text) + ' 不得抓出 lineId');
     }
   });
+
+  // 【負例是本體】D42 把繫詞放寬之後的頭號誤判面:LINE Pay 是收款服務，它的
+  // 收款 ID 不是加好友帳號。繫詞必須是封閉的選項清單，不是「LINE 與冒號之間
+  // 的任意字」——夾了其他英文字就不算帳號型錨點。
+  test('D42 detectScamPitch:「LINE Pay ID：abc123」不得被帳號型錨點命中(繫詞是封閉清單)', () => {
+    const res = C.detectScamPitch('付款用 LINE Pay ID：abc123 就可以');
+    assert.equal(
+      res.signals.includes('account'),
+      false,
+      'LINE 與可選繫詞之間夾了其他英文字(Pay)，整條樣式就該在那裡斷開'
+    );
+    assert.equal(res.hit, false, 'LINE Pay 的收款說明不得進黑名單');
+    // 強話術詞同框也不得因此成立:帳號型錨點是「錨點 ＋ 強話術詞」那條路的前
+    // 提，前提不成立就整條路走不到。
+    const withPitch = C.detectScamPitch('我做黑馬股波段很多年，付款用 LINE Pay ID：abc123');
+    assert.equal(withPitch.signals.includes('account'), false);
+    assert.equal(withPitch.hit, false, '沒有錨點時，單字型提及配強話術詞不構成命中');
+  });
 });
 
 test.describe('D43 規則 v4:lineId 抓取與標亮', () => {
