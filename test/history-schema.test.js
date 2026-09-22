@@ -582,13 +582,33 @@ test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
     lastSyncedAt: null,
     clearedAt: null,
     lastError: null,
-    // D38（車道 B）:警示名單 marks 通道的四格水位線,見 sync-marks 契約。
+    // D38（車道 B）:警示名單 marks 通道的四格水位線，見 sync-marks 契約。
     marksCursor: null,
     marksPushedAt: null,
     marksEvicted: null,
     marksRejected: null,
+    // CR-2：回填的續填位置。回填一輪最多翻 20 頁，翻不完時不記位置就只能下一輪
+    // 從第一頁重來——雲端筆數多到單輪翻不完的帳號因此永遠回填不到底，marks 通道
+    // 卡在回填、一筆都推不出去。
+    marksBackfillCursor: null,
   });
   assert.deepEqual(C.DEFAULT_SYNC_AUTH, { token: null });
+});
+
+// CR-2：新欄位要走 normalizeSyncState 的白名單，否則整包寫回 storage 時被當成
+// 未知鍵剝掉，續填位置撐不過一次落盤。
+test('CR-2 normalizeSyncState:marksBackfillCursor 放行字串、型別錯誤與缺席回 null', () => {
+  const kept = C.normalizeSyncState({ marksBackfillCursor: '1700000000000~threads:1001' });
+  assert.equal(kept.marksBackfillCursor, '1700000000000~threads:1001', '合法游標原樣保留');
+
+  assert.equal(C.normalizeSyncState({}).marksBackfillCursor, null, '缺席補預設 null');
+  [42, {}, [], true].forEach((bad) => {
+    assert.equal(
+      C.normalizeSyncState({ marksBackfillCursor: bad }).marksBackfillCursor,
+      null,
+      `型別錯誤（${JSON.stringify(bad)}）回 null`
+    );
+  });
 });
 
 // S5：normalizeSyncState 缺欄位補預設、型別錯誤回預設。
