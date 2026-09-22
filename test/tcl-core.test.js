@@ -1148,9 +1148,14 @@ test.describe('詐騙偵測:normalizeScamBlocklist', () => {
   // 【斷言翻轉｜D36】version 由 1 改成 2:讀回時一律就地升版，v1 的形狀不再
   // 是任何一條路徑的輸出。allowlist 仍在輸出上，但已是 dismissed 條目的派生
   // 唯讀視圖（見檔尾「警示名單 v2」區塊）。
-  const EMPTY_LIST = { version: 2, entries: {}, handleIndex: {}, allowlist: {} };
+  // 【斷言翻轉｜D46】v4 多一張 lineIdIndex（{ lineId → userId } 的反查表）。
+  // 它與 allowlist 同款：普通的可列舉鍵、只活在記憶體、落盤由
+  // capScamBlocklist 挑鍵擋掉（那條斷言另外釘著三把鍵）。刻意不用不可列舉屬
+  // 性把它藏過這條形狀斷言——藏起來的鍵在 structured clone、物件展開與
+  // Object.assign 之下會被默默丟掉，靠它的那條命中路徑就無聲失效。
+  const EMPTY_LIST = { version: 2, entries: {}, handleIndex: {}, allowlist: {}, lineIdIndex: {} };
 
-  test('normalizeScamBlocklist:缺席／非物件一律回空的四欄形狀', () => {
+  test('normalizeScamBlocklist:缺席／非物件一律回空的五欄形狀', () => {
     assert.equal(typeof C.normalizeScamBlocklist, 'function', 'normalizeScamBlocklist 應掛在 TCLCore 匯出');
     for (const bad of [undefined, null, 'nope', 42, true, []]) {
       assert.deepEqual(C.normalizeScamBlocklist(bad), EMPTY_LIST, JSON.stringify(String(bad)) + ' 應回空形狀');
