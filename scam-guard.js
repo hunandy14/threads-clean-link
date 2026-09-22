@@ -886,6 +886,27 @@
         return items;
       }
 
+      // 以 lineId 出現的位置為中心裁一段原文，窗格與 TCLCore 的 scamSnippet
+      // 同一把尺。純靠 ID 跨帳號成立的那條路上 detectScamPitch 不產 snippet，
+      // 證據卡沒有原文就只剩一串網址，使用者看不出自己被警示的是哪一句。
+      //
+      // 比對用的小寫化只平移 ASCII：String#toLowerCase 在少數字元上會改變長
+      // 度（U+0130），那會讓算出來的位置錯位。ID 在原文是全形時找不到位置，
+      // 回空字串即可——那是加值資訊，不是證據成立的必要條件。
+      function snippetAroundLineId(text, lineId, core) {
+        if (typeof text !== 'string' || !lineId) return '';
+        var clean = core.stripControlChars(text);
+        var probe = clean.replace(/[A-Z]/g, function (ch) {
+          return String.fromCharCode(ch.charCodeAt(0) + 32);
+        });
+        var index = probe.indexOf(lineId);
+        if (index === -1) return '';
+        var limits = core.SCAM_LIMITS || {};
+        var context = limits.SNIPPET_CONTEXT || 40;
+        var max = limits.SNIPPET_MAX || 120;
+        return clean.slice(Math.max(0, index - context), index + context).slice(0, max);
+      }
+
       // ---- 一輪掃描 ----
       function scan() {
         if (!settingsReady || !scamGuardEnabled) return;
@@ -961,8 +982,22 @@
         );
         if (items.length === 0) return;
 
-        var detection = core.detectScamPitch(buildThreadText(items));
-        if (!detection || !detection.hit) return;
+        var threadText = buildThreadText(items);
+        var detection = core.detectScamPitch(threadText);
+        if (!detection) return;
+
+        // 作者主鍵要在判定之後、命中判斷之前就取出來：ID 跨帳號那條路要拿它
+        // 跟索引指到的作者比。
+        var authorId = ssrRoot && ssrRoot.userId ? String(ssrRoot.userId) : null;
+        var lineId = typeof detection.lineId === 'string' ? detection.lineId : null;
+        // ID 跨帳號命中：這串貼出來的 LINE ID 已經在名單上、而且掛在**另一
+        // 位**作者名下。同一個 ID 換一個帳號再招攬一次就是同一組人，判定不必
+        // 再等行動呼籲或話術詞。索引指回本篇作者自己時不算——自己貼自己的
+        // LINE ID 是常態，算了的話名單上每個人的每一篇都會被自己的 ID 再標一
+        // 次。作者主鍵取不到時也不算：比不出「是不是同一人」就不該據此判定。
+        var idOwner = lineIdOwner(lineId);
+        var idMatched = !!idOwner && !!authorId && idOwner !== authorId;
+        if (!detection.hit && !idMatched) return;
 
         // 同步認領主文卡：同一輪稍後跑的查表要讓位給這一顆。
         claimedMainCode = items[0].code;
@@ -973,30 +1008,42 @@
         // anchorPostUrl 是含錨點那一篇（招攬串的錨點幾乎都落在末篇）、
         // threadUrl 是串頭。選項頁的證據連結要帶使用者去看得到那句話的地
         // 方，光有 postUrl 做不到。
-        var anchorItem = items[findAnchorIndex(items, detection.anchorMatch, core.stripControlChars)];
+        // 判定沒命中（純靠 ID 跨帳號成立）時 detectScamPitch 不產 anchorMatch
+        // 與 snippet——那兩欄只在命中時有意義。證據卡仍要指得出是哪一串的哪一
+        // 段，這裡改以抓到的 ID 當定位與標亮位置。
+        var anchorText = detection.anchorMatch || (idMatched && lineId ? lineId : '');
+        var snippet = detection.snippet || (idMatched ? snippetAroundLineId(threadText, lineId, core) : '');
+        var anchorItem = items[findAnchorIndex(items, anchorText, core.stripControlChars)];
         // 錨點本體送出前先裁到上限：連結型錨點（lin.ee／linktr.ee／line.me
         // 深連結）的帳號段沒有長度上限，超長時 background 會整筆判
         // bad_request，連帶讓一次真的命中寫不進黑名單。裁在送出端，驗證端
         // 才守得住「有帶就驗形狀」那條線。
         var anchorMax = core.SCAM_ANCHOR_MATCH_MAX || 40;
-        var anchorMatch =
-          typeof detection.anchorMatch === 'string' ? detection.anchorMatch.slice(0, anchorMax) : '';
+        var anchorMatch = typeof anchorText === 'string' ? anchorText.slice(0, anchorMax) : '';
+
+        // 靠 ID 跨帳號成立時多記一個訊號類別：證據卡與日後調參要看得出這一次
+        // 走的是哪一條路。
+        var signals = Array.isArray(detection.signals) ? detection.signals.slice() : [];
+        if (idMatched && signals.indexOf('id-match') === -1) signals.push('id-match');
 
         var payload = {
           type: 'scam.hit',
           // 比對主鍵是數字 user id；SSR 取不到時送 null，由 background 走匿
           // 名備援補查。
-          userId: ssrRoot && ssrRoot.userId ? String(ssrRoot.userId) : null,
+          userId: authorId,
           handle: handle,
           displayName:
             ssrRoot && typeof ssrRoot.displayName === 'string' ? ssrRoot.displayName : '',
           postUrl: origin + pathInfo.path,
           anchorPostUrl: threadPostUrl(origin, handle, anchorItem.code),
           threadUrl: threadPostUrl(origin, handle, items[0].code),
-          snippet: detection.snippet,
+          snippet: snippet,
           anchorMatch: anchorMatch,
           pitchMatches: detection.pitchMatches,
-          signals: detection.signals,
+          signals: signals,
+          // 對方的 LINE 帳號本體。background 把它寫進證據，之後整份名單的
+          // lineIdIndex 就由那些證據派生——這裡不送，跨帳號比對永遠查不到人。
+          lineId: lineId,
           at: Date.now(),
         };
         // 錨點篇的發布時間。取不到就整欄不帶——background 對這一欄的規則是
@@ -1081,8 +1128,11 @@
         // 沒有任何可查的作者時查表側留 null，可以立刻收工、不走訪 DOM；解除
         // 名單的檢查另外拿完整的 list，條目被移進 allowlist 後 handleIndex
         // 可能已經空了。
-        blocklist =
-          list && list.handleIndex && Object.keys(list.handleIndex).length > 0 ? list : null;
+        //
+        // 兩張反查表任一非空就要留著：handleIndex 空、lineIdIndex 非空的名單
+        // （條目都沒記下 handle，卻各自留了 LINE ID）照樣走得到 ID 跨帳號那
+        // 條命中路徑，整份丟掉等於把那條路關死。
+        blocklist = list && (mapHasKeys(list.handleIndex) || mapHasKeys(list.lineIdIndex)) ? list : null;
         listedContainers = newContainerSet();
         taggedContainers = newContainerSet();
         releaseAllowlistedScan(list);
@@ -1114,6 +1164,19 @@
             return;
           }
         }
+      }
+
+      // 反查表有沒有任何一把鍵。非物件一律當空表。
+      function mapHasKeys(map) {
+        return !!map && typeof map === 'object' && Object.keys(map).length > 0;
+      }
+
+      // ID 跨帳號查表：這串抓到的 LINE ID 已在名單上時回持有它的 userId。索
+      // 引只含 active 條目（使用者解除過的作者不再把別人拖下水），查到就算數。
+      function lineIdOwner(lineId) {
+        if (!blocklist || !lineId || !blocklist.lineIdIndex) return null;
+        if (!Object.prototype.hasOwnProperty.call(blocklist.lineIdIndex, lineId)) return null;
+        return blocklist.lineIdIndex[lineId];
       }
 
       // 一次 O(1) 查表：handle 小寫化後查 handleIndex 得 userId，userId 不在

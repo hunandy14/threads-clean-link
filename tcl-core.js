@@ -900,6 +900,12 @@
     MAX_EVIDENCE: 3,
     SNIPPET_MAX: 120,
     SNIPPET_CONTEXT: 40,
+    // LINE ID 的官方長度上下限。短於 3 位的帳號段是標點誤判，不是帳號。
+    LINE_ID_MAX: 20,
+    LINE_ID_MIN: 3,
+    // 「LINE／賴提及之後多少字以內的 ID 欄位算是這個提及的帳號」。視窗自提及
+    // 本體的結尾起算，超出的 ID 欄位視為與 LINE 無關(訂單 ID、會員 ID)。
+    ID_WINDOW: 80,
     SOFT_BUDGET: 2 * 1024 * 1024,
   };
 
@@ -922,8 +928,11 @@
   // 渲染成連結。省掉 scheme 後必須擋住黏在別的網域後面的情形——前置的負向
   // lookbehind 排除英數/點/@/斜線，`xxline.me/ti/g/x`、`a.linktr.ee/x`、
   // `https://line.me/...` 裡面那段 `line.me` 都不會各自起頭再匹配一次。
+  //
+  // ti/p 的路徑段容許前導 `~`:`line.me/ti/p/~帳號` 是 LINE 官方的加好友深連
+  // 結寫法，字元類少了它就在 `~` 前斷開，整條連結收不進錨點。
   var SCAM_LINK_ANCHOR_RE =
-    /(?<![A-Za-z0-9.@/])(?:https?:\/\/)?(?:www\.)?(?:line\.me\/(?:R\/)?ti\/[gp]\/[A-Za-z0-9@._-]+|lin\.ee\/[A-Za-z0-9._-]+|linktr\.ee\/[A-Za-z0-9._-]+)/i;
+    /(?<![A-Za-z0-9.@/])(?:https?:\/\/)?(?:www\.)?(?:line\.me\/(?:R\/)?ti\/[gp]\/[A-Za-z0-9@._~-]+|lin\.ee\/[A-Za-z0-9._-]+|linktr\.ee\/[A-Za-z0-9._-]+)/i;
 
   // 帳號型錨點:賴/籟/LINE(ID 兩字可省) + 冒號 + 至少 3 位帳號字元。全形/半
   // 形冒號、冒號前後空白、大小寫都吃。帳號段少於 3 位的是標點誤判，不是帳
@@ -936,11 +945,17 @@
   // 導。這類句子常同時帶投資詞，光靠 PITCH 二次確認擋不住，錨點本身必須排
   // 除。排除清單只列這五個字——詐騙招攬句「我的賴：ex01abc」前面也是中文，擴
   // 成「前面是中文就不算」會整組漏抓。
-  // 繫詞(是／ID／帳號)可選，負向邊界照舊:實際招攬句常寫「賴是：xxx」「LINE
-  // 帳號：xxx」，不只是「賴：xxx」這種裸冒號寫法。
+  // 繫詞(是／ID／帳號／號／號ID／號碼)可選，大小寫不拘，冒號前後容許空白(含
+  // 全形空白——`\s` 認得 U+3000)。負向邊界照舊:實際招攬句常寫「賴是：xxx」
+  // 「加我賴號ID：xxx」「LINE 帳號 : xxx」，不只是「賴：xxx」這種裸冒號寫法。
+  //
+  // 繫詞是封閉的選項清單，不是「任意字」:`LINE Pay ID：abc123` 的 `Pay` 不在
+  // 清單裡，整條樣式就在那裡斷開——LINE Pay 的收款 ID 不是加好友帳號。
+  //
+  // 括號捕獲的是帳號段本體，供 extractLineId 取用(證據卡標亮的就是這一段)。
   var SCAM_ACCOUNT_ANCHOR_RES = [
-    /(?<![信依無仰倚])[賴籟]\s*(?:是|ID|帳號)?\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/,
-    /(?<![A-Za-z])LINE\s*(?:ID|是|帳號)?\s*[:：]\s*[A-Za-z0-9][A-Za-z0-9._-]{2,19}/i,
+    /(?<![信依無仰倚])[賴籟]\s*(?:是|ID|帳號|號碼|號ID|號)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
+    /(?<![A-Za-z])LINE\s*(?:ID|是|帳號|號碼|號ID|號)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
   ];
 
   // 片語型錨點:「加入我的 LINE」這類明確的加好友祈使句。中文「賴」是姓氏
@@ -960,30 +975,66 @@
 
   // 群組詞與加入詞:招攬串的行動呼籲。這兩類詞單獨出現在任何社團、讀書會、
   // Discord 貼文裡都很常見，必須與 LINE 提及並存才構成命中。
+  //
+  // 暗號類(暗號／通關密語／密語)是同一種行動呼籲的另一種寫法:招攬者不寫
+  // 「加入群組」,改叫人帶著一組代碼私訊過來，好在對話一開始就分辨得出來人
+  // 是從哪一篇來的。
   var SCAM_GROUP_WORDS = ['群組', '社群', '群裡', '進群', '拉進', '拉你進', '小群'];
-  var SCAM_JOIN_WORDS = ['加入', '加我', '私訊我'];
+  var SCAM_JOIN_WORDS = ['加入', '加我', '私訊我', '暗號', '通關密語', '密語'];
 
   // 主動招攬詞:上面兩張表裡描述「把你帶走」這個動作的子集，單字型提及只認
   // 這一組。「群組」「社群」「加入」是名詞，公司公告、社區公告、讀書會、商
   // 家會員貼文本來就會跟 LINE 同框(「公司公告改用 LINE 群組發布」),配單字
   // 型提及遠不足以構成招攬;錨點型提及(連結/帳號/片語)已經帶著帳號或祈使
   // 句，才吃完整詞表。
-  var SCAM_ACTIVE_JOIN_WORDS = ['進群', '拉進', '拉你進', '小群', '加我', '私訊我'];
+  var SCAM_ACTIVE_JOIN_WORDS = ['進群', '拉進', '拉你進', '小群', '加我', '私訊我', '暗號', '通關密語', '密語'];
+
+  // 暗號型行動呼籲的樣式:詞表認不出「傳「177」給我」「留言【18】」這種把代
+  // 碼包在引號/括號裡的祈使句，只能用樣式抓。兩種形狀:
+  //   (a) 代碼被引號或括號包住——「傳訊「63」」本身就是暗號句，不必再有「給
+  //       我」。
+  //   (b) 裸代碼後面接「給我」——「傳 177 給我」。
+  // 代碼上限 8 位:再長就不是人記得住的暗號，而是識別碼或網址片段。
+  //
+  // 【負例是本體】「傳訊息給我」「把檔案傳給我」沒有代碼，兩種形狀都踩不到
+  // ——單獨的「給我」不是行動呼籲，是日常用語。
+  var SCAM_CODE_WORD_RES = [
+    /傳(?:送|訊)?\s*(?:[「【(\[]\s*[A-Za-z0-9]{1,8}\s*[」】)\]]|[A-Za-z0-9]{1,8}\s*給我)/,
+    /留言\s*[「【(\[]?\s*[A-Za-z0-9]{1,8}\s*[」】)\]]?/,
+  ];
+
+  // lineId 抓取第二段的兩把尺。idMention 是「這段文字在講 LINE」的起點(單字
+  // 型 LINE 或 賴／籟，負向邊界與錨點同一套);idLabelled 是視窗內的「ID／帳號
+  // ＋冒號＋帳號段」。兩者必須並存:沒有 LINE 提及時，任何貼文的「訂單 ID：
+  // A12345」都不是 LINE 帳號。
+  var SCAM_ID_MENTION_RE = /(?<![A-Za-z])LINE(?![A-Za-z])|(?<![信依無仰倚])[賴籟]/i;
+  var SCAM_ID_LABELLED_RE = /(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
+
+  // lineId 抓取第三段:加好友深連結的路徑段。只認 ti/p 與 lin.ee——ti/g 的路
+  // 徑段是群組邀請 token，不是 LINE 帳號，進索引只會用一串對不上任何帳號的
+  // 鍵把別人拖下水。前導 `~` 是深連結寫法，不屬於帳號本體。
+  // 前置的負向 lookbehind 與 scheme/www 前綴與連結型錨點同一套，理由相同。
+  var SCAM_ID_DEEP_LINK_RE =
+    /(?<![A-Za-z0-9.@/])(?:https?:\/\/)?(?:www\.)?(?:line\.me\/(?:R\/)?ti\/p\/|lin\.ee\/)~?([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
 
   // 判定用的規則資料。**規則是資料，判定是邏輯**:detectScamPitch 只認這個形
   // 狀，不認特定來源，因此同一份判定可以吃本機常數，也可以吃日後由後端下發
   // 的規則包。version 是規則版本，下發時用來比對新舊。
   var SCAM_RULES = {
-    version: 3,
+    version: 4,
     strongWords: SCAM_PITCH_STRONG_WORDS,
     weakWords: SCAM_PITCH_WEAK_WORDS,
     groupWords: SCAM_GROUP_WORDS,
     joinWords: SCAM_JOIN_WORDS,
     activeJoinWords: SCAM_ACTIVE_JOIN_WORDS,
+    codeWords: SCAM_CODE_WORD_RES,
     linkAnchor: SCAM_LINK_ANCHOR_RE,
     accountAnchors: SCAM_ACCOUNT_ANCHOR_RES,
     phraseAnchors: SCAM_PHRASE_ANCHOR_RES,
     lineWord: SCAM_LINE_WORD_RE,
+    idMention: SCAM_ID_MENTION_RE,
+    idLabelled: SCAM_ID_LABELLED_RE,
+    idDeepLink: SCAM_ID_DEEP_LINK_RE,
   };
 
   // 取一組樣式中位置最前的命中，都沒中回 null。
@@ -994,6 +1045,55 @@
       if (match && (best === null || match.index < best.index)) best = match;
     }
     return best;
+  }
+
+  // 一組樣式裡有任何一條中了就算。
+  function matchesAnyPattern(text, patterns) {
+    for (var i = 0; i < patterns.length; i++) {
+      if (patterns[i].test(text)) return true;
+    }
+    return false;
+  }
+
+  // 帳號段本體正規化:一律小寫、先裁到 LINE ID 的官方上限 20 字、再剝掉尾端
+  // 的 . _ -(句讀不是帳號的一部分)。剝完短於下限時回 null。
+  function normalizeLineIdValue(raw) {
+    if (typeof raw !== 'string') return null;
+    var id = raw.toLowerCase().slice(0, SCAM_LIMITS.LINE_ID_MAX).replace(/[._-]+$/, '');
+    return id.length >= SCAM_LIMITS.LINE_ID_MIN ? id : null;
+  }
+
+  // 一次樣式命中換算成 { id, index }。三段抓取用的樣式都把帳號段放在整段的結
+  // 尾，因此捕獲群的起點就是 `整段結尾 - 捕獲長度`;正規化只從尾端裁切，算出
+  // 來的 id 因此永遠是捕獲段的前綴，index 直接套回原文就是標亮位置。offset 是
+  // 樣式跑在切片上時的切片起點。
+  function scamIdCapture(match, offset) {
+    if (!match) return null;
+    var id = normalizeLineIdValue(match[1]);
+    if (id === null) return null;
+    return { id: id, index: offset + match.index + match[0].length - match[1].length };
+  }
+
+  // 抓出這段文字裡對方的 LINE 帳號本體，回 { id, index } 或 null。三段依序:
+  //   1. 帳號型錨點的帳號段(「賴：xxx」「LINE ID：xxx」)——寫得最明確。
+  //   2. LINE／賴提及本體結尾起 ID_WINDOW 字內的「ID／帳號＋冒號＋帳號段」。
+  //   3. 加好友深連結的路徑段(ti/p 與 lin.ee)。
+  // 前一段抓得到就不看後面:同一串同時出現三種來源時，證據卡要標的是寫得最
+  // 明確的那一個。
+  //
+  // 傳入的是半形正規化後的 probe，index 與原文逐位對齊，呼叫端拿它切原文。
+  function extractLineId(probe, cfg) {
+    var found = scamIdCapture(firstScamAnchor(probe, cfg.accountAnchors), 0);
+    if (found) return found;
+
+    var mention = cfg.idMention.exec(probe);
+    if (mention) {
+      var from = mention.index + mention[0].length;
+      found = scamIdCapture(cfg.idLabelled.exec(probe.slice(from, from + SCAM_LIMITS.ID_WINDOW)), from);
+      if (found) return found;
+    }
+
+    return scamIdCapture(cfg.idDeepLink.exec(probe), 0);
   }
 
   // 以錨點起點為中心取上下文:前面 SNIPPET_CONTEXT 字，起點往後 SNIPPET_CONTEXT
@@ -1114,9 +1214,15 @@
   // 檻不足而未命中時照樣回報，呼叫端(除錯、調參、之後的人工複核)才看得出差
   // 在哪裡。anchorMatch 與 snippet 則只在命中時才有意義，未命中一律空字串。
   // signals 列出這次踩到的訊號類別，供證據卡與調參回溯判定走的是哪一條路。
+  //
+  // lineId 是這段文字裡對方的 LINE 帳號本體(小寫、3-20 字，抓不到為 null)。
+  // 它與 pitchMatches 同一個待遇:**未命中照樣回報**——跨帳號比對(同一個 ID 換
+  // 一個帳號再招攬一次)就是靠這一欄，未命中就不回報的話那條路永遠走不到。抓
+  // 到 ID 時 anchorMatch 與 snippet 一併改以 ID 為中心:證據卡要讓使用者一眼
+  // 看到對方的帳號，而不是「LINE：」那三個字。
   function detectScamPitch(text, rules) {
     var cfg = rules || SCAM_RULES;
-    var miss = { hit: false, anchorMatch: '', pitchMatches: [], snippet: '', signals: [] };
+    var miss = { hit: false, anchorMatch: '', pitchMatches: [], snippet: '', signals: [], lineId: null };
     if (typeof text !== 'string' || text.length === 0) return miss;
     var clean = stripControlChars(text);
     if (clean.length === 0) return miss;
@@ -1136,35 +1242,53 @@
     }
 
     var link = cfg.linkAnchor.exec(probe);
+    var account = firstScamAnchor(probe, cfg.accountAnchors);
+    var phrase = firstScamAnchor(probe, cfg.phraseAnchors);
     // 錨點＝連結/帳號/片語三型，是「錨點 + 強話術詞」那條路認的形狀;提及再
     // 多收單字型。
-    var anchor = link || firstScamAnchor(probe, cfg.accountAnchors) || firstScamAnchor(probe, cfg.phraseAnchors);
+    var anchor = link || account || phrase;
     var mention = anchor || cfg.lineWord.exec(probe);
 
     var spans = scamMentionSpans(probe, cfg);
     var hasGroup = hasIndependentWord(scan, cfg.groupWords, spans);
-    var hasJoin = hasIndependentWord(scan, cfg.joinWords, spans);
-    // 行動呼籲的門檻分兩層:錨點型提及吃完整詞表，單字型只認主動招攬詞。
+    // 暗號型樣式與加入詞是同一類行動呼籲，一起落在 join 上。
+    var hasJoin =
+      hasIndependentWord(scan, cfg.joinWords, spans) || matchesAnyPattern(probe, cfg.codeWords);
+    // 行動呼籲的門檻分兩層:錨點型提及吃完整詞表，單字型只認主動招攬詞(暗號
+    // 型樣式本身就帶代碼與祈使句，兩層都認)。
     var hasCallToAction = anchor
       ? hasGroup || hasJoin
-      : hasIndependentWord(scan, cfg.activeJoinWords, spans);
+      : hasIndependentWord(scan, cfg.activeJoinWords, spans) || matchesAnyPattern(probe, cfg.codeWords);
 
+    var found = extractLineId(probe, cfg);
+    var lineId = found ? found.id : null;
+
+    // 順序與 SCAM_SIGNALS 一致，證據卡的 chip 才不必再排一次。
     var signals = [];
     if (link) signals.push('link');
     if (mention) signals.push('line');
     if (hasGroup) signals.push('group');
     if (hasJoin) signals.push('join');
     if (pitchMatches.length > 0) signals.push('pitch');
+    if (account) signals.push('account');
+    if (phrase) signals.push('phrase');
+    if (lineId) signals.push('id');
 
     var hit = !!link || (!!mention && hasCallToAction) || (!!anchor && strongCount > 0);
-    if (!hit) return { hit: false, anchorMatch: '', pitchMatches: pitchMatches, snippet: '', signals: signals };
+    if (!hit) {
+      return { hit: false, anchorMatch: '', pitchMatches: pitchMatches, snippet: '', signals: signals, lineId: lineId };
+    }
 
+    // 標亮位置:抓到帳號本體就標它，抓不到才退回提及本體那段片語。
+    var start = found ? found.index : mention.index;
+    var length = found ? found.id.length : mention[0].length;
     return {
       hit: true,
-      anchorMatch: clean.slice(mention.index, mention.index + mention[0].length),
+      anchorMatch: clean.slice(start, start + length),
       pitchMatches: pitchMatches,
-      snippet: scamSnippet(clean, mention.index),
+      snippet: scamSnippet(clean, start),
       signals: signals,
+      lineId: lineId,
     };
   }
 
@@ -1199,7 +1323,10 @@
 
   // 證據的訊號白名單與固定顯示順序，與 detectScamPitch 產出的 signals 同一
   // 份詞彙。選項頁按這個順序畫 chip，寫入順序不影響呈現。
-  var SCAM_SIGNALS = ['link', 'line', 'group', 'join', 'pitch'];
+  // v4 補的四類:account／phrase 分開記錨點是帶帳號段的還是純片語，id 記這次
+  // 抓到了帳號本體，id-match 記這次是靠 ID 跨帳號比對成立的。既有五類的值與
+  // 順序不得動——已落盤的證據與選項頁的 chip 都吃這張表。
+  var SCAM_SIGNALS = ['link', 'line', 'group', 'join', 'pitch', 'account', 'phrase', 'id', 'id-match'];
 
   // anchorMatch 的硬上限。錨點本體只是「片段裡要高亮哪一段」的定位字串，
   // 40 字足以涵蓋最長的連結型錨點;上限在儲存端保證，選項頁不再自行截斷。
@@ -1241,8 +1368,9 @@
   // 卡)、at 需為有限數字，snippet 剝除控制字元。任一不符回 null。
   //
   // anchorPostUrl(含錨點那一篇)、threadUrl(串頭)、anchorMatch(錨點本體)、
-  // signals(訊號類別)、postedAt(發布時間)、rulesVersion(判定當下的規則版本)
-  // 與 deviceId(寫入這筆證據的裝置)七欄皆為選填:形狀不對時**只剝該欄、整筆
+  // signals(訊號類別)、postedAt(發布時間)、rulesVersion(判定當下的規則版本)、
+  // deviceId(寫入這筆證據的裝置)與 lineId(對方的 LINE 帳號本體)八欄皆為選
+  // 填:形狀不對時**只剝該欄、整筆
   // 照留**——它們是加值資訊，不是證據成立的必要條件。缺欄時輸出不帶該鍵(不
   // 補 null 也不補空字串):選項頁靠「鍵在不在」決定要不要畫那一行。
   function normalizeScamEvidence(raw) {
@@ -1275,7 +1403,21 @@
     // 字串放行的話，拿它去 join 裝置清單永遠落空，時間軸上就顯示成未知裝置。
     var deviceId = normalizeDeviceId(raw.deviceId);
     if (deviceId !== undefined) out.deviceId = deviceId;
+    // lineId 是本機專有欄位(不上雲:toScamMark 不送、fromScamMark 不讀),也是
+    // lineIdIndex 的唯一真相來源。驗證刻意比其他欄位寬鬆——形狀不合只丟這一
+    // 欄、超長裁切而不整欄丟棄:它是加值資訊，為了它把一次真的命中整筆退掉是
+    // 賠本生意。
+    var lineId = normalizeScamLineId(raw.lineId);
+    if (lineId !== undefined) out.lineId = lineId;
     return out;
+  }
+
+  // 本機專有的 lineId 欄位正規化，storage 與 payload 兩側共用。非字串或空字
+  // 串回 undefined(呼叫端整欄不落鍵，缺席不補空字串);其餘一律小寫(索引與比
+  // 對都以小寫為鍵)並裁到 LINE ID 的官方上限 20 字。
+  function normalizeScamLineId(raw) {
+    if (typeof raw !== 'string' || raw.length === 0) return undefined;
+    return raw.toLowerCase().slice(0, SCAM_LIMITS.LINE_ID_MAX);
   }
 
   // 有限數字取值:非有限數字退回 fallback。
@@ -1335,7 +1477,8 @@
   }
 
   // storage 讀回的黑名單正規化成 { version, entries, handleIndex, allowlist }
-  // 這四把鍵的形狀。未知欄位不留存，handleIndex 一律由 entries 重建——存下
+  // 這四把可列舉鍵的形狀，另加一張不可列舉的 lineIdIndex(見下方
+  // defineProperty)。未知欄位不留存，handleIndex 一律由 entries 重建——存下
   // 來的反查表可能指向已淘汰的條目。entries 的鍵不是 userId 形狀的整筆剝
   // 除;handleIndex 只由留下來的 active 條目寫入，因此不會殘留指向被剝除鍵的
   // 孤兒項。
@@ -1345,6 +1488,15 @@
   // 本函式自己掛上去的派生視圖(見 rebuildScamViews)，不是真相來源。
   function normalizeScamBlocklist(raw) {
     var out = { version: SCAM_BLOCKLIST_VERSION, entries: {}, handleIndex: {}, allowlist: {} };
+    // lineIdIndex 掛成不可列舉的屬性:它是唯讀派生視圖，只活在記憶體。不可列
+    // 舉讓它在 JSON.stringify 與 Object.keys 之下一律隱形，「不落盤、不上雲」
+    // 因此由語言保證，而不是靠每個寫回 storage 的呼叫端自己記得挑鍵。
+    Object.defineProperty(out, 'lineIdIndex', {
+      value: {},
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
     if (!isPlainObject(raw)) return out;
     var ids = isPlainObject(raw.entries) ? Object.keys(raw.entries) : [];
     for (var i = 0; i < ids.length; i++) {
@@ -1385,10 +1537,12 @@
     });
   }
 
-  // 由 entries 重建兩張派生表。handleIndex 只含 active:解除過的作者不該再
+  // 由 entries 重建三張派生表。handleIndex 只含 active:解除過的作者不該再
   // 佔住反查鍵，河道也就不再替他標記。allowlist 是 dismissed 條目的唯讀視
   // 圖，沿用 v1 的 { at, handle } 形狀讓既有讀者(content script 的解除比
   // 對、選項頁的「已解除」小節)零改動;它只活在記憶體，不跟著落盤。
+  // lineIdIndex 是 { lineId → userId } 的反查表，與 handleIndex 同樣只含
+  // active:使用者解除過的作者不該再靠一個 ID 把別人也拖下水。
   function rebuildScamViews(list) {
     var ids = Object.keys(list.entries);
     for (var i = 0; i < ids.length; i++) {
@@ -1401,6 +1555,22 @@
         continue;
       }
       indexScamHandle(list, ids[i], entry);
+      indexScamLineIds(list, ids[i], entry);
+    }
+  }
+
+  // 把一筆條目每一格證據上的 lineId 都寫進反查表。同一位作者換過幾個 ID 就
+  // 佔幾個鍵——換帳號再招攬一次時，任何一個 ID 都要查得回他。鍵一律小寫(比照
+  // handleIndex),`__proto__` 照三張表的規矩擋下:反查表被換掉原型之後，查表
+  // 會拿到一筆撈不出來的條目。
+  function indexScamLineIds(list, id, entry) {
+    if (!list.lineIdIndex) return;
+    for (var i = 0; i < entry.evidence.length; i++) {
+      var raw = entry.evidence[i].lineId;
+      if (typeof raw !== 'string' || raw.length === 0) continue;
+      var key = raw.toLowerCase();
+      if (isUnsafeMapKey(key)) continue;
+      list.lineIdIndex[key] = id;
     }
   }
 
@@ -1554,6 +1724,9 @@
         if (typeof item.postedAt === 'number' && isFinite(item.postedAt)) out.postedAt = item.postedAt;
         if (typeof item.rulesVersion === 'number' && isFinite(item.rulesVersion)) out.rulesVersion = item.rulesVersion;
         if (typeof item.deviceId === 'string') out.deviceId = item.deviceId;
+        // lineId 要落盤:lineIdIndex 由 entries 派生，這一欄漏掉就等於跨帳號
+        // 比對在每次裁切之後失憶。
+        if (typeof item.lineId === 'string') out.lineId = item.lineId;
         return out;
       });
   }
@@ -1585,6 +1758,7 @@
           postedAt: raw.postedAt,
           rulesVersion: raw.rulesVersion,
           deviceId: raw.deviceId,
+          lineId: raw.lineId,
         },
       ],
       addedAt: finiteOr(raw.at, 0),
@@ -1807,7 +1981,9 @@
   // fromScamMark 落回本機形狀的，而本機形狀要求 postUrl 必填、snippet 至少
   // 是空字串，正規化因此會補出 snippet:'' 與 postUrl＝錨點篇。兩欄都有鍵、
   // 都是空殼，看鍵在不在的守衛會放行它們。
-  var SCAM_LOCAL_ONLY_EVIDENCE_FIELDS = ['snippet', 'anchorMatch', 'postUrl'];
+  // lineId 同屬本機專有:雲端那一筆永遠不帶它，讓較新的遠端勝出等於同步一次
+  // 就把本機的 ID 洗掉，跨帳號索引會在每次同步後失憶。
+  var SCAM_LOCAL_ONLY_EVIDENCE_FIELDS = ['snippet', 'anchorMatch', 'postUrl', 'lineId'];
 
   function mergeScamEvidencePair(localItem, remoteItem) {
     if (!localItem) return copyScamEvidence(remoteItem);
@@ -1936,6 +2112,7 @@
     detectScamPitch: detectScamPitch,
     isPostDetailPath: isPostDetailPath,
     normalizeScamEvidence: normalizeScamEvidence,
+    normalizeScamLineId: normalizeScamLineId,
     normalizeScamBlocklist: normalizeScamBlocklist,
     capScamEvidence: capScamEvidence,
     capScamBlocklist: capScamBlocklist,
