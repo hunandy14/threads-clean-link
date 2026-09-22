@@ -1017,12 +1017,14 @@
   // A12345」都不是 LINE 帳號。
   //
   // 【負例是本體】ID／帳號／號碼這三個標籤自己不挑歸屬，前面掛什麼詞就是誰
-  // 的 ID。前置的負向 lookbehind 列出有自己歸屬的那些:訂單、會員、銀行、手
-  // 機、員工、編號、訂位、取件、付款，以及 Apple／Pay／Google／Meta。容 0-2
-  // 個空白，「訂單 ID：」「訂單　ID：」都擋得下。
+  // 的 ID。前置的負向 lookbehind 列出有自己歸屬的那些:中文的訂單、會員、銀
+  // 行、手機、員工、編號、訂位、取件、付款，英文的 Order／Invoice／Ticket／
+  // Member／Customer／Case／Serial，以及 Apple／Pay／Google／Meta 這幾個服務
+  // 名。容 0-2 個空白，「訂單 ID：」「Order ID: 」都擋得下;`i` 旗標讓英文標
+  // 籤大小寫不敏感——標籤是使用者手打的，不會照著我們的字面寫。
   var SCAM_ID_MENTION_RE = /(?<![A-Za-z])LINE(?![A-Za-z])|(?<![信依無仰倚])[賴籟]/i;
   var SCAM_ID_LABELLED_RE =
-    /(?<!(?:訂單|會員|銀行|手機|員工|編號|訂位|取件|付款|Apple|Pay|Google|Meta)\s{0,2})(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
+    /(?<!(?:訂單|會員|銀行|手機|員工|編號|訂位|取件|付款|Order|Invoice|Ticket|Member|Customer|Case|Serial|Apple|Pay|Google|Meta)\s{0,2})(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
 
   // lineId 抓取第三段:加好友深連結的路徑段。只認 ti/p 與 lin.ee——ti/g 的路
   // 徑段是群組邀請 token，不是 LINE 帳號，進索引只會用一串對不上任何帳號的
