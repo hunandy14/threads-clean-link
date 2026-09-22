@@ -451,16 +451,30 @@
   .setting-row .txt { min-width: 0; }
   .setting-row .name { font-size: 13px; font-weight: 550; }
   .setting-row .desc { font-size: 12px; color: var(--ink-3); }
-  /* 設定列內的同頁導覽連結(目前只有「管理警示名單 →」)，另起一行接在說明之下。 */
+  /* 標題列(名稱 + 同頁導覽連結)。space-between 讓連結貼齊標題右側;寬度不
+     夠時 flex-wrap 讓連結整個換到下一行(此時只剩它一個 item，
+     space-between 退化成靠左)，不會推動同一 label 內右側的開關。 */
+  .name-row {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    column-gap: 10px;
+    row-gap: 2px;
+  }
+  /* 設定列內的同頁導覽連結(目前只有「管理警示名單」)。 */
   .setting-link {
-    display: inline-block;
-    margin-top: 2px;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
     font-size: 12px;
     font-weight: 600;
     color: var(--accent);
     text-decoration: none;
+    white-space: nowrap;
   }
   .setting-link:hover { text-decoration: underline; }
+  .setting-link .icon { width: 14px; height: 14px; }
   .switch {
     appearance: none;
     -webkit-appearance: none;
@@ -1533,7 +1547,7 @@
           <label class="setting-row" for="autoClean">
             <span class="txt">
               <span class="name" data-i18n="opAutoCleanName">自動淨化分享按鈕</span>
-              <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址；關閉仍照常寫入紀錄。</div>
+              <div class="desc" data-i18n="opAutoCleanDesc">複製時自動換成乾淨網址</div>
             </span>
             <input type="checkbox" id="autoClean" class="switch" />
           </label>
@@ -1549,7 +1563,7 @@
           <label class="setting-row" for="saveHistory">
             <span class="txt">
               <span class="name" data-i18n="opSaveName">保存紀錄</span>
-              <div class="desc" data-i18n="opSaveDesc">僅存於本機</div>
+              <div class="desc" data-i18n="opSaveDesc">儲存淨化或複製過的連結</div>
             </span>
             <input type="checkbox" id="saveHistory" class="switch" />
           </label>
@@ -1558,13 +1572,19 @@
                LOCAL_SETTING_IDS)。 -->
           <label class="setting-row" for="scamGuardEnabled">
             <span class="txt">
-              <span class="name" data-i18n="opScamGuardName">LINE 群組引導警示</span>
-              <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文並把作者加入警示名單；名單預設留在本機，登入雲端同步後會跟著你的帳號走，貼文文字片段則留在本機。</div>
-              <!-- 名單本體搬到警示名單分頁，設定卡只留這條同頁錨點。原生 <a
-                   href="#flags"> 改 hash 後由 hashchange 接手切分頁，不需另外
-                   攔截 click;錨點是 interactive content，點它不會連帶觸發外層
-                   label 的開關切換。 -->
-              <a class="setting-link" id="scamManageLink" href="#flags" data-i18n="opScamManageLink">管理警示名單 →</a>
+              <span class="name-row">
+                <span class="name" data-i18n="opScamGuardName">LINE 群組引導警示</span>
+                <!-- 名單本體搬到警示名單分頁，這裡只留這條同頁錨點，與標題同一
+                     行、靠右對齊(見下面 .name-row 的 CSS)。原生 <a href="#flags">
+                     改 hash 後由 hashchange 接手切分頁，不需另外攔截 click;
+                     錨點是 interactive content，點它不會連帶觸發外層 label 的
+                     開關切換。箭頭字元換成 Lucide arrow-right inline SVG。 -->
+                <a class="setting-link" id="scamManageLink" href="#flags">
+                  <span data-i18n="opScamManageLink">管理警示名單</span>
+                  <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                </a>
+              </span>
+              <div class="desc" data-i18n="opScamGuardDesc">偵測引導加入 LINE 群組的串文，並在貼文上標記</div>
             </span>
             <input type="checkbox" id="scamGuardEnabled" class="switch" />
           </label>
