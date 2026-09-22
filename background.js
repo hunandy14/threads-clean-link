@@ -48,7 +48,7 @@ const NOTIFICATION_ICON = 'icons/icon128.png';
 // 路徑改頁內 toast，見 bridge.js／post-icon.js)。saveHistory(只有
 // background 記錄時把關，guard/bridge 不下放)與 autoClean 的預設值須
 // 與 popup.js／bridge.js／clipboard-guard.js 同步。
-// 預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威),background 只挑
+// 預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威)，background 只挑
 // 自己把關的兩顆(autoClean/saveHistory;postCopyEnabled 是 popup/post-icon 的
 // 事，background 不讀)。
 const DEFAULT_SETTINGS = {
@@ -1011,8 +1011,6 @@ async function handleScamHit(message) {
     if (userId === null) return { ok: false, code: 'no_user_id' };
   }
 
-  const deviceId = await readLocalDeviceId();
-
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
     const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
@@ -1023,6 +1021,10 @@ async function handleScamHit(message) {
     if (existing && existing.state === 'dismissed') {
       return { ok: true, added: false, allowlisted: true };
     }
+
+    // deviceId 只有真的要寫一筆證據時才用得到，因此排在早退分支之後才讀：河道
+    // 一次捲動就派出幾十則 scam.hit，早退的那些先讀一次 storage 是白花的往返。
+    const deviceId = await readLocalDeviceId();
 
     // 證據帶判定規則版本與寫入裝置：兩者是日後跨裝置對帳與規則調參的依據，
     // 由寫入端記下，與 content script 送來的 payload 無關。
@@ -1046,9 +1048,21 @@ async function handleScamHit(message) {
       );
     } else {
       const merged = TCLCore.mergeBlocklistEvidence(existing, evidence);
-      // updatedAt 是合併時的 LWW 判準，補證據等於「最近又看到一次」。取較
-      // 大值而非直接覆寫：舊分頁補送的過期 at 不得讓時戳往回跳。
-      merged.updatedAt = Math.max(merged.updatedAt, hit.at);
+      // 去重之後一筆都沒多，整筆條目一個位元都沒變：不寫 storage 也不掛去抖
+      // 同步。河道一次捲動就派出幾十則 scam.hit，每一則都回寫一次整份名單、
+      // 再推一輪跟雲端一模一樣的資料，是白花的配額。
+      if (merged.evidence.length === existing.evidence.length) {
+        return { ok: true, added: false, entry: existing };
+      }
+      // 【被動掃描不動 updatedAt／state】updatedAt 是跨裝置 LWW 的唯一判準，
+      // 「這台機器又掃到一次」不是使用者的意思表示。推進它等於讓一次背景掃描
+      // 勝過別台裝置更早做的解除，使用者按掉的標記會在下一次捲到同一位作者時
+      // 自己長回來。新證據改以本機專有的 pushAfter 讓下一輪的推送批選得到
+      // （選批水位線取 updatedAt 與它的較大者），這一格不上雲。
+      merged.pushAfter = Math.max(
+        typeof existing.pushAfter === 'number' && isFinite(existing.pushAfter) ? existing.pushAfter : 0,
+        hit.at
+      );
       list.entries[userId] = merged;
     }
 
@@ -1239,10 +1253,10 @@ async function getSettings() {
 // 處理 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
 // POST_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
 // 任何紀錄;紀錄只用驗證通過的字串，不夾帶原文的任何其餘部分。
-// kind 同屬頁面可控輸入，白名單驗證(自動路徑只可能是 share/strip/icon),
+// kind 同屬頁面可控輸入，白名單驗證(自動路徑只可能是 share/strip/icon)，
 // 非法即整則忽略——guard 與 background 同版本出貨，沒有相容性負擔，
 // 形狀不對就是偽造或損毀，fail-safe 丟棄。'menu' 刻意不在此白名單內:
-// 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory,
+// 它只由 handleShareLinkClick(右鍵選單路徑)直接呼叫 recordHistory，
 // 不透過本訊息通道，避免頁面腳本偽造 kind:'menu' 混充右鍵來源。收到合法
 // notice 就無條件記錄一筆，author/handle/excerpt 為選填欄位一併寫入。
 //
@@ -1588,7 +1602,7 @@ function isEmptyOgFields(ogFields) {
 function cacheOgFields(cleanUrl, ogFields) {
   const empty = isEmptyOgFields(ogFields);
   // 真 LRU:set 前先 delete，讓「重新被碰到」的 key 移到 Map 迭代序尾端
-  // (最新),size 超限時淘汰的 keys().next()(最舊)才是真正最久沒用到的
+  // (最新)，size 超限時淘汰的 keys().next()(最舊)才是真正最久沒用到的
   // 那筆，而不是最早插入但可能剛被讀取過的那筆。
   ogFieldsCache.delete(cleanUrl);
   ogFieldsCache.set(cleanUrl, {
