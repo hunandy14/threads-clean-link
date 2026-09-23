@@ -2128,7 +2128,7 @@ test('refresh:詳細視窗開著時一併刷新視窗內相對時間(detailTime)
 // ------------------------------------------------------------
 // 刪除／清空的語意依登入態分流(D6:未登入行為與現況完全一致):
 //   - 已登入(syncState.userId 非 null):單筆刪除軟刪(寫 deletedAt 墓碑 +
-//     dirty)，清除全部寫 syncState.clearedAt 這條全域水位線;
+//     dirty)，清除全部同樣逐筆轉墓碑(D53，清空水位線已廢除);
 //   - 未登入:維持現況硬刪。
 // 墓碑是「等待上傳的刪除意圖」，必須留在 storage，但一律不進畫面、統計、
 // 圖表與匯出檔。匯入則改以 postKey 去重(D11)，並接受含／不含新欄位兩種格式。
@@ -2140,12 +2140,12 @@ const S4_NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serv
 // 已登入的 syncState(計劃 4.2 的形狀)。
 function signedInState(overrides) {
   return Object.assign(
-    { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+    { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, lastError: null },
     overrides || {}
   );
 }
 function signedOutState() {
-  return { userId: null, email: null, cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null };
+  return { userId: null, email: null, cursor: null, lastSyncedAt: null, lastError: null };
 }
 
 // 一筆已具備新欄位的條目(S1 形狀)。
@@ -2214,9 +2214,10 @@ test('S4 刪除:已登入軟刪(deletedAt + dirty，entry 留在陣列)，未登
   assert.deepEqual(outCtx.storage.localSnapshot().history, [], '未登入維持現況硬刪，不留墓碑');
 });
 
-// S4:清除全部。已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成
-// 墓碑撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由車道 D 上傳。
-test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入不動 syncState', async () => {
+// 【斷言翻轉｜D53】清除全部改走墓碑：已登入時每筆既有 entry 就地轉墓碑(deletedAt
+// ＋dirty:true、id 不變)，由同步引擎以 deletes[] 送出，其他裝置經墓碑各自刪除;
+// 不再寫 syncState.clearedAt。未登入維持硬刪。
+test('S4 清除全部(D53):已登入時逐筆轉墓碑、畫面清空、不寫 syncState.clearedAt;未登入硬刪', async () => {
   const inCtx = makeController(
     { history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)], syncState: signedInState() }
   );
@@ -2227,10 +2228,19 @@ test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入�
   await settle();
 
   const inLocal = inCtx.storage.localSnapshot();
-  assert.deepEqual(inLocal.history, [], '所有 entry 移除');
-  assert.equal(typeof inLocal.syncState.clearedAt, 'number', '應寫 syncState.clearedAt(雲端全域墓碑)');
-  assert.ok(inLocal.syncState.clearedAt > 0);
-  assert.equal(inLocal.syncState.userId, 'user-1', '清除紀錄不等於登出，userId 不得被清掉');
+  assert.deepEqual(inLocal.history.map((e) => e.id).sort(), ['id-1000', 'id-2000'], '墓碑留在 storage 等伺服器 ack，id 不變');
+  inLocal.history.forEach((e) => {
+    assert.equal(typeof e.deletedAt, 'number', `${e.id}:寫入刪除時戳`);
+    assert.ok(e.deletedAt > 0);
+    assert.equal(e.dirty, true, `${e.id}:待上傳的刪除意圖`);
+  });
+  assert.equal(inCtx.doc.ids.rows.children.length, 0, '畫面清空(墓碑不進畫面)');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(inLocal.syncState, 'clearedAt') && inLocal.syncState.clearedAt != null,
+    false,
+    '不再寫 syncState.clearedAt'
+  );
+  assert.equal(inLocal.syncState.userId, 'user-1', '清除紀錄不等於登出');
   assert.equal(inCtx.doc.ids.toast.textContent, i18n.t('zh', 'opToastCleared'));
 
   const outCtx = makeController({ history: [s4Entry(URL_A, 2000)], syncState: signedOutState() });
@@ -2240,8 +2250,29 @@ test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入�
   outCtx.doc.ids.confirmOk.fire('click');
   await settle();
 
-  assert.deepEqual(outCtx.storage.localSnapshot().history, []);
-  assert.equal(outCtx.storage.localSnapshot().syncState.clearedAt, null, '未登入不寫雲端水位線');
+  assert.deepEqual(outCtx.storage.localSnapshot().history, [], '未登入維持硬刪，不留墓碑');
+});
+
+test('S4 清除全部(D53):已登入時既有墓碑維持原樣，沒有 id 的舊資料直接移除', async () => {
+  const ctx = makeController({
+    history: [
+      s4Entry(URL_A, 2000),
+      s4Entry(URL_B, 1000, { deletedAt: 900, dirty: true }),
+      { url: URL_C, kind: 'share', at: 500, seen: [{ at: 500, kind: 'share' }] },
+    ],
+    syncState: signedInState(),
+  });
+  await ctx.controller.init();
+  await settle();
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const history = ctx.storage.localSnapshot().history;
+  const byId = Object.fromEntries(history.filter((e) => e.id).map((e) => [e.id, e]));
+  assert.equal(byId['id-1000'].deletedAt, 900, '既有墓碑的刪除時戳不動');
+  assert.equal(typeof byId['id-2000'].deletedAt, 'number');
+  history.forEach((e) => assert.equal(typeof e.deletedAt, 'number', '清除之後 storage 裡只剩墓碑'));
 });
 
 // S4:墓碑一律不進畫面。清單、筆數提示、統計磚(statTotal)、14 天圖表的
@@ -2817,7 +2848,9 @@ test('帳號入口:取消登入確認框不送出 sync.signIn', async () => {
   );
 });
 
-test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原/本機保留/這些紀錄不會再上傳)，確認後才送 sync.deleteCloud 並顯示已刪除 toast', async () => {
+// 【斷言翻轉｜D51】確認框語意改為 Chrome 模型：刪雲端＝登出所有裝置，本機保留，重新
+// 登入後重新上傳。原斷言「無法復原」「不會再上傳」作廢（後者改列禁詞）。
+test('帳號入口:刪除雲端資料先跳二次確認框(講清楚登出所有裝置/本機保留/重新登入後重新上傳)，確認後才送 sync.deleteCloud 並顯示已刪除 toast', async () => {
   const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
   const doc = makeDocumentStub();
   const runtime = makeFakeRuntime({
@@ -2850,12 +2883,10 @@ test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原
   assert.equal(doc.ids.confirmOverlay.hidden, false);
   const desc = doc.ids.confirmDesc.textContent;
   assert.equal(desc, i18n.t('zh', 'opSyncDeleteConfirmDesc'));
-  assert.match(desc, /無法復原/);
   assert.match(desc, /這台裝置/);
-  // 語意修正(伺服器對早於 cleared_at 的紀錄一律拒收，api-spec 4.4):刪除
-  // 雲端後本機紀錄不會再自動上傳，舊文案「下次登入時會再次上傳」與後端
-  // 實際行為矛盾。
-  assert.match(desc, /不會再上傳/);
+  assert.match(desc, /登出所有裝置/);
+  assert.match(desc, /重新登入後會重新上傳/);
+  assert.doesNotMatch(desc, /不會再上傳/, 'D51：清空水位線廢除，重新登入後本機會全量重傳');
   // R3-5:這顆按鈕現在連警示名單一起刪（deleteCloud 會續打 DELETE
   // /api/v1/marks），確認框不講清楚就是讓使用者在不知情下刪掉第二種資料。
   // 上面兩條改成不綁死句型的子字串，好讓文案改寫時只需要顧語意。
@@ -4046,25 +4077,19 @@ test('雲端同步權限:origin 一律夾到三個合法的後端 host，不跟�
   });
 });
 
-test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 syncState 為基底', async () => {
+// 【斷言翻轉｜D53】原斷言「水位線與清空寫在同一次 set(history＋syncState)」作廢：
+// 清除全部只轉墓碑，一次 set 只寫 history，不碰 syncState(因此也不可能把引擎推進
+// 的游標回捲)。
+test('S4 清除全部(D53):只寫一次 history，不寫 syncState，引擎推進的游標原封不動', async () => {
   const ctx = makeController({
     history: [s4Entry(URL_A, 2000)],
-    syncState: { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+    syncState: { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, lastError: null },
   });
   await ctx.controller.init();
   await settle();
 
-  // 頁面開著的期間，service worker 推進了游標並記下上次同步時間。開頁快照
-  // 完全不知道這件事;拿快照整包覆寫會把游標回捲。
   await ctx.storage.local.set({
-    syncState: {
-      userId: 'user-1',
-      email: 'a@example.com',
-      cursor: '1700000000000~srv-9',
-      lastSyncedAt: 99000,
-      clearedAt: null,
-      lastError: null,
-    },
+    syncState: { userId: 'user-1', email: 'a@example.com', cursor: '1700000000000~srv-9', lastSyncedAt: 99000, lastError: null },
   });
   await settle();
 
@@ -4074,14 +4099,13 @@ test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 sy
   await settle();
 
   const written = ctx.storage.localCalls.set.slice(setsBefore);
-  assert.equal(written.length, 1, '水位線與清空必須是同一次 set，不留半套狀態');
-  assert.deepEqual(Object.keys(written[0]).sort(), ['history', 'syncState']);
+  assert.equal(written.length, 1, '清除全部是一次寫入');
+  assert.deepEqual(Object.keys(written[0]), ['history'], '只寫 history');
 
   const snapshot = ctx.storage.localSnapshot();
-  assert.deepEqual(snapshot.history, []);
-  assert.equal(typeof snapshot.syncState.clearedAt, 'number');
-  assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9', '不得用開頁快照把引擎推進的游標回捲');
-  assert.equal(snapshot.syncState.lastSyncedAt, 99000, 'lastSyncedAt 同理');
+  assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9');
+  assert.equal(snapshot.syncState.lastSyncedAt, 99000);
+  assert.equal(Object.prototype.hasOwnProperty.call(snapshot.syncState, 'clearedAt'), false);
 });
 
 // ============================================================
@@ -9100,4 +9124,301 @@ test('R3-15 警示名單卡:解除訊息帶上該列的 handle 與 displayName',
   assert.ok(msg, '前置條件:確認後送出解除訊息');
   assert.equal(msg.handle, 'example_author', '帶上 handle，background 補建空條目時才寫得出名字');
   assert.equal(msg.displayName, 'Example Author', '有顯示名就一併帶上');
+});
+
+// ============================================================================
+// D51／D52 — 刪除雲端資料改 Chrome 模型的文案與帳號卡
+// ============================================================================
+
+const D51_FORBIDDEN = ['不會再上傳', '僅本機'];
+
+function signedInSyncState(over) {
+  return Object.assign(
+    {
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: 'Synthetic',
+      avatarUrl: null,
+      lastSyncedAt: 1000000 - 5 * 60 * 1000,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: 'https://api.example/',
+    },
+    over
+  );
+}
+
+async function mountAccount(state) {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({ 'sync.getState': () => state });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 1000000,
+    runtime,
+  });
+  await controller.init();
+  await settle();
+  return { doc, runtime, controller };
+}
+
+/** 所有沒被 hidden 的節點（含子節點）的文字，逐段收集。 */
+function visibleTexts(doc) {
+  const out = [];
+  const seen = new Set();
+  function walk(node, hiddenAbove) {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    const hidden = hiddenAbove || node.hidden === true;
+    if (!hidden && typeof node.textContent === 'string' && node.textContent) out.push(node.textContent);
+    (node.children || []).forEach((child) => walk(child, hidden));
+  }
+  Object.values(doc.ids).forEach((node) => walk(node, false));
+  return out;
+}
+
+test('D51 文案：確認說明 zh 講明「登出所有裝置」與「重新登入後會重新上傳」，en 講 sign out 與 re-upload', () => {
+  const zh = i18n.STRINGS.zh.opSyncDeleteConfirmDesc;
+  assert.ok(zh.includes('登出所有裝置'), `zh 要講明會登出所有裝置，實得:${zh}`);
+  assert.ok(zh.includes('重新登入後會重新上傳'), `zh 要講明重新登入後會重新上傳，實得:${zh}`);
+  const en = i18n.STRINGS.en.opSyncDeleteConfirmDesc;
+  assert.match(en, /sign(s|ed)? out|signing out/i, `en 要講明會登出，實得:${en}`);
+  assert.match(en, /re-?upload/i, `en 要講明會重新上傳，實得:${en}`);
+  assert.doesNotMatch(en, /will not be re-?uploaded|won't be re-?uploaded/i, 'en 不得沿用「不會再上傳」的舊語意');
+});
+
+test('D51 文案：選單按鈕定稿 zh「刪除雲端資料並登出」／en「Delete cloud data & sign out」', () => {
+  assert.equal(i18n.STRINGS.zh.opAccountDeleteCloud, '刪除雲端資料並登出');
+  assert.equal(i18n.STRINGS.en.opAccountDeleteCloud, 'Delete cloud data & sign out');
+});
+
+test('D51 文案：確認說明定稿（zh／en 逐字）', () => {
+  assert.equal(
+    i18n.STRINGS.zh.opSyncDeleteConfirmDesc,
+    '將刪除雲端上的紀錄與警示名單，並登出所有裝置。這台裝置與其他裝置上的資料都會保留，重新登入後會重新上傳。'
+  );
+  assert.equal(
+    i18n.STRINGS.en.opSyncDeleteConfirmDesc,
+    'This deletes your history and warning list from the cloud and signs out every device. Data on this and other devices stays, and is re-uploaded after you sign in again.'
+  );
+});
+
+test('D51 文案：刪雲端相關字串不得出現禁詞「不會再上傳」「僅本機」', () => {
+  ['opSyncDeleteConfirmDesc', 'opAccountDeleteCloud', 'opToastCloudDeleted', 'opSyncDeleteConfirmDo'].forEach((key) => {
+    const text = i18n.STRINGS.zh[key];
+    assert.equal(typeof text, 'string', `zh.${key} 應為字串`);
+    D51_FORBIDDEN.forEach((word) => {
+      assert.ok(!text.includes(word), `zh.${key} 不得含「${word}」，實得:${text}`);
+    });
+    assert.ok(!text.includes(','), `zh.${key} 不得含半形逗號，實得:${text}`);
+  });
+});
+
+test('D51 帳號入口:確認刪雲端之後、廣播轉成 signed_out 時，toast 講明「已登出」', async () => {
+  const { doc, runtime, controller } = await mountAccount(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.deleteCloud' });
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 6,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  await settle();
+  assert.match(doc.ids.toast.textContent, /已登出/, `成功 toast 要講明已登出，實得:${doc.ids.toast.textContent}`);
+  D51_FORBIDDEN.forEach((word) => assert.ok(!doc.ids.toast.textContent.includes(word)));
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '刪雲端＝登出：帳號入口回到登入鈕');
+});
+
+test('D52 帳號卡:登入且 pendingCount>0 時顯示「N 筆待上傳」', async () => {
+  const { doc } = await mountAccount(signedInSyncState({ pendingCount: 3 }));
+  const texts = visibleTexts(doc);
+  assert.ok(
+    texts.some((t) => /3\s*筆待上傳|待上傳\s*3\s*筆/.test(t)),
+    `應看得到 3 筆待上傳，實得:${JSON.stringify(texts.filter((t) => /待上傳/.test(t)))}`
+  );
+});
+
+test('D52 帳號卡:pendingCount 為 0 時不顯示任何「待上傳」字樣', async () => {
+  const { doc } = await mountAccount(signedInSyncState({ pendingCount: 0 }));
+  const hits = visibleTexts(doc).filter((t) => /待上傳/.test(t));
+  assert.deepEqual(hits, [], 'N=0 時整個待上傳提示收掉，不顯示「待上傳 0 筆」');
+});
+
+test('D52 帳號卡:未登入（刪雲端後的登出態）即使 pendingCount>0 也不顯示待上傳', async () => {
+  const { doc } = await mountAccount({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 6,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  const hits = visibleTexts(doc).filter((t) => /待上傳/.test(t));
+  assert.deepEqual(hits, [], '「N 筆待上傳」只在登入時顯示');
+});
+
+test('D52 帳號卡:有待上傳時「立即同步」可按，按下送 sync.now', async () => {
+  const { doc, runtime } = await mountAccount(signedInSyncState({ pendingCount: 3 }));
+  const btn = doc.ids.acctSyncNowBtn;
+  assert.ok(btn, '應有立即同步鈕');
+  assert.notEqual(btn.disabled, true);
+  const before = runtime.calls.length;
+  btn.fire('click');
+  await settle();
+  assert.ok(
+    runtime.calls.slice(before).some((c) => c && c.type === 'sync.now'),
+    '立即同步要送 sync.now'
+  );
+});
+
+test('D52 徽章文案:已登入的裝置提示不得宣稱「已同步至你的 Google 帳號」這類逐筆保證', async () => {
+  assert.ok(!i18n.STRINGS.zh.opDeviceNoteSynced.includes('已同步至'), `zh 實得:${i18n.STRINGS.zh.opDeviceNoteSynced}`);
+  assert.doesNotMatch(i18n.STRINGS.en.opDeviceNoteSynced, /synced to your google account/i);
+  const { doc } = await mountAccount(signedInSyncState({ pendingCount: 3 }));
+  assert.ok(!doc.ids.deviceNote.textContent.includes('已同步至'), `畫面實得:${doc.ids.deviceNote.textContent}`);
+  assert.ok(doc.ids.deviceNote.textContent.length > 0, '已登入時仍要有一句提示（實作者定字，例如「已連線」類）');
+});
+
+// ============================================================================
+// 審查 S3 — 刪雲端的 toast 依 sync.deleteCloud 的回應定案，不靠第一次廣播
+// ============================================================================
+
+async function mountAccountWithDelete(state) {
+  let resolveDelete;
+  const deferred = new Promise((resolve) => {
+    resolveDelete = resolve;
+  });
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({ 'sync.getState': () => state, 'sync.deleteCloud': () => deferred });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 1000000,
+    runtime,
+  });
+  await controller.init();
+  await settle();
+  return { doc, runtime, controller, resolveDelete };
+}
+
+test('S3 刪雲端:期間夾一則帶舊 lastError 的 syncing 廣播，最終 toast 依回應 {ok,signedOut} 定案為「已登出」', async () => {
+  const { doc, controller, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+
+  controller.setSyncState(signedInSyncState({ status: 'syncing', lastError: 'network_error' }));
+  await settle();
+  resolveDelete({ ok: true, signedOut: true });
+  await settle();
+
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
+  assert.match(doc.ids.toast.textContent, /已登出/);
+});
+
+test('S3 刪雲端:回應 401(session_expired)走既有登入過期文案，不把原始碼串進訊息', async () => {
+  const { doc, controller, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+
+  // 引擎的 session 過期出口先廣播 signed_out＋session_expired，再回應呼叫端。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: 'user@example.com',
+    displayName: 'Synthetic',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: 'session_expired',
+    apiBase: 'https://api.example/',
+  });
+  resolveDelete({ ok: false, code: 'session_expired' });
+  await settle();
+
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountExpired'));
+  assert.ok(!doc.ids.toast.textContent.includes('session_expired'), `實得:${doc.ids.toast.textContent}`);
+});
+
+test('S3 刪雲端:回應 {ok:false, code} 顯示錯誤 toast', async () => {
+  const { doc, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  resolveDelete({ ok: false, code: 'server_error' });
+  await settle();
+
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'server_error');
+});
+
+test('S3 刪雲端退路:runtime 回應 undefined 時，期間夾一則帶舊 lastError 的 syncing 廣播不得蓋成錯誤 toast', async () => {
+  const { doc, runtime, controller } = await mountAccount(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.deleteCloud' });
+  await settle();
+
+  controller.setSyncState(signedInSyncState({ status: 'syncing', lastError: 'network_error' }));
+  await settle();
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'), 'syncing 廣播只是過程，不判讀舊 lastError');
+  assert.ok(!doc.ids.toast.textContent.includes('network_error'));
+
+  // 旗標沒有被 syncing 廣播消耗：接下來轉成已登出仍會定案。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  await settle();
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
+});
+
+test('S-a 刪雲端:廣播 signed_out 先到、回應 {ok,signedOut} 後到，「已登出」toast 只顯示一次', async () => {
+  const { doc, controller, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  // 樂觀 toast 之後才掛側錄（toast 節點在第一次顯示時才建立）。
+  // 每顯示一次 toast 都會 classList.add('show')，側錄當下的文字。
+  const node = doc.ids.toast;
+  const writes = [];
+  const add = node.classList.add.bind(node.classList);
+  node.classList.add = (...names) => {
+    if (names.includes('show')) writes.push(node.textContent);
+    return add(...names);
+  };
+
+  // 引擎成功路徑：先廣播 signed_out，再回應呼叫端。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  resolveDelete({ ok: true, signedOut: true });
+  await settle();
+
+  const finals = writes.filter((v) => v === i18n.t('zh', 'opToastCloudDeletedSignedOut'));
+  assert.equal(finals.length, 1, `定案 toast 只能出現一次，實得序列:${JSON.stringify(writes)}`);
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
 });

@@ -173,9 +173,9 @@
       opAccountSyncNow: '立即同步',
       opAccountSyncing: '同步中…',
       opAccountSignOut: '登出',
-      opAccountDeleteCloud: '刪除雲端資料',
+      opAccountDeleteCloud: '刪除雲端資料並登出',
       opAccountLastSync: '上次同步 {t}',
-      opAccountPending: '待上傳 {n} 筆',
+      opAccountPending: '{n} 筆待上傳',
       opAccountErrorPrefix: '同步失敗：',
       opAccountRetry: '重試',
       opAccountExpired: '登入已過期，請重新登入',
@@ -183,10 +183,9 @@
       opAccountStatusSynced: '已同步',
       opAccountStatusError: '同步錯誤',
       opAccountStatusExpired: '登入已過期',
-      // 三件事講清楚:無法復原、本機紀錄保留、這些紀錄不會再上傳到雲端
-      // (伺服器對早於 cleared_at 的紀錄一律拒收，見 api-spec 4.4；之後
-      // 新清理的連結則不受影響，仍會正常上傳)。
-      opSyncDeleteConfirmDesc: '雲端保存的紀錄與警示名單將永久刪除，無法復原。這台裝置上的資料不受影響，但不會再上傳到雲端；之後新清理的連結仍會正常同步。',
+      // 三件事講清楚(D51):刪除雲端的紀錄與警示名單並登出所有裝置、各裝置
+      // 本機資料保留、重新登入後會重新上傳。
+      opSyncDeleteConfirmDesc: '將刪除雲端上的紀錄與警示名單，並登出所有裝置。這台裝置與其他裝置上的資料都會保留，重新登入後會重新上傳。',
       opSyncDeleteConfirmDo: '確定刪除',
       // 使用者在瀏覽器的權限對話框按了拒絕:登入流程就此中止，需要讓他知道
       // 為什麼什麼都沒發生。
@@ -196,11 +195,13 @@
       opAccountSignInFailed: '登入失敗，請稍後再試',
       opAccountSignInConfigError: '登入設定有誤，請回報錯誤碼：{code}',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
-      opDeviceNoteSynced: '已同步至你的 Google 帳號',
-      // 刪除雲端資料是 fire-and-forget(sendSyncAction 不等回應)，送出當下
-      // 先樂觀提示已完成;若下一次 stateChanged 帶回 lastError，改顯示
-      // 錯誤 toast(沿用 opAccountErrorPrefix + lastError，不另造重複鍵)。
-      opToastCloudDeleted: '已刪除雲端資料',
+      opDeviceNoteSynced: '已連線至你的 Google 帳號',
+      // 刪除雲端資料送出當下的進行中提示;最終依 sync.deleteCloud 回應
+      // { ok, signedOut, code } 定案，回應缺席才退回廣播判讀(錯誤沿用
+      // opAccountErrorPrefix + 錯誤碼，不另造重複鍵)。
+      opToastCloudDeleted: '正在刪除雲端資料…',
+      // 刪雲端成功並已登出的定案提示(D51)。
+      opToastCloudDeletedSignedOut: '雲端資料已刪除，已登出',
 
       // ---- 裝置管理(0.7 裝置歸屬):帳號選單入口與裝置對話框 ----
       // 選單項右側的台數只印數字＋量詞，0 台時整個 span 收掉不顯示。
@@ -446,7 +447,7 @@
       opAccountSyncNow: 'Sync now',
       opAccountSyncing: 'Syncing…',
       opAccountSignOut: 'Sign out',
-      opAccountDeleteCloud: 'Delete cloud data',
+      opAccountDeleteCloud: 'Delete cloud data & sign out',
       opAccountLastSync: 'Last synced {t}',
       opAccountPending: '{n} pending',
       opAccountErrorPrefix: 'Sync failed: ',
@@ -456,21 +457,21 @@
       opAccountStatusSynced: 'Synced',
       opAccountStatusError: 'Sync error',
       opAccountStatusExpired: 'Sign-in expired',
-      // Three things spelled out: cannot be undone, local history is kept,
-      // and these records will not be re-uploaded (the server rejects any
-      // record older than clearedAt, see api-spec 4.4; newly cleared links
-      // after this point still sync normally).
-      opSyncDeleteConfirmDesc: 'Records and the warning list stored in the cloud will be permanently deleted and cannot be recovered. The data on this device is unaffected, but it will not be re-uploaded; links you clean afterward will still sync normally.',
+      // Three things spelled out (D51): cloud history and warning list are
+      // deleted and every device is signed out, local data on each device is
+      // kept, and it is re-uploaded after signing in again.
+      opSyncDeleteConfirmDesc: 'This deletes your history and warning list from the cloud and signs out every device. Data on this and other devices stays, and is re-uploaded after you sign in again.',
       opSyncDeleteConfirmDo: 'Delete',
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opAccountSignInFailed: 'Sign-in failed, please try again later',
       opAccountSignInConfigError: 'Sign-in is misconfigured. Please report this code: {code}',
-      opDeviceNoteSynced: 'Synced to your Google account',
-      // Delete-cloud is fire-and-forget (sendSyncAction does not await a
-      // reply): show an optimistic toast right away, and if the next
-      // stateChanged carries a lastError, replace it with an error toast
-      // (reuses opAccountErrorPrefix + lastError — no separate key).
-      opToastCloudDeleted: 'Cloud data deleted',
+      opDeviceNoteSynced: 'Connected to your Google account',
+      // In-progress toast shown when delete-cloud is sent; the final toast is
+      // decided by the sync.deleteCloud reply { ok, signedOut, code }, and
+      // only falls back to reading the broadcast when the reply is missing
+      // (errors reuse opAccountErrorPrefix + code — no separate key).
+      opToastCloudDeleted: 'Deleting cloud data…',
+      opToastCloudDeletedSignedOut: 'Cloud data deleted. Signed out.',
 
       // ---- Device management (0.7 device attribution) ----
       // English has no measure word, so the menu count prints the bare
