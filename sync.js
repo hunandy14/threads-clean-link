@@ -555,6 +555,12 @@
         if (current) batches.push(current);
         current = null;
       }
+      // 刪除先排:分批中途失敗時，已送出的一定是刪除意圖，上傳留待下一輪。
+      deletes.forEach(function (id) {
+        if (current && current.deletes.length + 1 > MAX_DELETES) flush();
+        open();
+        current.deletes.push(id);
+      });
       upserts.forEach(function (item) {
         var rows = Array.isArray(item.seen) ? item.seen.length : 0;
         if (current && (current.upserts.length + 1 > MAX_UPSERTS || current.seenRows + rows > MAX_SEEN_ROWS)) {
@@ -563,11 +569,6 @@
         open();
         current.upserts.push(item);
         current.seenRows += rows;
-      });
-      deletes.forEach(function (id) {
-        if (current && current.deletes.length + 1 > MAX_DELETES) flush();
-        open();
-        current.deletes.push(id);
       });
       flush();
       // 沒有待推的東西也要發一次:一次往返同時處理推與拉，少發這一次就拉不
@@ -685,6 +686,10 @@
                   break;
                 }
               }
+              // 刪除優先:本機同 key 是尚未送出的墓碑(dirty)時，這筆來訊不合併。
+              // 蓋成活資料的話刪除意圖就此遺失，雲端與其他裝置永遠不刪;墓碑
+              // 留著，下一批或下一輪照樣以 deletes[] 送出。
+              if (index !== -1 && next[index].dirty === true && TCLCoreRef.isTombstone(next[index])) return;
               var merged = repairMergedEntry(
                 TCLCoreRef.fromSyncItem(item, index === -1 ? null : next[index])
               );
