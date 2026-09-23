@@ -109,7 +109,7 @@
 
   // 單輪同步 POST 的上限(links/sync 與 marks/sync 合計)。登入後的全量重傳可能
   // 切出上百批，一輪連發會撞後端限流桶(與手機端共用)。達上限就結束本輪，
-  // 以去抖(DEBOUNCE_MS)排下一輪續跑，直到沒有待推的批次。
+  // 以 30 秒保底 alarm 排下一輪續跑，直到沒有待推的批次。
   var MAX_ROUND_POSTS = 12;
 
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
@@ -767,7 +767,7 @@
 
     /**
      * 從本輪的 POST 額度扣一次。額度用完回 false 並記下「尚有待推」，runSync
-     * 收尾時據此排一次去抖續跑。
+     * 收尾時據此排一次 alarm 續跑。
      */
     function takePost(ctx) {
       if (ctx.budget.left <= 0) {
@@ -1605,8 +1605,8 @@
                   return broadcastState('signed_in');
                 })
                 .then(function () {
-                  // 本輪 POST 額度用完:排一次去抖續跑，直到沒有待推的批次。
-                  if (ctx.budget && ctx.budget.exhausted) return notifyRecorded();
+                  // 本輪 POST 額度用完:排保底 alarm 續跑，直到沒有待推的批次。
+                  if (ctx.budget && ctx.budget.exhausted) return scheduleContinuation();
                   return undefined;
                 });
             })
@@ -1979,6 +1979,18 @@
         debounceTimer = null;
         return fireDebounce();
       }, DEBOUNCE_MS);
+      alarms.create(DEBOUNCE_ALARM_NAME, { when: now() + DEBOUNCE_GUARD_MS });
+      var items = {};
+      items[DEBOUNCE_KEY] = { at: now() };
+      return sessionSet(items);
+    }
+
+    /**
+     * 額度用完後的續跑:只排 30 秒保底 alarm(不排 2 秒計時器)，兩輪之間至少
+     * 隔 DEBOUNCE_GUARD_MS，不對後端限流桶連發。待辦旗標與去抖共用，到期時
+     * 由 fireDebounce 認領;期間有新紀錄進來的話，照去抖的節奏提早跑。
+     */
+    function scheduleContinuation() {
       alarms.create(DEBOUNCE_ALARM_NAME, { when: now() + DEBOUNCE_GUARD_MS });
       var items = {};
       items[DEBOUNCE_KEY] = { at: now() };
