@@ -643,6 +643,8 @@
     // 登出就換成「已刪除、已登出」。見 acctDeleteBtn 的 click handler 與
     // setSyncState。
     var pendingDeleteCloudToast = false;
+    // 退路旗標已經顯示過的定案文字。回應隨後抵達、結論相同時不再重複顯示。
+    var deleteCloudFallbackText = null;
     // 裝置清單快取(純顯示層，計畫 §4):{ devices, currentDeviceId, defaultName }。
     // null 代表「還沒有任何清單」——與「取到 0 台」是兩回事，後者要畫空狀態。
     // 取清單失敗一律不清這份快取(§12)，只把 devicesLoadError 立起來。
@@ -1539,8 +1541,9 @@
       // 程，帶的 lastError 可能是上一輪留下的，不拿來判讀。
       if (pendingDeleteCloudToast && syncState.status !== 'syncing') {
         pendingDeleteCloudToast = false;
-        if (syncState.lastError) toast(syncErrorToastText(syncState.lastError));
-        else if (accountMode(syncState) === 'signedOut') toast(tt('opToastCloudDeletedSignedOut'));
+        if (syncState.lastError) deleteCloudFallbackText = syncErrorToastText(syncState.lastError);
+        else if (accountMode(syncState) === 'signedOut') deleteCloudFallbackText = tt('opToastCloudDeletedSignedOut');
+        if (deleteCloudFallbackText !== null) toast(deleteCloudFallbackText);
       }
       reportSignInFailure(transient);
     }
@@ -1768,11 +1771,18 @@
             var reply = sendSyncAction({ type: 'sync.deleteCloud' });
             // 送出當下先樂觀提示已完成，回應回來再定案(見 pendingDeleteCloudToast)。
             pendingDeleteCloudToast = true;
+            deleteCloudFallbackText = null;
             toast(tt('opToastCloudDeleted'));
             reply.then(function (res) {
               if (!res || typeof res !== 'object' || typeof res.ok !== 'boolean') return;
               pendingDeleteCloudToast = false;
-              toast(deleteCloudToastText(res));
+              var text = deleteCloudToastText(res);
+              // 廣播已先顯示同一個結論(引擎先廣播再回應)時不再顯示第二次;結論
+              // 不同(廣播帶的是舊 lastError)才由回應更正。
+              var shown = deleteCloudFallbackText;
+              deleteCloudFallbackText = null;
+              if (shown === text) return;
+              toast(text);
             });
           },
         });
