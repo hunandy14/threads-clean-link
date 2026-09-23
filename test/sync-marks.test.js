@@ -285,7 +285,6 @@ function signedInState(over = {}) {
       email: 'someone@example.com',
       cursor: '0',
       lastSyncedAt: T0 - 10 * 60_000,
-      clearedAt: null,
       lastError: null,
       marksCursor: null,
       marksPushedAt: null,
@@ -1468,25 +1467,8 @@ test('M7 共存：marks 與 links 在同一輪各自往返，scamBlocklist 的�
 //    伺服器退回 rejectedIds，白佔一次往返又把 key 記進 marksRejected。
 // ============================================================================
 
-const API_BASE = 'https://api.metalinkclearer.workers.dev';
 const MARKS_CLEAR_GUARD_KEY = 'syncMarksClearGuard';
 const MARKS_EVICTED_MAX = 1000000;
-
-/**
- * 直接對假後端打一次 `DELETE /api/v1/marks`（模擬別台裝置清空雲端），回傳水位
- * 線。端點未實作時先在這裡斷言失敗，紅燈才不會落在後面一路拿 undefined 比較的
- * 假綠燈上。
- */
-async function clearCloudMarks(env) {
-  const res = await env.server.fetch(API_BASE + '/api/v1/marks', {
-    method: 'DELETE',
-    headers: { authorization: 'Bearer tok-seeded' },
-  });
-  assert.equal(res.status, 200, 'DELETE /api/v1/marks 應回 200（mock 端點見 test/mock-marks-server.test.js）');
-  const body = await res.json();
-  assert.equal(typeof body.clearedAt, 'number', 'DELETE /api/v1/marks 應回 clearedAt 毫秒');
-  return body.clearedAt;
-}
 
 function marksDeletes(env) {
   return env.server.requestsTo('/api/v1/marks', 'DELETE');
@@ -1721,8 +1703,8 @@ test('R3-2 下行：同一個 clearedAt 不得每一輪重清一次（游標反�
     blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }) }),
     syncState: { marksCursor: '0', marksPushedAt: T0 + 10 * DAY },
   });
-  await clearCloudMarks(env);
-  const engine = TCLSync.create(env.deps);
+  // 【前置改寫｜D50】R11 的 DELETE /api/v1/marks 回 410，改以舊後端回應代言同一個水位線。
+  const engine = TCLSync.create(depsWithMarksClearedAt(env, T0));
 
   // 第一輪:拉到水位線，清本機、四格重設。
   await engine.syncNow();
@@ -1755,7 +1737,6 @@ test('R3-2 下行：changes 為 null（請求沒帶位置參數）不得被當�
     // 依契約 changes 整個是 null——沒有 clearedAt 可讀，一律不得推斷成清空。
     syncState: { marksCursor: null },
   });
-  await clearCloudMarks(env);
   // 舊後端（R4 之前）：GET 不回頂層 cursor，回填到底也建立不出增量游標。新後端
   // 這一輪就會拉到 changes.clearedAt 而依 D41 判 purge，那是另一條既有路徑。
   env.server.marks.listCursor(false);
@@ -1815,12 +1796,11 @@ test('R3-2 下行：clearedAt 等於守衛的水位線（自己剛清的那一�
     blocklist: blocklist({ 1001: localEntry({ handle: 'alice', updatedAt: T0 - 5 * DAY }) }),
     syncState: { marksCursor: '0', marksPushedAt: T0 + 10 * DAY },
   });
-  const cleared = await clearCloudMarks(env);
-  // deleteCloud 記下的那一筆守衛:同一個水位線拉回來時是「自己清的」，硬刪不可
-  // 逆，一律往不刪倒（links 的自清守衛 D19 同一條紀律）。
+  // 【前置改寫｜D50】R11 的 DELETE /api/v1/marks 回 410，改以舊後端回應代言水位線。
+  const cleared = T0;
   env.storage.localData[MARKS_CLEAR_GUARD_KEY] = { userId: 'user-abc', clearedAt: cleared };
 
-  const engine = TCLSync.create(env.deps);
+  const engine = TCLSync.create(depsWithMarksClearedAt(env, cleared));
   await engine.syncNow();
   await settle();
 
@@ -2825,4 +2805,43 @@ test('D50 其他裝置（marks）：A 刪雲端，B 401 登出後重新登入，
   );
   assert.deepEqual(Object.keys(envA.storage.entries()).sort(), ['7101', '7201', '7202'], 'A 本機是聯集');
   assert.equal(envB.storage.syncState().lastError, null);
+});
+
+test('D50 登入標髒（marks）：session 過期後同帳號重新登入，四格與 marksBackfillCursor 重設、名單全推', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    blocklist: blocklist({
+      7301: localEntry({ handle: 'synthetic_x', updatedAt: T0 - 3 * DAY }),
+      7302: localEntry({ handle: 'synthetic_y', state: 'dismissed', dismissedAt: T0 - DAY, updatedAt: T0 - DAY }),
+    }),
+    syncState: {
+      marksCursor: 'm-cur',
+      marksPushedAt: T0,
+      marksRejected: { 'threads:7301': T0 - 3 * DAY },
+      marksEvicted: 4,
+      marksBackfillCursor: 'bf-mid',
+    },
+  });
+  env.failPath('/api/v1/links/sync', { status: 401, body: { error: 'unauthorized' } });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle();
+  assert.equal(env.storage.syncState().lastError, 'session_expired', '前置：過期');
+
+  const before = env.server.requests.length;
+  await engine.signIn();
+  await settle(40);
+
+  const after = env.server.requests.slice(before);
+  assert.ok(
+    after.some((r) => r.path === '/api/v1/marks' && r.method === 'GET' && !/[?&]cursor=bf-mid/.test(r.search || '')),
+    '登入＝重建鏡像：marksBackfillCursor 重設，回填從第一頁開始'
+  );
+  assert.deepEqual(
+    Object.keys(env.upsertsByKey()).sort(),
+    ['threads:7301', 'threads:7302'],
+    'marksPushedAt／marksRejected 重設：名單全推（含曾被拒的那筆）'
+  );
+  assert.equal(env.server.marks.count(), 2);
 });

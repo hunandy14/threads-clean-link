@@ -78,10 +78,12 @@
 // - api-spec 4.3 的 `SyncRequest` **沒有** `clearedAt` 欄位。body 若帶了
 //   `clearedAt`，本 mock 只記錄不理會。
 // - 契約 R11（D50，刪雲端改 Chrome 書籤同步模型）：清空水位線廢除。
-//   `DELETE /api/v1/links`／`/marks` 仍保留（回 `{ ok, clearedAt }`），但
+//   舊端點 `DELETE /api/v1/links`／`/marks` 一律回 **410**
+//   `{ error:"gone", replacement:<CLOUD_DATA_CONTRACT.path> }`，不再有任何效果；
 //   `links/sync` 與 `marks/sync` **不再**依水位線拒收，`changes.clearedAt` 恆
 //   為 `null`（保留鍵一版，插件兩者皆容忍）。「刪除雲端資料」改走單一端點
-//   `CLOUD_DATA_CONTRACT`：硬刪該使用者全部雲端資料並撤銷**所有** session。
+//   `CLOUD_DATA_CONTRACT`：硬刪該使用者全部雲端資料（含 devices）並撤銷**所有**
+//   session；重新登入後第一個帶 device 區塊的 sync 重新登記裝置。
 // - 多 session：同一個使用者可同時持有多枚有效 token（多台裝置各自登入）。
 //   重新登入不撤銷既有 token；`sign-out` 只撤銷請求用的那一枚。
 // - api-spec 2.2 明寫 `get-session` 未登入回 `null`（200），**不是** 401。
@@ -1153,24 +1155,18 @@ function createMockSyncServer(options = {}) {
   }
 
   // ---- 端點：DELETE /api/v1/links（api-spec 4.4:459-467） ----
-  function handleDeleteLinks(headers, at) {
-    if (!authed(headers)) return unauthorized();
-    if (rateLimited(at)) return rateLimitedResponse();
-    state.links.clear();
-    state.tombstones.clear();
-    state.clearedAt = tick();
-    return jsonResponse(200, { ok: true, clearedAt: state.clearedAt });
+  // R11 定稿：舊端點下線，回 410 並指向替代端點，不動任何資料。
+  function goneResponse() {
+    return jsonResponse(410, { error: 'gone', replacement: CLOUD_DATA_CONTRACT.path });
+  }
+
+  function handleDeleteLinks() {
+    return goneResponse();
   }
 
   // ---- 端點：DELETE /api/v1/marks（警示名單契約 R3） ----
-  function handleDeleteMarks(headers, at) {
-    if (!authed(headers)) return unauthorized();
-    if (rateLimited(at)) return rateLimitedResponse();
-    state.marks.clear();
-    // 墓碑一併硬刪：留著會被其他裝置在下一輪當成刪除意圖再套用一次。
-    state.markTombstones.clear();
-    state.marksClearedAt = tick();
-    return jsonResponse(200, { ok: true, clearedAt: state.marksClearedAt });
+  function handleDeleteMarks() {
+    return goneResponse();
   }
 
   // ---- 端點：CLOUD_DATA_CONTRACT（契約 R11，D50） ----

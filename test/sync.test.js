@@ -303,7 +303,6 @@ function signedInState(over = {}) {
       email: 'someone@example.com',
       cursor: '0',
       lastSyncedAt: T0 - 10 * 60_000,
-      clearedAt: null,
       lastError: null,
     },
     over
@@ -672,7 +671,6 @@ test('T2 任何 API 回 401：帳號識別與顯示欄位全部保留，只記 s
       displayName: 'Alice',
       avatarUrl: 'https://lh3.googleusercontent.com/a/alice',
       cursor: 'cur-7',
-      clearedAt: T0 - 5_000,
     },
   });
   env.server.failNext({ status: 401, code: 'unauthorized' });
@@ -688,7 +686,9 @@ test('T2 任何 API 回 401：帳號識別與顯示欄位全部保留，只記 s
   assert.equal(state.userId, 'user-abc', 'userId 沒了就永遠判不出下次登入是不是換帳號');
   assert.equal(state.email, 'someone@example.com');
   assert.equal(state.cursor, 'cur-7', '游標留著，重新登入不必整份重拉');
-  assert.equal(state.clearedAt, T0 - 5_000, '待送出的清空水位線不得被吞掉');
+  // 【斷言翻轉｜D53】原斷言「待送出的清空水位線不得被吞掉」作廢：清除全部改走墓
+  // 碑，syncState 不再有 clearedAt。墓碑在 history 裡，過期處理本來就不動它。
+  assert.equal(Object.prototype.hasOwnProperty.call(state, 'clearedAt'), false);
 });
 
 test('T2 session 過期：退避次數歸零（重新登入不該延續失效前的退避，H2／M1）', async () => {
@@ -1293,16 +1293,14 @@ test('T3 拉：hasMore 為 true 時立刻用新 cursor 再拉一次', async () =
   assert.equal(env.storage.history().length, 260, '積壓要拉完');
 });
 
-test('T3 clearedAt：推送前先打 DELETE /api/v1/links，成功後清空並作廢舊 cursor', async () => {
-  // PM 裁決：api-spec 4.3 的 SyncRequest 沒有 clearedAt 欄位；「清空全部」的
-  // 雲端語意就是 DELETE /api/v1/links（api-spec 4.4:459-467）——伺服器自己寫
-  // cleared_at，其他裝置下次拉取時據此清本機。
+// 【斷言翻轉｜D53】「清除全部」改走墓碑：syncState.clearedAt 整格移除，runRound
+// 不再有「看到 clearedAt 就打 DELETE /api/v1/links」的分支（原兩條 T3 clearedAt
+// 測試作廢）。舊版殘留在 storage 的 clearedAt 一律無效。
+test('T3 D53：舊版殘留的 syncState.clearedAt 不觸發任何 DELETE，且寫回時被剝除', async () => {
   const TCLSync = loadSync();
-  const cleared = T0 - 30_000;
-  const staleCursor = '1699999999999~srv-old';
   const env = makeEnv({
     signedIn: true,
-    syncState: { clearedAt: cleared, cursor: staleCursor },
+    syncState: { clearedAt: T0 - 30_000, cursor: '1699999999999~srv-old' },
     history: [entry({ id: 'a', url: POST_A, at: T0 - 10_000, receivedAt: T0 - 10_000, dirty: true })],
   });
   env.server.seed([
@@ -1312,43 +1310,88 @@ test('T3 clearedAt：推送前先打 DELETE /api/v1/links，成功後清空並�
   await engine.syncNow();
   await settle(10);
 
-  const deletes = env.server.requestsTo('/api/v1/links', 'DELETE');
-  assert.equal(deletes.length, 1, 'clearedAt 非 null 時要先把雲端清掉');
-  assert.equal(deletes[0].headers.authorization, 'Bearer tok-seeded');
-  // 【斷言翻轉｜D50】原為「雲端 0 筆」：清除之後才記下的 'a' 不再被水位線連坐拒收。
-  assert.equal(env.server.linkByPostKey(POST_B), null, '清除前的雲端資料要被清掉');
-
-  const firstPush = env.syncPosts()[0];
-  assert.ok(firstPush, '清完之後照樣走完這一輪的推拉');
-  assert.ok(
-    env.server.requests.indexOf(deletes[0]) < env.server.requests.indexOf(firstPush),
-    'DELETE 必須早於推送，否則剛推上去的又被自己清掉'
+  assert.deepEqual(env.server.requestsTo('/api/v1/links', 'DELETE'), [], '插件完全不再呼叫 DELETE /api/v1/links');
+  assert.notEqual(env.server.linkByPostKey(POST_B), null, '殘留的 clearedAt 不代表任何清空意圖');
+  assert.notEqual(env.server.linkByPostKey(POST_A), null, '這一輪照常推送');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(env.storage.syncState(), 'clearedAt'),
+    false,
+    'syncState 不再有 clearedAt 這一格（D53）'
   );
-  assert.notEqual(firstPush.body.since, staleCursor, 'cursor 歸零：舊游標對清空後的雲端已無意義');
-  assert.equal(env.storage.syncState().clearedAt, null, '成功後清空本機 clearedAt，不得每輪重刪');
 });
 
-// 【斷言翻轉｜D50】上一條原本另斷言「清完之後雲端 0 筆」——那是靠伺服器以清空水
-// 位線連坐拒收同一輪推上去的新紀錄（清除之後才記下的 'a'）。R11 廢除拒收之後，
-// 清除之前的雲端資料照樣清掉，清除之後的新紀錄照常上雲。
-test('T3 clearedAt：清除全部之後才記下的新紀錄照常上雲，清除前的雲端資料不回來（D50）', async () => {
+/** 本機墓碑（清除全部之後的形狀：deletedAt 有值、dirty:true、id 不變）。 */
+function tombstoneOf(i) {
+  const url = `https://www.threads.com/@clr${i}/post/CLR${String(i).padStart(8, '0')}`;
+  const at = T0 - 500_000 + i;
+  return entry({ id: `clr-${i}`, url, at, receivedAt: at, seen: [{ at, kind: 'strip' }], dirty: true, deletedAt: T0 - 1000 });
+}
+
+function cloudRowOf(i) {
+  const url = `https://www.threads.com/@clr${i}/post/CLR${String(i).padStart(8, '0')}`;
+  const at = T0 - 500_000 + i;
+  return { id: `clr-${i}`, original: url, cleaned: url, receivedAt: at, seen: [{ at }] };
+}
+
+test('T3 D53 清除全部：下一輪 sync 的 deletes 含全部 id（每批 ≤50 分多輪），mock 墓碑數＝筆數，本機清空', async () => {
   const TCLSync = loadSync();
-  const cleared = T0 - 30_000;
-  const env = makeEnv({
-    signedIn: true,
-    syncState: { clearedAt: cleared, cursor: '1699999999999~srv-old' },
-    history: [entry({ id: 'a', url: POST_A, at: T0 - 10_000, receivedAt: T0 - 10_000, dirty: true })],
-  });
-  env.server.seed([
-    { id: 'srv-old', original: POST_B, cleaned: POST_B, receivedAt: T0 - 400_000, seen: [{ at: T0 - 400_000 }] },
-  ]);
+  const N = 120;
+  const tombs = [];
+  const rows = [];
+  for (let i = 0; i < N; i += 1) {
+    tombs.push(tombstoneOf(i));
+    rows.push(cloudRowOf(i));
+  }
+  const env = makeEnv({ signedIn: true, history: tombs });
+  env.server.seed(rows);
   const engine = TCLSync.create(env.deps);
   await engine.syncNow();
-  await settle(10);
+  await settle(30);
 
-  assert.equal(env.server.linkByPostKey(POST_B), null, '清除前的雲端資料要被清掉');
-  assert.notEqual(env.server.linkByPostKey(POST_A), null, '清除之後的新紀錄不得被連坐拒收');
-  assert.deepEqual(env.storage.history().map((e) => e.url), [POST_A], '被清掉的雲端資料不得被拉回本機');
+  const deleted = [];
+  env.syncPosts().forEach((r) => {
+    const ds = (r.body && r.body.deletes) || [];
+    assert.ok(ds.length <= 50, `單批 deletes 不得超過 50，實得 ${ds.length}`);
+    ds.forEach((id) => deleted.push(id));
+  });
+  assert.deepEqual([...new Set(deleted)].sort(), tombs.map((e) => e.id).sort(), 'deletes 含全部 id');
+  assert.equal(env.server.tombstoneCount(), N, '雲端墓碑數＝筆數');
+  assert.equal(env.server.linkCount(), 0);
+  assert.deepEqual(env.storage.history(), [], '墓碑 ack 之後本機真正清空');
+  assert.deepEqual(env.server.requestsTo('/api/v1/links', 'DELETE'), [], '不走 DELETE /api/v1/links');
+});
+
+test('T3 D53 清除全部：裝置 B 拉到墓碑後本機清空', async () => {
+  const TCLSync = loadSync();
+  const N = 60;
+  const rows = [];
+  const tombs = [];
+  for (let i = 0; i < N; i += 1) {
+    rows.push(cloudRowOf(i));
+    tombs.push(tombstoneOf(i));
+  }
+  const envA = makeEnv({ signedIn: true, history: tombs });
+  envA.server.seed(rows);
+  const envB = makeEnv({
+    shareWith: envA,
+    signedIn: true,
+    syncState: { cursor: null },
+    history: [],
+  });
+  const engineA = TCLSync.create(envA.deps);
+  const engineB = TCLSync.create(envB.deps);
+  await engineB.syncNow();
+  await settle(30);
+  assert.equal(envB.storage.history().length, N, '前置：B 已有全部紀錄');
+
+  await engineA.syncNow();
+  await settle(30);
+  envA.advance(60_000);
+  await engineB.syncNow();
+  await settle(30);
+
+  assert.deepEqual(envB.storage.history(), [], 'B 經墓碑各自刪除，本機清空');
+  assert.equal(envB.storage.syncState().lastError, null);
 });
 
 test('T3 單飛：同時三次 syncNow 只跑一輪往返', async () => {
@@ -1970,19 +2013,18 @@ test('T8 mock：429 附 Retry-After 標頭與 retryAfter 欄位（api-spec 7.4�
   assert.deepEqual(await res.json(), { error: 'rate_limited', retryAfter: 60 });
 });
 
-// 【斷言翻轉｜D50】契約 R11 廢除水位線拒收：舊端點保留、仍回 clearedAt，但之後
-// 同一筆資料照收，`changes.clearedAt` 恆 null。
-test('T8 mock：DELETE /api/v1/links 仍回 clearedAt，但之後舊資料照收、changes.clearedAt 恆 null（R11，D50）', async () => {
+// 【斷言翻轉｜D50】R11 定稿：DELETE /api/v1/links 下線回 410（原斷言「寫 clearedAt、
+// 之後舊資料一律拒收」作廢）。
+test('T8 mock：DELETE /api/v1/links 回 410 gone，資料不動；之後同一筆照收、changes.clearedAt 恆 null（R11，D50）', async () => {
   const server = createMockSyncServer({ now: () => T0 });
   const token = server.grantToken('tok-1');
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   server.seed([{ id: 'srv-a', original: POST_A, cleaned: POST_A, receivedAt: T0 - 5000, seen: [{ at: T0 - 5000 }] }]);
 
-  const cleared = await server.fetch(`${PRODUCTION_BASE}/api/v1/links`, { method: 'DELETE', credentials: 'omit', headers });
-  const clearedBody = await cleared.json();
-  assert.equal(clearedBody.ok, true);
-  assert.equal(typeof clearedBody.clearedAt, 'number');
-  assert.equal(server.linkCount(), 0);
+  const gone = await server.fetch(`${PRODUCTION_BASE}/api/v1/links`, { method: 'DELETE', credentials: 'omit', headers });
+  assert.equal(gone.status, 410);
+  assert.deepEqual(await gone.json(), { error: 'gone', replacement: CLOUD_DATA_CONTRACT.path });
+  assert.equal(server.linkCount(), 1);
 
   const replay = await server.fetch(`${PRODUCTION_BASE}/api/v1/links/sync`, {
     method: 'POST',
@@ -1994,8 +2036,7 @@ test('T8 mock：DELETE /api/v1/links 仍回 clearedAt，但之後舊資料照收
     }),
   });
   const body = await replay.json();
-  assert.deepEqual(body.applied.rejectedIds, [], '水位線廢除：重新登入的裝置要能把資料傳回來');
-  assert.equal(server.linkCount(), 1);
+  assert.deepEqual(body.applied.rejectedIds, []);
   assert.equal(body.changes.clearedAt, null);
 });
 
@@ -4584,6 +4625,7 @@ test('D50 舊守衛移除：sync.js 不再保留四態裁決與自清記錄', ()
       assert.equal(new RegExp('\\b' + name + '\\b').test(src), false, `sync.js 不應再有 ${name}（D50）`);
     }
   );
+  assert.equal(/state\.clearedAt/.test(src), false, 'runRound 看 syncState.clearedAt 的分支不存在（D53）');
 });
 
 test('D50 舊後端的毫秒 clearedAt：沒有任何守衛時也不硬刪，且不寫守衛', async () => {
@@ -4674,4 +4716,105 @@ test('D50 其他裝置：兩台各自重新登入後全量重傳，雲端與兩�
   assert.deepEqual(keysOf(envA), union, 'A 本機是聯集');
   assert.equal(envA.storage.syncState().lastError, null);
   assert.equal(envB.storage.syncState().lastError, null);
+});
+
+// ---- 裁決 3：登入＝重建鏡像；裁決 4：本機墓碑在全量重傳時進 deletes[] ----
+
+test('D50 登入標髒：session 過期時不動 history，同帳號重新登入時全部重傳', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    syncState: { cursor: 'cur-keep' },
+    history: [
+      entry({ id: 'a', url: POST_A, dirty: false, serverUpdatedAt: T0 - 1000 }),
+      entry({ id: 'b', url: POST_B, dirty: false, serverUpdatedAt: null }),
+    ],
+  });
+  env.server.failNext({ status: 401, code: 'unauthorized' });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(10);
+  assert.equal(env.storage.syncState().lastError, 'session_expired', '前置：過期');
+  assert.equal(env.storage.syncState().cursor, 'cur-keep', 'H2：過期保留游標');
+  assert.deepEqual(
+    env.storage.history().map((e) => e.dirty),
+    [false, false],
+    '過期本身不標髒（標髒在登入時做）'
+  );
+
+  const before = env.syncPosts().length;
+  await engine.signIn();
+  await settle(20);
+  const pushed = [];
+  env.syncPosts().slice(before).forEach((r) => ((r.body && r.body.upserts) || []).forEach((u) => pushed.push(u.id)));
+  assert.deepEqual([...new Set(pushed)].sort(), ['a', 'b'], '登入＝重建鏡像：全部重傳');
+});
+
+test('D50 登入標髒：從登出態登入（同帳號），dirty:false 的舊語意殘留也全部重傳', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    history: [
+      entry({ id: 'a', url: POST_A, dirty: false, serverUpdatedAt: null }),
+      entry({ id: 'b', url: POST_B, dirty: false, serverUpdatedAt: T0 - 5000 }),
+    ],
+  });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(20);
+
+  assert.deepEqual([...new Set(pushedIds(env))].sort(), ['a', 'b']);
+  assert.equal(env.server.linkCount(), 2);
+});
+
+test('D50 全量重傳：本機墓碑（deletedAt）進 deletes[]，ack 後從本機移除', async () => {
+  const TCLSync = loadSync();
+  const history = realisticHistory().concat([
+    entry({ id: 'tomb-1', url: 'https://www.threads.com/@ghost/post/GGGGGGGGGGG', dirty: true, deletedAt: T0 - 2000 }),
+  ]);
+  const env = makeEnv({ signedIn: true, history });
+  const engine = TCLSync.create(env.deps);
+  await engine.deleteCloud();
+  await settle(10);
+  assert.equal(env.storage.history().find((e) => e.id === 'tomb-1').dirty, true, '前置：墓碑也在待上傳之列');
+
+  await engine.signIn();
+  await settle(20);
+
+  const deleted = [];
+  env.syncPosts().forEach((r) => ((r.body && r.body.deletes) || []).forEach((id) => deleted.push(id)));
+  assert.ok(deleted.includes('tomb-1'), '雲端已空也要補送墓碑：防止別台裝置把它復活');
+  assert.equal(env.storage.history().some((e) => e.id === 'tomb-1'), false, '墓碑 ack 後移除');
+  assert.equal(env.server.linkCount(), 6, '其餘 6 筆重建');
+});
+
+test('D50 刪雲端 → 重登 → syncNow：裝置重新登記（mock 1 台），名稱沿用本機自訂名，syncDevice 不被清', async () => {
+  const TCLSync = loadSync();
+  const localDevice = {
+    deviceId: DEVICE_LOCAL_ID,
+    name: '合成自訂桌機名',
+    platform: 'chrome_extension',
+    createdAt: T0 - 86_400_000,
+  };
+  const env = makeDeviceEnv({ device: localDevice, local: { syncDevice: Object.assign({}, localDevice) }, history: [entry()] });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(20);
+  assert.equal(env.server.deviceCount(), 1, '前置：裝置已登記');
+
+  await engine.deleteCloud();
+  await settle(20);
+  assert.equal(env.server.deviceCount(), 0, '前置：刪雲端一併硬刪裝置列');
+  assert.deepEqual(env.storage.localData.syncDevice, localDevice, '本機身分與自訂名保留');
+
+  await engine.signIn();
+  await settle(20);
+  env.advance(60_000);
+  await engine.syncNow();
+  await settle(20);
+
+  assert.equal(env.server.deviceCount(), 1, '重登後第一個帶 device 區塊的 sync 重新登記');
+  const row = [...env.server.state.devices.values()][0];
+  assert.equal(row.deviceId, DEVICE_LOCAL_ID.toLowerCase());
+  assert.equal(row.name, '合成自訂桌機名', '名稱是本機自訂名，不是預設名');
+  assert.deepEqual(env.storage.localData.syncDevice, localDevice);
 });
