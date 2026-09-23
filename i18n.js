@@ -196,11 +196,11 @@
       opAccountSignInConfigError: '登入設定有誤，請回報錯誤碼：{code}',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
       opDeviceNoteSynced: '已連線至你的 Google 帳號',
-      // 刪除雲端資料是 fire-and-forget(sendSyncAction 不等回應)，送出當下
-      // 先樂觀提示已完成;若下一次 stateChanged 帶回 lastError，改顯示
-      // 錯誤 toast(沿用 opAccountErrorPrefix + lastError，不另造重複鍵)。
+      // 刪除雲端資料送出當下的樂觀提示;最終依 sync.deleteCloud 回應
+      // { ok, signedOut, code } 定案，回應缺席才退回廣播判讀(錯誤沿用
+      // opAccountErrorPrefix + 錯誤碼，不另造重複鍵)。
       opToastCloudDeleted: '已刪除雲端資料',
-      // 送出後第一次廣播轉成已登出:刪雲端成功的定案提示(D51)。
+      // 刪雲端成功並已登出的定案提示(D51)。
       opToastCloudDeletedSignedOut: '雲端資料已刪除，已登出',
 
       // ---- 裝置管理(0.7 裝置歸屬):帳號選單入口與裝置對話框 ----
@@ -466,10 +466,10 @@
       opAccountSignInFailed: 'Sign-in failed, please try again later',
       opAccountSignInConfigError: 'Sign-in is misconfigured. Please report this code: {code}',
       opDeviceNoteSynced: 'Connected to your Google account',
-      // Delete-cloud is fire-and-forget (sendSyncAction does not await a
-      // reply): show an optimistic toast right away, and if the next
-      // stateChanged carries a lastError, replace it with an error toast
-      // (reuses opAccountErrorPrefix + lastError — no separate key).
+      // Optimistic toast shown when delete-cloud is sent; the final toast is
+      // decided by the sync.deleteCloud reply { ok, signedOut, code }, and
+      // only falls back to reading the broadcast when the reply is missing
+      // (errors reuse opAccountErrorPrefix + code — no separate key).
       opToastCloudDeleted: 'Cloud data deleted',
       opToastCloudDeletedSignedOut: 'Cloud data deleted. Signed out.',
 
