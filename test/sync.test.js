@@ -4941,3 +4941,39 @@ test('S1 1,000 筆 history 登入：首輪 POST 數（links＋marks）≤ MAX_RO
   assert.equal(env.lastState().pendingCount, 0);
   assert.equal(env.storage.syncState().lastError, null);
 });
+
+// ============================================================================
+// 審查 S2 — deleteCloud 標髒寫入失敗：記 storage_write_failed、廣播 error、token 保留
+// ============================================================================
+
+test('S2 deleteCloud：R11 成功但 history 標髒寫入失敗 → lastError=storage_write_failed、廣播 error、token 保留、不宣稱已登出', async () => {
+  const TCLSync = loadSync();
+  const before = realisticHistory();
+  const env = makeEnv({ signedIn: true, history: before });
+  const brokenDeps = Object.assign({}, env.deps, {
+    storage: {
+      session: env.deps.storage.session,
+      local: Object.assign({}, env.deps.storage.local, {
+        set(items) {
+          if (Object.prototype.hasOwnProperty.call(items, 'history')) {
+            return Promise.reject(new Error('IO error'));
+          }
+          return env.deps.storage.local.set(items);
+        },
+      }),
+    },
+  });
+  const engine = TCLSync.create(brokenDeps);
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await engine.deleteCloud();
+  }, 'deleteCloud 不得把寫入失敗往外拋');
+  await settle(10);
+
+  assert.equal(cloudDataCalls(env).length, 1, '前置：R11 端點成功');
+  assert.equal(env.storage.syncAuth().token, 'tok-seeded', 'token 保留');
+  assert.equal(env.storage.syncState().lastError, 'storage_write_failed');
+  assert.equal(env.lastState().status, 'error');
+  assert.notEqual(result && result.signedOut, true, '沒標髒完成不得宣稱已登出');
+  assert.deepEqual(env.storage.history(), before, 'history 原封不動');
+});
