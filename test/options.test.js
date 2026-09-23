@@ -9290,3 +9290,75 @@ test('D52 徽章文案:已登入的裝置提示不得宣稱「已同步至你的
   assert.ok(!doc.ids.deviceNote.textContent.includes('已同步至'), `畫面實得:${doc.ids.deviceNote.textContent}`);
   assert.ok(doc.ids.deviceNote.textContent.length > 0, '已登入時仍要有一句提示（實作者定字，例如「已連線」類）');
 });
+
+// ============================================================================
+// 審查 S3 — 刪雲端的 toast 依 sync.deleteCloud 的回應定案，不靠第一次廣播
+// ============================================================================
+
+async function mountAccountWithDelete(state) {
+  let resolveDelete;
+  const deferred = new Promise((resolve) => {
+    resolveDelete = resolve;
+  });
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({ 'sync.getState': () => state, 'sync.deleteCloud': () => deferred });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 1000000,
+    runtime,
+  });
+  await controller.init();
+  await settle();
+  return { doc, runtime, controller, resolveDelete };
+}
+
+test('S3 刪雲端:期間夾一則帶舊 lastError 的 syncing 廣播，最終 toast 依回應 {ok,signedOut} 定案為「已登出」', async () => {
+  const { doc, controller, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+
+  controller.setSyncState(signedInSyncState({ status: 'syncing', lastError: 'network_error' }));
+  await settle();
+  resolveDelete({ ok: true, signedOut: true });
+  await settle();
+
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
+  assert.match(doc.ids.toast.textContent, /已登出/);
+});
+
+test('S3 刪雲端:回應 401(session_expired)走既有登入過期文案，不把原始碼串進訊息', async () => {
+  const { doc, controller, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+
+  // 引擎的 session 過期出口先廣播 signed_out＋session_expired，再回應呼叫端。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: 'user@example.com',
+    displayName: 'Synthetic',
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: 'session_expired',
+    apiBase: 'https://api.example/',
+  });
+  resolveDelete({ ok: false, code: 'session_expired' });
+  await settle();
+
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountExpired'));
+  assert.ok(!doc.ids.toast.textContent.includes('session_expired'), `實得:${doc.ids.toast.textContent}`);
+});
+
+test('S3 刪雲端:回應 {ok:false, code} 顯示錯誤 toast', async () => {
+  const { doc, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  resolveDelete({ ok: false, code: 'server_error' });
+  await settle();
+
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'server_error');
+});
