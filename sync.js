@@ -115,11 +115,14 @@
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
   var INFLIGHT_KEY = 'syncInflight';
+  // 單次請求的逾時(含讀回應本文)。到期中止連線並視為 network_error，走既有
+  // 退避;沒有這一道，一個不回應的連線會讓整輪永遠停在半路。
+  var CALL_TIMEOUT_MS = 30000;
   var DEBOUNCE_KEY = 'syncDebounce';
   // 單飛旗標的時效，必須大於單輪最長時間，否則還在跑的一輪會被第二輪搶走。
-  // 一輪最多 MAX_ROUND_POSTS 個同步 POST，加上 marks 回填的少數 GET;fetch 沒有
-  // 逾時設定，以每次往返 20 秒估，12 個 POST 約 4 分鐘，取 5 分鐘。
-  var INFLIGHT_TTL_MS = 300000;
+  // 一輪最多 MAX_ROUND_POSTS 個同步 POST，每次最長 CALL_TIMEOUT_MS:12×30 秒
+  // 為 6 分鐘，再加 marks 回填的少數 GET 與 storage 往返，取 8 分鐘。
+  var INFLIGHT_TTL_MS = 480000;
 
   // get-session 的節流:SW 每次被喚醒都會啟動驗一次，而喚醒在瀏覽期間非常
   // 頻繁（每一則訊息、每一個 alarm）。後端限流桶(與手機端共用)容量有限，
@@ -479,19 +482,50 @@
         init.body = JSON.stringify(body);
       }
       var res;
-      return Promise.resolve()
-        .then(function () {
-          return fetchImpl(ctx.apiBase + path, init);
-        })
-        .catch(function () {
-          throw syncError('network_error');
-        })
-        .then(function (response) {
-          res = response;
-          return Promise.resolve(res.json()).catch(function () {
-            return null;
-          });
-        })
+      // 逾時:注入的計時器到期就中止連線並讓這一次請求以 network_error 失敗。
+      // 計時器涵蓋到讀完回應本文為止。
+      var controller = typeof AbortController === 'function' ? new AbortController() : null;
+      if (controller) init.signal = controller.signal;
+      var timer = null;
+      var expired = new Promise(function (resolve, reject) {
+        if (typeof setTimer !== 'function') return;
+        timer = setTimer(function () {
+          timer = null;
+          if (controller) controller.abort();
+          reject(syncError('network_error'));
+        }, CALL_TIMEOUT_MS);
+      });
+      expired.catch(function () {});
+      function stopTimer() {
+        if (timer !== null && typeof clearTimer === 'function') clearTimer(timer);
+        timer = null;
+      }
+      return Promise.race([
+        Promise.resolve()
+          .then(function () {
+            return fetchImpl(ctx.apiBase + path, init);
+          })
+          .catch(function () {
+            throw syncError('network_error');
+          })
+          .then(function (response) {
+            res = response;
+            return Promise.resolve(res.json()).catch(function () {
+              return null;
+            });
+          }),
+        expired,
+      ])
+        .then(
+          function (payload) {
+            stopTimer();
+            return payload;
+          },
+          function (err) {
+            stopTimer();
+            throw err;
+          }
+        )
         .then(function (payload) {
           // 【契約要求】api-spec 8.1 第 4 點:「**任何**回應只要帶這個標頭就
           // 覆寫本地存值」——包含 4xx／5xx。後端可能在拒絕這一次請求的同時
