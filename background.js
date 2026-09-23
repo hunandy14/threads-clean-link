@@ -692,6 +692,7 @@ function isScamContentScriptSender(sender) {
 // 一律可缺席——舊版 content script 送來的三欄 payload 照常受理——但**有
 // 帶就驗形狀，不合格整筆回 bad_request**：payload 是自家 content script 送
 // 的，形狀不對代表兩端版本對不上，默默剝掉會讓錯誤晚好幾週才被發現。
+// lineId 是這條規矩的唯一例外，理由見下方該欄的註解。
 function validateScamHit(message) {
   if (!message) return null;
   if (typeof message.handle !== 'string' || !SCAM_HANDLE_PATTERN.test(message.handle)) return null;
@@ -761,6 +762,11 @@ function validateScamHit(message) {
     anchorMatch,
     signals,
     postedAt,
+    // lineId 的驗證規則**刻意與上面幾欄不同**：形狀不對只丟這一欄、整筆照收
+    // （normalizeScamLineId 對非字串／空字串回 undefined，從不拒收）。它是加
+    // 值資訊——標亮位置與跨帳號索引——不是證據成立的必要條件，為了它把一次真
+    // 的命中整筆退掉是賠本生意。
+    lineId: TCLCore.normalizeScamLineId(message.lineId),
   };
 }
 
@@ -1045,6 +1051,9 @@ async function handleScamHit(message) {
       postedAt: hit.postedAt,
       rulesVersion: TCLCore.SCAM_RULES.version,
       deviceId: deviceId,
+      // 本機專有：不上雲，但一定要落盤——整份名單的 lineIdIndex 由證據派生，
+      // 這一欄不寫，ID 跨帳號比對就永遠查不到人。
+      lineId: hit.lineId,
     };
 
     const added = !existing;
