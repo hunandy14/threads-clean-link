@@ -107,11 +107,19 @@
   // 意義的天文數字。
   var MARKS_EVICTED_MAX = 1000000;
 
+  // 單輪同步 POST 的上限(links/sync 與 marks/sync 合計)。登入後的全量重傳可能
+  // 切出上百批，一輪連發會撞後端限流桶(與手機端共用)。達上限就結束本輪，
+  // 以去抖(DEBOUNCE_MS)排下一輪續跑，直到沒有待推的批次。
+  var MAX_ROUND_POSTS = 12;
+
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
   var INFLIGHT_KEY = 'syncInflight';
   var DEBOUNCE_KEY = 'syncDebounce';
-  var INFLIGHT_TTL_MS = 120000;
+  // 單飛旗標的時效，必須大於單輪最長時間，否則還在跑的一輪會被第二輪搶走。
+  // 一輪最多 MAX_ROUND_POSTS 個同步 POST，加上 marks 回填的少數 GET;fetch 沒有
+  // 逾時設定，以每次往返 20 秒估，12 個 POST 約 4 分鐘，取 5 分鐘。
+  var INFLIGHT_TTL_MS = 300000;
 
   // get-session 的節流:SW 每次被喚醒都會啟動驗一次，而喚醒在瀏覽期間非常
   // 頻繁（每一則訊息、每一個 alarm）。後端限流桶(與手機端共用)容量有限，
@@ -723,7 +731,21 @@
 
     // ---- 一輪推拉往返 ----
 
+    /**
+     * 從本輪的 POST 額度扣一次。額度用完回 false 並記下「尚有待推」，runSync
+     * 收尾時據此排一次去抖續跑。
+     */
+    function takePost(ctx) {
+      if (ctx.budget.left <= 0) {
+        ctx.budget.exhausted = true;
+        return false;
+      }
+      ctx.budget.left -= 1;
+      return true;
+    }
+
     function runRound(ctx) {
+      ctx.budget = { left: MAX_ROUND_POSTS, exhausted: false };
       var chain = Promise.resolve();
       // D23:一輪只在**第一個** POST 掛 device 區塊。後端拿它做 upsert，續頁
       // 再帶一次只是重複同一筆寫入。
@@ -740,6 +762,8 @@
           var step = dropUnsendable(planned.dropped);
           planned.batches.forEach(function (batch) {
             step = step.then(function () {
+              // 額度用完:剩下的批次維持 dirty，下一輪再送。
+              if (!takePost(ctx)) return undefined;
               var body = {
                 upserts: batch.upserts,
                 deletes: batch.deletes,
@@ -772,6 +796,8 @@
           var rounds = 0;
           function more() {
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+            // 游標停在已落地的那一頁，下一輪從這裡續拉。
+            if (!takePost(ctx)) return Promise.resolve();
             rounds += 1;
             return call(ctx, 'POST', '/api/v1/links/sync', { since: ctx.state.cursor }).then(function (payload) {
               // 同上:先落地再前進游標。
@@ -1165,6 +1191,8 @@
       var step = Promise.resolve();
       batches.forEach(function (batch) {
         step = step.then(function () {
+          // 額度用完:沒送出的批次仍在推送水位線之上，下一輪選得到。
+          if (!takePost(ctx)) return undefined;
           return postMarks(ctx, batch, floor, round).then(function (changes) {
             lastChanges = changes;
           });
@@ -1176,6 +1204,7 @@
           var rounds = 0;
           function more() {
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+            if (!takePost(ctx)) return Promise.resolve();
             rounds += 1;
             return postMarks(ctx, emptyMarkBatch(), floor, round).then(function (changes) {
               lastChanges = changes;
@@ -1188,7 +1217,8 @@
           applyMarkFloor(ctx, floor);
           // 一輪完整跑完(沒有例外、沒有一筆被拒)且這一輪雲端一筆都沒淘汰時，把
           // 上一輪留下的提示收掉:對完帳那張提示就該收，否則它永遠掛在卡頭上。
-          if (!round.rejected && round.evicted === 0) ctx.state.marksEvicted = null;
+          // 額度用完提早收手的一輪不算完整跑完。
+          if (!ctx.budget.exhausted && !round.rejected && round.evicted === 0) ctx.state.marksEvicted = null;
         });
     }
 
@@ -1539,6 +1569,11 @@
                 .then(scheduleSuccess)
                 .then(function () {
                   return broadcastState('signed_in');
+                })
+                .then(function () {
+                  // 本輪 POST 額度用完:排一次去抖續跑，直到沒有待推的批次。
+                  if (ctx.budget && ctx.budget.exhausted) return notifyRecorded();
+                  return undefined;
                 });
             })
             .catch(function (err) {
@@ -1963,6 +1998,7 @@
     ALARM_NAME: ALARM_NAME,
     DEBOUNCE_ALARM_NAME: DEBOUNCE_ALARM_NAME,
     DEBOUNCE_MS: DEBOUNCE_MS,
+    MAX_ROUND_POSTS: MAX_ROUND_POSTS,
     SYNC_PERIOD_MINUTES: SYNC_PERIOD_MINUTES,
     API_BASE_PRODUCTION: API_BASE_PRODUCTION,
     API_BASE_STAGING: API_BASE_STAGING,
