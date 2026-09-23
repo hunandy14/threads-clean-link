@@ -540,9 +540,9 @@ test('classifyExcerptCandidate:空字串——已收集到內文時中止(stop)�
 // (COUNT_LIKE_RE)保留作第二道(D47)。
 //
 // extractExcerpt／extractPostInfo 定義在 post-icon.js 的 document 守衛
-// 內，Node 直接 require() 取不到，這裡沿用本檔既有的
-// loadPostIconInFakeDom()(vm sandbox + 假 document)取 window.TCLPostIcon，
-// 容器則餵下面這棵迷你樹。
+// 內，Node 直接 require() 取不到，這裡用下面的 loadPostIconApi()(本檔既
+// 有的假 document + 假 chrome)取 window.TCLPostIcon，容器則餵下面這棵迷
+// 你樹。
 //
 // 下列 fixture 的結構(層級、dir="auto"／role="button"／
 // data-pressable-container 的相對位置)照搬實測員自 staging 擷取的真實
@@ -760,11 +760,43 @@ function createReplyFocusContainer() {
   ]);
 }
 
-// 取 window.TCLPostIcon:vm sandbox 內用本檔既有的假 document 載入
-// post-icon.js(容器選擇器回空陣列，載入時不會真的注入任何東西)。
+// 取 window.TCLPostIcon:用本檔既有的假 document 載入 post-icon.js(容器
+// 選擇器回空陣列，載入時不會真的注入任何東西)，拿守衛內才掛上去的
+// extractPostInfo。
+//
+// 這裡不走 loadPostIconInFakeDom 的 vm sandbox:vm.createContext 會另開一
+// 個 realm，realm 內 `{}` 的原型是該 realm 自己的 Object.prototype，而
+// node:assert/strict 的 deepEqual 連原型一起比，extractPostInfo 回傳的物件
+// 永遠對不上本檔寫的物件字面量。改用 new Function 在同一個 realm 內餵同一
+// 組假全域——隔離程度相同(假 document、假 chrome、看不到 module 所以走
+// root.TCLPostIcon 分支)，回傳值則是一般物件。
 function loadPostIconApi() {
-  const { api } = loadPostIconInFakeDom(createFakeDocument(0), { runtime: { id: 'tcl-test-ext' } });
-  assert.equal(typeof api.extractPostInfo, 'function', 'sandbox 內應取得 extractPostInfo');
+  const win = {
+    location: { origin: 'https://www.threads.com' },
+    navigator: {},
+    getComputedStyle: () => ({ color: '' }),
+  };
+  const load = new Function(
+    'window',
+    'document',
+    'console',
+    'chrome',
+    'setTimeout',
+    'clearTimeout',
+    'URL',
+    SRC
+  );
+  load(
+    win,
+    createFakeDocument(0),
+    { warn() {}, error() {}, log() {} },
+    { runtime: { id: 'tcl-test-ext' } },
+    setTimeout,
+    clearTimeout,
+    URL
+  );
+  const api = win.TCLPostIcon;
+  assert.equal(typeof api.extractPostInfo, 'function', '載入後應取得 extractPostInfo');
   return api;
 }
 
@@ -882,6 +914,18 @@ test('extractExcerpt(D48 邊界):[role="button"] 祖先落在容器「外面」�
   // 整個貼文容器被外層的可點擊包裝夾住(祖先鏈往上走得出 [role="button"])，
   // 但那顆按鈕不在容器內，不該讓整個容器的內文都被跳過。
   el('div', { role: 'button' }, [container]);
+
+  assert.equal(excerptOf(container), FX_LINE_1);
+});
+
+// 容器節點自己帶 role="button" 時，候選的祖先鏈上找得到按鈕，但那顆按鈕
+// 就是容器本身、不是容器「內」的互動元素——內文不得因此被整篇丟掉。
+test('extractExcerpt(D48 邊界):容器節點自己帶 role="button" 不算容器內的互動列，內文照收', () => {
+  const container = el('div', { 'data-pressable-container': 'true', role: 'button' }, [
+    fxAuthorBlock(),
+    fxTimestamp('17小時'),
+    fxBodyBlock([FX_LINE_1]),
+  ]);
 
   assert.equal(excerptOf(container), FX_LINE_1);
 });

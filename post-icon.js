@@ -128,11 +128,18 @@
     /^(\d+\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)|\d+\s*(秒|分鐘|小時|天|週|周)|\d{4}-\d{1,2}-\d{1,2}|now|Just now|現在|剛剛)$/i;
 
   // 讚數/回覆數/轉發數這類互動計數，實測格式包含純數字("97")、千分位逗
-  // 號("2,440")、以及可能的 K/M/B 縮寫("1.2K")。內文若掃到這種計數字
-  // 串，視為「內文區段已經結束、進入互動列的計數區」的邊界訊號，中止收
-  // 集。要求以數字開頭(`^\d`)，避免內文中單獨成行的純標點(例如
-  // 「...」)被誤判成計數而提早截斷。
-  var COUNT_LIKE_RE = /^\d[\d,.]*[KMB]?$/i;
+  // 號("2,440")、小數("6.5")，單位有 K/M/B 縮寫("1.2K")與中文的「萬」
+  // 「億」，數字與單位之間可能夾半形空白、不斷行空白(U+00A0，實測讚數
+  // 原文用的就是這個)或全形空白(U+3000)。計數跳動時兩顆 span 的文字會
+  // 被串成同一段("5.9 萬6.0 萬")，故允許多個計數片段接續。內文若掃到整
+  // 串只由計數組成的字段，視為「內文區段已經結束、進入互動列的計數區」
+  // 的邊界訊號，中止收集。要求以數字開頭(`^\d`)，避免內文中單獨成行的
+  // 純標點(例如「...」)被誤判成計數而提早截斷；句子裡夾帶計數(例如「今
+  // 天賣了 5.8 萬」)因整串不只有計數而不命中，維持當內文收。片段之間一
+  // 定隔著單位字元，單位字元不屬於數字與空白字元集，量詞邊界唯一、回溯
+  // 有界。
+  var COUNT_LIKE_RE =
+    /^\d[\d,.]*(?:[\s\u00A0\u3000]*(?:[KMB]|萬|億)[\s\u00A0\u3000]*\d[\d,.]*)*[\s\u00A0\u3000]*(?:[KMB]|萬|億)?$/i;
 
   // hasContent:目前是否已經收集到至少一段內文(parts.length > 0)，用來
   // 決定 RELATIVE_TIME_RE 要不要套用(見上方註解)。text 非字串一律視為空
@@ -510,10 +517,31 @@
         return result;
       }
 
+      // ---- 候選節點是否落在「容器內部」的 [role="button"] 裡。互動列
+      // 的計數(讚／回覆／轉發)與影片貼文的配樂標示列，都是整塊包在
+      // [role="button"] 內、與內文 span 同層並列，唯一可靠的切分就是這
+      // 條祖先鏈。從候選的 parentNode 起往上找最近的按鈕(候選自己是不
+      // 是按鈕不在判斷範圍內)，再確認那顆按鈕是容器的真後代:容器節點
+      // 自己帶 role="button"、或容器被外層的可點擊包裝夾住時都不算，否
+      // 則整篇內文會被當成互動元素丟光。----
+      function isInsideContainerButton(el, container) {
+        var parent = el.parentNode;
+        if (!parent || !parent.closest) return false;
+        var button = parent.closest('[role="button"]');
+        if (!button) return false;
+        var cursor = button.parentNode;
+        while (cursor) {
+          if (cursor === container) return true;
+          cursor = cursor.parentNode;
+        }
+        return false;
+      }
+
       // ---- 擷取貼文內文摘要:依文件序掃過容器內所有 [dir="auto"] span，
       // 只收「屬於本容器本身」(排除巢狀引用貼文自己的內文)、「不在任何
       // <a> 內」(作者名／時間戳記／引用卡片標題都是整串包在 <a> 裡，內
-      // 文本身不是)的候選，交給純函式 classifyExcerptCandidate 決定
+      // 文本身不是)、「不在容器內的 [role="button"] 內」(互動列與配樂標
+      // 示列)的候選，交給純函式 classifyExcerptCandidate 決定
       // push／skip／stop(規則見該函式註解)。多段內文(部分貼文每行是獨
       // 立 span 而非同一個 span 內用 \n 分隔)用 '\n' 接起來。擷取不到任
       // 何內容回傳 undefined，由呼叫端決定要不要放進訊息。----
@@ -525,6 +553,13 @@
             var el = spans[i];
             if (el.closest && el.closest('div[data-pressable-container]') !== container) continue;
             if (el.closest && el.closest('a')) continue;
+            // 互動列位於內文之後，已經收到內文時把它當成內文區段結束的
+            // 標記而中止；還沒收到任何內文時只跳過這個候選，讓排在後面
+            // 的真正內文仍有機會被收(內文前也可能先出現按鈕)。
+            if (isInsideContainerButton(el, container)) {
+              if (parts.length) break;
+              continue;
+            }
             var text = cleanElementText(el);
             var action = classifyExcerptCandidate(text, parts.length > 0);
             if (action === 'stop') break;
