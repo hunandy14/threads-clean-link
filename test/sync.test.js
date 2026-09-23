@@ -4909,7 +4909,8 @@ function roundPosts(env) {
     .concat(env.server.requestsTo('/api/v1/marks/sync', 'POST'));
 }
 
-test('S1 1,000 筆 history 登入：首輪 POST 數（links＋marks）≤ MAX_ROUND_POSTS，之後經去抖自動續跑至全部 ack', async () => {
+// 【覆審收尾 3】續跑改排 30 秒保底 alarm（不走 2 秒去抖），避免對後端限流桶連發。
+test('S1 1,000 筆 history 登入：首輪 POST 數（links＋marks）≤ MAX_ROUND_POSTS，續跑不在 2 秒內觸發，由 30 秒 alarm 續跑至全部 ack', async () => {
   const TCLSync = loadSync();
   assert.equal(typeof TCLSync.MAX_ROUND_POSTS, 'number', '要匯出單輪 POST 上限');
   const limit = TCLSync.MAX_ROUND_POSTS;
@@ -4927,12 +4928,26 @@ test('S1 1,000 筆 history 登入：首輪 POST 數（links＋marks）≤ MAX_RO
 
   const firstRound = roundPosts(env).length;
   assert.ok(firstRound <= limit, `首輪 POST ${firstRound} 不得超過上限 ${limit}`);
-  assert.ok(env.timers.live.length > 0, '還有待推：要排一次去抖續跑');
+  assert.equal(
+    env.timers.live.filter((h) => h.ms === TCLSync.DEBOUNCE_MS).length,
+    0,
+    '續跑不得排 2 秒去抖計時器'
+  );
+  env.advance(2_000);
+  await env.runTimers();
+  await settle(40);
+  assert.equal(roundPosts(env).length, firstRound, '2 秒內不得觸發第二輪');
 
-  for (let i = 0; i < 20 && env.timers.live.length > 0; i += 1) {
+  const guard = env.alarms.creates().filter((c) => c.name === TCLSync.DEBOUNCE_ALARM_NAME).pop();
+  assert.ok(guard, '還有待推：要排 30 秒保底 alarm 續跑');
+  assert.ok(env.alarms.delayOf(guard, env.now() - 2_000) >= 30_000, '續跑至少隔 30 秒');
+
+  for (let i = 0; i < 20 && env.storage.history().some((e) => e.dirty === true); i += 1) {
     const before = roundPosts(env).length;
-    await env.runTimers();
+    env.advance(30_000);
+    await engine.onAlarm({ name: TCLSync.DEBOUNCE_ALARM_NAME });
     await settle(40);
+    assert.ok(roundPosts(env).length > before, 'alarm 到期要續跑');
     assert.ok(roundPosts(env).length - before <= limit, '續跑的每一輪同樣受上限約束');
   }
 
