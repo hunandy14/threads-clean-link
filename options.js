@@ -35,7 +35,7 @@
   // onChanged。
   var SCAM_BLOCKLIST_KEY = 'scamBlocklist';
   // 帳號同步狀態(docs/cloud-sync.md 4.2)。options 只讀 userId 判斷登入
-  // 態、只寫 clearedAt(清除全部的全域水位線)，其餘欄位由同步引擎維護。
+  // 態，不寫入;全部欄位由同步引擎維護。
   var SYNC_ACCOUNT_KEY = 'syncState';
   var DAY_MS = 86400000;
   var PAGE_SIZE_DEFAULT = 20;
@@ -637,9 +637,10 @@
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
     var syncState = DEFAULT_SYNC_CARD_STATE;
-    // 刪除雲端資料是 fire-and-forget:送出當下就樂觀顯示已完成的 toast，
-    // 這顆旗標記著「下一次 setSyncState 要順便檢查 lastError，非 null
-    // 就把樂觀 toast 蓋成錯誤訊息」，見 acctDeleteBtn 的 click handler 與
+    // 刪除雲端資料送出當下先樂觀顯示已完成的 toast，最後依 sync.deleteCloud
+    // 的回應定案。回應形狀不明(舊版 background)時以這顆旗標退回廣播判讀:
+    // 下一則非 syncing 的 setSyncState 若帶 lastError 就蓋成錯誤訊息，轉成已
+    // 登出就換成「已刪除、已登出」。見 acctDeleteBtn 的 click handler 與
     // setSyncState。
     var pendingDeleteCloudToast = false;
     // 裝置清單快取(純顯示層，計畫 §4):{ devices, currentDeviceId, defaultName }。
@@ -667,26 +668,6 @@
 
     function isSignedIn() {
       return nonEmptyString(syncAccount.userId) !== null;
-    }
-
-    // 從 storage 重讀帳號同步狀態、併進 patch，回傳「要寫回去的整包」(整包
-    // 寫回，不夾帶未知鍵)。實際落盤交給呼叫端，好與 history 併成同一次 set。
-    //
-    // 【競態】基底一定重讀，不用開頁快照:cursor／lastSyncedAt／lastError 由
-    // service worker 的同步引擎持續維護，拿快照整包覆寫等於把頁面開著這段期間
-    // 引擎推進的游標回捲，下一輪重拉一大段增量，最壞情況是把使用者早就刪掉的
-    // 雲端資料又拉回來。重讀失敗才退回用快照。
-    function nextSyncAccount(patch) {
-      return Promise.resolve(localStore.get({ [SYNC_ACCOUNT_KEY]: null })).then(
-        function (stored) {
-          return TCLCore.normalizeSyncState(
-            Object.assign({}, TCLCore.normalizeSyncState(stored && stored[SYNC_ACCOUNT_KEY]), patch)
-          );
-        },
-        function () {
-          return TCLCore.normalizeSyncState(Object.assign({}, syncAccount, patch));
-        }
-      );
     }
 
     // 畫面、統計、圖表與匯出共用的可見清單:墓碑留在 entries(它是待上傳的
@@ -997,16 +978,12 @@
     // 現值，失敗(常見:storage.local 配額寫爆)時把記憶體 entries 回滾成
     // 寫入前的值，避免磁碟寫失敗、記憶體卻已經前進造成分岔。呼叫端據
     // res.ok 決定發成功/失敗 toast，res.quota 供挑配額/一般兩種失敗文案。
-    // extraItems 會併進同一次 set:chrome.storage.local.set 一次提交多個鍵，
-    // 要嘛一起落地要嘛都不落地。清除全部靠它把「雲端水位線」與「清空本機」寫
-    // 成同一次原子寫入，不留「本機已清空、水位線沒寫」的半套狀態——那會讓下
-    // 次同步把整份雲端資料原封不動拉回來。
-    function persistHistory(list, extraItems) {
+    function persistHistory(list) {
       var prev = entries;
       entries = list;
       return Promise.resolve()
         .then(function () {
-          var items = Object.assign({}, extraItems || {});
+          var items = {};
           items[HISTORY_KEY] = list;
           return localStore.set(items);
         })
@@ -1163,16 +1140,35 @@
 
     // 觸發式動作(signIn/signOut/now/deleteCloud):fire-and-forget，後續
     // UI 更新一律等 background 廣播 sync.stateChanged(由接線層轉呼叫
-    // setSyncState)，這裡不用回應值直接改畫面——避免兩條更新路徑互相
-    // 打架。runtime 未注入或呼叫失敗時安靜吞掉，不丟例外。
+    // setSyncState)，不用回應值改畫面——避免兩條更新路徑互相打架;唯一例外
+    // 是刪除雲端資料的結果 toast，依回應定案。runtime 未注入或呼叫失敗時安靜
+    // 吞掉，不丟例外，回傳的 Promise 一律 resolve(失敗時為 undefined)。
     function sendSyncAction(message) {
-      if (!runtime || typeof runtime.sendMessage !== 'function') return;
+      if (!runtime || typeof runtime.sendMessage !== 'function') return Promise.resolve(undefined);
       try {
         var result = runtime.sendMessage(message);
-        if (result && typeof result.catch === 'function') result.catch(function () {});
+        if (result && typeof result.then === 'function') {
+          return result.then(null, function () {
+            return undefined;
+          });
+        }
       } catch (e) {
         // 同上，優雅退回。
       }
+      return Promise.resolve(undefined);
+    }
+
+    // 同步錯誤碼的 toast 文案:session 過期走既有的登入過期文案，其餘以錯誤
+    // 前綴帶出錯誤碼。
+    function syncErrorToastText(code) {
+      if (code === 'session_expired') return tt('opAccountExpired');
+      return tt('opAccountErrorPrefix') + code;
+    }
+
+    // 刪除雲端資料的定案 toast，依 sync.deleteCloud 的回應 { ok, signedOut, code }。
+    function deleteCloudToastText(res) {
+      if (res.ok) return tt(res.signedOut === true ? 'opToastCloudDeletedSignedOut' : 'opToastCloudDeleted');
+      return syncErrorToastText(typeof res.code === 'string' && res.code ? res.code : 'internal_error');
     }
 
     // 顯示名字:displayName 優先，缺席退回 email 的 @ 前段;兩者皆缺回
@@ -1451,7 +1447,10 @@
       var subEl = byId('acctMenuSub');
       if (subEl) {
         var timeText = s.lastSyncedAt !== null ? relTime(s.lastSyncedAt) : tt('opSyncNever');
-        subEl.textContent = tf('opAccountLastSync', { t: timeText }) + ' · ' + tf('opAccountPending', { n: s.pendingCount });
+        // 待上傳筆數只在 N>0 時附上(D52);N=0 就是雲端與本機一致，不必顯示。
+        var subText = tf('opAccountLastSync', { t: timeText });
+        if (s.pendingCount > 0) subText += ' · ' + tf('opAccountPending', { n: s.pendingCount });
+        subEl.textContent = subText;
       }
 
       var syncBtn = byId('acctSyncNowBtn');
@@ -1536,12 +1535,12 @@
       syncState = normalizeSyncCardState(state);
       renderAccount(syncState);
       renderScamEvictedHint(syncState);
-      // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
-      // 有沒有失敗——deleteCloud 是 fire-and-forget，這裡是唯一能得知
-      // 結果的管道(見 acctDeleteBtn 的 click handler)。
-      if (pendingDeleteCloudToast) {
+      // 刪除雲端資料送出後掛的旗標(回應定案前的退路):syncing 廣播只是過
+      // 程，帶的 lastError 可能是上一輪留下的，不拿來判讀。
+      if (pendingDeleteCloudToast && syncState.status !== 'syncing') {
         pendingDeleteCloudToast = false;
-        if (syncState.lastError) toast(tt('opAccountErrorPrefix') + syncState.lastError);
+        if (syncState.lastError) toast(syncErrorToastText(syncState.lastError));
+        else if (accountMode(syncState) === 'signedOut') toast(tt('opToastCloudDeletedSignedOut'));
       }
       reportSignInFailure(transient);
     }
@@ -1754,8 +1753,8 @@
         closeAcctMenu();
         sendSyncAction({ type: 'sync.signOut' });
       });
-      // 刪除雲端資料一樣走確認框，措辭明講三件事:無法復原、本機保留、
-      // 這些紀錄不會再上傳到雲端(避免與清除全部紀錄的本機刪除混淆)。
+      // 刪除雲端資料一樣走確認框，措辭明講三件事(D51):刪除雲端並登出所有
+      // 裝置、各裝置本機資料保留、重新登入後會重新上傳。
       on('acctDeleteBtn', 'click', function () {
         closeAcctMenu();
         if (!hasCloudSession()) return;
@@ -1766,12 +1765,15 @@
           icon: '#i-trash',
           desc: tt('opSyncDeleteConfirmDesc'),
           action: function () {
-            sendSyncAction({ type: 'sync.deleteCloud' });
-            // deleteCloud 是 fire-and-forget，送出當下先樂觀提示已完成；
-            // 若下一次 stateChanged 帶回 lastError，setSyncState 會把這
-            // 顆 toast 蓋成錯誤訊息(見 pendingDeleteCloudToast)。
+            var reply = sendSyncAction({ type: 'sync.deleteCloud' });
+            // 送出當下先樂觀提示已完成，回應回來再定案(見 pendingDeleteCloudToast)。
             pendingDeleteCloudToast = true;
             toast(tt('opToastCloudDeleted'));
+            reply.then(function (res) {
+              if (!res || typeof res !== 'object' || typeof res.ok !== 'boolean') return;
+              pendingDeleteCloudToast = false;
+              toast(deleteCloudToastText(res));
+            });
           },
         });
       });
@@ -3810,7 +3812,7 @@
         });
       });
 
-      // 清除全部:走共用確認框(openConfirm)，確認後才 persistHistory([])。
+      // 清除全部:走共用確認框(openConfirm)，確認後才寫入。
       on('clearBtn', 'click', function () {
         closeMenu();
         openConfirm({
@@ -3819,43 +3821,35 @@
           tone: 'danger',
           icon: '#i-trash',
           desc: tf('opClearConfirmDesc', { n: visibleEntries().length }),
-          // 已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成墓碑
-          // 撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由同步引擎
-          // 上傳。未登入不動 syncState。
-          //
-          // 【原子性】水位線與清空寫在同一次 set(見 persistHistory 的
-          // extraItems)。分兩次寫的話，兩步之間分頁被關掉會留下「本機已清空、
-          // 雲端水位線沒寫」，下次同步就把整份雲端資料拉回來，使用者眼中是
-          // 「清了又自己長回來」。
+          // 【依登入態分流】(D53)已登入時逐筆轉墓碑:id 不變、寫下 deletedAt
+          // 與 dirty，由同步引擎以 deletes[] 分批送出(每批 ≤50)，伺服器 ack
+          // 後才從本機移除，其他裝置經墓碑各自刪除。既有墓碑原樣保留(刪除時戳
+          // 不動);沒有 id 的舊資料送不上雲，直接移除。未登入維持硬刪。
+          // 只寫 history 一個鍵，syncState 由同步引擎獨佔維護。
           action: function () {
             var signedIn = isSignedIn();
-            var prepared = signedIn ? nextSyncAccount({ clearedAt: now() }) : Promise.resolve(null);
-            prepared
-              .then(function (nextAccount) {
-                var extra = null;
-                if (nextAccount) {
-                  extra = {};
-                  extra[SYNC_ACCOUNT_KEY] = nextAccount;
-                }
-                return persistHistory([], extra).then(function (res) {
-                  // 寫成功才更新記憶體快照，失敗時 persistHistory 已回滾
-                  // entries，這裡一併保持 syncAccount 與 storage 一致。
-                  if (res.ok && nextAccount) syncAccount = nextAccount;
-                  return res;
-                });
-              })
-              .then(function (res) {
-                if (!res.ok) {
-                  onPersistFailed(res);
+            var next = [];
+            if (signedIn) {
+              var deletedAt = now();
+              entries.forEach(function (x) {
+                if (TCLCore.isTombstone(x)) {
+                  next.push(x);
                   return;
                 }
-                // 線上時立刻推一次:clearedAt 只是「待送出」旗標，等下一個週期
-                // alarm 才送的話，這段空窗內寫入的新紀錄會被伺服器的 cleared_at
-                // 連坐拒收(見 docs/cloud-sync.md 第 6 節已知限制)。
-                if (signedIn) sendSyncAction({ type: 'sync.now' });
-                renderAll();
-                toast(tt('opToastCleared'));
+                if (typeof x.id !== 'string' || !x.id) return;
+                next.push(Object.assign({}, x, { deletedAt: deletedAt, dirty: true }));
               });
+            }
+            persistHistory(next).then(function (res) {
+              if (!res.ok) {
+                onPersistFailed(res);
+                return;
+              }
+              // 線上時立刻推一次，墓碑不必等下一個週期 alarm 才傳到其他裝置。
+              if (signedIn) sendSyncAction({ type: 'sync.now' });
+              renderAll();
+              toast(tt('opToastCleared'));
+            });
           },
         });
       });
