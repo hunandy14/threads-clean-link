@@ -637,10 +637,11 @@
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
     var syncState = DEFAULT_SYNC_CARD_STATE;
-    // 刪除雲端資料是 fire-and-forget:送出當下就樂觀顯示已完成的 toast，
-    // 這顆旗標記著「下一次 setSyncState 要順便檢查結果」:lastError 非 null
-    // 就把樂觀 toast 蓋成錯誤訊息，轉成已登出就換成「已刪除、已登出」的定案
-    // 提示，見 acctDeleteBtn 的 click handler 與 setSyncState。
+    // 刪除雲端資料送出當下先樂觀顯示已完成的 toast，最後依 sync.deleteCloud
+    // 的回應定案。回應形狀不明(舊版 background)時以這顆旗標退回廣播判讀:
+    // 下一則非 syncing 的 setSyncState 若帶 lastError 就蓋成錯誤訊息，轉成已
+    // 登出就換成「已刪除、已登出」。見 acctDeleteBtn 的 click handler 與
+    // setSyncState。
     var pendingDeleteCloudToast = false;
     // 裝置清單快取(純顯示層，計畫 §4):{ devices, currentDeviceId, defaultName }。
     // null 代表「還沒有任何清單」——與「取到 0 台」是兩回事，後者要畫空狀態。
@@ -1139,16 +1140,35 @@
 
     // 觸發式動作(signIn/signOut/now/deleteCloud):fire-and-forget，後續
     // UI 更新一律等 background 廣播 sync.stateChanged(由接線層轉呼叫
-    // setSyncState)，這裡不用回應值直接改畫面——避免兩條更新路徑互相
-    // 打架。runtime 未注入或呼叫失敗時安靜吞掉，不丟例外。
+    // setSyncState)，不用回應值改畫面——避免兩條更新路徑互相打架;唯一例外
+    // 是刪除雲端資料的結果 toast，依回應定案。runtime 未注入或呼叫失敗時安靜
+    // 吞掉，不丟例外，回傳的 Promise 一律 resolve(失敗時為 undefined)。
     function sendSyncAction(message) {
-      if (!runtime || typeof runtime.sendMessage !== 'function') return;
+      if (!runtime || typeof runtime.sendMessage !== 'function') return Promise.resolve(undefined);
       try {
         var result = runtime.sendMessage(message);
-        if (result && typeof result.catch === 'function') result.catch(function () {});
+        if (result && typeof result.then === 'function') {
+          return result.then(null, function () {
+            return undefined;
+          });
+        }
       } catch (e) {
         // 同上，優雅退回。
       }
+      return Promise.resolve(undefined);
+    }
+
+    // 同步錯誤碼的 toast 文案:session 過期走既有的登入過期文案，其餘以錯誤
+    // 前綴帶出錯誤碼。
+    function syncErrorToastText(code) {
+      if (code === 'session_expired') return tt('opAccountExpired');
+      return tt('opAccountErrorPrefix') + code;
+    }
+
+    // 刪除雲端資料的定案 toast，依 sync.deleteCloud 的回應 { ok, signedOut, code }。
+    function deleteCloudToastText(res) {
+      if (res.ok) return tt(res.signedOut === true ? 'opToastCloudDeletedSignedOut' : 'opToastCloudDeleted');
+      return syncErrorToastText(typeof res.code === 'string' && res.code ? res.code : 'internal_error');
     }
 
     // 顯示名字:displayName 優先，缺席退回 email 的 @ 前段;兩者皆缺回
@@ -1515,12 +1535,11 @@
       syncState = normalizeSyncCardState(state);
       renderAccount(syncState);
       renderScamEvictedHint(syncState);
-      // 刪除雲端資料送出後掛的旗標:這是送出後的第一次廣播，順便檢查
-      // 有沒有失敗——deleteCloud 是 fire-and-forget，這裡是唯一能得知
-      // 結果的管道(見 acctDeleteBtn 的 click handler)。
-      if (pendingDeleteCloudToast) {
+      // 刪除雲端資料送出後掛的旗標(回應定案前的退路):syncing 廣播只是過
+      // 程，帶的 lastError 可能是上一輪留下的，不拿來判讀。
+      if (pendingDeleteCloudToast && syncState.status !== 'syncing') {
         pendingDeleteCloudToast = false;
-        if (syncState.lastError) toast(tt('opAccountErrorPrefix') + syncState.lastError);
+        if (syncState.lastError) toast(syncErrorToastText(syncState.lastError));
         else if (accountMode(syncState) === 'signedOut') toast(tt('opToastCloudDeletedSignedOut'));
       }
       reportSignInFailure(transient);
@@ -1746,12 +1765,15 @@
           icon: '#i-trash',
           desc: tt('opSyncDeleteConfirmDesc'),
           action: function () {
-            sendSyncAction({ type: 'sync.deleteCloud' });
-            // deleteCloud 是 fire-and-forget，送出當下先樂觀提示已完成；
-            // 若下一次 stateChanged 帶回 lastError，setSyncState 會把這
-            // 顆 toast 蓋成錯誤訊息(見 pendingDeleteCloudToast)。
+            var reply = sendSyncAction({ type: 'sync.deleteCloud' });
+            // 送出當下先樂觀提示已完成，回應回來再定案(見 pendingDeleteCloudToast)。
             pendingDeleteCloudToast = true;
             toast(tt('opToastCloudDeleted'));
+            reply.then(function (res) {
+              if (!res || typeof res !== 'object' || typeof res.ok !== 'boolean') return;
+              pendingDeleteCloudToast = false;
+              toast(deleteCloudToastText(res));
+            });
           },
         });
       });
