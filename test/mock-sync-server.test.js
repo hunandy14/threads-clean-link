@@ -38,7 +38,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createMockSyncServer, RATE_LIMIT_MAX, MAX_DEVICES } = require('./helpers/mock-sync-server.js');
+const {
+  createMockSyncServer,
+  RATE_LIMIT_MAX,
+  MAX_DEVICES,
+  CLOUD_DATA_CONTRACT,
+} = require('./helpers/mock-sync-server.js');
 
 const BASE = 'https://api.metalinkclearer.workers.dev';
 const T0 = 1_700_000_000_000;
@@ -867,4 +872,208 @@ test('軟刪除上限：溢位先淘汰已移除者（lastSeenAt 最舊），名
     MAX_DEVICES,
     '活躍數維持在上限'
   );
+});
+
+// ============================================================================
+// 契約 R11（D50）：刪除雲端資料改 Chrome 書籤同步模型
+// ============================================================================
+//
+// 單一端點（路徑與回應鍵名收在 CLOUD_DATA_CONTRACT，後端定稿若不同只改那一處）：
+// 硬刪該使用者的 links／marks／兩種墓碑／devices、清兩條水位線，撤銷**所有**
+// session（含請求用的那一枚），之後任何帶舊 token 的請求一律 401；回
+// `{ ok:true, revokedSessions:n }`（n 含請求方）；冪等。`links/sync`／
+// `marks/sync` 不再依清空水位線拒收，`changes.clearedAt` 保留鍵一版、恆為 null。
+
+const MARK_KEY_R11 = 'threads:5550001';
+
+function r11Mark(overrides = {}) {
+  return Object.assign(
+    {
+      key: MARK_KEY_R11,
+      state: 'active',
+      dismissedAt: null,
+      handle: 'synthetic_scammer',
+      displayName: null,
+      source: 'auto',
+      evidence: [],
+      addedAt: T0 - 5 * MINUTE,
+      updatedAt: T0 - 5 * MINUTE,
+    },
+    overrides
+  );
+}
+
+function r11Call(h, method, path, opts = {}) {
+  const init = { method, headers: {} };
+  const token = Object.prototype.hasOwnProperty.call(opts, 'token') ? opts.token : h.token;
+  if (token !== null) init.headers.authorization = `Bearer ${token}`;
+  if (opts.body !== undefined) {
+    init.body = JSON.stringify(opts.body);
+    init.headers['content-type'] = 'application/json';
+  }
+  return h.server.fetch(`${BASE}${path}`, init);
+}
+
+function deleteCloudData(h, opts) {
+  return r11Call(h, CLOUD_DATA_CONTRACT.method, CLOUD_DATA_CONTRACT.path, opts);
+}
+
+/** 雲端四類資料各種一筆（連結、連結墓碑、警示、警示墓碑）加一台裝置。 */
+async function seedEverything(h) {
+  await h.sync({ upserts: [linkItem()], deletes: [], since: 0 });
+  h.server.seedTombstone('https://www.threads.com/@bob/post/BBBBBBBBBBB', 'local-tomb');
+  h.server.marks.seed([r11Mark()]);
+  h.server.marks.seedTombstone('threads:5550002', T0 - MINUTE);
+  await h.putDevice(DEV_A, { name: '合成桌機', platform: 'chrome_extension' });
+}
+
+test('D50/R11 常數：端點與回應鍵名集中在 CLOUD_DATA_CONTRACT 一處', () => {
+  assert.equal(typeof CLOUD_DATA_CONTRACT, 'object', 'mock 應外露 CLOUD_DATA_CONTRACT');
+  assert.equal(CLOUD_DATA_CONTRACT.method, 'DELETE');
+  assert.equal(typeof CLOUD_DATA_CONTRACT.path, 'string');
+  assert.match(CLOUD_DATA_CONTRACT.path, /^\/api\/v1\//);
+  assert.equal(typeof CLOUD_DATA_CONTRACT.revokedKey, 'string');
+});
+
+test('D50/R11 刪雲端：回 200 { ok:true, revokedSessions }，鍵名只有這兩把', async () => {
+  const h = harness();
+  const res = await deleteCloudData(h);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(Object.keys(body).sort(), ['ok', CLOUD_DATA_CONTRACT.revokedKey].sort());
+  assert.equal(body.ok, true);
+  assert.equal(body[CLOUD_DATA_CONTRACT.revokedKey], 1, '只有請求用的那一枚 session，撤銷數為 1');
+});
+
+test('D50/R11 刪雲端：硬刪 links／marks／兩種墓碑／devices，兩條水位線歸零', async () => {
+  const h = harness();
+  await seedEverything(h);
+  assert.equal(h.server.linkCount(), 1, '前置：連結一筆');
+  assert.equal(h.server.tombstoneCount(), 1, '前置：連結墓碑一筆');
+  assert.equal(h.server.marks.count(), 1, '前置：警示一筆');
+  assert.equal(h.server.marks.tombstoneCount(), 1, '前置：警示墓碑一筆');
+  assert.equal(h.server.deviceCount(), 1, '前置：裝置一台');
+
+  const res = await deleteCloudData(h);
+  assert.equal(res.status, 200);
+  assert.equal(h.server.linkCount(), 0);
+  assert.equal(h.server.tombstoneCount(), 0, '墓碑留著會被重新登入的裝置當成刪除意圖套用');
+  assert.equal(h.server.marks.count(), 0);
+  assert.equal(h.server.marks.tombstoneCount(), 0);
+  assert.equal(h.server.deviceCount(), 0, '裝置清單一併清掉：重新登入的裝置各自重新註冊');
+  assert.equal(h.server.clearedAt(), null, '不寫清空水位線（R11 廢除）');
+  assert.equal(h.server.marks.clearedAt(), null);
+});
+
+test('D50/R11 刪雲端：撤銷該使用者所有 session（含請求方），之後舊 token 一律 401', async () => {
+  const h = harness();
+  const other1 = h.server.issueSession();
+  const other2 = h.server.issueSession();
+  assert.equal(h.server.sessionCount(), 3, '前置：三台裝置各持一枚');
+  // 前置：別台裝置的 token 本來是有效的。
+  assert.equal((await r11Call(h, 'GET', '/api/v1/links', { token: other1 })).status, 200);
+
+  const body = await (await deleteCloudData(h)).json();
+  assert.equal(body[CLOUD_DATA_CONTRACT.revokedKey], 3, '撤銷數含請求方與其他兩台');
+  assert.equal(h.server.sessionCount(), 0);
+
+  for (const token of [h.token, other1, other2]) {
+    assert.equal(h.server.isTokenValid(token), false, `${token} 應已撤銷`);
+    const sync = await r11Call(h, 'POST', '/api/v1/links/sync', { token, body: { upserts: [], deletes: [], since: 0 } });
+    assert.equal(sync.status, 401, `${token}：links/sync 應 401`);
+    const marks = await r11Call(h, 'POST', '/api/v1/marks/sync', { token, body: { upserts: [], deletes: [] } });
+    assert.equal(marks.status, 401, `${token}：marks/sync 應 401`);
+    const session = await r11Call(h, 'GET', '/api/auth/get-session', { token });
+    assert.equal(session.status, 200);
+    assert.equal(await session.json(), null, `${token}：get-session 回 null（api-spec 2.2）`);
+  }
+});
+
+test('D50/R11 刪雲端：無 bearer 回 401，一筆不刪、session 不動', async () => {
+  const h = harness();
+  await seedEverything(h);
+  const res = await deleteCloudData(h, { token: null });
+  assert.equal(res.status, 401);
+  assert.equal(h.server.linkCount(), 1);
+  assert.equal(h.server.marks.count(), 1);
+  assert.equal(h.server.isTokenValid(h.token), true);
+});
+
+test('D50/R11 刪雲端：冪等——舊 token 再打回 401；重新登入後再打 200，雲端維持全空', async () => {
+  const h = harness();
+  await seedEverything(h);
+  assert.equal((await deleteCloudData(h)).status, 200);
+
+  assert.equal((await deleteCloudData(h)).status, 401, '請求方的 session 也已撤銷，舊 token 不得再通過');
+
+  const fresh = h.server.grantToken('tok-r11-fresh');
+  const again = await deleteCloudData(h, { token: fresh });
+  assert.equal(again.status, 200, '空帳號再刪一次照樣成功');
+  const body = await again.json();
+  assert.equal(body.ok, true);
+  assert.equal(body[CLOUD_DATA_CONTRACT.revokedKey], 1, '撤銷數只剩請求用的那一枚');
+  assert.equal(h.server.linkCount(), 0);
+  assert.equal(h.server.marks.count(), 0);
+});
+
+test('D50/R11 多 session：重新登入不撤銷別台裝置的 token；sign-out 只撤銷請求方', async () => {
+  const h = harness();
+  const other = h.server.issueSession();
+  const signIn = await h.server.fetch(`${BASE}/api/auth/sign-in/social`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'google', idToken: { token: 'fake.id.token', nonce: 'n' } }),
+  });
+  const fresh = signIn.headers.get('set-auth-token');
+  assert.ok(fresh, '前置：登入發出新 token');
+  assert.equal(h.server.isTokenValid(h.token), true, '這台重新登入不撤銷它先前的 token');
+  assert.equal(h.server.isTokenValid(other), true, '也不撤銷別台裝置的');
+
+  const out = await r11Call(h, 'POST', '/api/auth/sign-out', { token: other, body: {} });
+  assert.equal(out.status, 200);
+  assert.equal(h.server.isTokenValid(other), false, '登出那一台失效');
+  assert.equal(h.server.isTokenValid(fresh), true, '其他裝置不受影響');
+});
+
+test('D50/R11 links/sync：DELETE /api/v1/links 之後不再依水位線拒收，changes.clearedAt 恆 null', async () => {
+  const h = harness();
+  const item = linkItem({ receivedAt: T0 - 5000, seen: [{ at: T0 - 5000, source: 'share' }] });
+  await h.sync({ upserts: [item], deletes: [], since: 0 });
+  const cleared = await (await r11Call(h, 'DELETE', '/api/v1/links')).json();
+  assert.equal(cleared.ok, true, '舊端點保留（插件不再呼叫）');
+  assert.equal(h.server.linkCount(), 0);
+
+  const body = await (await h.sync({ upserts: [item], deletes: [], since: 0 })).json();
+  assert.deepEqual(body.applied.rejectedIds, [], '早於清空時間點的資料照收');
+  assert.equal(body.applied.upserts.length, 1);
+  assert.ok(Object.prototype.hasOwnProperty.call(body.changes, 'clearedAt'), '保留鍵一版');
+  assert.equal(body.changes.clearedAt, null);
+});
+
+test('D50/R11 刪雲端之後重新登入：全量重傳照收，雲端筆數等於上傳筆數', async () => {
+  const h = harness();
+  await seedEverything(h);
+  await deleteCloudData(h);
+  const fresh = h.server.grantToken('tok-r11-relogin');
+  const upserts = [
+    linkItem({ id: 'r1', receivedAt: T0 - 90_000, seen: [{ at: T0 - 90_000, source: 'share' }] }),
+    linkItem({
+      id: 'r2',
+      original: 'https://www.threads.com/@carol/post/CCCCCCCCCCC',
+      cleaned: 'https://www.threads.com/@carol/post/CCCCCCCCCCC',
+      receivedAt: T0 - 80_000,
+      seen: [{ at: T0 - 80_000, source: 'share' }],
+    }),
+  ];
+  const res = await r11Call(h, 'POST', '/api/v1/links/sync', { token: fresh, body: { upserts, deletes: [], since: 0 } });
+  const body = await res.json();
+  assert.deepEqual(body.applied.rejectedIds, []);
+  assert.equal(h.server.linkCount(), 2);
+  const marksRes = await r11Call(h, 'POST', '/api/v1/marks/sync', {
+    token: fresh,
+    body: { upserts: [r11Mark({ updatedAt: T0 - 10 * MINUTE })], deletes: [] },
+  });
+  const marks = await marksRes.json();
+  assert.deepEqual(marks.applied.rejectedIds, [], '比刪除時間點還舊的警示照收');
+  assert.equal(h.server.marks.count(), 1);
 });

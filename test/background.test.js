@@ -6839,3 +6839,43 @@ test('D45 scam.hit:證據記下的 rulesVersion 是 v4', async () => {
     'rulesVersion 由寫入端記下，升版後新證據一律是 4（跨裝置對帳與調參靠它分新舊）'
   );
 });
+
+// ============================================================================
+// D50 — sync.deleteCloud 的回應形狀（刪雲端＝登出，契約 R11）
+// ============================================================================
+
+test('D50 sync.deleteCloud：只打 R11 端點，回應形狀含 signedOut:true', async () => {
+  const { CLOUD_DATA_CONTRACT } = require('./helpers/mock-sync-server.js');
+  const calls = [];
+  const bg = loadBackgroundForDevices({
+    syncApi: REAL_SYNC,
+    localSeed: {
+      [DEVICE_KEY]: SEEDED_DEVICE,
+      syncAuth: { token: 'test-token' },
+      syncState: { userId: 'user-synthetic', email: 'someone@example.com' },
+      syncVerifiedAt: Date.now(),
+      history: [],
+    },
+    fetch: async (url, init) => {
+      calls.push({ path: new URL(String(url)).pathname, method: ((init && init.method) || 'GET').toUpperCase() });
+      return deviceJsonResponse({ ok: true, [CLOUD_DATA_CONTRACT.revokedKey]: 1 });
+    },
+  });
+
+  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  assert.equal(result.responded, true, '前提：sync.deleteCloud 有人接手');
+  await settle(800);
+
+  assert.ok(result.response && typeof result.response === 'object', '回應要是物件，UI 據以得知已登出');
+  assert.equal(result.response.signedOut, true);
+  assert.ok(
+    calls.some((c) => c.path === CLOUD_DATA_CONTRACT.path && c.method === CLOUD_DATA_CONTRACT.method),
+    '應打 R11 端點'
+  );
+  assert.ok(
+    calls.every((c) => !(c.method === 'DELETE' && (c.path === '/api/v1/links' || c.path === '/api/v1/marks'))),
+    '不再打舊的兩支 DELETE'
+  );
+  const local = bg.storage.localSnapshot();
+  assert.ok(!local.syncAuth || local.syncAuth.token == null, 'token 清掉');
+});
