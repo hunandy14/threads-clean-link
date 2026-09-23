@@ -1630,36 +1630,55 @@
      * @returns {Promise<{ok: boolean, signedOut?: boolean, code?: string}>}
      */
     function deleteCloud() {
+      /** 失敗收尾:不登出、只記 lastError 並廣播 error。 */
+      function failDelete(code) {
+        return loadContext().then(function (fresh) {
+          fresh.state.lastError = code;
+          return saveState(fresh.state)
+            .then(function () {
+              return broadcastState('error');
+            })
+            .then(function () {
+              return { ok: false, code: code };
+            });
+        });
+      }
+
       return loadContext().then(function (ctx) {
         if (!ctx.token) return { ok: false, code: 'signed_out' };
         return call(ctx, 'DELETE', CLOUD_DATA_PATH).then(
           function () {
-            return resetMirrorFields()
-              .then(function () {
-                return saveToken(null);
-              })
-              .then(function () {
-                return saveState(null);
-              })
-              .then(function () {
-                return saveFailures(0);
-              })
-              .then(function () {
-                return localRemove(DEVICES_CACHE_KEY);
-              })
-              .then(removeLegacyGuards)
-              .then(function () {
-                return Promise.all([
-                  Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
-                  Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
-                ]);
-              })
-              .then(function () {
-                return broadcastState('signed_out');
-              })
-              .then(function () {
-                return { ok: true, signedOut: true };
-              });
+            return resetMirrorFields().then(
+              function () {
+                return saveToken(null)
+                  .then(function () {
+                    return saveState(null);
+                  })
+                  .then(function () {
+                    return saveFailures(0);
+                  })
+                  .then(function () {
+                    return localRemove(DEVICES_CACHE_KEY);
+                  })
+                  .then(removeLegacyGuards)
+                  .then(function () {
+                    return Promise.all([
+                      Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
+                      Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
+                    ]);
+                  })
+                  .then(function () {
+                    return broadcastState('signed_out');
+                  })
+                  .then(function () {
+                    return { ok: true, signedOut: true };
+                  });
+              },
+              function () {
+                // 標髒沒落地:token 保留，使用者看得到錯誤，可以再按一次(端點冪等)。
+                return failDelete('storage_write_failed');
+              }
+            );
           },
           function (err) {
             var code = err && err.code ? err.code : 'internal_error';
@@ -1668,16 +1687,7 @@
                 return { ok: false, code: code };
               });
             }
-            return loadContext().then(function (fresh) {
-              fresh.state.lastError = code;
-              return saveState(fresh.state)
-                .then(function () {
-                  return broadcastState('error');
-                })
-                .then(function () {
-                  return { ok: false, code: code };
-                });
-            });
+            return failDelete(code);
           }
         );
       });
