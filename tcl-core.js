@@ -228,7 +228,6 @@
     avatarUrl: null,
     cursor: null,
     lastSyncedAt: null,
-    clearedAt: null,
     lastError: null,
     // D38:警示名單(marks)通道的水位線。與 links 的 cursor 並存於同一包
     // syncState，兩條通道各自獨立推進。
@@ -329,7 +328,6 @@
       avatarUrl: sanitizeAvatarUrl(raw.avatarUrl),
       cursor: optionalCursor(raw.cursor),
       lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
-      clearedAt: optionalFiniteNumber(raw.clearedAt),
       lastError: optionalString(raw.lastError),
       // D38:marks 通道的水位線。cursor 是伺服器發的不透明字串、pushedAt 是
       // 本機推送水位線、evicted 是雲端淘汰筆數(純 UI 提示)、rejected 是被拒
