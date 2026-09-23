@@ -4818,3 +4818,83 @@ test('D50 刪雲端 → 重登 → syncNow：裝置重新登記（mock 1 台）�
   assert.equal(row.name, '合成自訂桌機名', '名稱是本機自訂名，不是預設名');
   assert.deepEqual(env.storage.localData.syncDevice, localDevice);
 });
+
+// ============================================================================
+// 審查 FAIL-1 — 清除全部分批中途失敗：尚未送出的本機墓碑不得被來訊蓋回活資料
+// ============================================================================
+
+/** 第 n 個 links/sync POST 丟斷網（其餘照常轉給 mock）。 */
+function depsFailingNthLinksPost(env, n) {
+  let seen = 0;
+  const inner = env.deps.fetch;
+  return Object.assign({}, env.deps, {
+    fetch(url, init) {
+      const isSync =
+        new URL(String(url)).pathname === '/api/v1/links/sync' && ((init && init.method) || 'GET').toUpperCase() === 'POST';
+      if (isSync) {
+        seen += 1;
+        if (seen === n) return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      return inner(url, init);
+    },
+  });
+}
+
+test('FAIL-1 清除全部 120 筆、第 2 個 POST 斷網：第 1 批回應帶回的後段 key 本機仍是墓碑，續送後雲端墓碑 120、本機 0', async () => {
+  const TCLSync = loadSync();
+  const N = 120;
+  const tombs = [];
+  const rows = [];
+  for (let i = 0; i < N; i += 1) {
+    tombs.push(tombstoneOf(i));
+    rows.push(cloudRowOf(i));
+  }
+  const env = makeEnv({ signedIn: true, history: tombs });
+  env.server.seed(rows);
+
+  const failing = TCLSync.create(depsFailingNthLinksPost(env, 2));
+  await failing.syncNow();
+  await settle(30);
+
+  const first = env.syncPosts()[0];
+  assert.ok(first, '前置：第 1 個 POST 送出');
+  const firstDeletes = new Set(first.body.deletes || []);
+  const local = env.storage.history();
+  const remaining = tombs.filter((t) => !firstDeletes.has(t.id));
+  assert.ok(remaining.length > 0, '前置：還有後段墓碑沒送出');
+  remaining.forEach((t) => {
+    const hit = local.find((e) => postKeyOf(e.url) === postKeyOf(t.url));
+    assert.ok(hit, `${t.id}：本機仍在`);
+    assert.equal(typeof hit.deletedAt, 'number', `${t.id}：刪除優先，不得被來訊蓋回活資料`);
+    assert.equal(hit.dirty, true, `${t.id}：刪除意圖仍待送出`);
+  });
+
+  env.advance(60_000);
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(30);
+
+  assert.equal(env.server.tombstoneCount(), N, '雲端墓碑＝筆數');
+  assert.equal(env.server.linkCount(), 0);
+  assert.deepEqual(env.storage.history(), [], '本機清空');
+});
+
+test('FAIL-1 buildBatches：同一批裡 deletes 先於 upserts 排入（刪除優先）', async () => {
+  const TCLSync = loadSync();
+  const history = [];
+  for (let i = 0; i < 60; i += 1) history.push(tombstoneOf(i));
+  for (let i = 0; i < 60; i += 1) {
+    const url = `https://www.threads.com/@live${i}/post/LIVE${String(i).padStart(8, '0')}`;
+    history.push(entry({ id: `live-${i}`, url, dirty: true }));
+  }
+  const env = makeEnv({ signedIn: true, history });
+  const engine = TCLSync.create(env.deps);
+  await engine.syncNow();
+  await settle(30);
+
+  const posts = env.syncPosts();
+  assert.equal((posts[0].body.deletes || []).length, 50, '第 1 批先裝滿刪除');
+  const firstUpsertBatch = posts.findIndex((r) => (r.body.upserts || []).length > 0);
+  const lastDeleteBatch = posts.map((r) => (r.body.deletes || []).length > 0).lastIndexOf(true);
+  assert.ok(firstUpsertBatch >= lastDeleteBatch, '刪除不得排在任何上傳之後的批次');
+});
