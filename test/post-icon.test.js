@@ -532,6 +532,373 @@ test('classifyExcerptCandidate:空字串——已收集到內文時中止(stop)�
   assert.equal(classifyExcerptCandidate('', false), 'skip');
 });
 
+// ============================================================
+// 【摘要擷取的互動列防護:D47 計數字串、D48 結構排除】
+// extractExcerpt 把互動列的讚數(「6.5 萬」)與影片貼文的配樂標示列收進了
+// 摘要——兩者都是 [dir="auto"] 候選、都跟內文同層並列，唯一可靠的切分是
+// 「自己有 [role='button'] 祖先」(D48 主修);字串形狀的計數判斷
+// (COUNT_LIKE_RE)保留作第二道(D47)。
+//
+// extractExcerpt／extractPostInfo 定義在 post-icon.js 的 document 守衛
+// 內，Node 直接 require() 取不到，這裡沿用本檔既有的
+// loadPostIconInFakeDom()(vm sandbox + 假 document)取 window.TCLPostIcon，
+// 容器則餵下面這棵迷你樹。
+//
+// 下列 fixture 的結構(層級、dir="auto"／role="button"／
+// data-pressable-container 的相對位置)照搬實測員自 staging 擷取的真實
+// DOM，文字一律換成合成字串，不含真實帳號與貼文 code。
+// ============================================================
+
+// ---- 最小假 DOM:一棵支援 textContent／cloneNode(true)／closest／
+// querySelectorAll 的迷你樹。extractExcerpt 的三條保證——「候選依文件序
+// 列出」「祖先鏈上有沒有 a／role=button／別的貼文容器」「cleanElementText
+// 先 cloneNode 再剝掉按鈕子孫」——天生需要真的樹狀結構與祖先鏈，單層
+// duck-type 假物件表達不了。只搭到剛好夠用的程度，不擴充成通用 DOM
+// harness;本檔其餘測試維持既有的假物件慣例。----
+
+// 只支援本區用得到的單段選擇器形狀:`tag`、`[attr]`、`[attr="value"]`、
+// `[attr^="value"]` 與 tag + 屬性的組合(如 a[href^="/@"])。
+const MINI_SELECTOR_RE = /^([a-zA-Z]*)(?:\[([a-zA-Z-]+)(?:(\^?=)"([^"]*)")?\])?$/;
+
+function miniMatches(node, selector) {
+  const parsed = MINI_SELECTOR_RE.exec(String(selector).trim());
+  assert.ok(parsed, '假 DOM 不支援的選擇器：' + selector);
+  const [, tag, attr, operator, value] = parsed;
+  if (tag && node.nodeName !== tag.toUpperCase()) return false;
+  if (!attr) return true;
+  const actual = node.getAttribute(attr);
+  if (actual === null) return false;
+  if (!operator) return true;
+  if (operator === '^=') return actual.indexOf(value) === 0;
+  return actual === value;
+}
+
+function txt(value) {
+  return {
+    nodeType: 3,
+    nodeName: '#text',
+    textContent: value,
+    childNodes: [],
+    cloneNode() {
+      return txt(value);
+    },
+  };
+}
+
+function el(tag, attributes, children) {
+  const node = {
+    nodeType: 1,
+    nodeName: tag.toUpperCase(),
+    tagName: tag.toUpperCase(),
+    attributes: Object.assign({}, attributes || {}),
+    childNodes: [],
+    parentElement: null,
+    parentNode: null,
+    get textContent() {
+      return node.childNodes.map((child) => child.textContent).join('');
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(node.attributes, name)
+        ? String(node.attributes[name])
+        : null;
+    },
+    hasAttribute(name) {
+      return node.getAttribute(name) !== null;
+    },
+    matches(selector) {
+      return miniMatches(node, selector);
+    },
+    closest(selector) {
+      let cursor = node;
+      while (cursor) {
+        if (cursor.matches(selector)) return cursor;
+        cursor = cursor.parentElement;
+      }
+      return null;
+    },
+    // 前序走訪後代(不含自己)，與真實 querySelectorAll 的文件序一致;巢狀
+    // 容器／按鈕內的節點照樣列出——過濾是受測程式的責任，不是假件的。
+    querySelectorAll(selector) {
+      const found = [];
+      (function walk(cursor) {
+        cursor.childNodes.forEach((child) => {
+          if (child.nodeType !== 1) return;
+          if (child.matches(selector)) found.push(child);
+          walk(child);
+        });
+      })(node);
+      return found;
+    },
+    querySelector(selector) {
+      return node.querySelectorAll(selector)[0] || null;
+    },
+    appendChild(child) {
+      node.childNodes.push(child);
+      if (child.nodeType === 1) {
+        child.parentElement = node;
+        child.parentNode = node;
+      }
+      return child;
+    },
+    removeChild(child) {
+      const idx = node.childNodes.indexOf(child);
+      if (idx !== -1) node.childNodes.splice(idx, 1);
+      if (child.nodeType === 1) {
+        child.parentElement = null;
+        child.parentNode = null;
+      }
+      return child;
+    },
+    cloneNode(deep) {
+      return el(tag, node.attributes, deep ? node.childNodes.map((c) => c.cloneNode(true)) : []);
+    },
+  };
+  (children || []).forEach((child) => node.appendChild(child));
+  return node;
+}
+
+// ---- fixture 的合成素材(去識別化;帳號、貼文 code、內文全為合成值) ----
+const FX_AUTHOR = 'author_a';
+const FX_POST_CODE = 'POSTCODE';
+const FX_LINE_1 = '內文第一行';
+const FX_LINE_2 = '內文第二行';
+// 實測的讚數原文用 U+00A0 不斷行空白分隔數字與單位。
+const FX_LIKE_COUNT = '6.5 萬';
+// 影片貼文的配樂標示列(合成曲名／演出者)。
+const FX_MUSIC_ROW = '示意配樂曲名 · 示意演出者';
+
+// 互動列上的一顆計數按鈕:數字包在 [role="button"] 底下的
+// <span dir="auto"> 內，與內文 span 同層並列。
+function fxCountButton(label, count) {
+  return el('div', {}, [
+    el('div', { role: 'button' }, [
+      el('svg', { role: 'img', title: label }, [el('title', {}, [txt(label)])]),
+      el('span', { dir: 'auto' }, [el('div', {}, [el('span', {}, [txt(count)])])]),
+    ]),
+  ]);
+}
+
+// 作者名:整串包在 a[href^="/@"] 內(既有的「在 <a> 內跳過」靠這個形狀)。
+function fxAuthorBlock() {
+  return el('div', {}, [
+    el('a', { href: '/@' + FX_AUTHOR, role: 'link' }, [
+      el('span', { dir: 'auto' }, [el('span', {}, [txt(FX_AUTHOR)])]),
+    ]),
+  ]);
+}
+
+// 時間戳記:dir="auto" 在 <a> 外層(closest('a') 取不到)，靠
+// RELATIVE_TIME_RE 在「尚未收集到內文」時略過。
+function fxTimestamp(label) {
+  return el('span', { dir: 'auto' }, [
+    el('a', { href: '/@' + FX_AUTHOR + '/post/' + FX_POST_CODE, role: 'link' }, [
+      el('time', {}, [txt(label)]),
+    ]),
+  ]);
+}
+
+function fxBodyBlock(lines) {
+  return el(
+    'div',
+    {},
+    lines.map((line) => el('span', { dir: 'auto' }, [el('span', {}, [txt(line)])]))
+  );
+}
+
+// 主文容器(實測 fixture 01):作者／時間戳記／內文／互動列同層並列，
+// 互動列三顆計數(讚 6.5 萬、回覆 132、轉發 2,486)各自在 [role="button"] 內。
+function createMainPostContainer(options) {
+  const opts = options || {};
+  const lines = opts.lines || [FX_LINE_1];
+  const children = [fxAuthorBlock(), fxTimestamp('17小時'), fxBodyBlock(lines)];
+  if (opts.withActionRow !== false) {
+    children.push(
+      el('div', {}, [
+        fxCountButton('讚', FX_LIKE_COUNT),
+        fxCountButton('回覆', '132'),
+        fxCountButton('轉發', '2,486'),
+      ])
+    );
+  }
+  return el('div', { 'data-pressable-container': 'true' }, children);
+}
+
+// 一般回文容器(實測 fixture 02):讚數 101，靠既有的 COUNT_LIKE_RE 就擋得住。
+function createReplyContainer() {
+  return el('div', { 'data-pressable-container': 'true' }, [
+    fxAuthorBlock(),
+    fxTimestamp('1小時'),
+    fxBodyBlock([FX_LINE_1]),
+    el('div', {}, [
+      fxCountButton('讚', '101'),
+      fxCountButton('回覆', '1'),
+      fxCountButton('轉發', '1'),
+    ]),
+  ]);
+}
+
+// 回文詳情頁的 focus 容器(實測 fixture 06):內文 span 內嵌「翻譯」按鈕
+// (cleanElementText 會剝掉)，內文之後是整列包在 [role="button"] 內的配樂
+// 標示列，再來是互動列(計數未載入、span 為空字串)，最後是不在按鈕內的
+// 「尚無回覆」區段標題。
+function createReplyFocusContainer() {
+  return el('div', { 'data-pressable-container': 'true' }, [
+    fxAuthorBlock(),
+    fxTimestamp('3小時'),
+    el('div', {}, [
+      el('span', { dir: 'auto' }, [
+        el('span', {}, [txt(FX_LINE_1)]),
+        el('div', {}, [el('div', { role: 'button' }, [el('span', {}, [txt('翻譯')])])]),
+      ]),
+    ]),
+    el('div', { role: 'button' }, [
+      el('div', {}, [el('svg', { 'aria-label': '播放', role: 'img' }, [])]),
+      el('div', {}, [el('span', { dir: 'auto' }, [txt(FX_MUSIC_ROW)])]),
+    ]),
+    el('div', {}, [fxCountButton('讚', ''), fxCountButton('回覆', ''), fxCountButton('轉發', '')]),
+    el('div', {}, [el('div', {}, [el('span', { dir: 'auto' }, [txt('尚無回覆')])])]),
+  ]);
+}
+
+// 取 window.TCLPostIcon:vm sandbox 內用本檔既有的假 document 載入
+// post-icon.js(容器選擇器回空陣列，載入時不會真的注入任何東西)。
+function loadPostIconApi() {
+  const { api } = loadPostIconInFakeDom(createFakeDocument(0), { runtime: { id: 'tcl-test-ext' } });
+  assert.equal(typeof api.extractPostInfo, 'function', 'sandbox 內應取得 extractPostInfo');
+  return api;
+}
+
+function excerptOf(container) {
+  return loadPostIconApi().extractPostInfo(container).excerpt;
+}
+
+// ---- D47:COUNT_LIKE_RE／classifyExcerptCandidate 的計數字串涵蓋範圍 ----
+
+test('classifyExcerptCandidate(D47):中文計數單位(萬／億)與千分位一律中止收集(stop)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('5.8萬', true), 'stop');
+  assert.equal(classifyExcerptCandidate('5.8 萬', true), 'stop');
+  assert.equal(classifyExcerptCandidate('3億', true), 'stop');
+  assert.equal(classifyExcerptCandidate('12,345', true), 'stop');
+});
+
+test('classifyExcerptCandidate(D47):數字與單位間的不斷行空白(U+00A0)、全形空白(U+3000)、半形空白都要認出來', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('6.5 萬', true), 'stop', '實測讚數原文用 U+00A0');
+  assert.equal(classifyExcerptCandidate('6.5　萬', true), 'stop');
+  assert.equal(classifyExcerptCandidate('1.2 K', true), 'stop');
+});
+
+test('classifyExcerptCandidate(D47):讚數跳動時同一候選內串到兩個計數(「5.9 萬6.0 萬」)，整串仍視為計數而中止(stop)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('5.9 萬6.0 萬', true), 'stop');
+  assert.equal(classifyExcerptCandidate('5.9 萬6.0 萬', true), 'stop');
+});
+
+test('classifyExcerptCandidate(D47 誤殺面):內文句子裡含計數字樣但整串不只是計數，仍視為內文(push)', () => {
+  const { classifyExcerptCandidate } = loadPostIcon();
+
+  assert.equal(classifyExcerptCandidate('今天賣了 5.8 萬', true), 'push');
+  assert.equal(classifyExcerptCandidate('今天賣了 5.8 萬', false), 'push');
+  assert.equal(classifyExcerptCandidate('1.2K 人按讚很多嗎', true), 'push');
+});
+
+// ---- D48:extractExcerpt 排除「自己在 [role='button'] 內」的候選 ----
+
+test('extractExcerpt(D48 主文):互動列讚數(6.5 萬)不得混進摘要，摘要只剩內文', () => {
+  const excerpt = excerptOf(createMainPostContainer());
+
+  assert.equal(excerpt, FX_LINE_1);
+  assert.equal(excerpt.indexOf('萬'), -1, '讚數不得出現在摘要內');
+  assert.equal(excerpt.indexOf(FX_AUTHOR), -1, '作者名整串在 <a> 內，既有的跳過規則要維持');
+});
+
+test('extractExcerpt(D48 主文):多行內文照樣完整收集，互動列計數仍被擋在外', () => {
+  const excerpt = excerptOf(createMainPostContainer({ lines: [FX_LINE_1, FX_LINE_2] }));
+
+  assert.equal(excerpt, FX_LINE_1 + '\n' + FX_LINE_2);
+});
+
+test('extractExcerpt(D48 回文 focus):整列包在 [role="button"] 內的配樂標示列不得混進摘要', () => {
+  const excerpt = excerptOf(createReplyFocusContainer());
+
+  assert.equal(
+    excerpt.indexOf(FX_MUSIC_ROW),
+    -1,
+    '配樂標示列在 [role="button"] 內，屬互動元素不是內文'
+  );
+});
+
+// 嚴格讀法:配樂列被跳過(skip、不中止)之後，後面「尚無回覆」這種同樣不在
+// 按鈕內的區段標題會接著被收——那不是貼文內文，摘要應該就停在內文。上一
+// 條只釘「配樂列不得出現」，這條額外釘「摘要乾淨等於內文」。
+test('extractExcerpt(D48 回文 focus):摘要等於內文本身，不帶配樂列也不帶「尚無回覆」區段標題', () => {
+  assert.equal(excerptOf(createReplyFocusContainer()), FX_LINE_1);
+});
+
+test('extractExcerpt(D48 回文):讚數 101 照舊不入摘要，摘要等於內文', () => {
+  assert.equal(excerptOf(createReplyContainer()), FX_LINE_1);
+});
+
+test('extractExcerpt(D47 第二道):連續兩個計數候選都不在按鈕內時，兩個都不得進入摘要', () => {
+  const container = el('div', { 'data-pressable-container': 'true' }, [
+    fxAuthorBlock(),
+    fxTimestamp('17小時'),
+    fxBodyBlock([FX_LINE_1]),
+    el('span', { dir: 'auto' }, [txt('6.5 萬')]),
+    el('span', { dir: 'auto' }, [txt('6.6 萬')]),
+  ]);
+
+  assert.equal(excerptOf(container), FX_LINE_1);
+});
+
+test('extractExcerpt(誤殺面):內文行本身含「5.8 萬」「1.2K」這種數字字樣，照樣完整收進摘要', () => {
+  const excerpt = excerptOf(
+    createMainPostContainer({ lines: ['今天賣了 5.8 萬', '1.2K 人按讚很多嗎'], withActionRow: false })
+  );
+
+  assert.equal(excerpt, '今天賣了 5.8 萬\n1.2K 人按讚很多嗎');
+});
+
+test('extractExcerpt(既有保證):巢狀引用貼文容器內的文字不屬於本容器，不入摘要', () => {
+  const quoted = createMainPostContainer({ lines: ['引用貼文的內文'], withActionRow: false });
+  const container = el('div', { 'data-pressable-container': 'true' }, [
+    fxAuthorBlock(),
+    fxTimestamp('17小時'),
+    fxBodyBlock([FX_LINE_1]),
+    el('div', {}, [quoted]),
+  ]);
+
+  const excerpt = excerptOf(container);
+  assert.equal(excerpt, FX_LINE_1);
+  assert.equal(excerpt.indexOf('引用貼文的內文'), -1);
+});
+
+test('extractExcerpt(D48 邊界):[role="button"] 祖先落在容器「外面」時不算數，內文照收', () => {
+  const container = createMainPostContainer({ withActionRow: false });
+  // 整個貼文容器被外層的可點擊包裝夾住(祖先鏈往上走得出 [role="button"])，
+  // 但那顆按鈕不在容器內，不該讓整個容器的內文都被跳過。
+  el('div', { role: 'button' }, [container]);
+
+  assert.equal(excerptOf(container), FX_LINE_1);
+});
+
+// ---- 三路徑共用:貼文按鈕／右鍵／自動淨化都經 extractPostInfo(右鍵與自
+// 動淨化走 bridge.js 的 root.TCLPostIcon.extractPostInfo)，驗一處即可 ----
+
+test('extractPostInfo:主文容器回傳的 author／handle／excerpt 三欄都乾淨(摘要不含讚數)', () => {
+  const info = loadPostIconApi().extractPostInfo(createMainPostContainer());
+
+  assert.deepEqual(info, {
+    author: FX_AUTHOR,
+    handle: '@' + FX_AUTHOR,
+    excerpt: FX_LINE_1,
+  });
+});
+
 // ---- isSamePostPath(findContainerByCleanUrl 的可測核心——比對
 // 兩個網址／href 是否指向同一篇貼文，容忍尾隨斜線／query／hash 差異，也
 // 容忍一邊絕對網址、一邊頁面上常見的相對路徑) ----
