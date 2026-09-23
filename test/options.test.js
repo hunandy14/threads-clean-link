@@ -9389,3 +9389,36 @@ test('S3 刪雲端退路:runtime 回應 undefined 時，期間夾一則帶舊 la
   await settle();
   assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
 });
+
+test('S-a 刪雲端:廣播 signed_out 先到、回應 {ok,signedOut} 後到，「已登出」toast 只顯示一次', async () => {
+  const { doc, controller, resolveDelete } = await mountAccountWithDelete(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  // 樂觀 toast 之後才掛側錄（toast 節點在第一次顯示時才建立）。
+  // 每顯示一次 toast 都會 classList.add('show')，側錄當下的文字。
+  const node = doc.ids.toast;
+  const writes = [];
+  const add = node.classList.add.bind(node.classList);
+  node.classList.add = (...names) => {
+    if (names.includes('show')) writes.push(node.textContent);
+    return add(...names);
+  };
+
+  // 引擎成功路徑：先廣播 signed_out，再回應呼叫端。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  resolveDelete({ ok: true, signedOut: true });
+  await settle();
+
+  const finals = writes.filter((v) => v === i18n.t('zh', 'opToastCloudDeletedSignedOut'));
+  assert.equal(finals.length, 1, `定案 toast 只能出現一次，實得序列:${JSON.stringify(writes)}`);
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
+});
