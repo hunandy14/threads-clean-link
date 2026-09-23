@@ -637,7 +637,7 @@
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
     var syncState = DEFAULT_SYNC_CARD_STATE;
-    // 刪除雲端資料送出當下先樂觀顯示已完成的 toast，最後依 sync.deleteCloud
+    // 刪除雲端資料送出當下先顯示「正在刪除」的 toast，最後依 sync.deleteCloud
     // 的回應定案。回應形狀不明(舊版 background)時以這顆旗標退回廣播判讀:
     // 下一則非 syncing 的 setSyncState 若帶 lastError 就蓋成錯誤訊息，轉成已
     // 登出就換成「已刪除、已登出」。見 acctDeleteBtn 的 click handler 與
@@ -1523,7 +1523,7 @@
     // 有沒有可用的雲端工作階段。未登入與登入過期都沒有 token，任何需要
     // Bearer 的動作(sync.now／sync.deleteCloud)送到 background 也只會直接
     // return——按鈕看起來能按、按下去什麼都沒有，比停用更糟(刪雲端那顆還會
-    // 彈一句樂觀的「已刪除雲端資料」，等於謊報)。這一態唯一有意義的動作是
+    // 彈一句「正在刪除雲端資料…」，等於謊報)。這一態唯一有意義的動作是
     // 重新登入。
     function hasCloudSession() {
       var mode = accountMode(syncState);
@@ -1769,7 +1769,7 @@
           desc: tt('opSyncDeleteConfirmDesc'),
           action: function () {
             var reply = sendSyncAction({ type: 'sync.deleteCloud' });
-            // 送出當下先樂觀提示已完成，回應回來再定案(見 pendingDeleteCloudToast)。
+            // 送出當下先顯示進行中提示，回應回來再定案(見 pendingDeleteCloudToast)。
             pendingDeleteCloudToast = true;
             deleteCloudFallbackText = null;
             toast(tt('opToastCloudDeleted'));
