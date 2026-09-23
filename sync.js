@@ -77,15 +77,12 @@
   var API_BASE_KEY = 'syncApiBase';
   var BACKOFF_KEY = 'syncBackoff';
   var VERIFIED_AT_KEY = 'syncVerifiedAt';
-  // 自清守衛(D19):本機自己打過 DELETE /api/v1/links 之後，伺服器會把
-  // cleared_at 回給**每一台**裝置，包含發動的這一台。沒有這筆紀錄就分不出
-  // 「別台裝置清空了」與「我自己剛清的」，於是拉回自己的水位線時把本機早於
-  // 它的紀錄全刪。**刻意獨立於 syncState**:登出與 session 過期會把 syncState
-  // 整包重設，守衛跟著沒了，「刪雲端→登出→再登入」就會全滅。
-  var CLEAR_GUARD_KEY = 'syncClearGuard';
-  // 警示名單那一側的同一件事(R3)。與 links 的守衛各存一把鍵:兩條通道的清空
-  // 水位線互不相干，共用一格會讓「只刪了其中一邊」被誤判成兩邊都清過。
-  var MARKS_CLEAR_GUARD_KEY = 'syncMarksClearGuard';
+  // 舊版的兩把自清守衛鍵。清空水位線已廢除(D50)，這兩把鍵不再讀寫;登入與
+  // 刪雲端時一併移除舊版殘留。
+  var LEGACY_GUARD_KEYS = ['syncClearGuard', 'syncMarksClearGuard'];
+  // 「刪除雲端資料」的單一端點(契約 R11):硬刪該帳號全部雲端資料並撤銷所有
+  // session，回 `{ ok, revokedSessions }`。
+  var CLOUD_DATA_PATH = '/api/v1/cloud-data';
   // 別台裝置的純顯示快取。登出與刪雲端要清掉(留著就會在下一位使用者眼前秀
   // 出上一個帳號的裝置);本機身分 syncDevice 兩者皆不清。
   var DEVICES_CACHE_KEY = 'syncDevices';
@@ -110,31 +107,22 @@
   // 意義的天文數字。
   var MARKS_EVICTED_MAX = 1000000;
 
-  // 自清守衛的兩個槽位(D19／R3)。links 與 marks 各有一把 storage 鍵與一組 ctx
-  // 欄位，形狀閘門、四態裁決與落地出口三者共用。
-  var LINKS_GUARD = {
-    storageKey: CLEAR_GUARD_KEY,
-    field: 'clearGuard',
-    invalidField: 'clearGuardInvalid',
-    errorCode: 'clear_guard_invalid',
-    rememberPurged: false,
-  };
-  var MARKS_GUARD = {
-    storageKey: MARKS_CLEAR_GUARD_KEY,
-    field: 'marksClearGuard',
-    invalidField: 'marksClearGuardInvalid',
-    errorCode: 'marks_clear_guard_invalid',
-    // purge 之後把已處理的水位線記進守衛:marks 的硬刪會一併重設四格，沒記下來
-    // 的話下一輪拉回同一個 clearedAt 又判成一次新的清空，游標每兩輪歸零一次，
-    // 通道永遠停在回填。
-    rememberPurged: true,
-  };
+  // 單輪同步 POST 的上限(links/sync 與 marks/sync 合計)。登入後的全量重傳可能
+  // 切出上百批，一輪連發會撞後端限流桶(與手機端共用)。達上限就結束本輪，
+  // 以 30 秒保底 alarm 排下一輪續跑，直到沒有待推的批次。
+  var MAX_ROUND_POSTS = 12;
 
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
   var INFLIGHT_KEY = 'syncInflight';
+  // 單次請求的逾時(含讀回應本文)。到期中止連線並視為 network_error，走既有
+  // 退避;沒有這一道，一個不回應的連線會讓整輪永遠停在半路。
+  var CALL_TIMEOUT_MS = 30000;
   var DEBOUNCE_KEY = 'syncDebounce';
-  var INFLIGHT_TTL_MS = 120000;
+  // 單飛旗標的時效，必須大於單輪最長時間，否則還在跑的一輪會被第二輪搶走。
+  // 一輪最多 MAX_ROUND_POSTS 個同步 POST，每次最長 CALL_TIMEOUT_MS:12×30 秒
+  // 為 6 分鐘，再加 marks 回填的少數 GET 與 storage 往返，取 8 分鐘。
+  var INFLIGHT_TTL_MS = 480000;
 
   // get-session 的節流:SW 每次被喚醒都會啟動驗一次，而喚醒在瀏覽期間非常
   // 頻繁（每一則訊息、每一個 alarm）。後端限流桶(與手機端共用)容量有限，
@@ -214,17 +202,6 @@
     return err;
   }
 
-  // 這張卡「最新的一次事件」時間。伺服器以此判定早於 clearedAt／墓碑的舊
-  // 資料(api-spec 4.3 規則 2、3)，本機套用雲端水位線時必須用同一個判準。
-  function eventTimeOf(entry) {
-    var latest = typeof entry.receivedAt === 'number' && isFinite(entry.receivedAt) ? entry.receivedAt : 0;
-    var seen = Array.isArray(entry.seen) ? entry.seen : [];
-    for (var i = 0; i < seen.length; i += 1) {
-      if (seen[i] && typeof seen[i].at === 'number' && seen[i].at > latest) latest = seen[i].at;
-    }
-    return latest;
-  }
-
   function keyOfEntry(entry) {
     if (typeof entry.postKey === 'string' && entry.postKey) return entry.postKey;
     return TCLCoreRef.postKeyOf(entry.url);
@@ -240,36 +217,6 @@
 
   function finiteNumber(value) {
     return typeof value === 'number' && isFinite(value);
-  }
-
-  /**
-   * 自清守衛的形狀閘門(D19)。三種結果:
-   *
-   * - `null`:鍵不存在，這台裝置沒有發動過清空。
-   * - 已認領 `{ userId, clearedAt, pending: false }`:知道自己那一次的水位線。
-   * - 待定 `{ userId, clearedAt: null, pending: true, sentAt }`:DELETE 的回應
-   *   沒帶 clearedAt(欄位缺席／不是 JSON)，等下一次 `changes.clearedAt` 來認領。
-   *   **不拿本機時間當水位線**——伺服器時鐘快幾秒就會把自己清的那一次判成別台
-   *   裝置清的，本機紀錄全刪。
-   * - `{ invalid: true }`:鍵在但讀不懂(降級／被寫壞)。這一類**不能**當成「沒有
-   *   守衛」——那等於 fail-open 去硬刪使用者的資料;處理見 clearGuardVerdict。
-   */
-  function normalizeClearGuard(raw) {
-    if (raw === null || raw === undefined) return null;
-    if (typeof raw !== 'object' || Array.isArray(raw)) return { invalid: true };
-    var userId = typeof raw.userId === 'string' && raw.userId ? raw.userId : null;
-    if (finiteNumber(raw.clearedAt)) {
-      return { userId: userId, clearedAt: raw.clearedAt, pending: false };
-    }
-    if (raw.pending === true) {
-      return {
-        userId: userId,
-        clearedAt: null,
-        pending: true,
-        sentAt: finiteNumber(raw.sentAt) ? raw.sentAt : null,
-      };
-    }
-    return { invalid: true, userId: userId };
   }
 
   /**
@@ -396,8 +343,6 @@
       defaults[API_BASE_KEY] = null;
       defaults[BACKOFF_KEY] = null;
       defaults[VERIFIED_AT_KEY] = null;
-      defaults[CLEAR_GUARD_KEY] = null;
-      defaults[MARKS_CLEAR_GUARD_KEY] = null;
       return localGet(defaults).then(function (got) {
         var authRecord = got[AUTH_KEY];
         var backoff = got[BACKOFF_KEY];
@@ -413,8 +358,6 @@
               : got[API_BASE_KEY],
           failures: backoff && typeof backoff.failures === 'number' ? backoff.failures : 0,
           verifiedAt: finiteNumber(got[VERIFIED_AT_KEY]) ? got[VERIFIED_AT_KEY] : null,
-          clearGuard: normalizeClearGuard(got[CLEAR_GUARD_KEY]),
-          marksClearGuard: normalizeClearGuard(got[MARKS_CLEAR_GUARD_KEY]),
         };
       });
     }
@@ -437,87 +380,9 @@
       return localSet(items);
     }
 
-    /** 守衛落地的唯一出口:記憶體與 storage 一起更新，形狀由閘門統一。 */
-    function writeClearGuard(ctx, slot, guard) {
-      ctx[slot.field] = normalizeClearGuard(guard);
-      var items = {};
-      items[slot.storageKey] = guard;
-      return localSet(items);
-    }
-
-    /** 待定守衛:知道自己清過，但還不知道伺服器寫下的水位線是哪一刻。 */
-    function pendingGuard(userId, sentAt) {
-      return { userId: userId, clearedAt: null, pending: true, sentAt: sentAt };
-    }
-
-    /**
-     * 記下「這一次雲端清空是本機自己發動的」(D19)。水位線取伺服器回應的
-     * clearedAt(api-spec 4.4 回 `{ok:true, clearedAt}`);缺席就記成待定，由下
-     * 一次拉回來的 `changes.clearedAt` 認領——**不能**拿本機發出時間頂替:兩邊
-     * 時鐘差幾秒(伺服器較快)就會讓自己清的那一次比守衛新，被判成別台裝置清的，
-     * 本機紀錄全刪。sentAt 只留著診斷用，不參與比較。
-     * 同一個鍵直接覆寫:換帳號時 userId 跟著換，舊守衛自然失效。
-     */
-    function rememberSelfClear(ctx, slot, payload, sentAt) {
-      // 0 視同缺席(序列化過的 null):記成水位線 0 的守衛是「已認領且涵蓋 0」，
-      // 下一輪拉回真正的 clearedAt 就比它新，本機資料被當成別台裝置清的硬刪。
-      // 與下行閘門(只認有限正數)對稱，links 與 marks 共用這一條。
-      var clearedAt =
-        payload && finiteNumber(payload.clearedAt) && payload.clearedAt > 0 ? payload.clearedAt : null;
-      return writeClearGuard(
-        ctx,
-        slot,
-        clearedAt === null
-          ? pendingGuard(ctx.state.userId, sentAt)
-          : { userId: ctx.state.userId, clearedAt: clearedAt }
-      );
-    }
-
-    /** 丟掉兩條通道的守衛(換帳號)。留著會擋掉新帳號真正的清空水位線。 */
-    function forgetSelfClear() {
-      var items = {};
-      items[CLEAR_GUARD_KEY] = null;
-      items[MARKS_CLEAR_GUARD_KEY] = null;
-      return localSet(items);
-    }
-
-    /**
-     * 守衛對這一次 `changes.clearedAt` 的裁決(D19)。硬刪是不可逆的，所以只有
-     * 「確定不是自己清的」才刪:
-     *
-     * - `purge`  沒有守衛，或守衛屬於別的帳號，或水位線比守衛新 → 別台裝置清的。
-     * - `skip`   已認領的守衛涵蓋這個水位線 → 自己清的，本機留著。
-     * - `claim`  守衛待定 → 這就是自己那一次，本機留著並把水位線寫回守衛。
-     * - `invalid` 守衛讀不懂 → 本輪不硬刪(fail-safe)，另記錯誤碼讓使用者知情。
-     */
-    function clearGuardVerdict(ctx, slot, clearedAt) {
-      var guard = ctx[slot.field];
-      if (!guard) return 'purge';
-      if (guard.invalid) return 'invalid';
-      if (guard.userId !== ctx.state.userId) return 'purge';
-      if (guard.pending) return 'claim';
-      return clearedAt <= guard.clearedAt ? 'skip' : 'purge';
-    }
-
-    /**
-     * 落實裁決的副作用:認領待定守衛(記下伺服器的水位線)，或把讀不懂的守衛重置
-     * 成待定、標記錯誤碼——下一輪的 clearedAt 就會把它認領回來，同時 runSync
-     * 收尾時以 clear_guard_invalid 廣播，不把這件事靜靜吞掉。
-     */
-    function settleClearGuard(ctx, slot, verdict, clearedAt) {
-      if (verdict === 'claim') {
-        return writeClearGuard(ctx, slot, { userId: ctx.state.userId, clearedAt: clearedAt });
-      }
-      if (verdict === 'invalid') {
-        ctx[slot.invalidField] = true;
-        return writeClearGuard(ctx, slot, pendingGuard(ctx.state.userId, now()));
-      }
-      // 記下已經套用過的水位線(只有 marks 需要):硬刪之後四格全部重設，下一輪
-      // 拉回同一個 clearedAt 必須判成 skip，否則游標反覆歸零。
-      if (verdict === 'purge' && slot.rememberPurged && finiteNumber(clearedAt)) {
-        return writeClearGuard(ctx, slot, { userId: ctx.state.userId, clearedAt: clearedAt });
-      }
-      return Promise.resolve();
+    /** 移除舊版殘留的兩把自清守衛鍵(D50 起不再讀寫)。 */
+    function removeLegacyGuards() {
+      return localRemove(LEGACY_GUARD_KEYS);
     }
 
     // ---- 狀態與廣播(計劃 5.2／5.3) ----
@@ -617,19 +482,50 @@
         init.body = JSON.stringify(body);
       }
       var res;
-      return Promise.resolve()
-        .then(function () {
-          return fetchImpl(ctx.apiBase + path, init);
-        })
-        .catch(function () {
-          throw syncError('network_error');
-        })
-        .then(function (response) {
-          res = response;
-          return Promise.resolve(res.json()).catch(function () {
-            return null;
-          });
-        })
+      // 逾時:注入的計時器到期就中止連線並讓這一次請求以 network_error 失敗。
+      // 計時器涵蓋到讀完回應本文為止。
+      var controller = typeof AbortController === 'function' ? new AbortController() : null;
+      if (controller) init.signal = controller.signal;
+      var timer = null;
+      var expired = new Promise(function (resolve, reject) {
+        if (typeof setTimer !== 'function') return;
+        timer = setTimer(function () {
+          timer = null;
+          if (controller) controller.abort();
+          reject(syncError('network_error'));
+        }, CALL_TIMEOUT_MS);
+      });
+      expired.catch(function () {});
+      function stopTimer() {
+        if (timer !== null && typeof clearTimer === 'function') clearTimer(timer);
+        timer = null;
+      }
+      return Promise.race([
+        Promise.resolve()
+          .then(function () {
+            return fetchImpl(ctx.apiBase + path, init);
+          })
+          .catch(function () {
+            throw syncError('network_error');
+          })
+          .then(function (response) {
+            res = response;
+            return Promise.resolve(res.json()).catch(function () {
+              return null;
+            });
+          }),
+        expired,
+      ])
+        .then(
+          function (payload) {
+            stopTimer();
+            return payload;
+          },
+          function (err) {
+            stopTimer();
+            throw err;
+          }
+        )
         .then(function (payload) {
           // 【契約要求】api-spec 8.1 第 4 點:「**任何**回應只要帶這個標頭就
           // 覆寫本地存值」——包含 4xx／5xx。後端可能在拒絕這一次請求的同時
@@ -701,6 +597,12 @@
         if (current) batches.push(current);
         current = null;
       }
+      // 刪除先排:分批中途失敗時，已送出的一定是刪除意圖，上傳留待下一輪。
+      deletes.forEach(function (id) {
+        if (current && current.deletes.length + 1 > MAX_DELETES) flush();
+        open();
+        current.deletes.push(id);
+      });
       upserts.forEach(function (item) {
         var rows = Array.isArray(item.seen) ? item.seen.length : 0;
         if (current && (current.upserts.length + 1 > MAX_UPSERTS || current.seenRows + rows > MAX_SEEN_ROWS)) {
@@ -709,11 +611,6 @@
         open();
         current.upserts.push(item);
         current.seenRows += rows;
-      });
-      deletes.forEach(function (id) {
-        if (current && current.deletes.length + 1 > MAX_DELETES) flush();
-        open();
-        current.deletes.push(id);
       });
       flush();
       // 沒有待推的東西也要發一次:一次往返同時處理推與拉，少發這一次就拉不
@@ -795,7 +692,7 @@
               return;
             }
             if (rejectedIds[entry.id]) {
-              // 拒收的原因一律是「這筆事件早於雲端的清空水位線或墓碑」，原樣
+              // 拒收的原因一律是「這筆事件早於雲端的墓碑」，原樣
               // 重送永遠會被再拒一次。清掉 dirty 讓它停在本機，不無限重試。
               next.push(Object.assign({}, entry, { dirty: false }));
               return;
@@ -803,20 +700,10 @@
             next.push(entry);
           });
 
+          // changes.clearedAt(舊後端的清空水位線)一律忽略(D50):雲端的刪除只
+          // 經由墓碑傳到本機，本機不因水位線硬刪任何一筆。
           var changes = body && body.changes;
-          var verdict = null;
           if (changes) {
-            if (finiteNumber(changes.clearedAt)) {
-              // 別台裝置清空了雲端:早於水位線的本機紀錄一併硬刪。自己剛清的
-              // 那一次由守衛擋下(D19):使用者要的是「雲端沒了、這台留著」，把
-              // 自己的水位線拉回來當別人的會把本機資料清光。
-              verdict = clearGuardVerdict(ctx, LINKS_GUARD, changes.clearedAt);
-              if (verdict === 'purge') {
-                next = next.filter(function (entry) {
-                  return eventTimeOf(entry) > changes.clearedAt;
-                });
-              }
-            }
             var tombKeys = {};
             var tombIds = {};
             (changes.deleted || []).forEach(function (row) {
@@ -841,6 +728,10 @@
                   break;
                 }
               }
+              // 刪除優先:本機同 key 是尚未送出的墓碑(dirty)時，這筆來訊不合併。
+              // 蓋成活資料的話刪除意圖就此遺失，雲端與其他裝置永遠不刪;墓碑
+              // 留著，下一批或下一輪照樣以 deletes[] 送出。
+              if (index !== -1 && next[index].dirty === true && TCLCoreRef.isTombstone(next[index])) return;
               var merged = repairMergedEntry(
                 TCLCoreRef.fromSyncItem(item, index === -1 ? null : next[index])
               );
@@ -865,11 +756,6 @@
               throw syncError(TCLCoreRef.isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
             })
             .then(function () {
-              // 守衛的更新排在 history 之後:history 沒寫成功就整輪失敗重來，
-              // 守衛也不該先前進。
-              return settleClearGuard(ctx, LINKS_GUARD, verdict, changes && changes.clearedAt);
-            })
-            .then(function () {
               // D25:拉到沒見過的裝置只留旗標，不在同步途中順手打一次 devices。
               return noteUnknownDevices(body);
             });
@@ -879,33 +765,25 @@
 
     // ---- 一輪推拉往返 ----
 
+    /**
+     * 從本輪的 POST 額度扣一次。額度用完回 false 並記下「尚有待推」，runSync
+     * 收尾時據此排一次 alarm 續跑。
+     */
+    function takePost(ctx) {
+      if (ctx.budget.left <= 0) {
+        ctx.budget.exhausted = true;
+        return false;
+      }
+      ctx.budget.left -= 1;
+      return true;
+    }
+
     function runRound(ctx) {
+      ctx.budget = { left: MAX_ROUND_POSTS, exhausted: false };
       var chain = Promise.resolve();
       // D23:一輪只在**第一個** POST 掛 device 區塊。後端拿它做 upsert，續頁
       // 再帶一次只是重複同一筆寫入。
       var deviceSent = false;
-
-      // 「清除全部」的雲端語意就是 DELETE /api/v1/links(api-spec 4.4):伺服器
-      // 自己寫 cleared_at。必須早於推送，否則剛推上去的資料立刻被自己清掉。
-      if (ctx.state.clearedAt !== null) {
-        var sentAt = now();
-        chain = chain
-          .then(function () {
-            return call(ctx, 'DELETE', '/api/v1/links');
-          })
-          .then(function (payload) {
-            // 自己發動的清空記進守衛，同一輪後面拉回來的 clearedAt 才不會
-            // 被當成別台裝置的水位線(D19)。
-            return rememberSelfClear(ctx, LINKS_GUARD, payload, sentAt);
-          })
-          .then(function () {
-            ctx.state.clearedAt = null;
-            // 舊游標對清空後的雲端已無意義，歸零重拉。
-            ctx.state.cursor = null;
-            return saveState(ctx.state);
-          });
-      }
-
       var lastChanges = null;
 
       chain = chain
@@ -918,6 +796,8 @@
           var step = dropUnsendable(planned.dropped);
           planned.batches.forEach(function (batch) {
             step = step.then(function () {
+              // 額度用完:剩下的批次維持 dirty，下一輪再送。
+              if (!takePost(ctx)) return undefined;
               var body = {
                 upserts: batch.upserts,
                 deletes: batch.deletes,
@@ -950,6 +830,8 @@
           var rounds = 0;
           function more() {
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+            // 游標停在已落地的那一頁，下一輪從這裡續拉。
+            if (!takePost(ctx)) return Promise.resolve();
             rounds += 1;
             return call(ctx, 'POST', '/api/v1/links/sync', { since: ctx.state.cursor }).then(function (payload) {
               // 同上:先落地再前進游標。
@@ -1094,8 +976,8 @@
      * 整段不寫 storage:白寫一次除了燒配額，還會讓所有 storage.onChanged 的讀
      * 者(選項頁的名單)為一件沒發生的事重畫一次。
      */
-    function applyMarkChanges(marks, deletions, purgeBefore) {
-      if (!marks.length && !deletions.length && purgeBefore === null) return Promise.resolve([]);
+    function applyMarkChanges(marks, deletions) {
+      if (!marks.length && !deletions.length) return Promise.resolve([]);
       // 比墓碑新、因此留在本機的條目。回給呼叫端把推送水位線讓回去，下一輪
       // 才推得到它們。
       var kept = [];
@@ -1103,19 +985,6 @@
       var changed = false;
       return writeChain(function () {
         return readBlocklist().then(function (list) {
-          // 【雲端清空】別台裝置打過 DELETE /api/v1/marks:不晚於水位線的本機條
-          // 目一併硬刪，晚於的留著(那是清空之後才動過的，伺服器收得下)。自己剛
-          // 清的那一次由守衛在呼叫端擋下(D19 的同一條紀律)。
-          if (purgeBefore !== null) {
-            Object.keys(list.entries).forEach(function (userId) {
-              var current = list.entries[userId];
-              var at = finiteNumber(current.updatedAt) ? current.updatedAt : 0;
-              if (at <= purgeBefore) {
-                delete list.entries[userId];
-                changed = true;
-              }
-            });
-          }
           // 【墓碑守衛】契約 §3.1 R2③「比墓碑舊不復活」的對稱面:本機
           // updatedAt **晚於** deletedAt，代表使用者在別台裝置刪掉這一筆之後
           // 又動過它，那份改動不該被一筆較舊的刪除吃掉。留著並於下一輪重送，
@@ -1270,15 +1139,10 @@
             deletions.push({ key: row.key, deletedAt: finiteNumber(row.deletedAt) ? row.deletedAt : -Infinity });
           });
         }
-        // 【清空水位線】0 與非有限數字一律視同「沒有水位線」——0 是序列化過的
-        // null，拿它去比大小會把整份名單清掉。守衛四態與 links 同一套(D19):只有
-        // 「確定不是自己清的」才硬刪。
-        var clearedAt =
-          changes && finiteNumber(changes.clearedAt) && changes.clearedAt > 0 ? changes.clearedAt : null;
-        var verdict = clearedAt === null ? null : clearGuardVerdict(ctx, MARKS_GUARD, clearedAt);
-        var purgeBefore = verdict === 'purge' ? clearedAt : null;
+        // changes.clearedAt(舊後端的清空水位線)一律忽略(D50):名單只經由墓碑
+        // 刪除。
         // 【順序】游標必須等寫入真的落地才前進(比照 links)。
-        return applyMarkChanges(marks, deletions, purgeBefore).then(function (kept) {
+        return applyMarkChanges(marks, deletions).then(function (kept) {
           // 【順序】先記讓位再結算:settleMarkAck 要拿這一輪的 floor 夾住自己
           // 推上去的水位線，floor 晚一步記就夾不到本批的 ack。
           noteMarkFloor(floor, kept);
@@ -1289,21 +1153,7 @@
           // 舊值)，留存的條目下一輪依舊選不到。整輪尾端那次保留著，重複套用冪等。
           applyMarkFloor(ctx, floor);
           if (payload && isCursor(payload.cursor)) ctx.state.marksCursor = payload.cursor;
-          // 【順序】守衛的更新排在名單落盤之後:名單沒寫成功就整輪失敗重來，守
-          // 衛也不該先前進。
-          return settleClearGuard(ctx, MARKS_GUARD, verdict, clearedAt).then(function () {
-            if (purgeBefore === null) return changes;
-            // 清空之後舊游標與推送水位線對這個雲端都沒有意義:四格一併重設，下
-            // 一輪從回填把名單重新長回來。回填的續填位置同樣作廢——留著會讓下
-            // 一輪從一份已經不存在的分頁中段接手。
-            ctx.state.marksCursor = null;
-            ctx.state.marksPushedAt = null;
-            ctx.state.marksRejected = null;
-            ctx.state.marksEvicted = null;
-            ctx.state.marksBackfillCursor = null;
-            round.purged = true;
-            return changes;
-          });
+          return changes;
         });
       });
     }
@@ -1347,7 +1197,7 @@
         return call(ctx, 'GET', path).then(function (payload) {
           if (payload && isCursor(payload.cursor)) position = payload.cursor;
           var items = payload && Array.isArray(payload.items) ? payload.items : [];
-          return applyMarkChanges(items, [], null).then(function () {
+          return applyMarkChanges(items, []).then(function () {
             var next = payload && isCursor(payload.nextCursor) ? payload.nextCursor : null;
             if (next === null) {
               ctx.state.marksBackfillCursor = null;
@@ -1370,12 +1220,13 @@
       // 整輪共用一份讓位下限:任何一批留下來的條目都要守到這一輪結束。
       var floor = { value: null };
       // 整輪的結算帳:evicted 累計與「有沒有一筆被拒」決定輪末收不收掉淘汰提
-      // 示;purged 則讓清空當輪立刻收手——四格都重設了，再推再拉都沒有意義。
-      var round = { evicted: 0, rejected: false, purged: false };
+      // 示。
+      var round = { evicted: 0, rejected: false };
       var step = Promise.resolve();
       batches.forEach(function (batch) {
         step = step.then(function () {
-          if (round.purged) return undefined;
+          // 額度用完:沒送出的批次仍在推送水位線之上，下一輪選得到。
+          if (!takePost(ctx)) return undefined;
           return postMarks(ctx, batch, floor, round).then(function (changes) {
             lastChanges = changes;
           });
@@ -1386,8 +1237,8 @@
           // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
           var rounds = 0;
           function more() {
-            if (round.purged) return Promise.resolve();
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
+            if (!takePost(ctx)) return Promise.resolve();
             rounds += 1;
             return postMarks(ctx, emptyMarkBatch(), floor, round).then(function (changes) {
               lastChanges = changes;
@@ -1400,8 +1251,8 @@
           applyMarkFloor(ctx, floor);
           // 一輪完整跑完(沒有例外、沒有一筆被拒)且這一輪雲端一筆都沒淘汰時，把
           // 上一輪留下的提示收掉:對完帳那張提示就該收，否則它永遠掛在卡頭上。
-          // 清空當輪已經重設過四格，不再動它。
-          if (!round.purged && !round.rejected && round.evicted === 0) ctx.state.marksEvicted = null;
+          // 額度用完提早收手的一輪不算完整跑完。
+          if (!ctx.budget.exhausted && !round.rejected && round.evicted === 0) ctx.state.marksEvicted = null;
         });
     }
 
@@ -1411,7 +1262,7 @@
         // D35 開關 A:關閉時整條通道跳過，零請求、水位線一格不動。
         if (!enabled) return undefined;
         // 回填中的判準是兩格:marksBackfillCursor 非 null 代表上一輪停在分頁
-        // 中段，marksCursor 為 null 代表這個帳號還沒回填過(或剛被清空重設)。
+        // 中段，marksCursor 為 null 代表這個帳號還沒回填過(或登入時剛重設)。
         var backfilling = ctx.state.marksBackfillCursor !== null || ctx.state.marksCursor === null;
         var chain = backfilling ? backfillMarks(ctx) : Promise.resolve(true);
         return chain.then(function (backfilled) {
@@ -1475,10 +1326,10 @@
      *
      * 【合併式 patch】session 過期是一次轉場，不是換帳號也不是刪資料:整包
      * 重設會把 userId 一起清掉，下次登入的帳號切換偵測(finishSignIn)就永遠
-     * 判不出「換了人」，前一位使用者的本機鏡像會被當成新帳號的資料;
-     * clearedAt(待送出的清空)與 cursor 被清掉則分別造成「清空指令遺失」與
-     * 「重登後整份重拉」。displayName／avatarUrl 留著是 D17 的「登入過期」
-     * 卡片要顯示的資訊——使用者得看得出過期的是哪一個帳號。
+     * 判不出「換了人」，前一位使用者的本機鏡像會被當成新帳號的資料。游標與
+     * history 不動，重建鏡像的標髒統一在 finishSignIn 做。displayName／
+     * avatarUrl 留著是 D17 的「登入過期」卡片要顯示的資訊——使用者得看得出
+     * 過期的是哪一個帳號。
      * 退避次數歸零:失效不是後端故障，重新登入後該從基礎週期重新開始。
      */
     function handleSessionExpired() {
@@ -1592,23 +1443,18 @@
       var rawAvatar = typeof user.image === 'string' ? user.image : claims.picture;
       var displayName = TCLCoreRef.sanitizeDisplayName(rawName);
       var avatarUrl = TCLCoreRef.sanitizeAvatarUrl(rawAvatar);
-      // 帳號切換:上一位使用者的雲端鏡像欄位對新帳號毫無意義，全部重置成
-      // 「本機新資料」，由這次登入重新全量上傳(比照手機端 active-owner)。
+      // 登入＝重建鏡像(D50):雲端可能已被刪除(本機或別台裝置發動)，也可能
+      // 換了帳號，本機無從分辨，因此每次登入都把 history 全部標髒重傳，墓碑
+      // 一併進 deletes[]。marks 的四格與回填位置隨下方 saveState 整包重設，
+      // 名單同樣全推。伺服器端的 upsert 與墓碑冪等，重傳不會長出重複資料。
       var switched = ctx.state.userId !== null && userId !== null && ctx.state.userId !== userId;
-      var reset = switched ? resetMirrorFields() : Promise.resolve();
-      return reset
+      return resetMirrorFields()
+        .then(removeLegacyGuards)
         .then(function () {
-          // 自清守衛屬於前一個帳號:換人之後這台裝置對新帳號的雲端沒有做過
-          // 任何清空，留著只會擋掉新帳號真正的清空水位線(D19)。
+          // 別台裝置的清單屬於前一個帳號(D25):換人時這份顯示層快取留著，就是
+          // 把上一位使用者的裝置名秀給新使用者看。同帳號重新登入不清。
           if (!switched) return undefined;
-          ctx.clearGuard = null;
-          ctx.marksClearGuard = null;
-          return forgetSelfClear().then(function () {
-            // 別台裝置的清單同樣屬於前一個帳號(D25):鏡像欄位都重置了，這份
-            // 顯示層快取沒有獨活下來的道理，留著就是把上一位使用者的裝置名
-            // 秀給新使用者看。同帳號重新登入不清——那不是換人。
-            return localRemove(DEVICES_CACHE_KEY);
-          });
+          return localRemove(DEVICES_CACHE_KEY);
         })
         .then(function () {
           return saveToken(exchange.authToken);
@@ -1752,17 +1598,16 @@
           return runRound(ctx)
             .then(function () {
               ctx.state.lastSyncedAt = now();
-              // 守衛讀不懂時這一輪照樣走完(推拉都成功，只是沒有執行硬刪)，但
-              // 不能靜靜吞掉:記錯誤碼並以 error 廣播，使用者才知道「別台裝置的
-              // 清空這一輪沒有套用到這台」。守衛已重置成待定，下一輪會認領回來。
-              var guardInvalid = null;
-              if (ctx.clearGuardInvalid) guardInvalid = LINKS_GUARD.errorCode;
-              else if (ctx.marksClearGuardInvalid) guardInvalid = MARKS_GUARD.errorCode;
-              ctx.state.lastError = guardInvalid;
+              ctx.state.lastError = null;
               return saveState(ctx.state)
                 .then(scheduleSuccess)
                 .then(function () {
-                  return broadcastState(guardInvalid === null ? 'signed_in' : 'error');
+                  return broadcastState('signed_in');
+                })
+                .then(function () {
+                  // 本輪 POST 額度用完:排保底 alarm 續跑，直到沒有待推的批次。
+                  if (ctx.budget && ctx.budget.exhausted) return scheduleContinuation();
+                  return undefined;
                 });
             })
             .catch(function (err) {
@@ -1803,86 +1648,82 @@
         });
     }
 
+    /**
+     * 刪除雲端資料(D50，契約 R11):打單一端點，伺服器硬刪這個帳號的全部雲端
+     * 資料並撤銷所有 session。成功(2xx，不看 revokedSessions)即本機登出:
+     *
+     * 1. history 全部標髒、serverUpdatedAt 歸 null(墓碑的 deletedAt 不動)，
+     *    下次登入時全量重傳。先標髒再登出:標髒寫入失敗時整件事走失敗路徑，
+     *    token 還在，使用者看得到錯誤而不是一個已登出卻漏標的本機鏡像。
+     * 2. 清 token、syncState 整包重設、退避歸零、清別台裝置快取、移除舊版守衛
+     *    鍵、停掉兩支 alarm，廣播 signed_out。本機身分 syncDevice 不動。
+     *
+     * 失敗(非 2xx／斷網)不登出、本機一格不動，只記 lastError;401 走 session
+     * 過期的統一出口。
+     *
+     * @returns {Promise<{ok: boolean, signedOut?: boolean, code?: string}>}
+     */
     function deleteCloud() {
+      /** 失敗收尾:不登出、只記 lastError 並廣播 error。 */
+      function failDelete(code) {
+        return loadContext().then(function (fresh) {
+          fresh.state.lastError = code;
+          return saveState(fresh.state)
+            .then(function () {
+              return broadcastState('error');
+            })
+            .then(function () {
+              return { ok: false, code: code };
+            });
+        });
+      }
+
       return loadContext().then(function (ctx) {
-        if (!ctx.token) return undefined;
-        var sentAt = now();
-        return call(ctx, 'DELETE', '/api/v1/links')
-          .then(function (payload) {
-            // 先記自清守衛再動 history:伺服器已經寫下 cleared_at 並會回給
-            // 這台裝置自己，沒有這一筆的話下一輪(或重新登入後的首輪)拉回
-            // 自己的水位線就會把要留在本機的紀錄全刪(D19)。
-            return rememberSelfClear(ctx, LINKS_GUARD, payload, sentAt);
-          })
-          .then(function () {
-            // 本機紀錄原樣保留但全部標乾淨:刪完雲端若還留著 dirty，下一輪同步
-            // 立刻把資料推回去，使用者的刪除等於完全無效。
-            return writeChain(function () {
-              return readHistory().then(function (list) {
-                var next = list.map(function (entry) {
-                  return Object.assign({}, entry, { dirty: false, serverUpdatedAt: null });
-                });
-                var items = {};
-                items[HISTORY_KEY] = next;
-                return localSet(items);
+        if (!ctx.token) return { ok: false, code: 'signed_out' };
+        return call(ctx, 'DELETE', CLOUD_DATA_PATH).then(
+          function () {
+            return resetMirrorFields().then(
+              function () {
+                return saveToken(null)
+                  .then(function () {
+                    return saveState(null);
+                  })
+                  .then(function () {
+                    return saveFailures(0);
+                  })
+                  .then(function () {
+                    return localRemove(DEVICES_CACHE_KEY);
+                  })
+                  .then(removeLegacyGuards)
+                  .then(function () {
+                    return Promise.all([
+                      Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
+                      Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
+                    ]);
+                  })
+                  .then(function () {
+                    return broadcastState('signed_out');
+                  })
+                  .then(function () {
+                    return { ok: true, signedOut: true };
+                  });
+              },
+              function () {
+                // 標髒沒落地:token 保留，使用者看得到錯誤，可以再按一次(端點冪等)。
+                return failDelete('storage_write_failed');
+              }
+            );
+          },
+          function (err) {
+            var code = err && err.code ? err.code : 'internal_error';
+            if (code === 'session_expired') {
+              return handleSessionExpired().then(function () {
+                return { ok: false, code: code };
               });
-            });
-          })
-          .then(function () {
-            // 【兩條通道各自結算】links 那一支已經成功，雲端那份紀錄真的沒
-            // 了:本機這一側的重設在這裡就落地，不等 marks 收尾。押到最後統一
-            // 寫的話，marks 失敗會把 links 側一起回捲——本機還留著 cursor 與
-            // displayName，下一輪同步拿一個指向不存在資料的游標去續傳，帳號入
-            // 口也繼續秀著剛被刪掉的那份資料。
-            // 游標歸零:舊游標指向的增量在清空後的雲端已不存在。
-            ctx.state.cursor = null;
-            ctx.state.clearedAt = null;
-            ctx.state.lastError = null;
-            // D15:使用者主動刪雲端資料是明確的隱私動作，即便帳號仍保持登入
-            // (userId／email 不動)，快取的名字與大頭照也一併清空，不留在本
-            // 機造成「資料已刪但畫面還秀著」的錯覺。
-            ctx.state.displayName = null;
-            ctx.state.avatarUrl = null;
-            return saveState(ctx.state);
-          })
-          .then(function () {
-            return localRemove(DEVICES_CACHE_KEY);
-          })
-          .then(function () {
-            // 刪除雲端資料必須涵蓋警示名單(R3):只刪 links 的話名單整份留在後
-            // 端。排在 links 之後，前一步失敗時這一步不會把那個錯誤吞掉;總開關
-            // 關閉時照樣刪——使用者要的是雲端那一份消失，與本機掃不掃描無關。
-            var marksSentAt = now();
-            return call(ctx, 'DELETE', MARKS_PATH)
-              .then(function (payload) {
-                // 與 links 同一條紀律:沒刪成功就不記守衛(記了等於把「已清空」寫死
-                // 在本機，別台裝置真的清空時反而不刪)。
-                return rememberSelfClear(ctx, MARKS_GUARD, payload, marksSentAt);
-              })
-              .then(function () {
-                // marks 的水位線同理:雲端名單沒了，推送水位線、被拒映射、淘汰
-                // 提示與回填位置一併歸零，下一輪從回填重新長回來。本機名單則留
-                // 在這台裝置(D19)。
-                ctx.state.marksCursor = null;
-                ctx.state.marksPushedAt = null;
-                ctx.state.marksRejected = null;
-                ctx.state.marksEvicted = null;
-                ctx.state.marksBackfillCursor = null;
-                return saveState(ctx.state);
-              });
-          })
-          .then(function () {
-            return broadcastState('signed_in');
-          })
-          .catch(function (err) {
-            if (err && err.code === 'session_expired') return handleSessionExpired();
-            return loadContext().then(function (fresh) {
-              fresh.state.lastError = err && err.code ? err.code : 'internal_error';
-              return saveState(fresh.state).then(function () {
-                return broadcastState('error');
-              });
-            });
-          });
+            }
+            return failDelete(code);
+          }
+        );
       });
     }
 
@@ -2144,6 +1985,18 @@
       return sessionSet(items);
     }
 
+    /**
+     * 額度用完後的續跑:只排 30 秒保底 alarm(不排 2 秒計時器)，兩輪之間至少
+     * 隔 DEBOUNCE_GUARD_MS，不對後端限流桶連發。待辦旗標與去抖共用，到期時
+     * 由 fireDebounce 認領;期間有新紀錄進來的話，照去抖的節奏提早跑。
+     */
+    function scheduleContinuation() {
+      alarms.create(DEBOUNCE_ALARM_NAME, { when: now() + DEBOUNCE_GUARD_MS });
+      var items = {};
+      items[DEBOUNCE_KEY] = { at: now() };
+      return sessionSet(items);
+    }
+
     /** 認領去抖待辦。搶到才跑同步，另一條路到期時就會撲空。 */
     function claimDebounce() {
       var defaults = {};
@@ -2201,6 +2054,7 @@
     ALARM_NAME: ALARM_NAME,
     DEBOUNCE_ALARM_NAME: DEBOUNCE_ALARM_NAME,
     DEBOUNCE_MS: DEBOUNCE_MS,
+    MAX_ROUND_POSTS: MAX_ROUND_POSTS,
     SYNC_PERIOD_MINUTES: SYNC_PERIOD_MINUTES,
     API_BASE_PRODUCTION: API_BASE_PRODUCTION,
     API_BASE_STAGING: API_BASE_STAGING,

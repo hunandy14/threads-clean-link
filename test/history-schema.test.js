@@ -580,7 +580,7 @@ test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
     avatarUrl: null,
     cursor: null,
     lastSyncedAt: null,
-    clearedAt: null,
+    // 【斷言翻轉｜D53】clearedAt（清除全部的全域水位線）移除：清除全部改走墓碑。
     lastError: null,
     // D38（車道 B）:警示名單 marks 通道的四格水位線，見 sync-marks 契約。
     marksCursor: null,
@@ -646,14 +646,19 @@ test('S5 normalizeSyncState:缺欄位補預設、型別錯誤回該欄預設、�
     email: 'a@example.com',
     cursor: '1700000000000~abc',
     lastSyncedAt: 1700000000000,
-    // clearedAt 缺席 → null
     lastError: 42, // 型別錯誤 → null
   });
   assert.equal(out.userId, 'user-1');
   assert.equal(out.email, 'a@example.com');
   assert.equal(out.cursor, '1700000000000~abc');
   assert.equal(out.lastSyncedAt, 1700000000000);
-  assert.equal(out.clearedAt, null, '缺席欄位補預設');
+  // 【斷言翻轉｜D53】clearedAt 不再是 syncState 的欄位，連預設值都不補。
+  assert.equal(Object.prototype.hasOwnProperty.call(out, 'clearedAt'), false, 'clearedAt 已移除');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(C.normalizeSyncState({ clearedAt: 1700000000000 }), 'clearedAt'),
+    false,
+    '舊版殘留的 clearedAt 當未知鍵剝除'
+  );
   assert.equal(out.lastError, null, '型別錯誤回預設');
 
   // 數字欄位收到字串／非有限數字一律回預設（NaN 進 storage 會序列化成
