@@ -4898,3 +4898,46 @@ test('FAIL-1 buildBatches：同一批裡 deletes 先於 upserts 排入（刪除�
   const lastDeleteBatch = posts.map((r) => (r.body.deletes || []).length > 0).lastIndexOf(true);
   assert.ok(firstUpsertBatch >= lastDeleteBatch, '刪除不得排在任何上傳之後的批次');
 });
+
+// ============================================================================
+// 審查 S1 — 單輪 POST 上限：全量重傳分多輪續跑，不一輪連發撞限流
+// ============================================================================
+
+function roundPosts(env) {
+  return env.server
+    .requestsTo('/api/v1/links/sync', 'POST')
+    .concat(env.server.requestsTo('/api/v1/marks/sync', 'POST'));
+}
+
+test('S1 1,000 筆 history 登入：首輪 POST 數（links＋marks）≤ MAX_ROUND_POSTS，之後經去抖自動續跑至全部 ack', async () => {
+  const TCLSync = loadSync();
+  assert.equal(typeof TCLSync.MAX_ROUND_POSTS, 'number', '要匯出單輪 POST 上限');
+  const limit = TCLSync.MAX_ROUND_POSTS;
+  const N = 1000;
+  const history = [];
+  for (let i = 0; i < N; i += 1) {
+    const url = `https://www.threads.com/@bulk${i}/post/BULK${String(i).padStart(8, '0')}`;
+    const at = T0 - 2_000_000 + i;
+    history.push(entry({ id: `bulk-${i}`, url, at, receivedAt: at, seen: [{ at, kind: 'strip' }], dirty: false, serverUpdatedAt: at }));
+  }
+  const env = makeEnv({ history });
+  const engine = TCLSync.create(env.deps);
+  await engine.signIn();
+  await settle(40);
+
+  const firstRound = roundPosts(env).length;
+  assert.ok(firstRound <= limit, `首輪 POST ${firstRound} 不得超過上限 ${limit}`);
+  assert.ok(env.timers.live.length > 0, '還有待推：要排一次去抖續跑');
+
+  for (let i = 0; i < 20 && env.timers.live.length > 0; i += 1) {
+    const before = roundPosts(env).length;
+    await env.runTimers();
+    await settle(40);
+    assert.ok(roundPosts(env).length - before <= limit, '續跑的每一輪同樣受上限約束');
+  }
+
+  assert.equal(env.server.linkCount(), N, '全部上雲');
+  assert.equal(env.storage.history().filter((e) => e.dirty === true).length, 0, '全部 ack');
+  assert.equal(env.lastState().pendingCount, 0);
+  assert.equal(env.storage.syncState().lastError, null);
+});
