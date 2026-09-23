@@ -768,8 +768,11 @@ function createReplyFocusContainer() {
 // 個 realm，realm 內 `{}` 的原型是該 realm 自己的 Object.prototype，而
 // node:assert/strict 的 deepEqual 連原型一起比，extractPostInfo 回傳的物件
 // 永遠對不上本檔寫的物件字面量。改用 new Function 在同一個 realm 內餵同一
-// 組假全域——隔離程度相同(假 document、假 chrome、看不到 module 所以走
-// root.TCLPostIcon 分支)，回傳值則是一般物件。
+// 組假全域，回傳值就是一般物件。與 sandbox 相同的有三點:同一份假
+// document、同一份假 chrome、看不到 module 所以走 root.TCLPostIcon 分支。
+// 差別是這樣載入時模組看得到 Node realm 其餘的全域(process／globalThis／
+// navigator 等);post-icon.js 取瀏覽器全域一律走 root. 前綴(root.location／
+// root.navigator／root.getComputedStyle)，目前沒有用到裸全域，撞不到。
 function loadPostIconApi() {
   const win = {
     location: { origin: 'https://www.threads.com' },
@@ -928,6 +931,23 @@ test('extractExcerpt(D48 邊界):容器節點自己帶 role="button" 不算容�
   ]);
 
   assert.equal(excerptOf(container), FX_LINE_1);
+});
+
+// 按鈕內的候選也可能排在內文「之前」(影片貼文的「追蹤」鈕就在內文上方)，
+// 此時還沒收集到任何內文，只能跳過這個候選繼續往下看;若改成一律中止，摘要
+// 會在第一顆按鈕就整篇空掉。
+test('extractExcerpt(D48 分流):內文之前就出現按鈕內的候選時只跳過不中止，摘要仍是內文', () => {
+  const container = el('div', { 'data-pressable-container': 'true' }, [
+    fxAuthorBlock(),
+    el('div', {}, [el('div', { role: 'button' }, [el('span', { dir: 'auto' }, [txt('追蹤')])])]),
+    fxTimestamp('17小時'),
+    fxBodyBlock([FX_LINE_1]),
+    el('div', {}, [fxCountButton('讚', FX_LIKE_COUNT)]),
+  ]);
+
+  const excerpt = excerptOf(container);
+  assert.equal(excerpt, FX_LINE_1, '內文之前的按鈕只該被跳過，摘要不得整篇空掉');
+  assert.equal(excerpt.indexOf('追蹤'), -1, '按鈕內的文字不得進摘要');
 });
 
 // ---- 三路徑共用:貼文按鈕／右鍵／自動淨化都經 extractPostInfo(右鍵與自
