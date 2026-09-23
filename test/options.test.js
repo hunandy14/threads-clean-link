@@ -2128,7 +2128,7 @@ test('refresh:詳細視窗開著時一併刷新視窗內相對時間(detailTime)
 // ------------------------------------------------------------
 // 刪除／清空的語意依登入態分流(D6:未登入行為與現況完全一致):
 //   - 已登入(syncState.userId 非 null):單筆刪除軟刪(寫 deletedAt 墓碑 +
-//     dirty)，清除全部寫 syncState.clearedAt 這條全域水位線;
+//     dirty)，清除全部同樣逐筆轉墓碑(D53，清空水位線已廢除);
 //   - 未登入:維持現況硬刪。
 // 墓碑是「等待上傳的刪除意圖」，必須留在 storage，但一律不進畫面、統計、
 // 圖表與匯出檔。匯入則改以 postKey 去重(D11)，並接受含／不含新欄位兩種格式。
@@ -2140,12 +2140,12 @@ const S4_NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serv
 // 已登入的 syncState(計劃 4.2 的形狀)。
 function signedInState(overrides) {
   return Object.assign(
-    { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+    { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, lastError: null },
     overrides || {}
   );
 }
 function signedOutState() {
-  return { userId: null, email: null, cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null };
+  return { userId: null, email: null, cursor: null, lastSyncedAt: null, lastError: null };
 }
 
 // 一筆已具備新欄位的條目(S1 形狀)。
@@ -2214,9 +2214,10 @@ test('S4 刪除:已登入軟刪(deletedAt + dirty，entry 留在陣列)，未登
   assert.deepEqual(outCtx.storage.localSnapshot().history, [], '未登入維持現況硬刪，不留墓碑');
 });
 
-// S4:清除全部。已登入時 entry 全數移除(不是逐筆轉墓碑——那會把整張表變成
-// 墓碑撐爆配額)，改寫 syncState.clearedAt 這條全域水位線，由車道 D 上傳。
-test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入不動 syncState', async () => {
+// 【斷言翻轉｜D53】清除全部改走墓碑：已登入時每筆既有 entry 就地轉墓碑(deletedAt
+// ＋dirty:true、id 不變)，由同步引擎以 deletes[] 送出，其他裝置經墓碑各自刪除;
+// 不再寫 syncState.clearedAt。未登入維持硬刪。
+test('S4 清除全部(D53):已登入時逐筆轉墓碑、畫面清空、不寫 syncState.clearedAt;未登入硬刪', async () => {
   const inCtx = makeController(
     { history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)], syncState: signedInState() }
   );
@@ -2227,10 +2228,19 @@ test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入�
   await settle();
 
   const inLocal = inCtx.storage.localSnapshot();
-  assert.deepEqual(inLocal.history, [], '所有 entry 移除');
-  assert.equal(typeof inLocal.syncState.clearedAt, 'number', '應寫 syncState.clearedAt(雲端全域墓碑)');
-  assert.ok(inLocal.syncState.clearedAt > 0);
-  assert.equal(inLocal.syncState.userId, 'user-1', '清除紀錄不等於登出，userId 不得被清掉');
+  assert.deepEqual(inLocal.history.map((e) => e.id).sort(), ['id-1000', 'id-2000'], '墓碑留在 storage 等伺服器 ack，id 不變');
+  inLocal.history.forEach((e) => {
+    assert.equal(typeof e.deletedAt, 'number', `${e.id}:寫入刪除時戳`);
+    assert.ok(e.deletedAt > 0);
+    assert.equal(e.dirty, true, `${e.id}:待上傳的刪除意圖`);
+  });
+  assert.equal(inCtx.doc.ids.rows.children.length, 0, '畫面清空(墓碑不進畫面)');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(inLocal.syncState, 'clearedAt') && inLocal.syncState.clearedAt != null,
+    false,
+    '不再寫 syncState.clearedAt'
+  );
+  assert.equal(inLocal.syncState.userId, 'user-1', '清除紀錄不等於登出');
   assert.equal(inCtx.doc.ids.toast.textContent, i18n.t('zh', 'opToastCleared'));
 
   const outCtx = makeController({ history: [s4Entry(URL_A, 2000)], syncState: signedOutState() });
@@ -2240,8 +2250,29 @@ test('S4 清除全部:已登入時清空並寫 syncState.clearedAt，未登入�
   outCtx.doc.ids.confirmOk.fire('click');
   await settle();
 
-  assert.deepEqual(outCtx.storage.localSnapshot().history, []);
-  assert.equal(outCtx.storage.localSnapshot().syncState.clearedAt, null, '未登入不寫雲端水位線');
+  assert.deepEqual(outCtx.storage.localSnapshot().history, [], '未登入維持硬刪，不留墓碑');
+});
+
+test('S4 清除全部(D53):已登入時既有墓碑維持原樣，沒有 id 的舊資料直接移除', async () => {
+  const ctx = makeController({
+    history: [
+      s4Entry(URL_A, 2000),
+      s4Entry(URL_B, 1000, { deletedAt: 900, dirty: true }),
+      { url: URL_C, kind: 'share', at: 500, seen: [{ at: 500, kind: 'share' }] },
+    ],
+    syncState: signedInState(),
+  });
+  await ctx.controller.init();
+  await settle();
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const history = ctx.storage.localSnapshot().history;
+  const byId = Object.fromEntries(history.filter((e) => e.id).map((e) => [e.id, e]));
+  assert.equal(byId['id-1000'].deletedAt, 900, '既有墓碑的刪除時戳不動');
+  assert.equal(typeof byId['id-2000'].deletedAt, 'number');
+  history.forEach((e) => assert.equal(typeof e.deletedAt, 'number', '清除之後 storage 裡只剩墓碑'));
 });
 
 // S4:墓碑一律不進畫面。清單、筆數提示、統計磚(statTotal)、14 天圖表的
@@ -4046,25 +4077,19 @@ test('雲端同步權限:origin 一律夾到三個合法的後端 host，不跟�
   });
 });
 
-test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 syncState 為基底', async () => {
+// 【斷言翻轉｜D53】原斷言「水位線與清空寫在同一次 set(history＋syncState)」作廢：
+// 清除全部只轉墓碑，一次 set 只寫 history，不碰 syncState(因此也不可能把引擎推進
+// 的游標回捲)。
+test('S4 清除全部(D53):只寫一次 history，不寫 syncState，引擎推進的游標原封不動', async () => {
   const ctx = makeController({
     history: [s4Entry(URL_A, 2000)],
-    syncState: { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, clearedAt: null, lastError: null },
+    syncState: { userId: 'user-1', email: 'a@example.com', cursor: null, lastSyncedAt: null, lastError: null },
   });
   await ctx.controller.init();
   await settle();
 
-  // 頁面開著的期間，service worker 推進了游標並記下上次同步時間。開頁快照
-  // 完全不知道這件事;拿快照整包覆寫會把游標回捲。
   await ctx.storage.local.set({
-    syncState: {
-      userId: 'user-1',
-      email: 'a@example.com',
-      cursor: '1700000000000~srv-9',
-      lastSyncedAt: 99000,
-      clearedAt: null,
-      lastError: null,
-    },
+    syncState: { userId: 'user-1', email: 'a@example.com', cursor: '1700000000000~srv-9', lastSyncedAt: 99000, lastError: null },
   });
   await settle();
 
@@ -4074,14 +4099,13 @@ test('S4 清除全部:水位線與清空寫在同一次 set，且以重讀的 sy
   await settle();
 
   const written = ctx.storage.localCalls.set.slice(setsBefore);
-  assert.equal(written.length, 1, '水位線與清空必須是同一次 set，不留半套狀態');
-  assert.deepEqual(Object.keys(written[0]).sort(), ['history', 'syncState']);
+  assert.equal(written.length, 1, '清除全部是一次寫入');
+  assert.deepEqual(Object.keys(written[0]), ['history'], '只寫 history');
 
   const snapshot = ctx.storage.localSnapshot();
-  assert.deepEqual(snapshot.history, []);
-  assert.equal(typeof snapshot.syncState.clearedAt, 'number');
-  assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9', '不得用開頁快照把引擎推進的游標回捲');
-  assert.equal(snapshot.syncState.lastSyncedAt, 99000, 'lastSyncedAt 同理');
+  assert.equal(snapshot.syncState.cursor, '1700000000000~srv-9');
+  assert.equal(snapshot.syncState.lastSyncedAt, 99000);
+  assert.equal(Object.prototype.hasOwnProperty.call(snapshot.syncState, 'clearedAt'), false);
 });
 
 // ============================================================
@@ -9166,9 +9190,20 @@ test('D51 文案：確認說明 zh 講明「登出所有裝置」與「重新登
   assert.doesNotMatch(en, /will not be re-?uploaded|won't be re-?uploaded/i, 'en 不得沿用「不會再上傳」的舊語意');
 });
 
-test('D51 文案：選單按鈕 zh 為「刪除雲端資料並登出」，en 也講明會登出', () => {
+test('D51 文案：選單按鈕定稿 zh「刪除雲端資料並登出」／en「Delete cloud data & sign out」', () => {
   assert.equal(i18n.STRINGS.zh.opAccountDeleteCloud, '刪除雲端資料並登出');
-  assert.match(i18n.STRINGS.en.opAccountDeleteCloud, /sign out/i);
+  assert.equal(i18n.STRINGS.en.opAccountDeleteCloud, 'Delete cloud data & sign out');
+});
+
+test('D51 文案：確認說明定稿（zh／en 逐字）', () => {
+  assert.equal(
+    i18n.STRINGS.zh.opSyncDeleteConfirmDesc,
+    '將刪除雲端上的紀錄與警示名單，並登出所有裝置。這台裝置與其他裝置上的資料都會保留，重新登入後會重新上傳。'
+  );
+  assert.equal(
+    i18n.STRINGS.en.opSyncDeleteConfirmDesc,
+    'This deletes your history and warning list from the cloud and signs out every device. Data on this and other devices stays, and is re-uploaded after you sign in again.'
+  );
 });
 
 test('D51 文案：刪雲端相關字串不得出現禁詞「不會再上傳」「僅本機」', () => {

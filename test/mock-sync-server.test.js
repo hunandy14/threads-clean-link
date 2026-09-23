@@ -1035,19 +1035,44 @@ test('D50/R11 多 session：重新登入不撤銷別台裝置的 token；sign-ou
   assert.equal(h.server.isTokenValid(fresh), true, '其他裝置不受影響');
 });
 
-test('D50/R11 links/sync：DELETE /api/v1/links 之後不再依水位線拒收，changes.clearedAt 恆 null', async () => {
+test('D50/R11 舊端點下線：DELETE /api/v1/links 與 /marks 回 410 gone 並指向替代端點，資料一筆不動', async () => {
+  const h = harness();
+  await seedEverything(h);
+  for (const path of ['/api/v1/links', '/api/v1/marks']) {
+    const res = await r11Call(h, 'DELETE', path);
+    assert.equal(res.status, 410, `${path} 應回 410`);
+    assert.deepEqual(await res.json(), { error: 'gone', replacement: CLOUD_DATA_CONTRACT.path });
+  }
+  assert.equal(h.server.linkCount(), 1, '舊端點不再有任何效果');
+  assert.equal(h.server.marks.count(), 1);
+  assert.equal(h.server.isTokenValid(h.token), true, '也不撤銷 session');
+});
+
+test('D50/R11 links/sync：不再依水位線拒收，changes.clearedAt 恆 null（保留鍵）', async () => {
   const h = harness();
   const item = linkItem({ receivedAt: T0 - 5000, seen: [{ at: T0 - 5000, source: 'share' }] });
-  await h.sync({ upserts: [item], deletes: [], since: 0 });
-  const cleared = await (await r11Call(h, 'DELETE', '/api/v1/links')).json();
-  assert.equal(cleared.ok, true, '舊端點保留（插件不再呼叫）');
-  assert.equal(h.server.linkCount(), 0);
-
+  h.server.seed([], { clearedAt: T0 });
   const body = await (await h.sync({ upserts: [item], deletes: [], since: 0 })).json();
-  assert.deepEqual(body.applied.rejectedIds, [], '早於清空時間點的資料照收');
+  assert.deepEqual(body.applied.rejectedIds, [], '早於（殘留）水位線的資料照收');
   assert.equal(body.applied.upserts.length, 1);
   assert.ok(Object.prototype.hasOwnProperty.call(body.changes, 'clearedAt'), '保留鍵一版');
   assert.equal(body.changes.clearedAt, null);
+});
+
+test('D50/R11 刪雲端之後：第一個帶 device 區塊的 sync 重新登記裝置', async () => {
+  const h = harness();
+  await seedEverything(h);
+  await deleteCloudData(h);
+  assert.equal(h.server.deviceCount(), 0, '前置：裝置列已硬刪');
+  const fresh = h.server.grantToken('tok-r11-device');
+  const res = await r11Call(h, 'POST', '/api/v1/links/sync', {
+    token: fresh,
+    body: { upserts: [], deletes: [], since: 0, device: { deviceId: DEV_A, name: '合成桌機', platform: 'chrome_extension' } },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(h.server.deviceCount(), 1);
+  const listed = await (await r11Call(h, 'GET', '/api/v1/devices', { token: fresh })).json();
+  assert.equal(listed.devices[0].name, '合成桌機');
 });
 
 test('D50/R11 刪雲端之後重新登入：全量重傳照收，雲端筆數等於上傳筆數', async () => {
