@@ -2817,7 +2817,9 @@ test('帳號入口:取消登入確認框不送出 sync.signIn', async () => {
   );
 });
 
-test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原/本機保留/這些紀錄不會再上傳)，確認後才送 sync.deleteCloud 並顯示已刪除 toast', async () => {
+// 【斷言翻轉｜D51】確認框語意改為 Chrome 模型：刪雲端＝登出所有裝置，本機保留，重新
+// 登入後重新上傳。原斷言「無法復原」「不會再上傳」作廢（後者改列禁詞）。
+test('帳號入口:刪除雲端資料先跳二次確認框(講清楚登出所有裝置/本機保留/重新登入後重新上傳)，確認後才送 sync.deleteCloud 並顯示已刪除 toast', async () => {
   const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
   const doc = makeDocumentStub();
   const runtime = makeFakeRuntime({
@@ -2850,12 +2852,10 @@ test('帳號入口:刪除雲端資料先跳二次確認框(講清楚無法復原
   assert.equal(doc.ids.confirmOverlay.hidden, false);
   const desc = doc.ids.confirmDesc.textContent;
   assert.equal(desc, i18n.t('zh', 'opSyncDeleteConfirmDesc'));
-  assert.match(desc, /無法復原/);
   assert.match(desc, /這台裝置/);
-  // 語意修正(伺服器對早於 cleared_at 的紀錄一律拒收，api-spec 4.4):刪除
-  // 雲端後本機紀錄不會再自動上傳，舊文案「下次登入時會再次上傳」與後端
-  // 實際行為矛盾。
-  assert.match(desc, /不會再上傳/);
+  assert.match(desc, /登出所有裝置/);
+  assert.match(desc, /重新登入後會重新上傳/);
+  assert.doesNotMatch(desc, /不會再上傳/, 'D51：清空水位線廢除，重新登入後本機會全量重傳');
   // R3-5:這顆按鈕現在連警示名單一起刪（deleteCloud 會續打 DELETE
   // /api/v1/marks），確認框不講清楚就是讓使用者在不知情下刪掉第二種資料。
   // 上面兩條改成不綁死句型的子字串，好讓文案改寫時只需要顧語意。
@@ -9100,4 +9100,158 @@ test('R3-15 警示名單卡:解除訊息帶上該列的 handle 與 displayName',
   assert.ok(msg, '前置條件:確認後送出解除訊息');
   assert.equal(msg.handle, 'example_author', '帶上 handle，background 補建空條目時才寫得出名字');
   assert.equal(msg.displayName, 'Example Author', '有顯示名就一併帶上');
+});
+
+// ============================================================================
+// D51／D52 — 刪除雲端資料改 Chrome 模型的文案與帳號卡
+// ============================================================================
+
+const D51_FORBIDDEN = ['不會再上傳', '僅本機'];
+
+function signedInSyncState(over) {
+  return Object.assign(
+    {
+      status: 'signed_in',
+      email: 'user@example.com',
+      displayName: 'Synthetic',
+      avatarUrl: null,
+      lastSyncedAt: 1000000 - 5 * 60 * 1000,
+      pendingCount: 0,
+      lastError: null,
+      apiBase: 'https://api.example/',
+    },
+    over
+  );
+}
+
+async function mountAccount(state) {
+  const storage = createChromeStorage({ langPref: 'zh' }, { history: [] });
+  const doc = makeDocumentStub();
+  const runtime = makeFakeRuntime({ 'sync.getState': () => state });
+  const controller = options.createOptionsController({
+    document: doc,
+    syncStorage: storage.sync,
+    localStorage: storage.local,
+    i18n,
+    now: () => 1000000,
+    runtime,
+  });
+  await controller.init();
+  await settle();
+  return { doc, runtime, controller };
+}
+
+/** 所有沒被 hidden 的節點（含子節點）的文字，逐段收集。 */
+function visibleTexts(doc) {
+  const out = [];
+  const seen = new Set();
+  function walk(node, hiddenAbove) {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    const hidden = hiddenAbove || node.hidden === true;
+    if (!hidden && typeof node.textContent === 'string' && node.textContent) out.push(node.textContent);
+    (node.children || []).forEach((child) => walk(child, hidden));
+  }
+  Object.values(doc.ids).forEach((node) => walk(node, false));
+  return out;
+}
+
+test('D51 文案：確認說明 zh 講明「登出所有裝置」與「重新登入後會重新上傳」，en 講 sign out 與 re-upload', () => {
+  const zh = i18n.STRINGS.zh.opSyncDeleteConfirmDesc;
+  assert.ok(zh.includes('登出所有裝置'), `zh 要講明會登出所有裝置，實得:${zh}`);
+  assert.ok(zh.includes('重新登入後會重新上傳'), `zh 要講明重新登入後會重新上傳，實得:${zh}`);
+  const en = i18n.STRINGS.en.opSyncDeleteConfirmDesc;
+  assert.match(en, /sign(s|ed)? out|signing out/i, `en 要講明會登出，實得:${en}`);
+  assert.match(en, /re-?upload/i, `en 要講明會重新上傳，實得:${en}`);
+  assert.doesNotMatch(en, /will not be re-?uploaded|won't be re-?uploaded/i, 'en 不得沿用「不會再上傳」的舊語意');
+});
+
+test('D51 文案：選單按鈕 zh 為「刪除雲端資料並登出」，en 也講明會登出', () => {
+  assert.equal(i18n.STRINGS.zh.opAccountDeleteCloud, '刪除雲端資料並登出');
+  assert.match(i18n.STRINGS.en.opAccountDeleteCloud, /sign out/i);
+});
+
+test('D51 文案：刪雲端相關字串不得出現禁詞「不會再上傳」「僅本機」', () => {
+  ['opSyncDeleteConfirmDesc', 'opAccountDeleteCloud', 'opToastCloudDeleted', 'opSyncDeleteConfirmDo'].forEach((key) => {
+    const text = i18n.STRINGS.zh[key];
+    assert.equal(typeof text, 'string', `zh.${key} 應為字串`);
+    D51_FORBIDDEN.forEach((word) => {
+      assert.ok(!text.includes(word), `zh.${key} 不得含「${word}」，實得:${text}`);
+    });
+    assert.ok(!text.includes(','), `zh.${key} 不得含半形逗號，實得:${text}`);
+  });
+});
+
+test('D51 帳號入口:確認刪雲端之後、廣播轉成 signed_out 時，toast 講明「已登出」', async () => {
+  const { doc, runtime, controller } = await mountAccount(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.deleteCloud' });
+
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 6,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  await settle();
+  assert.match(doc.ids.toast.textContent, /已登出/, `成功 toast 要講明已登出，實得:${doc.ids.toast.textContent}`);
+  D51_FORBIDDEN.forEach((word) => assert.ok(!doc.ids.toast.textContent.includes(word)));
+  assert.equal(doc.ids.acctSignInBtn.hidden, false, '刪雲端＝登出：帳號入口回到登入鈕');
+});
+
+test('D52 帳號卡:登入且 pendingCount>0 時顯示「N 筆待上傳」', async () => {
+  const { doc } = await mountAccount(signedInSyncState({ pendingCount: 3 }));
+  const texts = visibleTexts(doc);
+  assert.ok(
+    texts.some((t) => /3\s*筆待上傳|待上傳\s*3\s*筆/.test(t)),
+    `應看得到 3 筆待上傳，實得:${JSON.stringify(texts.filter((t) => /待上傳/.test(t)))}`
+  );
+});
+
+test('D52 帳號卡:pendingCount 為 0 時不顯示任何「待上傳」字樣', async () => {
+  const { doc } = await mountAccount(signedInSyncState({ pendingCount: 0 }));
+  const hits = visibleTexts(doc).filter((t) => /待上傳/.test(t));
+  assert.deepEqual(hits, [], 'N=0 時整個待上傳提示收掉，不顯示「待上傳 0 筆」');
+});
+
+test('D52 帳號卡:未登入（刪雲端後的登出態）即使 pendingCount>0 也不顯示待上傳', async () => {
+  const { doc } = await mountAccount({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 6,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  const hits = visibleTexts(doc).filter((t) => /待上傳/.test(t));
+  assert.deepEqual(hits, [], '「N 筆待上傳」只在登入時顯示');
+});
+
+test('D52 帳號卡:有待上傳時「立即同步」可按，按下送 sync.now', async () => {
+  const { doc, runtime } = await mountAccount(signedInSyncState({ pendingCount: 3 }));
+  const btn = doc.ids.acctSyncNowBtn;
+  assert.ok(btn, '應有立即同步鈕');
+  assert.notEqual(btn.disabled, true);
+  const before = runtime.calls.length;
+  btn.fire('click');
+  await settle();
+  assert.ok(
+    runtime.calls.slice(before).some((c) => c && c.type === 'sync.now'),
+    '立即同步要送 sync.now'
+  );
+});
+
+test('D52 徽章文案:已登入的裝置提示不得宣稱「已同步至你的 Google 帳號」這類逐筆保證', async () => {
+  assert.ok(!i18n.STRINGS.zh.opDeviceNoteSynced.includes('已同步至'), `zh 實得:${i18n.STRINGS.zh.opDeviceNoteSynced}`);
+  assert.doesNotMatch(i18n.STRINGS.en.opDeviceNoteSynced, /synced to your google account/i);
+  const { doc } = await mountAccount(signedInSyncState({ pendingCount: 3 }));
+  assert.ok(!doc.ids.deviceNote.textContent.includes('已同步至'), `畫面實得:${doc.ids.deviceNote.textContent}`);
+  assert.ok(doc.ids.deviceNote.textContent.length > 0, '已登入時仍要有一句提示（實作者定字，例如「已連線」類）');
 });

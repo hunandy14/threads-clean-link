@@ -75,13 +75,27 @@
 // ============================================================================
 // 契約備註（PM 已裁決）
 // ============================================================================
-// - api-spec 4.3 的 `SyncRequest` **沒有** `clearedAt` 欄位。「清空全部」的
-//   雲端語意就是 `DELETE /api/v1/links`（4.4:459-467）：伺服器自己寫
-//   `cleared_at`，之後 `sync` 拒收早於它的資料，並在 `changes.clearedAt`
-//   回給其他裝置據以清本機。body 若帶了 `clearedAt`，本 mock 只記錄不理會。
+// - api-spec 4.3 的 `SyncRequest` **沒有** `clearedAt` 欄位。body 若帶了
+//   `clearedAt`，本 mock 只記錄不理會。
+// - 契約 R11（D50，刪雲端改 Chrome 書籤同步模型）：清空水位線廢除。
+//   `DELETE /api/v1/links`／`/marks` 仍保留（回 `{ ok, clearedAt }`），但
+//   `links/sync` 與 `marks/sync` **不再**依水位線拒收，`changes.clearedAt` 恆
+//   為 `null`（保留鍵一版，插件兩者皆容忍）。「刪除雲端資料」改走單一端點
+//   `CLOUD_DATA_CONTRACT`：硬刪該使用者全部雲端資料並撤銷**所有** session。
+// - 多 session：同一個使用者可同時持有多枚有效 token（多台裝置各自登入）。
+//   重新登入不撤銷既有 token；`sign-out` 只撤銷請求用的那一枚。
 // - api-spec 2.2 明寫 `get-session` 未登入回 `null`（200），**不是** 401。
 //   預設行為照此；要模擬 401 請用 `failNext({ status: 401 })`。
 'use strict';
+
+// 契約 R11（D50）的端點與回應鍵名。後端定稿前的暫定值，**只在這裡定義一次**，
+// mock 與全部測試一律引用本常數；定稿若不同只改這一處。
+const CLOUD_DATA_CONTRACT = Object.freeze({
+  method: 'DELETE',
+  path: '/api/v1/cloud-data',
+  // 回應 `{ ok: true, [revokedKey]: <撤銷的 session 數，含請求用的那一枚> }`
+  revokedKey: 'revokedSessions',
+});
 
 const { postKeyOf, normalizePostUrl } = require('../../tcl-core.js');
 
@@ -521,9 +535,18 @@ function createMockSyncServer(options = {}) {
     markTombstones: new Map(),
     /** deviceId（小寫）→ { deviceId, name, platform, createdAt, lastSeenAt, removedAt } */
     devices: new Map(),
+    /**
+     * `DELETE /api/v1/links` 寫下的時間點。R11（D50）起純屬診斷：不再拒收、
+     * 不再經 `changes.clearedAt` 外流。
+     */
     clearedAt: null,
-    /** 警示名單的清空水位線（DELETE /api/v1/marks 寫下），與 links 的各自獨立 */
+    /** 警示名單那一側的同一件事（`DELETE /api/v1/marks` 寫下），同樣不再生效 */
     marksClearedAt: null,
+    /**
+     * 除 `token`（最近一次登入發的那枚）之外，同一個使用者仍有效的其他 token
+     * ——多台裝置各自登入時各持一枚。`CLOUD_DATA_CONTRACT` 會連同它們一起撤銷。
+     */
+    sessions: new Set(),
     accountDeleted: false,
   };
 
@@ -549,8 +572,19 @@ function createMockSyncServer(options = {}) {
 
   function issueToken() {
     tokenSeq += 1;
+    // 重新登入不撤銷既有 session：前一枚留在 sessions 裡照樣有效（別台裝置、
+    // 或同一台在換 token 前還沒送完的請求）。
+    if (state.token !== null) state.sessions.add(state.token);
     state.token = `tok-${tokenSeq}`;
     return state.token;
+  }
+
+  /** 撤銷這個使用者的全部 session，回傳撤銷了幾枚。 */
+  function revokeAllSessions() {
+    const count = (state.token !== null ? 1 : 0) + state.sessions.size;
+    state.token = null;
+    state.sessions.clear();
+    return count;
   }
 
   function bearerOf(headers) {
@@ -562,7 +596,8 @@ function createMockSyncServer(options = {}) {
 
   function authed(headers) {
     const token = bearerOf(headers);
-    return token !== null && state.token !== null && token === state.token && !state.accountDeleted;
+    if (token === null || state.accountDeleted) return false;
+    return (state.token !== null && token === state.token) || state.sessions.has(token);
   }
 
   function unauthorized() {
@@ -790,11 +825,8 @@ function createMockSyncServer(options = {}) {
       const incoming = entry.item;
       const eventAt = eventTimeOf(incoming);
 
-      // 規則 2：早於 clearedAt 一律拒收
-      if (state.clearedAt !== null && eventAt <= state.clearedAt) {
-        applied.rejectedIds.push(entry.sentId);
-        return;
-      }
+      // 規則 2（早於 clearedAt 一律拒收）已由契約 R11 廢除（D50）：清空水位線
+      // 不再存在，刪雲端之後各裝置重新登入要能把本機資料全量傳回來。
       // 規則 3：早於墓碑拒收；比墓碑新則撤銷墓碑
       const tomb = state.tombstones.get(key);
       if (tomb) {
@@ -883,7 +915,8 @@ function createMockSyncServer(options = {}) {
       changes = {
         links: linkPage.map((x) => publicItem(x.row)),
         deleted: tombPage.map((x) => ({ id: x.row.id, postKey: x.row.postKey, deletedAt: x.row.deletedAt })),
-        clearedAt: state.clearedAt,
+        // R11（D50）：保留鍵一版，恆為 null。
+        clearedAt: null,
         hasMore,
       };
 
@@ -955,12 +988,7 @@ function createMockSyncServer(options = {}) {
         applied.rejectedIds.push(key);
         return;
       }
-      // 清空水位線：不晚於它的版本一律拒收，與 links 的「早於 cleared_at 一律
-      // 拒收」同一條規則。插件端刪完雲端後本機名單留著也推不回去，靠的就是這裡。
-      if (state.marksClearedAt !== null && incoming.updatedAt <= state.marksClearedAt) {
-        applied.rejectedIds.push(key);
-        return;
-      }
+      // 清空水位線的拒收已由契約 R11 廢除（D50），與 links 一致。
       const tomb = state.markTombstones.get(key);
       if (tomb) {
         // 比墓碑舊的版本不復活；較新的版本撤銷墓碑。
@@ -1028,8 +1056,8 @@ function createMockSyncServer(options = {}) {
         marks: markPage.map((x) => markView(x.row)),
         deleted: tombPage.map((x) => ({ key: x.tomb.key, deletedAt: x.tomb.deletedAt })),
         hasMore,
-        // 其他裝置靠這一格得知雲端被清空；沒清空過時為 null，不缺鍵。
-        clearedAt: state.marksClearedAt,
+        // R11（D50）：保留鍵一版，恆為 null（不缺鍵）。
+        clearedAt: null,
       };
 
       if (hasMore) {
@@ -1145,6 +1173,24 @@ function createMockSyncServer(options = {}) {
     return jsonResponse(200, { ok: true, clearedAt: state.marksClearedAt });
   }
 
+  // ---- 端點：CLOUD_DATA_CONTRACT（契約 R11，D50） ----
+  // 硬刪該使用者的 links／marks／兩種墓碑／devices、清掉兩條水位線，並撤銷**所
+  // 有** session（含請求用的那一枚）：之後任何帶舊 token 的請求一律 401。冪等：
+  // 重新登入後再打一次照樣 200，雲端維持全空，撤銷數只剩請求用的那一枚。
+  function handleDeleteCloudData(headers, at) {
+    if (!authed(headers)) return unauthorized();
+    if (rateLimited(at)) return rateLimitedResponse();
+    state.links.clear();
+    state.tombstones.clear();
+    state.marks.clear();
+    state.markTombstones.clear();
+    state.devices.clear();
+    state.clearedAt = null;
+    state.marksClearedAt = null;
+    const revoked = revokeAllSessions();
+    return jsonResponse(200, { ok: true, [CLOUD_DATA_CONTRACT.revokedKey]: revoked });
+  }
+
   // ---- 端點：DELETE /api/v1/account（api-spec 4.6:520-540） ----
   function handleDeleteAccount(headers) {
     if (!authed(headers)) return unauthorized();
@@ -1155,7 +1201,7 @@ function createMockSyncServer(options = {}) {
     state.devices.clear();
     state.clearedAt = null;
     state.marksClearedAt = null;
-    state.token = null;
+    revokeAllSessions();
     state.accountDeleted = true;
     return jsonResponse(200, { ok: true });
   }
@@ -1198,7 +1244,10 @@ function createMockSyncServer(options = {}) {
 
   function handleSignOut(headers) {
     if (!authed(headers)) return unauthorized();
-    state.token = null;
+    // 只撤銷請求用的那一枚：別台裝置的 session 不受影響。
+    const token = bearerOf(headers);
+    if (token === state.token) state.token = null;
+    else state.sessions.delete(token);
     return jsonResponse(200, { success: true });
   }
 
@@ -1219,6 +1268,9 @@ function createMockSyncServer(options = {}) {
     if (method === 'DELETE' && path === '/api/v1/links') return handleDeleteLinks(headers, at);
     if (method === 'DELETE' && path === '/api/v1/marks') return handleDeleteMarks(headers, at);
     if (method === 'DELETE' && path === '/api/v1/account') return handleDeleteAccount(headers);
+    if (method === CLOUD_DATA_CONTRACT.method && path === CLOUD_DATA_CONTRACT.path) {
+      return handleDeleteCloudData(headers, at);
+    }
     if (method === 'GET' && path === '/api/v1/devices') return handleListDevices(headers, at);
     const deviceIdMatch = path.match(/^\/api\/v1\/devices\/([^/]+)$/);
     if (deviceIdMatch) {
@@ -1336,6 +1388,33 @@ function createMockSyncServer(options = {}) {
     expireSession() {
       state.token = null;
       return this;
+    },
+
+    /**
+     * 另發一枚同一使用者的有效 token（略過登入往返），不影響 `currentToken()`
+     * 那一枚——模擬「另一台裝置也登入著」。R11 的撤銷語意靠它測。
+     */
+    issueSession(token) {
+      tokenSeq += 1;
+      const issued = token || `tok-session-${tokenSeq}`;
+      state.sessions.add(issued);
+      state.accountDeleted = false;
+      return issued;
+    },
+
+    /** 目前仍有效的 session 數（`currentToken()` 那一枚加上其他裝置的）。 */
+    sessionCount() {
+      return (state.token !== null ? 1 : 0) + state.sessions.size;
+    },
+
+    /** 這枚 token 伺服器還認不認得。 */
+    isTokenValid(token) {
+      return authed({ authorization: `Bearer ${token}` });
+    },
+
+    /** 目前雲端的裝置筆數（R11 會一併硬刪）。 */
+    deviceCount() {
+      return state.devices.size;
     },
 
     /**
@@ -1482,6 +1561,7 @@ function createMockSyncServer(options = {}) {
 
 module.exports = {
   createMockSyncServer,
+  CLOUD_DATA_CONTRACT,
   // 協定常數也一併外露，測試不重複硬編（api-spec 7.2:719-732）。
   MAX_SYNC_UPSERTS,
   MAX_SYNC_DELETES,

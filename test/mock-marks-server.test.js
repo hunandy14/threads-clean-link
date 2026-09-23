@@ -1065,7 +1065,9 @@ test('R3-4 輔助 API：server.marks.clearedAt() 讀得到清空水位線', asyn
   assert.equal(h.server.marks.clearedAt(), body.clearedAt, '輔助 API 看到的水位線與回應一致');
 });
 
-test('R3-4 marks sync：updatedAt 不大於 clearedAt 的 upsert 退進 rejectedIds，一筆不寫', async () => {
+// 【斷言翻轉｜D50】契約 R11 廢除清空水位線：刪雲端之後各裝置重新登入要把本機
+// 名單全量傳回來，早於 DELETE 時間點的版本不得再被拒收。
+test('R3-4 marks sync：updatedAt 不大於 clearedAt 的 upsert 照常收下（R11 廢除水位線拒收，D50）', async () => {
   const h = harness();
   const cleared = await clearMarks(h);
 
@@ -1074,9 +1076,9 @@ test('R3-4 marks sync：updatedAt 不大於 clearedAt 的 upsert 退進 rejected
     deletes: [],
   });
   assert.equal(res.status, 200);
-  assert.deepEqual(body.applied.upserts, [], '早於（含等於）水位線的一律不收');
-  assert.deepEqual(body.applied.rejectedIds.sort(), [KEY_A, KEY_B]);
-  assert.equal(h.server.marks.count(), 0, '被拒的一筆都不得落地');
+  assert.deepEqual(body.applied.upserts.sort(), [KEY_A, KEY_B], '水位線不再生效，早於清空時間點的版本照收');
+  assert.deepEqual(body.applied.rejectedIds, []);
+  assert.equal(h.server.marks.count(), 2);
 });
 
 test('R3-4 marks sync：updatedAt 大於 clearedAt 的 upsert 照常收下', async () => {
@@ -1102,11 +1104,14 @@ test('R3-4 marks sync：changes 物件必帶 clearedAt（沒清空過時為 null
   assert.equal(body.changes.clearedAt, null, '沒清空過時是 null，不是缺鍵');
 });
 
-test('R3-4 marks sync：清空之後 changes.clearedAt 帶回水位線毫秒', async () => {
+// 【斷言翻轉｜D50】R11：`changes.clearedAt` 保留鍵一版、恆為 null，清空不再經
+// 這一格廣播給其他裝置（其他裝置改由 session 撤銷後的 401 得知）。
+test('R3-4 marks sync：清空之後 changes.clearedAt 仍為 null（R11 保留鍵、恆 null，D50）', async () => {
   const h = harness();
-  const cleared = await clearMarks(h);
+  await clearMarks(h);
   const body = (await h.syncJson({ upserts: [], deletes: [], since: 0 })).body;
-  assert.equal(body.changes.clearedAt, cleared, '其他裝置靠這一格得知雲端被清空');
+  assert.ok(Object.prototype.hasOwnProperty.call(body.changes, 'clearedAt'), '保留鍵一版，不缺鍵');
+  assert.equal(body.changes.clearedAt, null, '水位線不再外流');
 });
 
 test('R3-4 marks sync：沒帶 since／cursor 時 changes 整個為 null，不另立 clearedAt 鍵', async () => {
