@@ -196,10 +196,10 @@
       opAccountSignInConfigError: '登入設定有誤，請回報錯誤碼：{code}',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
       opDeviceNoteSynced: '已連線至你的 Google 帳號',
-      // 刪除雲端資料送出當下的樂觀提示;最終依 sync.deleteCloud 回應
+      // 刪除雲端資料送出當下的進行中提示;最終依 sync.deleteCloud 回應
       // { ok, signedOut, code } 定案，回應缺席才退回廣播判讀(錯誤沿用
       // opAccountErrorPrefix + 錯誤碼，不另造重複鍵)。
-      opToastCloudDeleted: '已刪除雲端資料',
+      opToastCloudDeleted: '正在刪除雲端資料…',
       // 刪雲端成功並已登出的定案提示(D51)。
       opToastCloudDeletedSignedOut: '雲端資料已刪除，已登出',
 
@@ -466,11 +466,11 @@
       opAccountSignInFailed: 'Sign-in failed, please try again later',
       opAccountSignInConfigError: 'Sign-in is misconfigured. Please report this code: {code}',
       opDeviceNoteSynced: 'Connected to your Google account',
-      // Optimistic toast shown when delete-cloud is sent; the final toast is
+      // In-progress toast shown when delete-cloud is sent; the final toast is
       // decided by the sync.deleteCloud reply { ok, signedOut, code }, and
       // only falls back to reading the broadcast when the reply is missing
       // (errors reuse opAccountErrorPrefix + code — no separate key).
-      opToastCloudDeleted: 'Cloud data deleted',
+      opToastCloudDeleted: 'Deleting cloud data…',
       opToastCloudDeletedSignedOut: 'Cloud data deleted. Signed out.',
 
       // ---- Device management (0.7 device attribution) ----
