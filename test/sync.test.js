@@ -4977,3 +4977,49 @@ test('S2 deleteCloud：R11 成功但 history 標髒寫入失敗 → lastError=st
   assert.notEqual(result && result.signedOut, true, '沒標髒完成不得宣稱已登出');
   assert.deepEqual(env.storage.history(), before, 'history 原封不動');
 });
+
+// ============================================================================
+// 覆審收尾 1 — 單次請求逾時：fetch 永不 resolve 時 30 秒後以 network_error 收尾
+// ============================================================================
+
+test('覆審 1 call 逾時：fetch 永不 resolve，30 秒計時器到期後該輪以 network_error 結束並排退避', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({ signedIn: true, history: [entry()] });
+  let signal = null;
+  const hangingDeps = Object.assign({}, env.deps, {
+    fetch(url, init) {
+      signal = init && init.signal;
+      return new Promise(() => {});
+    },
+  });
+  const engine = TCLSync.create(hangingDeps);
+  let done = false;
+  const running = engine.syncNow().then(
+    () => {
+      done = true;
+    },
+    () => {
+      done = true;
+    }
+  );
+  await settle(10);
+
+  assert.equal(done, false, '前置：請求掛著');
+  const timeout = env.timers.live.find((h) => h.ms === 30_000);
+  assert.ok(timeout, '每次請求都要排一個 30 秒逾時計時器（注入的 setTimeout）');
+  assert.ok(signal && typeof signal.aborted === 'boolean', 'fetch 要帶 AbortSignal，逾時時一併中止連線');
+
+  env.advance(30_000);
+  await timeout.fn();
+  await running;
+  await settle(10);
+
+  assert.equal(done, true, '逾時後該輪結束，不得永久卡住');
+  assert.equal(signal.aborted, true, '逾時要中止底層 fetch');
+  assert.equal(env.storage.syncState().lastError, 'network_error');
+  assert.deepEqual(env.storage.localData.syncBackoff, { failures: 1 }, '走既有退避');
+  const backoff = env.alarms.lastCreate();
+  assert.equal(backoff.name, TCLSync.ALARM_NAME);
+  assert.equal(env.alarms.delayOf(backoff, env.now()), 30_000, '退避第一階');
+  assert.equal(env.lastState().status, 'error');
+});
