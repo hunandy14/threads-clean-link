@@ -9362,3 +9362,30 @@ test('S3 刪雲端:回應 {ok:false, code} 顯示錯誤 toast', async () => {
 
   assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'server_error');
 });
+
+test('S3 刪雲端退路:runtime 回應 undefined 時，期間夾一則帶舊 lastError 的 syncing 廣播不得蓋成錯誤 toast', async () => {
+  const { doc, runtime, controller } = await mountAccount(signedInSyncState({ pendingCount: 2 }));
+  doc.ids.acctDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+  assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.deleteCloud' });
+  await settle();
+
+  controller.setSyncState(signedInSyncState({ status: 'syncing', lastError: 'network_error' }));
+  await settle();
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeleted'), 'syncing 廣播只是過程，不判讀舊 lastError');
+  assert.ok(!doc.ids.toast.textContent.includes('network_error'));
+
+  // 旗標沒有被 syncing 廣播消耗：接下來轉成已登出仍會定案。
+  controller.setSyncState({
+    status: 'signed_out',
+    email: null,
+    displayName: null,
+    avatarUrl: null,
+    lastSyncedAt: null,
+    pendingCount: 2,
+    lastError: null,
+    apiBase: 'https://api.example/',
+  });
+  await settle();
+  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
+});
