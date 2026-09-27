@@ -2016,8 +2016,8 @@ test('自癒重注入:onInstalled 只對 threads 分頁重新注入 ISOLATED wor
   bg.executeScriptCalls.forEach((call) => {
     assert.deepEqual(
       Array.from(call.files),
-      ['bridge.js', 'i18n.js', 'post-icon.js'],
-      '檔案與順序需對齊 manifest 的 content_scripts(MAIN world 的 clipboard-guard.js 刻意不重注入)'
+      ['bridge.js', 'i18n.js', 'tcl-core.js', 'post-icon.js', 'scam-guard.js'],
+      '檔案與順序需對齊 manifest 的 ISOLATED world content_scripts(MAIN world 的 clipboard-guard.js 刻意不重注入)'
     );
     assert.equal(call.world, 'ISOLATED', '重注入的是 ISOLATED world 腳本');
   });

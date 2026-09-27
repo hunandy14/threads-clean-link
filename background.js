@@ -108,24 +108,31 @@ chrome.runtime.onInstalled.addListener(() => {
 // context invalidated」。使用者看到的是「按鈕都在、複製也成功，但紀錄全部
 // 靜默丟失」，而且非重新整理不能復原——沒人會知道要重新整理。
 //
-// 【解法】更新完成的當下，對每個既開的 threads 分頁重新注入 ISOLATED world
-// 的三支腳本，讓分頁立刻換上帶有效 chrome.runtime 的新實例。所需權限
-// (scripting + threads 的 host_permissions)全部既有，不新增任何權限。
+// 【解法】更新完成的當下，對每個既開的 threads 分頁重新注入 manifest 裡
+// 全部的 ISOLATED world content script，讓分頁立刻換上帶有效
+// chrome.runtime 的新實例。所需權限(scripting + threads 的
+// host_permissions)全部既有，不新增任何權限。
 //
-// 【MAIN world 的 clipboard-guard.js 刻意不重注入】它是純頁面層的
+// 【新舊實例交接】舊實例留在已失效的舊 ISOLATED world，新實例跑在新
+// world，兩者只共用 DOM。新實例啟動時在 document 上派送交棒事件，舊實例
+// 收到後自我退場(斷 observer、清計時器、收掉自己插入的節點);舊實例在
+// 下一次要碰 chrome.runtime／chrome.storage 前也會先判活，發現自己是孤兒
+// 就退場。兩層任一層生效，頁面上都只剩新實例在運作。
+//
+// 【MAIN world 的 clipboard-guard.js 不重注入】它是純頁面層的
 // navigator.clipboard.writeText／copy 事件包裹，完全不碰 chrome.* API，擴
 // 充功能重載不會讓它失效;它 postMessage 出來的 TCL_RESOLVE_REQ／
-// TCL_CLEANED_NOTICE 是靠「監聽 window message 的 bridge.js」接手，而 bridge
-// 這一支我們重注入了(新身分、chrome.runtime 有效)，所以整條管道會自動接
-// 回來——舊 guard 依賴的是「頁面上有人在聽 message」這件事，不是某個特定
-// 的 bridge 實例。反過來重注入 guard 才有害:舊包裹還在，writeText 會被包
-// 第二層，一次複製可能觸發兩次淨化/兩次通知。
+// TCL_CLEANED_NOTICE 由監聽 window message 的 bridge.js 接手，而 bridge 會
+// 隨本清單重注入，整條管道因此自動接回來。反過來重注入 guard 才有害:舊
+// 包裹還在，writeText 會被包第二層，一次複製可能觸發兩次淨化/兩次通知。
 const REINJECT_MATCHES = ['https://*.threads.com/*', 'https://*.threads.net/*'];
 
-// 重注入的檔案與順序刻意對齊 manifest.json 的 content_scripts:bridge.js 先
-// 上(它負責 window message 橋接)，接著 i18n.js(post-icon.js 的文案來源)，
-// 最後 post-icon.js。少一支或順序顛倒都會讓新實例缺件。
-const REINJECT_FILES = ['bridge.js', 'i18n.js', 'post-icon.js'];
+// 重注入的檔案與順序等於 manifest.json content_scripts 裡 ISOLATED world
+// 的 document_start 那組接 document_idle 那組:bridge.js(window message 橋
+// 接)、i18n.js(文案來源)、tcl-core.js(scam-guard 的判定核心)、
+// post-icon.js、scam-guard.js。後面的腳本依賴前面掛上的全域，少一支或順
+// 序顛倒都會讓新實例缺件。
+const REINJECT_FILES = ['bridge.js', 'i18n.js', 'tcl-core.js', 'post-icon.js', 'scam-guard.js'];
 
 // 分頁 URL 的自我把關:tabs.query 的 url 篩選已經先擋一層，這裡再依同一組
 // 主機規則過濾一次，確保就算查詢條件被忽略(不同瀏覽器版本對 url 篩選的
