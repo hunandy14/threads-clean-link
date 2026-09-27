@@ -372,8 +372,7 @@
       if (part === '') continue;
       if (i % 2 === 1 && part.indexOf('…') === -1) {
         // 尾端黏著的標點不算連結本體，切回文字段
-        var m = part.match(/[),.;:!?、。」』]+$/);
-        var url = m ? part.slice(0, part.length - m[0].length) : part;
+        var url = TCLCore.trimEndChars(part, '),.;:!?、。」』');
         var a = doc.createElement('a');
         a.className = 'excerpt-link';
         a.href = url;
@@ -381,7 +380,7 @@
         a.rel = 'noopener noreferrer';
         a.textContent = url;
         el.appendChild(a);
-        if (m) el.appendChild(doc.createTextNode(m[0]));
+        if (url.length < part.length) el.appendChild(doc.createTextNode(part.slice(url.length)));
       } else {
         el.appendChild(doc.createTextNode(part));
       }

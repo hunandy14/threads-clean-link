@@ -18,8 +18,10 @@
 
   // Threads 分享短連結格式，例如:https://www.threads.com/share/AbCdEfGhI
   // 容忍尾隨斜線/查詢字串/hash。原 background.js SHARE_URL_PATTERN。
+  // query 段的字元類排除 `#`:query 與 hash 以第一個 `#` 為界，兩段不爭搶同
+  // 一批字元，比對是線性的;吻合的字串集合與「? 之後任意非空白」相同。
   var SHARE_URL_PATTERN =
-    /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s]*)?(#[^\s]*)?$/i;
+    /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s#]*)?(#[^\s]*)?$/i;
 
   // 錨定嚴格版乾淨貼文網址:白名單字元類(handle:英數/底線/句點;post id:
   // 英數/連字號/底線)各 1-80 字元，收尾錨定 $，不容尾隨內容。原 background.js
@@ -72,6 +74,16 @@
   // 選單路徑，seen[] 裡是合法值)。原 background.js SEEN_KIND_WHITELIST /
   // options.js KINDS 的鍵集合。
   var KIND_LIST = ['share', 'strip', 'menu', 'icon'];
+
+  // 剝掉 str 尾端連續出現的 chars 字元(chars 列出的任一字元)，回傳剩下的前
+  // 段。由尾往前逐字檢查，整串最多走一遍。尾端剝除不寫成 `X+$` 正則:沒有
+  // 起點錨定時，引擎從尾端連續段裡的每個位置各掃一次到結尾，最差是二次方。
+  // chars 只放 BMP 字元(逐個 UTF-16 單位比對)。
+  function trimEndChars(str, chars) {
+    var end = str.length;
+    while (end > 0 && chars.indexOf(str.charAt(end - 1)) !== -1) end--;
+    return end === str.length ? str : str.slice(0, end);
+  }
 
   // 自動落盤通知(cleanedNotice)可接受的 kind:'menu' 刻意排除——它只由右鍵
   // 選單路徑直接呼叫 recordHistory，不經 postMessage 通道，避免頁面腳本偽造
@@ -187,7 +199,7 @@
   // query 照留(呼叫端傳入的網址已剝過追蹤參數)。
   function urlKey(parsed) {
     var host = parsed.hostname.toLowerCase().replace(/^(?:www|m|mobile)\./, '');
-    var path = parsed.pathname.replace(/\/+$/, '') || '/';
+    var path = trimEndChars(parsed.pathname, '/') || '/';
     return 'url:' + host + path + parsed.search;
   }
 
@@ -947,14 +959,17 @@
   // 繫詞(是／ID／帳號／號／號ID／號碼)可選，大小寫不拘，冒號前後容許空白(含
   // 全形空白——`\s` 認得 U+3000)。負向邊界照舊:實際招攬句常寫「賴是：xxx」
   // 「加我賴號ID：xxx」「LINE 帳號 : xxx」，不只是「賴：xxx」這種裸冒號寫法。
+  // 繫詞連同它前面的空白包成同一個可選段，繫詞到冒號之間只有一段 `\s*`:兩段
+  // 相鄰的 `\s*` 夾著可省的繫詞時，同一串空白能任意拆給前後兩段，比對失敗前
+  // 每種拆法都要試過，空白一長就是二次方。
   //
   // 繫詞是封閉的選項清單，不是「任意字」:`LINE Pay ID：abc123` 的 `Pay` 不在
   // 清單裡，整條樣式就在那裡斷開——LINE Pay 的收款 ID 不是加好友帳號。
   //
   // 括號捕獲的是帳號段本體，供 extractLineId 取用(證據卡標亮的就是這一段)。
   var SCAM_ACCOUNT_ANCHOR_RES = [
-    /(?<![信依無仰倚])[賴籟]\s*(?:是|ID|帳號|號碼|號ID|號)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
-    /(?<![A-Za-z])LINE\s*(?:ID|是|帳號|號碼|號ID|號)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
+    /(?<![信依無仰倚])[賴籟](?:\s*(?:是|ID|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
+    /(?<![A-Za-z])LINE(?:\s*(?:ID|是|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
   ];
 
   // 片語型錨點:「加入我的 LINE」這類明確的加好友祈使句。中文「賴」是姓氏
@@ -1015,14 +1030,24 @@
   // A12345」都不是 LINE 帳號。
   //
   // 【負例是本體】ID／帳號／號碼這三個標籤自己不挑歸屬，前面掛什麼詞就是誰
-  // 的 ID。前置的負向 lookbehind 列出有自己歸屬的那些:中文的訂單、會員、銀
+  // 的 ID。排除詞表 idLabelExclude 列出有自己歸屬的那些:中文的訂單、會員、銀
   // 行、手機、員工、編號、訂位、取件、付款，英文的 Order／Invoice／Ticket／
   // Member／Customer／Case／Serial，以及 Apple／Pay／Google／Meta 這幾個服務
   // 名。容 0-2 個空白，「訂單 ID：」「Order ID: 」都擋得下;`i` 旗標讓英文標
   // 籤大小寫不敏感——標籤是使用者手打的，不會照著我們的字面寫。
+  //
+  // 排除詞與 idLabelled 分成兩條:idLabelled 只留線性的「標籤＋冒號＋帳號
+  // 段」，由 findIdLabelled 逐一取命中，再拿命中起點前 SCAM_ID_LABEL_LOOKBACK
+  // 字交給 idLabelExclude(以 `$` 錨定在這段結尾)判斷，語意等同把排除詞寫成
+  // 前置負向 lookbehind。排除詞寫進 lookbehind 時，「詞＋0-2 個空白」在每個起
+  // 點都要往回展開一遍，靜態分析證不出線性。
   var SCAM_ID_MENTION_RE = /(?<![A-Za-z])LINE(?![A-Za-z])|(?<![信依無仰倚])[賴籟]/i;
-  var SCAM_ID_LABELLED_RE =
-    /(?<!(?:訂單|會員|銀行|手機|員工|編號|訂位|取件|付款|Order|Invoice|Ticket|Member|Customer|Case|Serial|Apple|Pay|Google|Meta)\s{0,2})(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
+  var SCAM_ID_LABELLED_RE = /(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
+  var SCAM_ID_LABEL_EXCLUDE_RE =
+    /(?:訂單|會員|銀行|手機|員工|編號|訂位|取件|付款|Order|Invoice|Ticket|Member|Customer|Case|Serial|Apple|Pay|Google|Meta)\s{0,2}$/i;
+  // 排除詞判斷往回看的字數，須不小於排除詞表最長的詞(Customer，8 字)加 2 個
+  // 空白。
+  var SCAM_ID_LABEL_LOOKBACK = 16;
 
   // lineId 抓取第三段:加好友深連結的路徑段。只認 ti/p 與 lin.ee——ti/g 的路
   // 徑段是群組邀請 token，不是 LINE 帳號，進索引只會用一串對不上任何帳號的
@@ -1048,6 +1073,7 @@
     lineWord: SCAM_LINE_WORD_RE,
     idMention: SCAM_ID_MENTION_RE,
     idLabelled: SCAM_ID_LABELLED_RE,
+    idLabelExclude: SCAM_ID_LABEL_EXCLUDE_RE,
     idDeepLink: SCAM_ID_DEEP_LINK_RE,
   };
 
@@ -1073,7 +1099,7 @@
   // 的 . _ -(句讀不是帳號的一部分)。剝完短於下限時回 null。
   function normalizeLineIdValue(raw) {
     if (typeof raw !== 'string') return null;
-    var id = raw.toLowerCase().slice(0, SCAM_LIMITS.LINE_ID_MAX).replace(/[._-]+$/, '');
+    var id = trimEndChars(raw.toLowerCase().slice(0, SCAM_LIMITS.LINE_ID_MAX), '._-');
     return id.length >= SCAM_LIMITS.LINE_ID_MIN ? id : null;
   }
 
@@ -1086,6 +1112,22 @@
     var id = normalizeLineIdValue(match[1]);
     if (id === null) return null;
     return { id: id, index: offset + match.index + match[0].length - match[1].length };
+  }
+
+  // 在 text 裡找第一個前面不是排除詞的 idLabelled 命中，回 exec 結果或 null。
+  // 命中起點前 SCAM_ID_LABEL_LOOKBACK 字吻合 idLabelExclude 時跳過，從下一個
+  // 位置續找——逐位置推進，與負向 lookbehind 的「每個起點各判一次」同義。
+  // 規則包沒有 idLabelExclude 時不排除。
+  function findIdLabelled(text, cfg) {
+    var scanner = globalCopy(cfg.idLabelled);
+    var exclude = cfg.idLabelExclude;
+    var match;
+    while ((match = scanner.exec(text)) !== null) {
+      var before = text.slice(Math.max(0, match.index - SCAM_ID_LABEL_LOOKBACK), match.index);
+      if (!exclude || !exclude.test(before)) return match;
+      scanner.lastIndex = match.index + 1;
+    }
+    return null;
   }
 
   // 抓出這段文字裡對方的 LINE 帳號本體，回 { id, index } 或 null。三段依序:
@@ -1108,7 +1150,7 @@
       // 斷，樣式在半截字串上照樣匹配得出一個短帳號——抓回半截帳號比抓不到更
       // 糟，它會用一個錯的鍵進跨帳號索引。
       var slice = probe.slice(from, from + SCAM_LIMITS.ID_WINDOW + SCAM_LIMITS.LINE_ID_MAX + 8);
-      var labelled = cfg.idLabelled.exec(slice);
+      var labelled = findIdLabelled(slice, cfg);
       if (labelled && labelled.index < SCAM_LIMITS.ID_WINDOW) {
         found = scamIdCapture(labelled, from);
         if (found) return found;
@@ -1148,12 +1190,17 @@
     });
   }
 
+  // 同一樣式的 g 旗標副本，供逐次推進 lastIndex 掃描，不動呼叫端共用的原樣式
+  // 物件。原樣式的旗標全數保留(i/u/m/s 都會改變比對語意),只換上 g。
+  function globalCopy(pattern) {
+    return new RegExp(pattern.source, pattern.flags.replace(/g/g, '') + 'g');
+  }
+
   // 收集一個樣式在整串文字裡的所有出現區間。改用帶 g 的副本逐次推進
   // lastIndex，而不是切片後重掃:錨點樣式帶 lookbehind(前面不得是 信依無仰倚
   // 或英文字母),切片會讓前文落在字串外，lookbehind 跟著失準。
   function collectMatchSpans(pattern, text, out) {
-    // 原樣式的旗標全數保留(i/u/m/s 都會改變比對語意),只換上 g。
-    var scanner = new RegExp(pattern.source, pattern.flags.replace(/g/g, '') + 'g');
+    var scanner = globalCopy(pattern);
     var match;
     while ((match = scanner.exec(text)) !== null) {
       out.push({ start: match.index, end: match.index + match[0].length });
@@ -2123,6 +2170,7 @@
 
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
+    trimEndChars: trimEndChars,
     isCleanPostUrl: isCleanPostUrl,
     normalizePostUrl: normalizePostUrl,
     extractPostId: extractPostId,
