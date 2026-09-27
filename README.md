@@ -1,7 +1,7 @@
 # Threads Clean Link(脆連結清潔工)
 
 [![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
-[![CI](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml/badge.svg)](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml)
+[![CI](https://github.com/hunandy14/threads-clean-link/actions/workflows/ci.yml/badge.svg)](https://github.com/hunandy14/threads-clean-link/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/hunandy14/threads-clean-link)](./LICENSE)
 
 Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。雙語名稱:英文「Threads Clean Link」、中文「脆連結清潔工」，依瀏覽器語言自動顯示;介面、通知與右鍵選單文字支援中英文，預設跟隨瀏覽器語言，可於「紀錄與設定」頁手動切換。
@@ -104,7 +104,11 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 ## 開發
 
-執行測試:`node --test test/*.test.js`(或 `npm test`)
+執行測試:`node --test test/*.test.js`(或 `npm test`)。開發與 CI 使用 Node.js 22 以上。
+
+語法基準:ES2024(對應 manifest 的 `minimum_chrome_version` 123)。background service worker 為 classic script(以 `importScripts` 載入共用模組)，不可使用 top-level await 與 ES module 語法。
+
+上架 zip 的必要檔案可用 `node tools/manifest-files.mjs` 列出(由 manifest.json 與其引用鏈推導);`tools/build-release.ps1` 的打包白名單必須涵蓋這份清單，由 `test/package.test.js` 把關。
 
 一鍵啟動除錯用 Chrome 並載入開發版擴充，連線目標用 `--env` 三選一(local/staging/production)，慣例說明見 `docs/dev-environments.md`:
 
