@@ -9,9 +9,9 @@
 // 身不碰全域 chrome／fetch／Date——SW 隨時被回收，測試要能在 node 內以假時鐘
 // 跑完整往返，兩者都靠這條紀律。
 //
-// history 的讀改寫一律包進注入的 writeChain(background.js 的
-// historyWriteChain)，與 recordHistory／遷移共用同一條序列鏈，否則兩邊的
-// read-modify-write 會互相覆蓋。
+// storage.local 的讀改寫一律經 TCLCore.createMutator 建的 mutate，佇列用注入
+// 的 writeChain(background.js 的 storageQueue)，與 recordHistory／遷移／警示
+// 名單共用同一條序列佇列，否則兩邊的 read-modify-write 會互相覆蓋。
 (function (root) {
   'use strict';
 
@@ -287,12 +287,16 @@
     var writeChain = typeof deps.writeChain === 'function' ? deps.writeChain : function (fn) {
       return Promise.resolve().then(fn);
     };
-    // 容量上限:由 background 注入 capHistoryForStorage（位元組軟預算＋筆數硬
+    // 容量上限:由 background 注入 TCLCore.capHistory（位元組軟預算＋筆數硬
     // 保險，並優先淘汰墓碑）。拉取是唯一會把 history 變長的寫入路徑，沒有這
     // 一道就會在雲端資料多於本機上限時直接把 storage 寫爆。
     var capHistory = typeof deps.capHistory === 'function' ? deps.capHistory : function (list) {
       return list;
     };
+    // 單鍵讀改寫模板，佇列用注入的 writeChain。
+    // 【死鎖守則】fn 在佇列內執行，fn 內不得呼叫 getLocalDevice 等會排進同一條
+    // 佇列的函式;要用的值在 mutate 之前先取好。
+    var mutate = TCLCoreRef.createMutator({ area: storage.local, enqueue: writeChain });
     var setTimer = deps.setTimeout;
     var clearTimer = deps.clearTimeout;
     // 請求逾時的 signal 工廠((ms) => AbortSignal，background 接成
@@ -333,9 +337,26 @@
       var defaults = {};
       defaults[HISTORY_KEY] = [];
       return localGet(defaults).then(function (got) {
-        return Array.isArray(got && got[HISTORY_KEY]) ? got[HISTORY_KEY] : [];
+        return normalizeHistoryList(got && got[HISTORY_KEY]);
       });
     }
+
+    function normalizeHistoryList(raw) {
+      return Array.isArray(raw) ? raw : [];
+    }
+
+    // history 的寫入參數。不帶 cap 的(清 dirty、重置鏡像欄位)只改欄位不改筆
+    // 數，撞配額沒有收緊的餘地，直接拋 storage_quota。
+    var HISTORY_PLAIN_OPTS = { normalize: normalizeHistoryList, onQuota: 'throw' };
+    // 拉取會把 history 變長:level 0 用注入的 capHistory，撞配額以 level 1 收緊
+    // 再寫一次，仍失敗拋 storage_quota(游標不前進)。
+    var HISTORY_CAPPED_OPTS = {
+      normalize: normalizeHistoryList,
+      cap: function (list, level) {
+        return level ? TCLCoreRef.capHistoryAt(list, level) : capHistory(list);
+      },
+      onQuota: 'throw',
+    };
 
     /** 讀出這一輪需要的全部持久狀態(不含 history)。 */
     function loadContext() {
@@ -615,25 +636,25 @@
       ids.forEach(function (id) {
         drop[id] = true;
       });
-      return writeChain(function () {
-        return readHistory().then(function (list) {
-          var next = list.map(function (entry) {
-            return entry && drop[entry.id] && entry.dirty === true
-              ? Object.assign({}, entry, { dirty: false })
-              : entry;
-          });
-          var items = {};
-          items[HISTORY_KEY] = next;
-          return localSet(items);
+      return mutate(HISTORY_KEY, function (list) {
+        var next = list.map(function (entry) {
+          return entry && drop[entry.id] && entry.dirty === true
+            ? Object.assign({}, entry, { dirty: false })
+            : entry;
         });
-      });
+        return { next: next };
+      }, HISTORY_PLAIN_OPTS);
     }
 
     // ---- 套用一次往返的回應 ----
 
     /**
-     * 把 applied(ack)與 changes(增量)套回本機 history。整段讀改寫包在注入
-     * 的 writeChain 內，與 recordHistory 串行。
+     * 把 applied(ack)與 changes(增量)套回本機 history。整段讀改寫走 mutate
+     * (注入的 writeChain)，與 recordHistory 串行。
+     *
+     * 撞配額不是「這一輪失敗、下一輪重來就好」而已:游標一旦前進，這一頁的增
+     * 量就再也拉不回來。收緊重寫仍失敗就拋 storage_quota，由 runSync 統一記
+     * lastError 並排退避，游標留在原地下一輪重拉同一頁。
      *
      * 【只清送出的那一版】ack 以「伺服器回報的 id」找到本機 entry 後，重讀該筆
      * 現值與切批快照(versions，鍵為送出的 id)比對版本指紋:相同才清 dirty;
@@ -645,123 +666,112 @@
      */
     function applyResponse(body, ctx, versions) {
       var sentVersions = versions || {};
-      return writeChain(function () {
-        return readHistory().then(function (list) {
-          var applied = (body && body.applied) || {};
-          var canonical = {};
-          var deletedIds = {};
-          var rejectedIds = {};
-          (applied.upserts || []).forEach(function (row) {
-            if (row && typeof row.id === 'string') {
-              canonical[row.id] = typeof row.canonicalId === 'string' && row.canonicalId ? row.canonicalId : row.id;
-            }
-          });
-          (applied.deletedIds || []).forEach(function (id) {
-            if (typeof id === 'string') deletedIds[id] = true;
-          });
-          (applied.rejectedIds || []).forEach(function (id) {
-            if (typeof id === 'string') rejectedIds[id] = true;
-          });
+      return mutate(HISTORY_KEY, function (list) {
+        var applied = (body && body.applied) || {};
+        var canonical = {};
+        var deletedIds = {};
+        var rejectedIds = {};
+        (applied.upserts || []).forEach(function (row) {
+          if (row && typeof row.id === 'string') {
+            canonical[row.id] = typeof row.canonicalId === 'string' && row.canonicalId ? row.canonicalId : row.id;
+          }
+        });
+        (applied.deletedIds || []).forEach(function (id) {
+          if (typeof id === 'string') deletedIds[id] = true;
+        });
+        (applied.rejectedIds || []).forEach(function (id) {
+          if (typeof id === 'string') rejectedIds[id] = true;
+        });
 
-          var stamp = now();
-          var next = [];
-          list.forEach(function (entry) {
-            if (!entry) return;
-            // 墓碑被 ack 之後才真正從 storage 移除，在此之前必須保留——SW 中途
-            // 被殺時墓碑還在，下次照樣送得出去。
-            if (TCLCoreRef.isTombstone(entry) && deletedIds[entry.id]) return;
-            if (canonical[entry.id] !== undefined) {
-              var unchanged =
-                Object.prototype.hasOwnProperty.call(sentVersions, entry.id) &&
-                sentVersions[entry.id] === versionOf(entry);
-              next.push(
-                Object.assign({}, entry, {
-                  // canonicalId:雲端同一篇貼文早有一張卡時就地改名，否則下
-                  // 次同步又分裂一張。
-                  id: canonical[entry.id],
-                  dirty: unchanged ? false : entry.dirty,
-                  // serverUpdatedAt 只是「這一輪已上傳」的標記，不是比較用的
-                  // 判準——後端契約(api-spec 3.1)的 ShareHistoryItem 沒有
-                  // updatedAt 欄位。新舊一律以 SyncResponse.cursor 與 changes
-                  // 為準，本欄不參與任何比較。
-                  serverUpdatedAt: stamp,
-                })
-              );
-              return;
-            }
-            if (rejectedIds[entry.id]) {
-              // 拒收的原因一律是「這筆事件早於雲端的墓碑」，原樣
-              // 重送永遠會被再拒一次。清掉 dirty 讓它停在本機，不無限重試。
-              next.push(Object.assign({}, entry, { dirty: false }));
-              return;
-            }
-            next.push(entry);
-          });
+        var stamp = now();
+        var next = [];
+        list.forEach(function (entry) {
+          if (!entry) return;
+          // 墓碑被 ack 之後才真正從 storage 移除，在此之前必須保留——SW 中途
+          // 被殺時墓碑還在，下次照樣送得出去。
+          if (TCLCoreRef.isTombstone(entry) && deletedIds[entry.id]) return;
+          if (canonical[entry.id] !== undefined) {
+            var unchanged =
+              Object.prototype.hasOwnProperty.call(sentVersions, entry.id) &&
+              sentVersions[entry.id] === versionOf(entry);
+            next.push(
+              Object.assign({}, entry, {
+                // canonicalId:雲端同一篇貼文早有一張卡時就地改名，否則下
+                // 次同步又分裂一張。
+                id: canonical[entry.id],
+                dirty: unchanged ? false : entry.dirty,
+                // serverUpdatedAt 只是「這一輪已上傳」的標記，不是比較用的
+                // 判準——後端契約(api-spec 3.1)的 ShareHistoryItem 沒有
+                // updatedAt 欄位。新舊一律以 SyncResponse.cursor 與 changes
+                // 為準，本欄不參與任何比較。
+                serverUpdatedAt: stamp,
+              })
+            );
+            return;
+          }
+          if (rejectedIds[entry.id]) {
+            // 拒收的原因一律是「這筆事件早於雲端的墓碑」，原樣
+            // 重送永遠會被再拒一次。清掉 dirty 讓它停在本機，不無限重試。
+            next.push(Object.assign({}, entry, { dirty: false }));
+            return;
+          }
+          next.push(entry);
+        });
 
-          // changes.clearedAt(舊後端的清空水位線)一律忽略(D50):雲端的刪除只
-          // 經由墓碑傳到本機，本機不因水位線硬刪任何一筆。
-          var changes = body && body.changes;
-          if (changes) {
-            var tombKeys = {};
-            var tombIds = {};
-            (changes.deleted || []).forEach(function (row) {
-              if (!row) return;
-              if (typeof row.postKey === 'string') tombKeys[row.postKey] = true;
-              if (typeof row.id === 'string') tombIds[row.id] = true;
-            });
-            if (changes.deleted && changes.deleted.length) {
-              // 雲端墓碑在本機是硬刪，不是再留一個本機墓碑——留下來會被下一輪
-              // 當成待送出的刪除意圖再送一次。
-              next = next.filter(function (entry) {
-                return !(tombKeys[keyOfEntry(entry)] || tombIds[entry.id]);
-              });
-            }
-            (changes.links || []).forEach(function (item) {
-              if (!acceptIncomingItem(item)) return;
-              var key = keyOfItem(item);
-              var index = -1;
-              for (var i = 0; i < next.length; i += 1) {
-                if (keyOfEntry(next[i]) === key) {
-                  index = i;
-                  break;
-                }
-              }
-              // 刪除優先:本機同 key 是尚未送出的墓碑(dirty)時，這筆來訊不合併。
-              // 蓋成活資料的話刪除意圖就此遺失，雲端與其他裝置永遠不刪;墓碑
-              // 留著，下一批或下一輪照樣以 deletes[] 送出。
-              if (index !== -1 && next[index].dirty === true && TCLCoreRef.isTombstone(next[index])) return;
-              var merged = repairMergedEntry(
-                TCLCoreRef.fromSyncItem(item, index === -1 ? null : next[index])
-              );
-              // 整形後仍不合格就維持本機原樣(有既有卡)或整筆不收(沒有):寫進
-              // 一筆 options 讀不出來的資料，比不寫更糟。
-              if (!merged) return;
-              // 本機同 key 仍 dirty(ack 版本比對未過、或尚未送出)時合併後維持
-              // dirty:合併結果是雲端與本機 seen 的聯集，本機那份尚未上雲的事件
-              // 要靠下一輪再送。
-              if (index !== -1 && next[index].dirty === true) merged.dirty = true;
-              if (index === -1) next.push(merged);
-              else next[index] = merged;
+        // changes.clearedAt(舊後端的清空水位線)一律忽略(D50):雲端的刪除只
+        // 經由墓碑傳到本機，本機不因水位線硬刪任何一筆。
+        var changes = body && body.changes;
+        if (changes) {
+          var tombKeys = {};
+          var tombIds = {};
+          (changes.deleted || []).forEach(function (row) {
+            if (!row) return;
+            if (typeof row.postKey === 'string') tombKeys[row.postKey] = true;
+            if (typeof row.id === 'string') tombIds[row.id] = true;
+          });
+          if (changes.deleted && changes.deleted.length) {
+            // 雲端墓碑在本機是硬刪，不是再留一個本機墓碑——留下來會被下一輪
+            // 當成待送出的刪除意圖再送一次。
+            next = next.filter(function (entry) {
+              return !(tombKeys[keyOfEntry(entry)] || tombIds[entry.id]);
             });
           }
-
-          next.sort(function (a, b) {
-            return (b.at || 0) - (a.at || 0);
+          (changes.links || []).forEach(function (item) {
+            if (!acceptIncomingItem(item)) return;
+            var key = keyOfItem(item);
+            var index = -1;
+            for (var i = 0; i < next.length; i += 1) {
+              if (keyOfEntry(next[i]) === key) {
+                index = i;
+                break;
+              }
+            }
+            // 刪除優先:本機同 key 是尚未送出的墓碑(dirty)時，這筆來訊不合併。
+            // 蓋成活資料的話刪除意圖就此遺失，雲端與其他裝置永遠不刪;墓碑
+            // 留著，下一批或下一輪照樣以 deletes[] 送出。
+            if (index !== -1 && next[index].dirty === true && TCLCoreRef.isTombstone(next[index])) return;
+            var merged = repairMergedEntry(
+              TCLCoreRef.fromSyncItem(item, index === -1 ? null : next[index])
+            );
+            // 整形後仍不合格就維持本機原樣(有既有卡)或整筆不收(沒有):寫進
+            // 一筆 options 讀不出來的資料，比不寫更糟。
+            if (!merged) return;
+            // 本機同 key 仍 dirty(ack 版本比對未過、或尚未送出)時合併後維持
+            // dirty:合併結果是雲端與本機 seen 的聯集，本機那份尚未上雲的事件
+            // 要靠下一輪再送。
+            if (index !== -1 && next[index].dirty === true) merged.dirty = true;
+            if (index === -1) next.push(merged);
+            else next[index] = merged;
           });
-          var items = {};
-          items[HISTORY_KEY] = capHistory(next);
-          return localSet(items)
-            .catch(function (err) {
-              // 配額爆掉不是「這一輪失敗、下一輪重來就好」而已:游標一旦前進，
-              // 這一頁的增量就再也拉不回來。改成拋出可辨識的錯誤碼，由 runSync
-              // 統一記 lastError 並排退避，游標留在原地下一輪重拉同一頁。
-              throw syncError(TCLCoreRef.isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
-            })
-            .then(function () {
-              // D25:拉到沒見過的裝置只留旗標，不在同步途中順手打一次 devices。
-              return noteUnknownDevices(body);
-            });
+        }
+
+        next.sort(function (a, b) {
+          return (b.at || 0) - (a.at || 0);
         });
+        return { next: next };
+      }, HISTORY_CAPPED_OPTS).then(function () {
+        // D25:拉到沒見過的裝置只留旗標，不在同步途中順手打一次 devices。
+        return noteUnknownDevices(body);
       });
     }
 
@@ -867,6 +877,10 @@
       });
     }
 
+    // 名單的寫入參數:寫前 normalize、寫後 capScamBlocklistAt;撞配額收緊重寫
+    // 仍失敗拋 storage_quota(marksCursor 不前進)。
+    var BLOCKLIST_OPTS = { normalize: TCLCoreRef.normalizeScamBlocklist, cap: TCLCoreRef.capScamBlocklistAt, onQuota: 'throw' };
+
     /** 讀出本機警示名單，一律先過正規化(storage 是使用者可編輯的地方)。 */
     function readBlocklist() {
       var defaults = {};
@@ -966,12 +980,14 @@
     }
 
     /**
-     * 把一頁雲端 mark(與墓碑)併進本機名單。整段讀改寫包在注入的 writeChain
-     * 內，與 background 的 recordHistory／handleScamHit 串行:scamBlocklist 只
-     * 有 background 寫得到，兩邊的 read-modify-write 會互相覆蓋。
+     * 把一頁雲端 mark(與墓碑)併進本機名單。整段讀改寫走 mutate(注入的
+     * writeChain)，與 background 的 recordHistory／handleScamHit 串行:
+     * scamBlocklist 只有 background 寫得到，兩邊的 read-modify-write 會互相覆蓋。
      *
-     * 寫前 normalize(readBlocklist)、寫後 cap——與 background 的三支寫入路徑
-     * 同一套紀律，handleIndex 一律由 entries 重建，不留孤兒鍵。
+     * 寫前 normalize、寫後 cap——與 background 的三支寫入路徑同一套紀律(同一份
+     * BLOCKLIST_OPTS 形狀)，handleIndex 一律由 entries 重建，不留孤兒鍵。撞配
+     * 額比照 links:收緊重寫仍失敗拋 storage_quota，游標不得前進，否則這一頁
+     * 的增量再也拉不回來(伺服器只認游標，不會重送)。
      *
      * 【重送即 no-op】伺服器對同毫秒併發寫入的列會在下一次增量重送一次(後端
      * R5 的 now-1 游標)。逐欄相同的重送合併出來與本機現存那一份一模一樣，這時
@@ -985,48 +1001,40 @@
       var kept = [];
       // 這一頁有沒有真的改到本機那一份。一筆都沒改就不落盤(見函式註解)。
       var changed = false;
-      return writeChain(function () {
-        return readBlocklist().then(function (list) {
-          // 【墓碑守衛】契約 §3.1 R2③「比墓碑舊不復活」的對稱面:本機
-          // updatedAt **晚於** deletedAt，代表使用者在別台裝置刪掉這一筆之後
-          // 又動過它，那份改動不該被一筆較舊的刪除吃掉。留著並於下一輪重送，
-          // 伺服器會以較新的版本撤銷墓碑(D37 的 LWW 在刪除這一側同樣成立)。
-          // 不晚於墓碑的才硬刪——留一個本機墓碑會在下一輪被當成待推的條目再
-          // 送一次。
-          deletions.forEach(function (row) {
-            var userId = TCLCoreRef.scamMarkUserId(row.key);
-            if (userId === null) return;
-            var entry = list.entries[userId];
-            if (!entry) return;
-            var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
-            if (updatedAt > row.deletedAt) {
-              kept.push({ key: row.key, updatedAt: updatedAt });
-              return;
-            }
-            delete list.entries[userId];
-            changed = true;
-          });
-          marks.forEach(function (mark) {
-            var parsed = TCLCoreRef.fromScamMark(mark);
-            // key 形狀不對的整筆丟棄:落進 entries 就是一筆永遠查不到的條目。
-            if (!parsed) return;
-            var local = list.entries[parsed.userId];
-            var merged = local ? TCLCoreRef.mergeScamEntry(local, parsed.entry) : parsed.entry;
-            // 逐欄相同的重送不算改動(鍵序不計:合併出來的鍵序與正規化後的不同)。
-            if (local && sameShape(local, merged)) return;
-            list.entries[parsed.userId] = merged;
-            changed = true;
-          });
-          if (!changed) return undefined;
-          var items = {};
-          items[BLOCKLIST_KEY] = TCLCoreRef.capScamBlocklist(list);
-          return localSet(items).catch(function (err) {
-            // 比照 links:配額爆掉時游標不得前進，否則這一頁的增量再也拉不回
-            // 來(伺服器只認游標，不會重送)。
-            throw syncError(TCLCoreRef.isQuotaExceededError(err) ? 'storage_quota' : 'storage_write_failed');
-          });
+      return mutate(BLOCKLIST_KEY, function (list) {
+        // 【墓碑守衛】契約 §3.1 R2③「比墓碑舊不復活」的對稱面:本機
+        // updatedAt **晚於** deletedAt，代表使用者在別台裝置刪掉這一筆之後
+        // 又動過它，那份改動不該被一筆較舊的刪除吃掉。留著並於下一輪重送，
+        // 伺服器會以較新的版本撤銷墓碑(D37 的 LWW 在刪除這一側同樣成立)。
+        // 不晚於墓碑的才硬刪——留一個本機墓碑會在下一輪被當成待推的條目再
+        // 送一次。
+        deletions.forEach(function (row) {
+          var userId = TCLCoreRef.scamMarkUserId(row.key);
+          if (userId === null) return;
+          var entry = list.entries[userId];
+          if (!entry) return;
+          var updatedAt = finiteNumber(entry.updatedAt) ? entry.updatedAt : 0;
+          if (updatedAt > row.deletedAt) {
+            kept.push({ key: row.key, updatedAt: updatedAt });
+            return;
+          }
+          delete list.entries[userId];
+          changed = true;
         });
-      }).then(function () {
+        marks.forEach(function (mark) {
+          var parsed = TCLCoreRef.fromScamMark(mark);
+          // key 形狀不對的整筆丟棄:落進 entries 就是一筆永遠查不到的條目。
+          if (!parsed) return;
+          var local = list.entries[parsed.userId];
+          var merged = local ? TCLCoreRef.mergeScamEntry(local, parsed.entry) : parsed.entry;
+          // 逐欄相同的重送不算改動(鍵序不計:合併出來的鍵序與正規化後的不同)。
+          if (local && sameShape(local, merged)) return;
+          list.entries[parsed.userId] = merged;
+          changed = true;
+        });
+        if (!changed) return undefined;
+        return { next: list };
+      }, BLOCKLIST_OPTS).then(function () {
         return kept;
       });
     }
@@ -1521,16 +1529,12 @@
 
     /** 把 history 的雲端鏡像欄位重置成「未同步過的本機資料」。 */
     function resetMirrorFields() {
-      return writeChain(function () {
-        return readHistory().then(function (list) {
-          var next = list.map(function (entry) {
-            return Object.assign({}, entry, { dirty: true, serverUpdatedAt: null });
-          });
-          var items = {};
-          items[HISTORY_KEY] = next;
-          return localSet(items);
+      return mutate(HISTORY_KEY, function (list) {
+        var next = list.map(function (entry) {
+          return Object.assign({}, entry, { dirty: true, serverUpdatedAt: null });
         });
-      });
+        return { next: next };
+      }, HISTORY_PLAIN_OPTS);
     }
 
     function signOut() {
@@ -1734,8 +1738,8 @@
      * 只是這一輪的請求不帶 device 區塊，不該讓整輪同步掛掉。
      *
      * 【死鎖守則】§12 增補四:background 的 getLocalDevice 自己也要佔一段
-     * historyWriteChain，因此本函式**只能在進 writeChain 之前**呼叫;在
-     * dropUnsendable／applyResponse 的回呼內才取就是在鏈上等自己。
+     * storageQueue(即 writeChain)，因此本函式**只能在進 writeChain 之前**呼叫;在
+     * dropUnsendable／applyResponse 的 mutate 回呼內才取就是在佇列上等自己。
      */
     function readLocalDevice() {
       if (!getLocalDevice) return Promise.resolve(null);

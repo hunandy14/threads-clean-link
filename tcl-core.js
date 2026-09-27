@@ -883,6 +883,112 @@
     return budgeted.length === list.length ? list : budgeted;
   }
 
+  // 撞配額之後的收緊比例(mutate 的 cap level 1):位元組軟預算打八折、筆數上
+  // 限打九折。level 0 就是平時的上限;模板只重試一次，level 2 以上不會出現。
+  var QUOTA_TIGHTEN = { softBudget: 0.8, maxEntries: 0.9 };
+
+  function tightenedLimits(maxEntries, softBudget) {
+    return {
+      maxEntries: Math.floor(maxEntries * QUOTA_TIGHTEN.maxEntries),
+      softBudget: Math.floor(softBudget * QUOTA_TIGHTEN.softBudget),
+    };
+  }
+
+  // mutate 的 cap 介面版本:cap(list, level)，level 0 用 HISTORY_LIMITS，level
+  // 1 起用收緊後的上限。
+  function capHistoryAt(list, level) {
+    if (!level) return capHistory(list);
+    return capHistory(list, tightenedLimits(HISTORY_LIMITS.MAX_ENTRIES, HISTORY_LIMITS.SOFT_BUDGET));
+  }
+
+  // ---- 儲存讀改寫模板 ----
+  //
+  // createSerialQueue():單一 promise 佇列。enqueue(fn) 等前一個工作整段結算
+  // 才執行 fn，回傳「這一次」的 promise(如實反映成敗);佇列尾端另外吞掉錯
+  // 誤，某一次失敗不阻塞後續。
+  function createSerialQueue() {
+    var tail = Promise.resolve();
+    return function enqueue(fn) {
+      var run = tail.then(fn);
+      tail = run.catch(function () {});
+      return run;
+    };
+  }
+
+  function storageError(code, cause) {
+    var err = new Error(code);
+    err.code = code;
+    err.cause = cause;
+    return err;
+  }
+
+  // createMutator({ area, enqueue }):回傳 mutate(key, fn, opts)，一次單鍵讀
+  // 改寫，整段在 enqueue 佇列內執行。area 只需 get／set(chrome.storage 區域
+  // 或其轉接)。
+  //   opts.normalize(raw)  讀出的原始值(鍵缺席時為 null)先過它再交給 fn;缺
+  //                        席時原樣交出。opts 整個缺席也可以。
+  //   fn(current)          回 undefined＝不寫，結果 { written:false };回
+  //                        { next, result }＝寫 next，結果 { written:true,
+  //                        result, value }，value 是實際落盤的內容(過 cap 後)。
+  //   opts.cap(next, level) 選填。寫入值一律先過 cap(next, 0);撞配額時以
+  //                        cap(next, 1) 收緊再寫一次。沒有 cap 不重試——同一
+  //                        份內容再寫一次照樣撞。
+  //   opts.onQuota         收緊後仍撞配額(或沒有 cap)時:'skip' 回 { written:
+  //                        false, result, quota:true, cause }(cause 是原
+  //                        配額錯誤);'throw' 拋 code storage_quota。
+  // 非配額的寫入錯誤一律拋 code storage_write_failed，cause 帶原錯誤，不重試。
+  // 讀取錯誤與 fn 拋出的錯誤原樣往外拋。
+  //
+  // 【死鎖守則】fn 在佇列內執行，fn 內不得呼叫任何會 enqueue 到同一條佇列的
+  // 函式(background 的 ensureDevice／getLocalDevice 即是):佇列要等本次結算
+  // 才放行下一個，fn 等它就是等自己。需要的值在呼叫 mutate 之前先取好。
+  function identity(value) {
+    return value;
+  }
+
+  function createMutator(deps) {
+    return function mutate(key, fn, opts) {
+      opts = opts || {};
+      var normalize = typeof opts.normalize === 'function' ? opts.normalize : identity;
+      return deps.enqueue(function () {
+        var query = {};
+        query[key] = null;
+        return Promise.resolve()
+          .then(function () {
+            return deps.area.get(query);
+          })
+          .then(function (got) {
+            return fn(normalize(got ? got[key] : null));
+          })
+          .then(function (plan) {
+            if (!plan) return { written: false, result: undefined };
+            return write(plan, 0);
+          });
+      });
+
+      function write(plan, level) {
+        var value = opts.cap ? opts.cap(plan.next, level) : plan.next;
+        var items = {};
+        items[key] = value;
+        return Promise.resolve()
+          .then(function () {
+            return deps.area.set(items);
+          })
+          .then(
+            function () {
+              return { written: true, result: plan.result, value: value };
+            },
+            function (err) {
+              if (!isQuotaExceededError(err)) throw storageError('storage_write_failed', err);
+              if (level === 0 && opts.cap) return write(plan, 1);
+              if (opts.onQuota === 'skip') return { written: false, result: plan.result, quota: true, cause: err };
+              throw storageError('storage_quota', err);
+            }
+          );
+      }
+    };
+  }
+
   // ---- 詐騙串文偵測 ----
 
   // 詐騙帳號的共通劇本:正文寫長篇心得，末段把人帶去 LINE 群組。共通結構是
@@ -1770,7 +1876,13 @@
   // 位元組裁切先用單筆估算做單次 O(n) 前向累加(同一筆不 stringify 兩次)，收
   // 尾再用整包的實際序列化位元組驗證:估算只近似分隔逗號，仍可能低估。兩處
   // 都以 UTF-8 位元組計。
-  function capScamBlocklist(raw) {
+  //
+  // limits(選填):{ maxEntries, softBudget }，缺席的鍵用 SCAM_LIMITS(比照
+  // capHistory)。淘汰的條目連同 handleIndex 裡指向它的反查鍵一起清掉。
+  function capScamBlocklist(raw, limits) {
+    var maxEntries =
+      limits && typeof limits.maxEntries === 'number' ? limits.maxEntries : SCAM_LIMITS.MAX_ENTRIES;
+    var budget = limits && typeof limits.softBudget === 'number' ? limits.softBudget : SCAM_LIMITS.SOFT_BUDGET;
     var list = normalizeScamBlocklist(raw);
     var ids = Object.keys(list.entries);
     var i;
@@ -1781,22 +1893,28 @@
     ids.sort(function (a, b) {
       return list.entries[b].updatedAt - list.entries[a].updatedAt;
     });
-    ids = ids.slice(0, SCAM_LIMITS.MAX_ENTRIES);
+    ids = ids.slice(0, maxEntries);
 
     var out = { version: SCAM_BLOCKLIST_VERSION, entries: {}, handleIndex: {} };
     var kept = [];
     var bytes = utf8Length(JSON.stringify(out));
     for (i = 0; i < ids.length; i++) {
       var size = scamEntryBytes(ids[i], list.entries[ids[i]]);
-      if (kept.length > 0 && bytes + size > SCAM_LIMITS.SOFT_BUDGET) break;
+      if (kept.length > 0 && bytes + size > budget) break;
       bytes += size;
       addScamEntry(out, ids[i], list.entries[ids[i]]);
       kept.push(ids[i]);
     }
-    while (kept.length > 1 && utf8Length(JSON.stringify(out)) > SCAM_LIMITS.SOFT_BUDGET) {
+    while (kept.length > 1 && utf8Length(JSON.stringify(out)) > budget) {
       removeScamEntry(out, kept.pop());
     }
     return out;
+  }
+
+  // mutate 的 cap 介面版本:level 0 用 SCAM_LIMITS，level 1 起用收緊後的上限。
+  function capScamBlocklistAt(raw, level) {
+    if (!level) return capScamBlocklist(raw);
+    return capScamBlocklist(raw, tightenedLimits(SCAM_LIMITS.MAX_ENTRIES, SCAM_LIMITS.SOFT_BUDGET));
   }
 
   // 單筆條目的證據裁切:依 at 降冪留最新 MAX_EVIDENCE 筆，snippet 硬裁
@@ -2233,6 +2351,9 @@
     errorCategoryOf: errorCategoryOf,
     HISTORY_LIMITS: HISTORY_LIMITS,
     capHistory: capHistory,
+    capHistoryAt: capHistoryAt,
+    createSerialQueue: createSerialQueue,
+    createMutator: createMutator,
     SCAM_LIMITS: SCAM_LIMITS,
     SCAM_RULES: SCAM_RULES,
     SCAM_SIGNALS: SCAM_SIGNALS,
@@ -2244,6 +2365,7 @@
     normalizeScamBlocklist: normalizeScamBlocklist,
     capScamEvidence: capScamEvidence,
     capScamBlocklist: capScamBlocklist,
+    capScamBlocklistAt: capScamBlocklistAt,
     scamEntryBytes: scamEntryBytes,
     makeBlocklistEntry: makeBlocklistEntry,
     mergeBlocklistEvidence: mergeBlocklistEvidence,
