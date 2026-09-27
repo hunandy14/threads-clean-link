@@ -805,72 +805,98 @@
       return true;
     }
 
+    /**
+     * 一條通道「分批推 → 續拉」的共用外殼(links 與 marks 各走一次)。
+     *
+     * - 每個 POST 前過 takeCall(ctx, true);擋下時整條通道當輪收手，沒送出的批
+     *   維持 dirty，runSync 依 budget.exhausted 排 continue 接著跑。
+     * - 批次推完後只看**最後一次**回應的 changes.hasMore 決定續拉:積壓要在同一
+     *   輪拉完，不能等下一個 alarm;續拉受 MAX_PULL_ROUNDS 與同一道額度關卡約
+     *   束。changes 為 null(或缺席)即不續拉。
+     * - 每個 POST 送出前重讀 ctx.state[cursorKey] 決定 since，續拉因此一律從已
+     *   落地的那一頁接著拉。
+     *
+     * 【順序】每次往返先 apply(落地)再前進游標。反過來的話，寫入失敗(配額、
+     * storage 壞掉)時失敗路徑的 saveState 會把已前進的游標寫進去，這一頁的增量
+     * 從此再也拉不回來——伺服器只認游標，不會重送。apply 拋錯時游標不動，例外
+     * 原樣往上拋，後續批與續拉都不送。
+     *
+     * @param {object} ctx 本輪情境(state、budget、deadline)。
+     * @param {object} ch 通道描述:
+     *   - path {string}:POST 的端點。
+     *   - cursorKey {string}:ctx.state 上存游標的欄位。
+     *   - sinceWhenNone {string|null}:沒有游標時送的 since;null 代表 body 不
+     *     寫出 since 鍵。
+     *   - batches {Array}:依序推送的批次，至少一批(推空的也要發，一次往返同
+     *     時處理推與拉)。
+     *   - bodyOf(batch) {function}:組出不含 since 的請求 body(每次回傳新物件)。
+     *   - decorate(body, isFirst) {function} 選填:送出前加掛欄位;isFirst 只在
+     *     本通道這一輪的第一個 POST 為 true。
+     *   - apply(payload, batch) {function}:把回應落地，回傳 Promise。
+     *   - pullBatch:續拉時交給 bodyOf 與 apply 的批次。
+     * @returns {Promise<void>}
+     */
+    async function drainChannel(ctx, ch) {
+      var last = null;
+      var first = true;
+      async function post(batch) {
+        var body = ch.bodyOf(batch);
+        var cursor = ctx.state[ch.cursorKey];
+        var since = isCursor(cursor) ? cursor : ch.sinceWhenNone;
+        if (since !== null) body.since = since;
+        if (ch.decorate) ch.decorate(body, first);
+        first = false;
+        var payload = await call(ctx, 'POST', ch.path, body);
+        await ch.apply(payload, batch);
+        if (payload && isCursor(payload.cursor)) ctx.state[ch.cursorKey] = payload.cursor;
+        last = payload ? payload.changes : null;
+      }
+      for (var i = 0; i < ch.batches.length; i += 1) {
+        if (!takeCall(ctx, true)) return;
+        await post(ch.batches[i]);
+      }
+      for (var rounds = 0; last && last.hasMore && rounds < MAX_PULL_ROUNDS; rounds += 1) {
+        if (!takeCall(ctx, true)) return;
+        await post(ch.pullBatch);
+      }
+    }
+
     function runRound(ctx) {
       ctx.budget = { left: MAX_ROUND_POSTS, exhausted: false };
       ctx.deadline = now() + ROUND_DEADLINE_MS;
-      var chain = Promise.resolve();
-      // D23:一輪只在**第一個** POST 掛 device 區塊。後端拿它做 upsert，續頁
-      // 再帶一次只是重複同一筆寫入。
-      var deviceSent = false;
-      var lastChanges = null;
 
-      chain = chain
-        .then(readHistory)
+      return readHistory()
         .then(function (history) {
           // 「開始同步」的廣播沿用這一次已經讀好的 ctx 與 history:SW 隨時會
           // 被殺，第一次請求要盡快發出去，不為了一則廣播多跑兩趟 storage。
           emitState(ctx, history, 'syncing');
           var planned = buildBatches(history);
-          var step = dropUnsendable(planned.dropped);
-          planned.batches.forEach(function (batch) {
-            step = step.then(function () {
-              // 額度用完:剩下的批次維持 dirty，下一輪再送。
-              if (!takeCall(ctx, true)) return undefined;
-              var body = {
-                upserts: batch.upserts,
-                deletes: batch.deletes,
-                // 沒有游標的首輪送 '0':api-spec 4.3 明訂不帶 since 就不回增
-                // 量，首次登入會永遠拉不到雲端既有資料。'0' 是合法的純數字
-                // 游標，空字串不是——後端(R6)把空 since 判成 400 bad_since。
-                since: isCursor(ctx.state.cursor) ? ctx.state.cursor : '0',
-              };
-              var block = deviceSent ? null : deviceBlockOf(ctx.device);
-              if (block) {
-                body.device = block;
-                deviceSent = true;
-              }
-              return call(ctx, 'POST', '/api/v1/links/sync', body).then(function (payload) {
-                // 【順序】游標必須等 applyResponse 真的落地才前進。反過來的話，
-                // 寫入失敗（配額、storage 壞掉）時失敗路徑的 saveState 會把已
-                // 前進的游標寫進去，這一頁的增量從此再也拉不回來——伺服器只認
-                // 游標，不會重送。
-                return applyResponse(payload, ctx, batch.versions).then(function () {
-                  if (payload && isCursor(payload.cursor)) ctx.state.cursor = payload.cursor;
-                  lastChanges = payload ? payload.changes : null;
-                });
-              });
+          return dropUnsendable(planned.dropped).then(function () {
+            return drainChannel(ctx, {
+              path: '/api/v1/links/sync',
+              cursorKey: 'cursor',
+              // 沒有游標的首輪送 '0':api-spec 4.3 明訂不帶 since 就不回增量，
+              // 首次登入會永遠拉不到雲端既有資料。'0' 是合法的純數字游標，空字
+              // 串不是——後端(R6)把空 since 判成 400 bad_since。
+              sinceWhenNone: '0',
+              batches: planned.batches,
+              // 續拉(batch 為 null)的 body 只有 since。
+              bodyOf: function (batch) {
+                return batch ? { upserts: batch.upserts, deletes: batch.deletes } : {};
+              },
+              // D23:一輪只在**第一個** POST 掛 device 區塊。後端拿它做 upsert，
+              // 續頁再帶一次只是重複同一筆寫入。
+              decorate: function (body, isFirst) {
+                var block = isFirst ? deviceBlockOf(ctx.device) : null;
+                if (block) body.device = block;
+              },
+              // 續拉沒有切批快照，ack 一律不清 dirty。
+              apply: function (payload, batch) {
+                return applyResponse(payload, ctx, batch ? batch.versions : undefined);
+              },
+              pullBatch: null,
             });
           });
-          return step;
-        })
-        .then(function () {
-          // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
-          var rounds = 0;
-          function more() {
-            if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
-            // 游標停在已落地的那一頁，下一輪從這裡續拉。
-            if (!takeCall(ctx, true)) return Promise.resolve();
-            rounds += 1;
-            return call(ctx, 'POST', '/api/v1/links/sync', { since: ctx.state.cursor }).then(function (payload) {
-              // 同上:先落地再前進游標。
-              return applyResponse(payload, ctx).then(function () {
-                if (payload && isCursor(payload.cursor)) ctx.state.cursor = payload.cursor;
-                lastChanges = payload ? payload.changes : null;
-                return more();
-              });
-            });
-          }
-          return more();
         })
         .then(function () {
           // marks 是並存的第二條通道:links 這一輪收完才輪到它。擺在後面是為
@@ -878,8 +904,6 @@
           // 輪已經落地，只是 lastError 記在同一格。
           return runMarksRound(ctx);
         });
-
-      return chain;
     }
 
     // ---- 警示名單(marks)通道(D38) ----
@@ -1067,43 +1091,37 @@
       return acked;
     }
 
-    /**
-     * 一次推拉往返。推空的也要發:一次 POST 同時處理推與拉，少發這一次就拉不
-     * 到別台裝置的新資料(與 links 同一個取向)。
-     *
-     * 【位置參數】marksCursor 為 null 時不帶——契約 §3.1 的首輪回填走 GET，不
-     * 帶位置參數時伺服器回 changes: null，這一次 POST 只是把游標領回來。
-     */
-    function postMarks(ctx, batch, round) {
-      var body = {
+    /** marks 一批的請求 body(不含 since，由 drainChannel 依游標補上)。 */
+    function markBodyOf(batch) {
+      return {
         upserts: batch.rows.map(function (row) {
           return row.mark;
         }),
         // 本機沒有「刪除」動作:解除是 state 翻成 dismissed，不是刪條目。
         deletes: [],
       };
-      if (isCursor(ctx.state.marksCursor)) body.since = ctx.state.marksCursor;
-      return call(ctx, 'POST', MARKS_SYNC_PATH, body).then(function (payload) {
-        var changes = payload && payload.changes;
-        var marks = changes && Array.isArray(changes.marks) ? changes.marks : [];
-        var deletions = [];
-        if (changes && Array.isArray(changes.deleted)) {
-          changes.deleted.forEach(function (row) {
-            if (!row || typeof row.key !== 'string') return;
-            // deletedAt 讀不出來時當成「無限早」，一律交給守衛留下本機那一份
-            // ——刪除是不可逆的，形狀不明時不動手。
-            deletions.push({ key: row.key, deletedAt: finiteNumber(row.deletedAt) ? row.deletedAt : -Infinity });
-          });
-        }
-        // changes.clearedAt(舊後端的清空水位線)一律忽略(D50):名單只經由墓碑
-        // 刪除。
-        var acked = settleMarkAck(ctx, payload, batch, round);
-        // 【順序】游標必須等寫入真的落地才前進(比照 links)。
-        return applyMarkChanges(marks, deletions, acked).then(function () {
-          if (payload && isCursor(payload.cursor)) ctx.state.marksCursor = payload.cursor;
-          return changes;
+    }
+
+    /**
+     * 把一次 marks 往返的回應落地:先結算 ack(settleMarkAck)，再把增量與該清
+     * 的 dirty 一次寫進名單。游標由 drainChannel 在落地之後前進。
+     */
+    function applyMarksResponse(ctx, payload, batch, round) {
+      var changes = payload && payload.changes;
+      var marks = changes && Array.isArray(changes.marks) ? changes.marks : [];
+      var deletions = [];
+      if (changes && Array.isArray(changes.deleted)) {
+        changes.deleted.forEach(function (row) {
+          if (!row || typeof row.key !== 'string') return;
+          // deletedAt 讀不出來時當成「無限早」，一律交給守衛留下本機那一份
+          // ——刪除是不可逆的，形狀不明時不動手。
+          deletions.push({ key: row.key, deletedAt: finiteNumber(row.deletedAt) ? row.deletedAt : -Infinity });
         });
-      });
+      }
+      // changes.clearedAt(舊後端的清空水位線)一律忽略(D50):名單只經由墓碑
+      // 刪除。
+      var acked = settleMarkAck(ctx, payload, batch, round);
+      return applyMarkChanges(marks, deletions, acked);
     }
 
     /**
@@ -1160,46 +1178,36 @@
       return page(ctx.state.marksBackfillCursor);
     }
 
-    /** 推拉往返本體:分批推完再把增量拉乾淨(hasMore 同輪續拉)。 */
+    /**
+     * 推拉往返本體:分批推完再把增量拉乾淨(同輪續拉)，推拉迴圈交給
+     * drainChannel。
+     *
+     * 【位置參數】marksCursor 為 null 時不帶 since——契約 §3.1 的首輪回填走
+     * GET，不帶位置參數時伺服器回 changes: null，這一次 POST 只是把游標領回來。
+     */
     function exchangeMarks(ctx, list) {
       var batches = planMarkBatches(list);
       // 推空的也要發一次:一次 POST 同時處理推與拉。
       if (!batches.length) batches.push(emptyMarkBatch());
-      var lastChanges = null;
       // 整輪的結算帳:evicted 累計與「有沒有一筆被拒」決定輪末收不收掉淘汰提
       // 示。
       var round = { evicted: 0, rejected: false };
-      var step = Promise.resolve();
-      batches.forEach(function (batch) {
-        step = step.then(function () {
-          // 額度用完:沒送出的條目仍是 dirty，下一輪再送。
-          if (!takeCall(ctx, true)) return undefined;
-          return postMarks(ctx, batch, round).then(function (changes) {
-            lastChanges = changes;
-          });
-        });
+      return drainChannel(ctx, {
+        path: MARKS_SYNC_PATH,
+        cursorKey: 'marksCursor',
+        sinceWhenNone: null,
+        batches: batches,
+        bodyOf: markBodyOf,
+        apply: function (payload, batch) {
+          return applyMarksResponse(ctx, payload, batch, round);
+        },
+        pullBatch: emptyMarkBatch(),
+      }).then(function () {
+        // 一輪完整跑完(沒有例外、沒有一筆被拒)且這一輪雲端一筆都沒淘汰時，把
+        // 上一輪留下的提示收掉:對完帳那張提示就該收，否則它永遠掛在卡頭上。
+        // 額度用完提早收手的一輪不算完整跑完。
+        if (!ctx.budget.exhausted && !round.rejected && round.evicted === 0) ctx.state.marksEvicted = null;
       });
-      return step
-        .then(function () {
-          // hasMore:積壓要在同一輪拉完，不能等下一個 alarm。
-          var rounds = 0;
-          function more() {
-            if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
-            if (!takeCall(ctx, true)) return Promise.resolve();
-            rounds += 1;
-            return postMarks(ctx, emptyMarkBatch(), round).then(function (changes) {
-              lastChanges = changes;
-              return more();
-            });
-          }
-          return more();
-        })
-        .then(function () {
-          // 一輪完整跑完(沒有例外、沒有一筆被拒)且這一輪雲端一筆都沒淘汰時，把
-          // 上一輪留下的提示收掉:對完帳那張提示就該收，否則它永遠掛在卡頭上。
-          // 額度用完提早收手的一輪不算完整跑完。
-          if (!ctx.budget.exhausted && !round.rejected && round.evicted === 0) ctx.state.marksEvicted = null;
-        });
     }
 
     /**
