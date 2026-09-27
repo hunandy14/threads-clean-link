@@ -307,9 +307,8 @@
     var current = null;
     // 進行中收到 manual／recorded 請求:輪末走一次 2 秒去抖補跑。
     var rerunPending = false;
-    // 去抖待辦(soon／continue)。null＝本實例剛啟動、不知道有沒有待辦(保底
-    // alarm 到期照跑);true／false＝記憶體已知。計時器與保底 alarm 誰先到誰
-    // 跑，另一條到期時看到 false 就跳過。
+    // 去抖待辦(soon／continue)。null＝本實例剛啟動、不知道;true／false＝記
+    // 憶體已知。到期的處理見 fireSoon。
     var soonPending = null;
     // 去抖計時器 handle(SW 存活期路徑)，只留最後一次排程。
     var debounceTimer = null;
@@ -1364,8 +1363,9 @@
     }
 
     /**
-     * 去抖待辦到期(計時器或保底 alarm)。待辦為 true 或 null(剛重啟、不知道)
-     * 才跑，跑之前先標成 false 並清掉保底 alarm，另一條路到期時就會跳過。
+     * 去抖待辦到期(計時器或保底 alarm)。兩條路誰先到誰跑:待辦為 true 或
+     * null(SW 剛重啟、不知道有沒有待辦，保底 alarm 到期照跑)才跑，跑之前先
+     * 標成 false 並清掉保底 alarm，後到的那一條看到 false 就跳過。
      */
     function fireSoon(reason) {
       if (soonPending === false) return Promise.resolve();
@@ -2015,9 +2015,8 @@
     /**
      * recordHistory 之後的掛鉤，即 setNext('soon')。雙保險:注入的 setTimeout
      * 走 SW 存活期的 2 秒去抖，另排一個 30 秒的 alarm 當 SW 被回收時的保底;
-     * 待辦只記在記憶體(soonPending)，兩條路任一先到就跑，另一條看到待辦已消
-     * 化就跳過。SW 重啟後記憶體不知道有沒有待辦，保底 alarm 到期照跑。連續寫
-     * 入只留最後一次排程(計時器與保底 alarm 一起重排)。
+     * 待辦只記在記憶體(soonPending)，到期的處理見 fireSoon。連續寫入只留最
+     * 後一次排程(計時器與保底 alarm 一起重排)。
      */
     function notifyRecorded() {
       return setNext('soon');

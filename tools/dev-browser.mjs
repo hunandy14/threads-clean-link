@@ -357,7 +357,7 @@ function helpText() {
 切換環境的副作用:
     寫入新的 syncApiBase 之前，若擴充目前指向的是另一個環境，會清掉舊的
     登入與同步狀態(syncAuth／syncState／syncVerifiedAt／syncBackoff 與
-    session 的單飛旗標、去抖、nonce)並印一行提示。舊 token 是另一台伺服器
+    session 中舊版遺留的單飛、去抖、nonce 鍵)並印一行提示。舊 token 是另一台伺服器
     簽的，留著只會讓同步一直失敗。三個環境互切都適用。
 
 範例:
@@ -620,7 +620,7 @@ async function readCurrentApiBase(swWsUrl, timeoutMs) {
 }
 
 // 清掉上一個環境留下的登入與同步狀態(storage.local 四鍵 ＋ storage.session
-// 的單飛旗標／去抖／nonce)。三個環境互切都適用。
+// 中舊版遺留的單飛／去抖／nonce)。三個環境互切都適用。
 async function clearStaleSyncState(swWsUrl, timeoutMs) {
   const expression = [
     '(async () => {',
