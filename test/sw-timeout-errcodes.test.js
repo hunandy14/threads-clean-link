@@ -1060,7 +1060,6 @@ test('H2 errorCategoryOf：六類各自的碼與可重試旗標', () => {
     ['network_error', 'network', true],
     ['internal_error', 'server', true],
     ['misconfigured', 'server', true],
-    ['gone', 'server', true],
   ];
   table.forEach(([code, category, retryable]) => {
     assert.deepEqual(TCLCore.errorCategoryOf(code), { category, retryable }, code);
@@ -1092,6 +1091,11 @@ test('H2 errorCategoryOf：其他碼與非字串一律歸 unknown', () => {
     assert.equal(typeof got.retryable, 'boolean', `${String(code)} 的 retryable 要是布林`);
   });
   assert.equal(TCLCore.errorCategoryOf('forbidden_origin').retryable, false, 'forbidden_origin 屬 FATAL_ERRORS，不可重試');
+  assert.deepEqual(
+    TCLCore.errorCategoryOf('gone'),
+    { category: 'unknown', retryable: false },
+    'gone（410，端點已廢止）重試不會成功，歸 unknown、不可重試'
+  );
 });
 
 // ============================================================================
@@ -1197,9 +1201,9 @@ for (const [code, expected] of CATEGORY_TEXT_CASES) {
 }
 
 test('H2 options：server 類文案帶出原始碼（{code} 插值）', async () => {
-  const { doc } = await mountOptions(optState({ status: 'error', lastError: 'gone' }));
-  assert.ok(doc.ids.acctErrorText.textContent.includes('gone'), `實得：${doc.ids.acctErrorText.textContent}`);
-  assert.equal(doc.ids.acctErrorText.textContent, i18n.fmt('zh', 'opSyncErrServer', { code: 'gone' }));
+  const { doc } = await mountOptions(optState({ status: 'error', lastError: 'misconfigured' }));
+  assert.ok(doc.ids.acctErrorText.textContent.includes('misconfigured'), `實得：${doc.ids.acctErrorText.textContent}`);
+  assert.equal(doc.ids.acctErrorText.textContent, i18n.fmt('zh', 'opSyncErrServer', { code: 'misconfigured' }));
 });
 
 test('H2 options 刪雲端 toast：auth 類（unauthorized）走登入過期文案', async () => {
@@ -1218,6 +1222,11 @@ test('H2 options 刪雲端 toast：auth 類（unauthorized）走登入過期文�
 test('H2 options：unknown 類維持「前綴＋碼」（回歸保護）', async () => {
   const { doc } = await mountOptions(optState({ status: 'error', lastError: 'bad_request' }));
   assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'bad_request');
+});
+
+test('H2 options：gone（410）走 unknown 的「前綴＋碼」', async () => {
+  const { doc } = await mountOptions(optState({ status: 'error', lastError: 'gone' }));
+  assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'gone');
 });
 
 // ============================================================================
