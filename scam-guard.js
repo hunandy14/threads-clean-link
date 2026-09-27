@@ -465,14 +465,14 @@
       // 已經查過表的貼文容器。河道的 MutationObserver 每秒可觸發數十次，同一
       // 張卡只需查一次；黑名單換過一版就整組丟掉重建，讓新增與解除都在下一次
       // 觸發反映。
-      var listedContainers = newContainerSet();
+      var listedContainers = new WeakSet();
 
       // 查表已經替它掛過 tag 的容器。tag 節點被 React 重繪沖掉時靠這組補回
       // ——容器沒換，只是警示不見了。
-      var taggedContainers = newContainerSet();
+      var taggedContainers = new WeakSet();
 
       // 各容器連續取不到 permalink 的次數，達上限即併入 listedContainers。
-      var permalinkMisses = newContainerMap();
+      var permalinkMisses = new WeakMap();
       var PERMALINK_MISS_LIMIT = 3;
 
       // 查表對頁面唯一會寫的 tag 提示文案。
@@ -573,12 +573,7 @@
       // ---- 網址列的貼文座標；非詳情頁回傳 null ----
       function readPathInfo() {
         var pathname = (root.location && root.location.pathname) || '';
-        var core = root.TCLCore;
-        var isDetail =
-          core && typeof core.isPostDetailPath === 'function'
-            ? core.isPostDetailPath(pathname)
-            : POST_PATH_PATTERN.test(pathname);
-        if (!isDetail) return null;
+        if (!root.TCLCore.isPostDetailPath(pathname)) return null;
         var match = POST_PATH_PATTERN.exec(pathname);
         if (!match) return null;
         return {
@@ -812,10 +807,9 @@
         }
       }
 
-      // ---- 送 scam.hit 給 background。callback 與 Promise 兩種
-      // chrome.runtime.sendMessage 形態都撐住；分頁在擴充功能更新後會拿到已
-      // 失效的 runtime，任何失敗一律以 null 回呼，不丟例外、不影響頁面上已
-      // 經掛好的警示。----
+      // ---- 送 scam.hit 給 background。分頁在擴充功能更新後會拿到已失效的
+      // runtime，任何失敗一律以 null 回呼，不丟例外、不影響頁面上已經掛好的
+      // 警示。----
       function sendHit(payload, callback) {
         var done = false;
         function finish(response) {
@@ -828,22 +822,13 @@
             finish(null);
             return;
           }
-          var maybePromise = chrome.runtime.sendMessage(payload, function (response) {
+          chrome.runtime.sendMessage(payload, function (response) {
             if (chrome.runtime.lastError) {
               finish(null);
               return;
             }
             finish(response || null);
           });
-          if (maybePromise && typeof maybePromise.then === 'function') {
-            maybePromise
-              .then(function (response) {
-                finish(response || null);
-              })
-              .catch(function () {
-                finish(null);
-              });
-          }
         } catch (e) {
           finish(null);
         }
@@ -897,9 +882,8 @@
         var clean = core.stripControlChars(text);
         var index = lowerAscii(clean).indexOf(lineId);
         if (index === -1) return '';
-        var limits = core.SCAM_LIMITS || {};
-        var context = limits.SNIPPET_CONTEXT || 40;
-        var max = limits.SNIPPET_MAX || 120;
+        var context = core.SCAM_LIMITS.SNIPPET_CONTEXT;
+        var max = core.SCAM_LIMITS.SNIPPET_MAX;
         return clean.slice(Math.max(0, index - context), index + context).slice(0, max);
       }
 
@@ -933,7 +917,6 @@
         if (!settingsReady || !scamGuardEnabled) return;
 
         var core = root.TCLCore;
-        if (!core || typeof core.detectScamPitch !== 'function') return;
 
         var pathInfo = readPathInfo();
         // 河道與其他頁面整頁都是別人的貼文片段，不掃。離開詳情頁時一併鬆開
@@ -1046,7 +1029,7 @@
         // 深連結）的帳號段沒有長度上限，超長時 background 會整筆判
         // bad_request，連帶讓一次真的命中寫不進黑名單。裁在送出端，驗證端
         // 才守得住「有帶就驗形狀」那條線。
-        var anchorMax = core.SCAM_ANCHOR_MATCH_MAX || 40;
+        var anchorMax = core.SCAM_ANCHOR_MATCH_MAX;
         var anchorMatch = typeof anchorText === 'string' ? anchorText.slice(0, anchorMax) : '';
 
         // 靠 ID 跨帳號成立時多記一個訊號類別：證據卡與日後調參要看得出這一次
@@ -1129,27 +1112,13 @@
       // 純本機動作——不送訊息、不發請求、不跑串文判定。
       // ============================================================
 
-      // 記錄已查表容器的集合。WeakSet 不留參照，React 換掉的卡片可以直接被回
-      // 收；環境沒有 WeakSet 時退成「不記憶」，每次觸發重查一遍（insertTag 自
-      // 帶冪等守衛，結果相同，只是多走訪幾次 DOM）。
-      function newContainerSet() {
-        return typeof WeakSet === 'function' ? new WeakSet() : null;
-      }
-
-      function newContainerMap() {
-        return typeof WeakMap === 'function' ? new WeakMap() : null;
-      }
-
       // 把 storage 讀到的原始值正規化成查表形狀，並清空兩份容器記憶讓整頁重
-      // 掃：名單換版後，新增的作者要補掛，解除的作者不再被補回。TCLCore 缺席
-      // 或正規化失敗時退成空名單：寧可不掛，也不拿未正規化的結構查表。
+      // 掃：名單換版後，新增的作者要補掛，解除的作者不再被補回。正規化失敗
+      // 時退成空名單：寧可不掛，也不拿未正規化的結構查表。
       function setBlocklist(raw) {
         var list = null;
         try {
-          var core = root.TCLCore;
-          if (core && typeof core.normalizeScamBlocklist === 'function') {
-            list = core.normalizeScamBlocklist(raw);
-          }
+          list = root.TCLCore.normalizeScamBlocklist(raw);
         } catch (e) {
           list = null;
         }
@@ -1161,8 +1130,8 @@
         // （條目都沒記下 handle，卻各自留了 LINE ID）照樣走得到 ID 跨帳號那
         // 條命中路徑，整份丟掉等於把那條路關死。
         blocklist = list && (mapHasKeys(list.handleIndex) || mapHasKeys(list.lineIdIndex)) ? list : null;
-        listedContainers = newContainerSet();
-        taggedContainers = newContainerSet();
+        listedContainers = new WeakSet();
+        taggedContainers = new WeakSet();
         releaseAllowlistedScan(list);
       }
 
@@ -1277,14 +1246,14 @@
           // 見的地方把 tag 無條件長回來。
           if (isHiddenNode(container)) continue;
 
-          if (taggedContainers && taggedContainers.has(container)) {
+          if (taggedContainers.has(container)) {
             // 查表只掛 scamBlockedByList 這一種，補回時不必另外記 titleKey。
             if (!container.querySelector || !container.querySelector('.' + TAG_CLASS)) {
               insertTag(container, LIST_TAG_TITLE_KEY);
             }
             continue;
           }
-          if (listedContainers && listedContainers.has(container)) continue;
+          if (listedContainers.has(container)) continue;
 
           // 巢狀容器（引用貼文）不算獨立的一張卡，判準與 collectOwnContainers
           // 一致。被引用者是誰不影響外層卡的作者，兩邊都不該掛。
@@ -1296,7 +1265,7 @@
             notePermalinkMiss(container);
             continue;
           }
-          if (listedContainers) listedContainers.add(container);
+          listedContainers.add(container);
 
           var handle = normalizeHandle(permalink.handle);
           if (ownerHandle && handle === ownerHandle && permalink.code !== pathInfo.code) continue;
@@ -1308,7 +1277,7 @@
           if (!isBlockedHandle(handle)) continue;
 
           insertTag(container, LIST_TAG_TITLE_KEY);
-          if (taggedContainers) taggedContainers.add(container);
+          taggedContainers.add(container);
         }
       }
 
@@ -1316,7 +1285,6 @@
       // 後併入已查表集合，之後不再對它重跑 querySelectorAll('a[href]')；給三次
       // 餘裕是因為 React 有可能先掛容器、下一批才補上連結。
       function notePermalinkMiss(container) {
-        if (!permalinkMisses || !listedContainers) return;
         var misses = (permalinkMisses.get(container) || 0) + 1;
         permalinkMisses.set(container, misses);
         if (misses >= PERMALINK_MISS_LIMIT) listedContainers.add(container);
@@ -1348,7 +1316,6 @@
       // 不重載腳本。比照 post-icon 監聽整個 body，debounce 後重掃；冪等靠
       // lastScan 的冪等鍵。----
       function startObserver() {
-        if (typeof MutationObserver === 'undefined') return;
         try {
           var target = document.body || document.documentElement;
           if (!target) return;
@@ -1382,21 +1349,12 @@
             finish(null);
             return;
           }
-          var maybePromise = chrome.storage.local.get(
+          chrome.storage.local.get(
             { scamGuardEnabled: true, scamBlocklist: null },
             function (items) {
               finish(items);
             }
           );
-          if (maybePromise && typeof maybePromise.then === 'function') {
-            maybePromise
-              .then(function (items) {
-                finish(items);
-              })
-              .catch(function () {
-                finish(null);
-              });
-          }
         } catch (e) {
           finish(null);
         }
@@ -1452,18 +1410,9 @@
             finish(null);
             return;
           }
-          var maybePromise = chrome.storage.sync.get({ langPref: null }, function (items) {
+          chrome.storage.sync.get({ langPref: null }, function (items) {
             finish(items && typeof items === 'object' ? items.langPref : null);
           });
-          if (maybePromise && typeof maybePromise.then === 'function') {
-            maybePromise
-              .then(function (items) {
-                finish(items && typeof items === 'object' ? items.langPref : null);
-              })
-              .catch(function () {
-                finish(null);
-              });
-          }
         } catch (e) {
           finish(null);
         }

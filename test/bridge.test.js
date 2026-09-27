@@ -26,9 +26,11 @@ function loadBridge({ sendMessage, tclPostIcon }) {
       // content script);孤兒測試把它設成 undefined。既有測試一律走有效情境。
       id: 'tcl-test-ext',
       lastError: undefined,
+      // 比照 MV3：不帶 callback 時回 Promise。
       sendMessage(message, callback) {
         sentMessages.push(message);
         sendMessage(message, callback, chrome.runtime);
+        return typeof callback === 'function' ? undefined : Promise.resolve();
       },
     },
   };
@@ -351,6 +353,7 @@ function loadBridgeWithStorage(initialSettings = {}) {
       sendMessage(message, callback) {
         sentMessages.push(message);
         if (typeof callback === 'function') setTimeout(() => callback(undefined), 0);
+        else return Promise.resolve();
       },
     },
     storage: storage.api,
@@ -734,7 +737,11 @@ function loadBridgeWithConsole(sendMessageImpl, opts = {}) {
       // 預設帶有效 id(情境有效);孤兒-競態測試用 opts.runtimeId 覆寫。
       id: 'runtimeId' in opts ? opts.runtimeId : 'tcl-test-ext',
       lastError: undefined,
-      sendMessage: sendMessageImpl,
+      // 比照 MV3：不帶 callback 時回 Promise。
+      sendMessage(message, callback) {
+        const result = sendMessageImpl(message, callback);
+        return typeof callback === 'function' ? result : Promise.resolve();
+      },
     },
   };
   runInSandbox(SRC, {
@@ -851,6 +858,7 @@ test('冪等交棒:同一 window 二次載入 bridge，舊實例交棒下線，�
       sendMessage(message, callback) {
         sentMessages.push(message);
         if (typeof callback === 'function') callback(undefined);
+        else return Promise.resolve();
       },
     },
   };
