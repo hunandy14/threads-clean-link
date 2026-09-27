@@ -87,7 +87,10 @@ function checkAllInParallel(items) {
   let done = 0;
   return new Promise((resolve, reject) => {
     const workers = [];
+    let settled = false;
     const finish = (err) => {
+      if (settled) return;
+      settled = true;
       for (const w of workers) w.terminate();
       if (err) reject(err);
       else resolve(results);
@@ -110,6 +113,11 @@ function checkAllInParallel(items) {
         else dispatch(worker);
       });
       worker.on('error', finish);
+      // 還有結果沒收齊時 worker 就結束（沒拋錯也算），整批立即失敗，不等到測
+      // 試逾時；收齊之後 finish 已結算，terminate 觸發的 exit 在這裡被忽略。
+      worker.on('exit', (code) => {
+        finish(new Error('recheck worker 在分析完成前結束，exit code ' + code));
+      });
       workers.push(worker);
       dispatch(worker);
     }
@@ -122,9 +130,11 @@ function checkAllInParallel(items) {
 const DYNAMIC_REGEXP_ALLOWLIST = {
   // 兩段字面值夾一個經 escapeRegExp 跳脫的 handle，無量詞。
   "background.js:'\"username\":\"' + escapeRegExp(handle)": '跳脫後的字面值比對，無量詞',
-  // og meta 擷取，屬性名經 escapeRegExp 跳脫。以 og:title 代入試跑 recheck：
-  // property 在前的一條 unknown（fuzz 逾時），content 在前的一條 vulnerable
-  // （二次方）。輸入是 fetch 回來的 HTML，屬未納入閘門的已知風險。
+  // og meta 擷取，屬性名經 escapeRegExp 跳脫。以 og:title 代入、用本檔的
+  // RECHECK_PARAMS 試跑 recheck：property 在前的一條 vulnerable（automaton
+  // 判定三次方），content 在前的一條 vulnerable（fuzz 判定二次方）。輸入是
+  // fetch 回來的 HTML，工作量由 background.js 的 OG_SCAN_LIMIT 封頂，屬未納
+  // 入閘門的已知風險（不改寫的理由見 background.js extractOgMeta 的註解）。
   'background.js:`<meta[^>]+property="${escaped}"': 'og meta 擷取（property 在前），未納入閘門',
   'background.js:`<meta[^>]+content="([^"]*)"': 'og meta 擷取（content 在前），未納入閘門',
   // 由常數字元清單組出的單一字元類，無量詞。
