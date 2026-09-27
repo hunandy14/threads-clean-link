@@ -138,7 +138,7 @@
 
   // ---- 跨裝置合併鍵(postKeyOf) ----
 
-  // 逐字移植自手機 C:\gitRepos\meta-link-clearer\src\lib\post-key.ts 的
+  // 逐字移植自手機端 repo 的 src/lib/post-key.ts 的
   // postKeyOf，輸入輸出與其完全等價(見 docs/cloud-sync.md D11)。純函
   // 式、無副作用，SW 與擴充頁共用，雲端同步以此為 history 的合併鍵，取代
   // extractPostId 只認嚴格樣式(無尾斜線/query，handle 白名單字元類)的局
@@ -884,11 +884,10 @@
   // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
   // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
   //
-  // SOFT_BUDGET 2MB 是本機配額 10MB(Chrome 114 起;更早版本為 5MB)的約
-  // 20%;滿證據時實際可容約 900-1,600 位(含證據五欄)，由位元組預算先觸發淘
-  // 汰，MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。manifest 的
-  // minimum_chrome_version 是 103，落在 5MB 配額的那幾版佔比約 40%,仍在安
-  // 全水位。
+  // SOFT_BUDGET 2MB 是本機配額 10MB(Chrome 114 起，manifest 的
+  // minimum_chrome_version 123 一律適用)的約 20%;滿證據時實際可容約
+  // 900-1,600 位(含證據五欄)，由位元組預算先觸發淘汰，MAX_ENTRIES 5000 是
+  // 證據稀疏時的筆數硬保險。
   //
   // MAX_ENTRIES 自 v2 起由 active 與 dismissed 兩態共用;MAX_ALLOWLIST 隨著
   // allowlist 降為派生視圖而廢止，常數保留只為不讓舊呼叫端讀到 undefined。
