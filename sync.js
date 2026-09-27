@@ -910,11 +910,10 @@
           if (err && err.code === 'epoch_mismatch' && isEpoch(err.epoch)) return resetForEpoch(ctx, err.epoch);
           throw err;
         }
-        if (await reconcileEpoch(ctx, payload)) return undefined;
+        if (await reconcileEpoch(ctx, payload)) return;
         await ch.apply(payload, batch);
         if (payload && isCursor(payload.cursor)) ctx.state[ch.cursorKey] = payload.cursor;
         last = payload ? payload.changes : null;
-        return undefined;
       }
       for (var i = 0; i < ch.batches.length; i += 1) {
         if (!takeCall(ctx, true)) return;
@@ -930,7 +929,11 @@
       ctx.budget = { left: MAX_ROUND_POSTS, exhausted: false, halted: false };
       ctx.deadline = now() + ROUND_DEADLINE_MS;
 
-      return readHistory()
+      // 舊版 marks 遷移排在本輪任何請求之前:第一個回應就可能採用 epoch，而本機
+      // 有 epoch 的登入不再全量標髒(§3.3)。遷移若落在採用之後，中途失敗再登出
+      // 登入，舊版未推的條目就永遠不會被標髒送出。遷移不看警示開關。
+      return migrateLegacyMarks(ctx)
+        .then(readHistory)
         .then(function (history) {
           // 「開始同步」的廣播沿用這一次已經讀好的 ctx 與 history:SW 隨時會
           // 被殺，第一次請求要盡快發出去，不為了一則廣播多跑兩趟 storage。
@@ -1313,11 +1316,9 @@
       });
     }
 
-    /** 一輪 marks:舊版遷移 → 開關 → 回填 → 推 → 拉。 */
+    /** 一輪 marks:開關 → 回填 → 推 → 拉(舊版遷移已在 runRound 開頭做完)。 */
     function runMarksRound(ctx) {
-      // 遷移不看開關:關閉期間照樣把該推的標好，重新開啟時推得出去。
-      return migrateLegacyMarks(ctx)
-        .then(readScamEnabled)
+      return readScamEnabled()
         .then(function (enabled) {
           // D35 開關 A:關閉時整條通道跳過，零請求、游標一格不動。
           if (!enabled) return undefined;
@@ -1784,8 +1785,9 @@
      * (RESET.deleted):清 token、syncState 整包重設、退避歸零、清別台裝置快
      * 取，以上一次寫入;停掉兩支 alarm，廣播 signed_out。本機 history 與名單
      * 不動，syncEpoch 也不動:伺服器 epoch 已 +1，下次登入第一個 POST 撞 409，
-     * 由 resetForEpoch 標髒重傳(D54／§3.3)。本機身分 syncDevice 不動。寫入失敗回 storage_write_failed、token 保留，使用者看得到錯誤，可以
-     * 再按一次(端點冪等);伺服器 session 已撤銷，下一次請求會 401，走過期出口。
+     * 由 resetForEpoch 標髒重傳(D54／§3.3)。本機身分 syncDevice 不動。寫入失
+     * 敗回 storage_write_failed、token 保留，使用者看得到錯誤，可以再按一次(端
+     * 點冪等);伺服器 session 已撤銷，下一次請求會 401，走過期出口。
      *
      * 失敗(非 2xx／斷網)不登出、本機一格不動，只記 lastError;401 走 session
      * 過期的統一出口。
