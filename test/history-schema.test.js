@@ -23,20 +23,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
 const C = require(path.join(__dirname, '..', 'tcl-core.js'));
-
-// background.js 依賴 i18n 與 tcl-core（真實環境靠 importScripts），測試把三
-// 支腳本接在同一個 sandbox 全域內執行（同 test/background.test.js）。
-const SRC =
-  fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
 const CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
 const OTHER_URL = 'https://www.threads.com/@other/post/OtherPostId';
@@ -55,7 +46,7 @@ const NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverU
 // og fetch 補強經 fetchOgFieldsForLocalKind 的 setTimeout 逾時競速)跑完就
 // 斷言、閒時又白等，兩頭不討好;連同其餘五份逐字或近乎逐字相同的版本收斂
 // 進 test/support/settle.js 一份共用實作(原理與各項取捨的完整說明見該檔
-// 頭註解)。本檔經 runInSandbox 載入同一份 background.js(含
+// 頭註解)。本檔經 loadSwSources 載入同一份 background.js(含
 // fetchOgFieldsForLocalKind 的長效逾時計時器與 TCLSync 引擎的 setTimeout
 // 注入)，defaultMs 150 與 background.test.js 一致。
 const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 150 });
@@ -102,8 +93,7 @@ function loadBackgroundForMigration(localHistory, localExtra) {
   if (localHistory) localSeed.history = localHistory;
   const storage = createChromeStorage({ saveHistory: true }, localSeed);
   chrome.storage = storage.api;
-  runInSandbox(
-    SRC,
+  loadSwSources(
     makeSandboxGlobals(chrome, async () => {
       throw new Error('unexpected fetch');
     })
@@ -138,7 +128,7 @@ function loadBackgroundForRecord(localHistory) {
   // cleanedNotice 一律經 fetchOgFieldsForLocalKind 對貼文頁補一次 og
   // fetch，這裡一律回無 og 的最小 HTML（欄位維持呼叫端傳入的值）。
   const fetchImpl = async (url) => ({ url, text: async () => NO_OG_HTML });
-  runInSandbox(SRC, makeSandboxGlobals(chrome, fetchImpl));
+  loadSwSources(makeSandboxGlobals(chrome, fetchImpl));
 
   return {
     storage,

@@ -15,13 +15,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
 const TCLCore = require('../tcl-core.js');
 const { postKeyOf } = TCLCore;
 const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
 function loadSync() {
   return require('../sync.js');
@@ -666,13 +665,6 @@ test('RA5 刪雲端：sync.js 不再移除舊版守衛鍵', async () => {
 // background.js 的 onInstalled 載入器（同 background.test.js 的
 // loadBackgroundForMigration）。共用 createChromeStorage 的 local 區沒有
 // remove()，這裡在本檔替身上補一支側錄版，不改共用 helper。
-const BG_SRC =
-  fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
-
 function loadBackgroundForInstall(localSeed) {
   const onInstalledListeners = [];
   const chrome = {
@@ -697,7 +689,7 @@ function loadBackgroundForInstall(localSeed) {
     return new Promise((resolve) => setTimeout(resolve, 0));
   };
   chrome.storage = storage.api;
-  runInSandbox(BG_SRC, {
+  loadSwSources({
     chrome,
     fetch: async () => {
       throw new Error('unexpected fetch');

@@ -107,7 +107,7 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 執行測試:`node --test test/*.test.js`(或 `npm test`)。開發與 CI 使用 Node.js 22 以上。
 
-語法基準:ES2024(對應 manifest 的 `minimum_chrome_version` 123)。background service worker 為 classic script(以 `importScripts` 載入共用模組)，不可使用 top-level await 與 ES module 語法。
+語法基準:ES2024(對應 manifest 的 `minimum_chrome_version` 123)。background service worker 為 classic script(以 `importScripts` 載入共用模組)，不可使用 top-level await 與 ES module 語法。`background.js` 只負責接線(onInstalled、右鍵選單、訊息寄件者判準與路由表、同步引擎接線、剪貼簿與通知)，功能本體依序由四支檔案提供:`sw-history.js`(紀錄寫入、合併、遷移與 storage.local 唯一的讀改寫佇列)、`sw-device.js`(本機裝置身分與裝置管理訊息)、`sw-og.js`(短碼解析與貼文頁 og 資訊擷取、快取)、`sw-scam.js`(詐騙警示名單的寫入與匿名取作者 id)。各檔頂層名稱在整個 SW 必須唯一，頂層程式只能讀先載入檔案宣告的名稱，由 `test/sw-split.test.js` 把關。
 
 上架 zip 的必要檔案可用 `node tools/manifest-files.mjs` 列出(由 manifest.json 與其引用鏈推導);`tools/build-release.ps1` 的打包白名單必須涵蓋這份清單，由 `test/package.test.js` 把關。
 
