@@ -4,25 +4,30 @@
 (function () {
   'use strict';
 
-  // ---- 冪等 + 舊實例交棒 ----
-  // 同一個 ISOLATED world 若已經有本腳本的舊實例在跑(擴充功能更新後的自
-  // 癒重注入，或「使用者手動 F5 × 自癒重注入」的毫秒級競態造成同頁雙注
-  // 入)，先讓舊實例的 message listener 下線，再由這個新實例接手，消除「雙
-  // listener → 雙轉發 cleanedNotice → 時間軸多一筆假事件」。
+  // ---- 生命週期:判活、交棒、退場 ----
   //
-  // 刻意不用「if (window.__tclBridgeLoaded) return」這種永久旗標:那會讓
-  // 擴充功能更新後的自癒重注入(background.js reinjectIntoOpenTabs)因旗標
-  // 仍在而整支 return、不註冊新 listener，而舊的孤兒 listener 又會在下方
-  // 自檢後自我下線，share 解析就此無人接手。交棒式(先 dispose 舊的、再註
-  // 冊新的)兩種情境都正確:純雙注入淨剩一個 listener;更新重注入則由帶有
-  // 效 chrome.runtime 的新實例接手。
-  if (typeof window !== 'undefined' && typeof window.__tclBridgeDispose === 'function') {
-    try {
-      window.__tclBridgeDispose();
-    } catch (e) {
-      // 舊實例下線失敗不影響新實例接手。
-    }
-  }
+  // 同一頁面上可能同時有本腳本的舊實例在跑(擴充功能更新後的自癒重注入，
+  // 或「使用者手動 F5 × 自癒重注入」的毫秒級競態造成同頁雙注入)。新實例
+  // 啟動時在 document 上派送交棒事件，舊實例收到後讓 message listener 下
+  // 線，由新實例接手，消除「雙 listener → 雙轉發 cleanedNotice → 時間軸多
+  // 一筆假事件」。更新後的重注入讓新舊實例分處不同的 ISOLATED world、只共
+  // 用 DOM，交棒因此走 DOM 事件而不走 window 全域。
+  //
+  // 不用「if (window.__tclBridgeLoaded) return」這種永久旗標:那會讓更新
+  // 後的自癒重注入因旗標仍在而整支 return、不註冊新 listener，share 解析
+  // 就此無人接手。交棒式(先讓舊的下線、再註冊新的)兩種情境都正確。
+  var SCRIPT_NAME = 'bridge';
+  var HANDOFF_EVENT = 'threads-clean-link:handoff';
+  var INSTANCE_ID = 'tcl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+
+  // 本實例的 DOM 事件監聽(window message、document 上的交棒事件)掛在這
+  // 個 AbortController 的 signal 上，下線時 abort() 一次拆掉;另外逐一
+  // removeEventListener 兜底不支援 signal 的環境。
+  var lifecycle = typeof AbortController === 'function' ? new AbortController() : null;
+
+  // chrome.storage.onChanged 上註冊的設定推播監聽。活著的實例交棒下線時
+  // removeListener;孤兒下線不碰 chrome API，只靠 disposed 旗標短路。
+  var settingsListener = null;
 
   var REQ_TYPE = 'TCL_RESOLVE_REQ';
   var RES_TYPE = 'TCL_RESOLVE_RES';
@@ -80,16 +85,79 @@
     }
   }
 
-  // 自我下線:斷開 message listener 並永久短路。冪等，重複呼叫安全。孤兒自
-  // 檢通過時、sendMessage 擲 context invalidated 時、或被新實例交棒時呼
-  // 叫，把場子讓給重注入的新實例。
+  function listenerOptions() {
+    return lifecycle ? { signal: lifecycle.signal } : false;
+  }
+
+  function hasDocumentEvents() {
+    return (
+      typeof document !== 'undefined' &&
+      !!document &&
+      typeof document.addEventListener === 'function' &&
+      typeof document.dispatchEvent === 'function'
+    );
+  }
+
+  // 自我下線:拆掉 message 與交棒監聽並永久短路。冪等，重複呼叫安全。判
+  // 活發現本實例已是孤兒、sendMessage 擲 context invalidated、或被新實例
+  // 交棒時呼叫，把場子讓給新實例。
   function disposeBridge() {
     if (disposed) return;
     disposed = true;
+    if (lifecycle) {
+      try {
+        lifecycle.abort();
+      } catch (e) {
+        // 下方的 removeEventListener 仍會把監聽拆掉。
+      }
+    }
     try {
       if (typeof window !== 'undefined') window.removeEventListener('message', onBridgeMessage);
     } catch (e) {
       // 斷不開就算了，disposed 旗標本身已足以讓 listener 短路。
+    }
+    try {
+      if (hasDocumentEvents()) document.removeEventListener(HANDOFF_EVENT, onHandoff, false);
+    } catch (e) {
+      // 同上，onHandoff 會被 disposed 旗標短路。
+    }
+    // 孤兒情境下 chrome API 已不可靠，不呼叫 removeListener。
+    var listener = settingsListener;
+    settingsListener = null;
+    if (listener && !isContextLost()) {
+      try {
+        chrome.storage.onChanged.removeListener(listener);
+      } catch (e) {
+        // 拆不掉就算了，監聽器本身會被 disposed 旗標短路。
+      }
+    }
+  }
+
+  // 交棒事件:detail 為純值 { script, instanceId }，收到「同腳本、
+  // instanceId 不是自己」就下線。跨 world 時 detail 可能讀成 null，此時不
+  // 依 detail 下線，改由判活決定:本實例已是孤兒就照樣下線。
+  function onHandoff(event) {
+    if (disposed) return;
+    if (isContextLost()) {
+      disposeBridge();
+      return;
+    }
+    var detail = event ? event.detail : null;
+    if (!detail || typeof detail !== 'object') return;
+    if (detail.script !== SCRIPT_NAME) return;
+    if (typeof detail.instanceId !== 'string' || !detail.instanceId) return;
+    if (detail.instanceId === INSTANCE_ID) return;
+    disposeBridge();
+  }
+
+  function announceHandoff() {
+    if (!hasDocumentEvents() || typeof CustomEvent !== 'function') return;
+    try {
+      document.dispatchEvent(
+        new CustomEvent(HANDOFF_EVENT, { detail: { script: SCRIPT_NAME, instanceId: INSTANCE_ID } })
+      );
+    } catch (e) {
+      // 派送失敗時，舊實例仍會在下一則訊息的判活時自行下線。
     }
   }
 
@@ -229,12 +297,9 @@
         // MV3 下不帶 callback 呼叫 sendMessage 會回傳 Promise：background
         // 的 cleanedNotice 監聽器 return false(同步處理完即關通道)，該
         // Promise 會以「message port closed」reject，不接 .catch 就會在
-        // 頁面 console 留下 unhandled promise rejection。回傳值先防禦性
-        // 檢查是不是真的 Promise 再接空 .catch 吞掉。
-        var maybePromise = chrome.runtime.sendMessage(payload);
-        if (maybePromise && typeof maybePromise.catch === 'function') {
-          maybePromise.catch(function () {});
-        }
+        // 頁面 console 留下 unhandled promise rejection，這裡接空 .catch
+        // 吞掉。
+        chrome.runtime.sendMessage(payload).catch(function () {});
       } catch (e) {
         // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而
         // 為。仍留一則 console.warn，孤兒情境才有跡可循。
@@ -336,13 +401,39 @@
     }
   }
 
-  window.addEventListener('message', onBridgeMessage);
+  // 載入當下就已是孤兒:不註冊任何監聽、不讀 storage，整支到此為止，把
+  // 場子留給重注入的新實例。
+  if (isContextLost()) {
+    disposed = true;
+    console.warn(
+      '[threads-clean-link] 橋接載入時擴充功能情境已失效(擴充功能剛更新或重載)，本實例不啟動，交由重注入的新實例接手'
+    );
+    return;
+  }
 
-  // 交棒握把:曝露自我下線函式給「下一個載入的新實例」呼叫(見檔頭的冪等
-  // 交棒)。掛在 window 上，同一 ISOLATED world 的後續實例讀得到。
+  // 交棒:先派送交棒事件讓舊實例下線，再註冊本實例的監聽。
+  announceHandoff();
+  // 相容握把:同一 world 裡只認 window.__tclBridgeDispose 的舊版實例靠它下
+  // 線;交棒事件已生效時，這裡呼叫到的是已下線實例的冪等 no-op。
+  if (typeof window !== 'undefined' && typeof window.__tclBridgeDispose === 'function') {
+    try {
+      window.__tclBridgeDispose();
+    } catch (e) {
+      // 舊實例下線失敗不影響新實例接手。
+    }
+  }
   if (typeof window !== 'undefined') {
     window.__tclBridgeDispose = disposeBridge;
   }
+  if (hasDocumentEvents()) {
+    try {
+      document.addEventListener(HANDOFF_EVENT, onHandoff, listenerOptions());
+    } catch (e) {
+      // 註冊失敗只是少了交棒這條路，訊息進來時的判活下線仍然有效。
+    }
+  }
+
+  window.addEventListener('message', onBridgeMessage, listenerOptions());
 
   // ------------------------------------------------------------
   // 載入時讀一次 chrome.storage.sync，把設定經 postMessage 以
@@ -399,6 +490,7 @@
       // deepEqual 比對整個 settings 物件時被判定「結構相同但非同一個
       // realm」而失敗；正規化型別時也用就地覆寫、不建立新物件。
       chrome.storage.sync.get(SETTINGS_DEFAULTS, function (items) {
+        if (disposed) return;
         var settings = items && typeof items === 'object' ? items : {};
         SETTINGS_KEYS.forEach(function (key) {
           if (typeof settings[key] !== 'boolean') settings[key] = SETTINGS_DEFAULTS[key];
@@ -417,7 +509,13 @@
     chrome.storage.onChanged &&
     typeof chrome.storage.onChanged.addListener === 'function'
   ) {
-    chrome.storage.onChanged.addListener(function (changes, areaName) {
+    settingsListener = function (changes, areaName) {
+      if (disposed) return;
+      // 判活:孤兒實例不再推播，直接下線。
+      if (isContextLost()) {
+        disposeBridge();
+        return;
+      }
       if (areaName !== 'sync') return;
 
       // 增量套用 changes 裡的新值再推播，不再另外打一次 chrome.storage.get：
@@ -447,6 +545,7 @@
         }
       });
       if (mutated) broadcast(next);
-    });
+    };
+    chrome.storage.onChanged.addListener(settingsListener);
   }
 })();

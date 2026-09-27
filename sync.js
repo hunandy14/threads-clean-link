@@ -4,7 +4,8 @@
 //   - Node 測試:CommonJS require
 //
 // 全部外部依賴一律由 create() 注入(storage／fetch／now／alarms／broadcast／
-// auth／permissions／randomUUID／writeChain／setTimeout／clearTimeout)，模組本
+// auth／permissions／randomUUID／writeChain／setTimeout／clearTimeout／
+// timeoutSignal／clientVersion)，模組本
 // 身不碰全域 chrome／fetch／Date——SW 隨時被回收，測試要能在 node 內以假時鐘
 // 跑完整往返，兩者都靠這條紀律。
 //
@@ -27,9 +28,9 @@
   // token 送去別人家。local 指向開發機自己跑的 wrangler dev，只有
   // tools/dev-browser.mjs 產出的 manifest 副本才宣告 localhost 的 host
   // 權限，商店版連要求該權限都做不到，因此白名單多這一項不擴大攻擊面。
-  var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
-  var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
-  var API_BASE_LOCAL = 'http://localhost:8787';
+  var API_BASE_PRODUCTION = TCLCoreRef.API_BASE_PRODUCTION;
+  var API_BASE_STAGING = TCLCoreRef.API_BASE_STAGING;
+  var API_BASE_LOCAL = TCLCoreRef.API_BASE_LOCAL;
   var API_BASE_ALLOWED = [API_BASE_PRODUCTION, API_BASE_STAGING, API_BASE_LOCAL];
 
   // D5:Google Web client(公開值)。後端把 staging 與 production 的 client
@@ -77,9 +78,6 @@
   var API_BASE_KEY = 'syncApiBase';
   var BACKOFF_KEY = 'syncBackoff';
   var VERIFIED_AT_KEY = 'syncVerifiedAt';
-  // 舊版的兩把自清守衛鍵。清空水位線已廢除(D50)，這兩把鍵不再讀寫;登入與
-  // 刪雲端時一併移除舊版殘留。
-  var LEGACY_GUARD_KEYS = ['syncClearGuard', 'syncMarksClearGuard'];
   // 「刪除雲端資料」的單一端點(契約 R11):硬刪該帳號全部雲端資料並撤銷所有
   // session，回 `{ ok, revokedSessions }`。
   var CLOUD_DATA_PATH = '/api/v1/cloud-data';
@@ -115,8 +113,9 @@
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
   var INFLIGHT_KEY = 'syncInflight';
-  // 單次請求的逾時(含讀回應本文)。到期中止連線並視為 network_error，走既有
-  // 退避;沒有這一道，一個不回應的連線會讓整輪永遠停在半路。
+  // 單次請求的逾時(含讀回應本文)，交給注入的 timeoutSignal 產生 signal。
+  // 到期中止連線並視為 network_error，走既有退避;沒有這一道，一個不回應的
+  // 連線會讓整輪永遠停在半路。
   var CALL_TIMEOUT_MS = 30000;
   var DEBOUNCE_KEY = 'syncDebounce';
   // 單飛旗標的時效，必須大於單輪最長時間，否則還在跑的一輪會被第二輪搶走。
@@ -296,8 +295,14 @@
     };
     var setTimer = deps.setTimeout;
     var clearTimer = deps.clearTimeout;
-    // 本機裝置身分(§12 增補二)。舊版接線沒有這支，整組裝置歸屬功能就靜默
-    // 缺席——同步照跑，只是請求不帶 device 區塊。
+    // 請求逾時的 signal 工廠((ms) => AbortSignal，background 接成
+    // AbortSignal.timeout)。沒注入就不帶 signal，請求不設逾時。
+    var timeoutSignal = typeof deps.timeoutSignal === 'function' ? deps.timeoutSignal : null;
+    // 擴充功能版本(manifest 的 version)。每個後端請求與登入交換都帶
+    // X-Client-Version: ext/<版本>，讓後端分辨客戶端版本;沒注入就不帶。
+    var clientVersion = typeof deps.clientVersion === 'string' && deps.clientVersion ? deps.clientVersion : null;
+    // 本機裝置身分(§12 增補二)。未注入時整組裝置歸屬功能靜默缺席——同步
+    // 照跑，只是請求不帶 device 區塊。
     var getLocalDevice = typeof deps.getLocalDevice === 'function' ? deps.getLocalDevice : null;
 
     // 同一個 SW 實例內的單飛:三次 syncNow 同時進來時共用同一個 promise。
@@ -313,9 +318,6 @@
     }
     function localSet(items) {
       return Promise.resolve(storage.local.set(items));
-    }
-    function localRemove(keys) {
-      return Promise.resolve(storage.local.remove(keys));
     }
     function sessionGet(defaults) {
       return Promise.resolve(storage.session.get(defaults));
@@ -378,11 +380,6 @@
       var items = {};
       items[BACKOFF_KEY] = { failures: failures };
       return localSet(items);
-    }
-
-    /** 移除舊版殘留的兩把自清守衛鍵(D50 起不再讀寫)。 */
-    function removeLegacyGuards() {
-      return localRemove(LEGACY_GUARD_KEYS);
     }
 
     // ---- 狀態與廣播(計劃 5.2／5.3) ----
@@ -477,55 +474,32 @@
       // set-auth-token 標頭），等於把 token 的來源交給任何能讓後端轉址的人。
       var init = { method: method, credentials: 'omit', headers: {}, redirect: 'error' };
       init.headers.Authorization = 'Bearer ' + ctx.token;
+      if (clientVersion) init.headers['X-Client-Version'] = 'ext/' + clientVersion;
       if (body !== undefined) {
         init.headers['Content-Type'] = 'application/json';
         init.body = JSON.stringify(body);
       }
       var res;
-      // 逾時:注入的計時器到期就中止連線並讓這一次請求以 network_error 失敗。
-      // 計時器涵蓋到讀完回應本文為止。
-      var controller = typeof AbortController === 'function' ? new AbortController() : null;
-      if (controller) init.signal = controller.signal;
-      var timer = null;
-      var expired = new Promise(function (resolve, reject) {
-        if (typeof setTimer !== 'function') return;
-        timer = setTimer(function () {
-          timer = null;
-          if (controller) controller.abort();
-          reject(syncError('network_error'));
-        }, CALL_TIMEOUT_MS);
-      });
-      expired.catch(function () {});
-      function stopTimer() {
-        if (timer !== null && typeof clearTimer === 'function') clearTimer(timer);
-        timer = null;
-      }
-      return Promise.race([
-        Promise.resolve()
-          .then(function () {
-            return fetchImpl(ctx.apiBase + path, init);
-          })
-          .catch(function () {
-            throw syncError('network_error');
-          })
-          .then(function (response) {
-            res = response;
-            return Promise.resolve(res.json()).catch(function () {
-              return null;
-            });
-          }),
-        expired,
-      ])
-        .then(
-          function (payload) {
-            stopTimer();
-            return payload;
-          },
-          function (err) {
-            stopTimer();
-            throw err;
-          }
-        )
+      // 逾時涵蓋到讀完回應本文為止:signal 同時管 fetch 與 res.json()。連線或
+      // 讀本文途中被中止都以 network_error 失敗，不會走到下面採信
+      // set-auth-token 的那一段。
+      if (timeoutSignal) init.signal = timeoutSignal(CALL_TIMEOUT_MS);
+      return Promise.resolve()
+        .then(function () {
+          return fetchImpl(ctx.apiBase + path, init);
+        })
+        .catch(function () {
+          throw syncError('network_error');
+        })
+        .then(function (response) {
+          res = response;
+          // 本文不是 JSON 時以 null 續走(由狀態碼決定成敗);被逾時中止則不
+          // 能這樣退讓，否則 2xx 會被當成 payload 為 null 的成功。
+          return Promise.resolve(res.json()).catch(function () {
+            if (init.signal && init.signal.aborted) throw syncError('network_error');
+            return null;
+          });
+        })
         .then(function (payload) {
           // 【契約要求】api-spec 8.1 第 4 點:「**任何**回應只要帶這個標頭就
           // 覆寫本地存值」——包含 4xx／5xx。後端可能在拒絕這一次請求的同時
@@ -546,10 +520,10 @@
     }
 
     function httpError(res, payload) {
-      var code =
-        payload && typeof payload.error === 'string' && payload.error
-          ? payload.error
-          : defaultCodeFor(res.status);
+      // body.error 與登入交換同一道夾擠(見 ERROR_CODE_PATTERN)，不合樣式退回
+      // 狀態碼的預設碼。
+      var raw = payload && typeof payload.error === 'string' ? payload.error : null;
+      var code = raw !== null && ERROR_CODE_PATTERN.test(raw) ? raw : defaultCodeFor(res.status);
       var err = syncError(code);
       // HTTP 狀態碼與錯誤碼分開帶:removeDevice 的冪等判定看的是 404 這個
       // 狀態，不是後端剛好回了哪一個 body.error。
@@ -566,9 +540,21 @@
     // ---- 切批(api-spec 7.2) ----
 
     /**
+     * 一筆 entry 的版本指紋：at、seen 筆數、deletedAt 三者組成的字串(記值不
+     * 記參照)。history 紀錄沒有 updatedAt，recordHistory 再次複製會推進 at
+     * 並追加 seen，刪除會寫下 deletedAt，三者任一變動即視為另一個版本。
+     */
+    function versionOf(entry) {
+      var seenCount = entry && Array.isArray(entry.seen) ? entry.seen.length : 0;
+      var deletedAt = entry && typeof entry.deletedAt === 'number' ? entry.deletedAt : null;
+      return [entry ? entry.at : null, seenCount, deletedAt].join('|');
+    }
+
+    /**
      * @returns {{batches: object[], dropped: string[]}} dropped 是送不上雲的
      *   entry id(見 isUploadable):它們的 dirty 必須就地清掉，否則每一輪重送
-     *   一次卻永遠等不到 ack。
+     *   一次卻永遠等不到 ack。每個 batch 另帶 versions:以送出的 id 為鍵、
+     *   切批當下的版本指紋(見 versionOf)為值，供 applyResponse 比對 ack。
      */
     function buildBatches(history) {
       var upserts = [];
@@ -585,13 +571,14 @@
           if (typeof entry.id === 'string') dropped.push(entry.id);
           return;
         }
-        upserts.push(TCLCoreRef.toSyncItem(entry));
+        var item = TCLCoreRef.toSyncItem(entry);
+        upserts.push({ item: item, version: versionOf(entry) });
       });
 
       var batches = [];
       var current = null;
       function open() {
-        if (!current) current = { upserts: [], deletes: [], seenRows: 0 };
+        if (!current) current = { upserts: [], deletes: [], seenRows: 0, versions: {} };
       }
       function flush() {
         if (current) batches.push(current);
@@ -603,19 +590,21 @@
         open();
         current.deletes.push(id);
       });
-      upserts.forEach(function (item) {
+      upserts.forEach(function (planned) {
+        var item = planned.item;
         var rows = Array.isArray(item.seen) ? item.seen.length : 0;
         if (current && (current.upserts.length + 1 > MAX_UPSERTS || current.seenRows + rows > MAX_SEEN_ROWS)) {
           flush();
         }
         open();
         current.upserts.push(item);
+        current.versions[item.id] = planned.version;
         current.seenRows += rows;
       });
       flush();
       // 沒有待推的東西也要發一次:一次往返同時處理推與拉，少發這一次就拉不
       // 到別台裝置的新資料。
-      if (!batches.length) batches.push({ upserts: [], deletes: [], seenRows: 0 });
+      if (!batches.length) batches.push({ upserts: [], deletes: [], seenRows: 0, versions: {} });
       return { batches: batches, dropped: dropped };
     }
 
@@ -646,10 +635,16 @@
      * 把 applied(ack)與 changes(增量)套回本機 history。整段讀改寫包在注入
      * 的 writeChain 內，與 recordHistory 串行。
      *
-     * 【只清本輪快照】ack 一律以「伺服器回報的 id」比對，往返期間 recordHistory
-     * 新寫入的 entry 不在回應裡，自然保持 dirty，下一輪才上雲。
+     * 【只清送出的那一版】ack 以「伺服器回報的 id」找到本機 entry 後，重讀該筆
+     * 現值與切批快照(versions，鍵為送出的 id)比對版本指紋:相同才清 dirty;
+     * 不同代表往返期間又被改動(再次複製、刪成墓碑)，改名與 serverUpdatedAt
+     * 照常套用但 dirty 保持 true，下一輪送出最新內容。查無快照一律保持
+     * dirty。往返期間新寫入的 entry 不在回應裡，自然保持 dirty。
+     *
+     * @param {object} [versions] 該批切批當下的版本快照;純拉取的往返不帶。
      */
-    function applyResponse(body, ctx) {
+    function applyResponse(body, ctx, versions) {
+      var sentVersions = versions || {};
       return writeChain(function () {
         return readHistory().then(function (list) {
           var applied = (body && body.applied) || {};
@@ -676,12 +671,15 @@
             // 被殺時墓碑還在，下次照樣送得出去。
             if (TCLCoreRef.isTombstone(entry) && deletedIds[entry.id]) return;
             if (canonical[entry.id] !== undefined) {
+              var unchanged =
+                Object.prototype.hasOwnProperty.call(sentVersions, entry.id) &&
+                sentVersions[entry.id] === versionOf(entry);
               next.push(
                 Object.assign({}, entry, {
                   // canonicalId:雲端同一篇貼文早有一張卡時就地改名，否則下
                   // 次同步又分裂一張。
                   id: canonical[entry.id],
-                  dirty: false,
+                  dirty: unchanged ? false : entry.dirty,
                   // serverUpdatedAt 只是「這一輪已上傳」的標記，不是比較用的
                   // 判準——後端契約(api-spec 3.1)的 ShareHistoryItem 沒有
                   // updatedAt 欄位。新舊一律以 SyncResponse.cursor 與 changes
@@ -738,6 +736,10 @@
               // 整形後仍不合格就維持本機原樣(有既有卡)或整筆不收(沒有):寫進
               // 一筆 options 讀不出來的資料，比不寫更糟。
               if (!merged) return;
+              // 本機同 key 仍 dirty(ack 版本比對未過、或尚未送出)時合併後維持
+              // dirty:合併結果是雲端與本機 seen 的聯集，本機那份尚未上雲的事件
+              // 要靠下一輪再送。
+              if (index !== -1 && next[index].dirty === true) merged.dirty = true;
               if (index === -1) next.push(merged);
               else next[index] = merged;
             });
@@ -816,7 +818,7 @@
                 // 寫入失敗（配額、storage 壞掉）時失敗路徑的 saveState 會把已
                 // 前進的游標寫進去，這一頁的增量從此再也拉不回來——伺服器只認
                 // 游標，不會重送。
-                return applyResponse(payload, ctx).then(function () {
+                return applyResponse(payload, ctx, batch.versions).then(function () {
                   if (payload && isCursor(payload.cursor)) ctx.state.cursor = payload.cursor;
                   lastChanges = payload ? payload.changes : null;
                 });
@@ -1322,45 +1324,97 @@
     // ---- 登出／失效 ----
 
     /**
-     * token 失效的統一出口:清 token、記 session_expired、停掉週期 alarm。
+     * 帳號轉場單表:登入、session 過期、登出、刪雲端成功四條路徑對帳號狀態的
+     * 處置。欄位:
      *
-     * 【合併式 patch】session 過期是一次轉場，不是換帳號也不是刪資料:整包
-     * 重設會把 userId 一起清掉，下次登入的帳號切換偵測(finishSignIn)就永遠
-     * 判不出「換了人」，前一位使用者的本機鏡像會被當成新帳號的資料。游標與
-     * history 不動，重建鏡像的標髒統一在 finishSignIn 做。displayName／
-     * avatarUrl 留著是 D17 的「登入過期」卡片要顯示的資訊——使用者得看得出
-     * 過期的是哪一個帳號。
-     * 退避次數歸零:失效不是後端故障，重新登入後該從基礎週期重新開始。
+     * - markDirty:寫帳號鍵之前把 history 全部標髒、serverUpdatedAt 歸 null
+     *   (D50 登入＝重建鏡像)。只有登入標髒(D54):登出與刪雲端不碰 history
+     *   與名單，下次登入時在這裡統一標髒重傳。
+     * - token:'new' 寫入這次換到的 token;null 清掉。
+     * - state:'identity' 以這次登入的身分四欄整包重設(游標、lastSyncedAt、
+     *   lastError、marks 五欄隨之歸 null);'patchExpired' 為合併 patch，只記
+     *   lastError:'session_expired'，其餘欄位保留;'reset' 整包重設。
+     * - backoff:syncBackoff 的連續失敗次數。
+     * - verifiedAt:'now' 記下這一刻(剛換到的 token 等同剛驗過);null 清掉。
+     * - devices:別台裝置的顯示快取。'clear' 一律清;'ifSwitched' 只在換帳號
+     *   時清(D25)。本機身分 syncDevice 不在此列(D21)。
+     * - next:'periodic' 建週期 alarm;'none' 週期與去抖兩支都清(留著去抖
+     *   alarm 會在登出後照樣喚醒 SW，白跑一輪什麼也做不了)。
+     * - status:收尾廣播的狀態。
+     *
+     * 【過期為合併 patch】session 過期是一次轉場，不是換帳號也不是刪資料:整
+     * 包重設會把 userId 一起清掉，下次登入的帳號切換偵測(finishSignIn)就永遠
+     * 判不出「換了人」，前一位使用者的本機鏡像會被當成新帳號的資料。
+     * displayName／avatarUrl 留著是 D17 的「登入過期」卡片要顯示的資訊——使用
+     * 者得看得出過期的是哪一個帳號。
+     *
+     * 【退避一律歸零】過期與登出不是後端故障，登入後該從基礎週期重新開始。
      */
-    function handleSessionExpired() {
-      return loadContext()
-        .then(function (ctx) {
-          var patched = Object.assign({}, ctx.state, { lastError: 'session_expired' });
-          return saveState(patched);
+    var RESET = {
+      signIn: { markDirty: true, token: 'new', state: 'identity', backoff: 0, verifiedAt: 'now', devices: 'ifSwitched', next: 'periodic', status: 'signed_in' },
+      expired: { markDirty: false, token: null, state: 'patchExpired', backoff: 0, verifiedAt: null, devices: 'clear', next: 'none', status: 'signed_out' },
+      signOut: { markDirty: false, token: null, state: 'reset', backoff: 0, verifiedAt: null, devices: 'clear', next: 'none', status: 'signed_out' },
+      deleted: { markDirty: false, token: null, state: 'reset', backoff: 0, verifiedAt: null, devices: 'clear', next: 'none', status: 'signed_out' },
+    };
+
+    /**
+     * 依 RESET[kind] 執行一次帳號轉場。
+     *
+     * 1. markDirty 時先標髒 history(另一個鍵，走寫入佇列，排在 token 寫入之
+     *    前)。
+     * 2. 帳號五鍵 syncAuth、syncState、syncBackoff、syncVerifiedAt、
+     *    syncDevices 由單一 storage.local.set 寫入:chrome.storage 單次 set 是
+     *    原子的，不會落下「token 清了、syncState 還在」的半套狀態。syncDevices
+     *    以 null 表示清掉(readDevicesCache 把非物件一律當沒有);不需清時整個
+     *    鍵不寫。
+     * 3. 依 next 建立或清除 alarm。
+     * 4. 廣播 status。
+     *
+     * @param {string} kind RESET 的鍵。
+     * @param {{token?: string, identity?: object, prevState?: object, switched?: boolean}} [args]
+     *   token:signIn 的新 token;identity:signIn 的身分四欄;prevState:
+     *   expired 合併 patch 的底;switched:signIn 是否換了帳號。
+     * @returns {Promise<void>} 標髒或帳號鍵寫入失敗時 reject，alarm 與廣播不跑。
+     */
+    function resetAccount(kind, args) {
+      var spec = RESET[kind];
+      var opts = args || {};
+      var ready = spec.markDirty ? resetMirrorFields() : Promise.resolve();
+      return ready
+        .then(function () {
+          var state = null;
+          if (spec.state === 'identity') state = opts.identity;
+          else if (spec.state === 'patchExpired') state = Object.assign({}, opts.prevState, { lastError: 'session_expired' });
+          var items = {};
+          items[AUTH_KEY] = { token: spec.token === 'new' ? opts.token : null };
+          items[STATE_KEY] = TCLCoreRef.normalizeSyncState(state);
+          items[BACKOFF_KEY] = { failures: spec.backoff };
+          items[VERIFIED_AT_KEY] = spec.verifiedAt === 'now' ? now() : null;
+          if (spec.devices === 'clear' || (spec.devices === 'ifSwitched' && opts.switched)) {
+            items[DEVICES_CACHE_KEY] = null;
+          }
+          return localSet(items);
         })
         .then(function () {
-          return saveToken(null);
-        })
-        .then(function () {
-          return saveFailures(0);
-        })
-        .then(function () {
-          // 週期與去抖保底兩支都要清:留著去抖 alarm 會在登出後照樣喚醒 SW，
-          // 白跑一輪什麼也做不了。
+          if (spec.next === 'periodic') {
+            alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
+            return undefined;
+          }
           return Promise.all([
             Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
             Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
           ]);
         })
         .then(function () {
-          // 別台裝置的快取描述的是「這個帳號底下有哪些裝置」。過期後重新登
-          // 入的可能是另一個 Google 帳號，留著就會在新使用者眼前先閃出上一
-          // 位的裝置名。本機身分 syncDevice 不動(D21)。
-          return localRemove(DEVICES_CACHE_KEY);
-        })
-        .then(function () {
-          return broadcastState('signed_out');
+          return broadcastState(spec.status);
         });
+    }
+
+    /** token 失效的統一出口(RESET.expired)。 */
+    function handleSessionExpired() {
+      return loadContext().then(function (ctx) {
+        return resetAccount('expired', { prevState: ctx.state });
+      });
     }
 
     // ---- 對外介面 ----
@@ -1416,7 +1470,12 @@
               // 回報的值。
               var effective = typeof result.nonce === 'string' && result.nonce ? result.nonce : nonce;
               return auth
-                .exchangeWithBackend({ apiBase: ctx.apiBase, idToken: result.idToken, nonce: effective })
+                .exchangeWithBackend({
+                  apiBase: ctx.apiBase,
+                  idToken: result.idToken,
+                  nonce: effective,
+                  clientVersion: clientVersion,
+                })
                 .then(function (exchange) {
                   return finishSignIn(ctx, result, exchange);
                 });
@@ -1445,34 +1504,19 @@
       var avatarUrl = TCLCoreRef.sanitizeAvatarUrl(rawAvatar);
       // 登入＝重建鏡像(D50):雲端可能已被刪除(本機或別台裝置發動)，也可能
       // 換了帳號，本機無從分辨，因此每次登入都把 history 全部標髒重傳，墓碑
-      // 一併進 deletes[]。marks 的四格與回填位置隨下方 saveState 整包重設，
-      // 名單同樣全推。伺服器端的 upsert 與墓碑冪等，重傳不會長出重複資料。
+      // 一併進 deletes[]。marks 的四格與回填位置隨 syncState 整包重設，名單同
+      // 樣全推。伺服器端的 upsert 與墓碑冪等，重傳不會長出重複資料。
+      // 別台裝置的清單屬於前一個帳號(D25):換人時清掉，同帳號重新登入不清。
       var switched = ctx.state.userId !== null && userId !== null && ctx.state.userId !== userId;
-      return resetMirrorFields()
-        .then(removeLegacyGuards)
-        .then(function () {
-          // 別台裝置的清單屬於前一個帳號(D25):換人時這份顯示層快取留著，就是
-          // 把上一位使用者的裝置名秀給新使用者看。同帳號重新登入不清。
-          if (!switched) return undefined;
-          return localRemove(DEVICES_CACHE_KEY);
-        })
-        .then(function () {
-          return saveToken(exchange.authToken);
-        })
-        .then(function () {
-          return saveState({ userId: userId, email: email, displayName: displayName, avatarUrl: avatarUrl });
-        })
-        .then(function () {
-          alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
-        })
-        .then(function () {
-          return broadcastState('signed_in');
-        })
-        .then(function () {
-          // 登入完成就跑一次:首次綁定的全量上傳(D3)與雲端既有資料的首輪拉
-          // 取都在這一次完成，不必等第一個 alarm。
-          return syncNow();
-        });
+      return resetAccount('signIn', {
+        token: exchange.authToken,
+        identity: { userId: userId, email: email, displayName: displayName, avatarUrl: avatarUrl },
+        switched: switched,
+      }).then(function () {
+        // 登入完成就跑一次:首次綁定的全量上傳(D3)與雲端既有資料的首輪拉
+        // 取都在這一次完成，不必等第一個 alarm。
+        return syncNow();
+      });
     }
 
     /** 把 history 的雲端鏡像欄位重置成「未同步過的本機資料」。 */
@@ -1496,29 +1540,9 @@
           : Promise.resolve();
         // 後端 sign-out 失敗(503／斷網)也要完成本機清理:留著一枚可能已失效
         // 的 token 只會讓使用者卡在「看起來還登入著」。
-        return revoke
-          .then(resetMirrorFields)
-          .then(function () {
-            return saveToken(null);
-          })
-          .then(function () {
-            return saveState(null);
-          })
-          .then(function () {
-            return saveFailures(0);
-          })
-          .then(function () {
-            return localRemove(DEVICES_CACHE_KEY);
-          })
-          .then(function () {
-            return Promise.all([
-              Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
-              Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
-            ]);
-          })
-          .then(function () {
-            return broadcastState('signed_out');
-          });
+        return revoke.then(function () {
+          return resetAccount('signOut');
+        });
       });
     }
 
@@ -1650,13 +1674,12 @@
 
     /**
      * 刪除雲端資料(D50，契約 R11):打單一端點，伺服器硬刪這個帳號的全部雲端
-     * 資料並撤銷所有 session。成功(2xx，不看 revokedSessions)即本機登出:
-     *
-     * 1. history 全部標髒、serverUpdatedAt 歸 null(墓碑的 deletedAt 不動)，
-     *    下次登入時全量重傳。先標髒再登出:標髒寫入失敗時整件事走失敗路徑，
-     *    token 還在，使用者看得到錯誤而不是一個已登出卻漏標的本機鏡像。
-     * 2. 清 token、syncState 整包重設、退避歸零、清別台裝置快取、移除舊版守衛
-     *    鍵、停掉兩支 alarm，廣播 signed_out。本機身分 syncDevice 不動。
+     * 資料並撤銷所有 session。成功(2xx，不看 revokedSessions)即本機登出
+     * (RESET.deleted):清 token、syncState 整包重設、退避歸零、清別台裝置快
+     * 取，以上一次寫入;停掉兩支 alarm，廣播 signed_out。本機 history 與名單
+     * 不動，下次登入由 finishSignIn 統一標髒重傳(D54)。本機身分 syncDevice 不
+     * 動。寫入失敗回 storage_write_failed、token 保留，使用者看得到錯誤，可以
+     * 再按一次(端點冪等);伺服器 session 已撤銷，下一次請求會 401，走過期出口。
      *
      * 失敗(非 2xx／斷網)不登出、本機一格不動，只記 lastError;401 走 session
      * 過期的統一出口。
@@ -1682,34 +1705,11 @@
         if (!ctx.token) return { ok: false, code: 'signed_out' };
         return call(ctx, 'DELETE', CLOUD_DATA_PATH).then(
           function () {
-            return resetMirrorFields().then(
+            return resetAccount('deleted').then(
               function () {
-                return saveToken(null)
-                  .then(function () {
-                    return saveState(null);
-                  })
-                  .then(function () {
-                    return saveFailures(0);
-                  })
-                  .then(function () {
-                    return localRemove(DEVICES_CACHE_KEY);
-                  })
-                  .then(removeLegacyGuards)
-                  .then(function () {
-                    return Promise.all([
-                      Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
-                      Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
-                    ]);
-                  })
-                  .then(function () {
-                    return broadcastState('signed_out');
-                  })
-                  .then(function () {
-                    return { ok: true, signedOut: true };
-                  });
+                return { ok: true, signedOut: true };
               },
               function () {
-                // 標髒沒落地:token 保留，使用者看得到錯誤，可以再按一次(端點冪等)。
                 return failDelete('storage_write_failed');
               }
             );
@@ -2064,10 +2064,6 @@
     CLIENT_ID_BY_API_BASE: CLIENT_ID_BY_API_BASE,
     SIGN_IN_CANCELLED: SIGN_IN_CANCELLED,
     SIGN_IN_TRANSIENT: SIGN_IN_TRANSIENT,
-    signInKindOf: signInKindOf,
-    MAX_UPSERTS: MAX_UPSERTS,
-    MAX_DELETES: MAX_DELETES,
-    MAX_SEEN_ROWS: MAX_SEEN_ROWS,
     pollIntervalFor: pollIntervalFor,
   };
 

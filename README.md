@@ -1,7 +1,7 @@
 # Threads Clean Link(脆連結清潔工)
 
 [![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hehokicokbgajpanjcajhmflaennnmdj?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/threads-clean-link/hehokicokbgajpanjcajhmflaennnmdj)
-[![CI](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml/badge.svg)](https://github.com/hunandy14/threads-clean-link/actions/workflows/release.yml)
+[![CI](https://github.com/hunandy14/threads-clean-link/actions/workflows/ci.yml/badge.svg)](https://github.com/hunandy14/threads-clean-link/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/hunandy14/threads-clean-link)](./LICENSE)
 
 Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」結果轉換為不含追蹤參數的乾淨貼文網址。雙語名稱:英文「Threads Clean Link」、中文「脆連結清潔工」，依瀏覽器語言自動顯示;介面、通知與右鍵選單文字支援中英文，預設跟隨瀏覽器語言，可於「紀錄與設定」頁手動切換。
@@ -101,10 +101,15 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 - 淨化功能僅作用於 Chrome 載入的 Threads 網頁版分頁，不處理手機 App 或其他裝置產生的複製內容。
 - 網域、`/share/` 路徑格式、轉址行為、貼文網址格式、複製連結寫入格式若有變動，對應功能會直接失效而非靜默出錯，修復通常僅需調整比對規則。
+- 擴充功能更新或重載後，既開的 Threads 分頁會自動重注入 ISOLATED world 的 content script(`bridge.js`、`i18n.js`、`tcl-core.js`、`post-icon.js`、`scam-guard.js`)，舊實例靠兩層機制自行退場:要碰 `chrome.runtime`／`chrome.storage` 前先判活，發現自己已失效就收掉 observer、計時器與自己插入的節點;新實例啟動時也會在 document 上派送 `threads-clean-link:handoff` 交棒事件，讓舊實例立即讓位。MAIN world 的 `clipboard-guard.js` 不在此列:它以包裹頁面的 `navigator.clipboard` 運作，重注入會疊出第二層包裹，而舊包裹無法從外部拆除，因此更新後該分頁會沿用舊版 `clipboard-guard.js` 直到重新整理。舊版送出的訊息仍由重注入的 `bridge.js` 接手轉發，一般不影響使用;但新版若改了 `clipboard-guard.js` 本身的行為，要重新整理分頁才會生效。
 
 ## 開發
 
-執行測試:`node --test test/*.test.js`(或 `npm test`)
+執行測試:`node --test test/*.test.js`(或 `npm test`)。開發與 CI 使用 Node.js 22 以上。
+
+語法基準:ES2024(對應 manifest 的 `minimum_chrome_version` 123)。background service worker 為 classic script(以 `importScripts` 載入共用模組)，不可使用 top-level await 與 ES module 語法。
+
+上架 zip 的必要檔案可用 `node tools/manifest-files.mjs` 列出(由 manifest.json 與其引用鏈推導);`tools/build-release.ps1` 的打包白名單必須涵蓋這份清單，由 `test/package.test.js` 把關。
 
 一鍵啟動除錯用 Chrome 並載入開發版擴充，連線目標用 `--env` 三選一(local/staging/production)，慣例說明見 `docs/dev-environments.md`:
 

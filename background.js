@@ -11,8 +11,8 @@ if (typeof TCLI18N === 'undefined' && typeof importScripts === 'function') {
 // 共用核心 lib(網址樣式、欄位消毒、常數):SW 環境用 importScripts 載入;
 // 測試 sandbox 由測試端先把 tcl-core.js 原始碼載進同一個 sandbox(TCLCore
 // 已存在)，此條件式便不執行。SHARE_URL_PATTERN、乾淨貼文網址的權威判定
-// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore，不再
-// 於本檔養一份鏡像(原本 background 與 options 各養一份，漂移一處即分裂)。
+// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore，不在
+// 本檔養鏡像:background 與 options 共用單一權威，漂移一處即分裂。
 if (typeof TCLCore === 'undefined' && typeof importScripts === 'function') {
   importScripts('tcl-core.js');
 }
@@ -96,7 +96,28 @@ chrome.runtime.onInstalled.addListener(() => {
   // 得齊七個雲端欄位。兩支都掛在同一條 historyWriteChain 上，串行執行。
   migrateHistoryMerge();
   migrateHistorySchema();
+  removeLegacyGuardKeys();
 });
+
+// 舊版的兩把自清守衛鍵(D19／D41 舊語意)。清空水位線已由 D50 廢除，這兩把
+// 鍵不再讀寫，這裡在 onInstalled 把舊版殘留清一次。
+const LEGACY_GUARD_KEYS = ['syncClearGuard', 'syncMarksClearGuard'];
+
+/**
+ * 移除舊版殘留的守衛鍵。盡力而為:remove 缺席或失敗都只記 warn，不影響其他
+ * onInstalled 工作;鍵本來就不存在時 remove 什麼也不做。
+ */
+function removeLegacyGuardKeys() {
+  const local = chrome.storage && chrome.storage.local;
+  if (!local || typeof local.remove !== 'function') return;
+  try {
+    Promise.resolve(local.remove(LEGACY_GUARD_KEYS)).catch((err) => {
+      console.warn('[threads-clean-link] 移除舊版守衛鍵失敗', err);
+    });
+  } catch (err) {
+    console.warn('[threads-clean-link] 移除舊版守衛鍵失敗', err);
+  }
+}
 
 // ------------------------------------------------------------
 // 擴充功能安裝/更新後的自癒重注入
@@ -108,24 +129,31 @@ chrome.runtime.onInstalled.addListener(() => {
 // context invalidated」。使用者看到的是「按鈕都在、複製也成功，但紀錄全部
 // 靜默丟失」，而且非重新整理不能復原——沒人會知道要重新整理。
 //
-// 【解法】更新完成的當下，對每個既開的 threads 分頁重新注入 ISOLATED world
-// 的三支腳本，讓分頁立刻換上帶有效 chrome.runtime 的新實例。所需權限
-// (scripting + threads 的 host_permissions)全部既有，不新增任何權限。
+// 【解法】更新完成的當下，對每個既開的 threads 分頁重新注入 manifest 裡
+// 全部的 ISOLATED world content script，讓分頁立刻換上帶有效
+// chrome.runtime 的新實例。所需權限(scripting + threads 的
+// host_permissions)全部既有，不新增任何權限。
 //
-// 【MAIN world 的 clipboard-guard.js 刻意不重注入】它是純頁面層的
+// 【新舊實例交接】舊實例留在已失效的舊 ISOLATED world，新實例跑在新
+// world，兩者只共用 DOM。新實例啟動時在 document 上派送交棒事件，舊實例
+// 收到後自我退場(斷 observer、清計時器、收掉自己插入的節點);舊實例在
+// 下一次要碰 chrome.runtime／chrome.storage 前也會先判活，發現自己是孤兒
+// 就退場。兩層任一層生效，頁面上都只剩新實例在運作。
+//
+// 【MAIN world 的 clipboard-guard.js 不重注入】它是純頁面層的
 // navigator.clipboard.writeText／copy 事件包裹，完全不碰 chrome.* API，擴
 // 充功能重載不會讓它失效;它 postMessage 出來的 TCL_RESOLVE_REQ／
-// TCL_CLEANED_NOTICE 是靠「監聽 window message 的 bridge.js」接手，而 bridge
-// 這一支我們重注入了(新身分、chrome.runtime 有效)，所以整條管道會自動接
-// 回來——舊 guard 依賴的是「頁面上有人在聽 message」這件事，不是某個特定
-// 的 bridge 實例。反過來重注入 guard 才有害:舊包裹還在，writeText 會被包
-// 第二層，一次複製可能觸發兩次淨化/兩次通知。
+// TCL_CLEANED_NOTICE 由監聽 window message 的 bridge.js 接手，而 bridge 會
+// 隨本清單重注入，整條管道因此自動接回來。反過來重注入 guard 才有害:舊
+// 包裹還在，writeText 會被包第二層，一次複製可能觸發兩次淨化/兩次通知。
 const REINJECT_MATCHES = ['https://*.threads.com/*', 'https://*.threads.net/*'];
 
-// 重注入的檔案與順序刻意對齊 manifest.json 的 content_scripts:bridge.js 先
-// 上(它負責 window message 橋接)，接著 i18n.js(post-icon.js 的文案來源)，
-// 最後 post-icon.js。少一支或順序顛倒都會讓新實例缺件。
-const REINJECT_FILES = ['bridge.js', 'i18n.js', 'post-icon.js'];
+// 重注入的檔案與順序等於 manifest.json content_scripts 裡 ISOLATED world
+// 的 document_start 那組接 document_idle 那組:bridge.js(window message 橋
+// 接)、i18n.js(文案來源)、tcl-core.js(scam-guard 的判定核心)、
+// post-icon.js、scam-guard.js。後面的腳本依賴前面掛上的全域，少一支或順
+// 序顛倒都會讓新實例缺件。
+const REINJECT_FILES = ['bridge.js', 'i18n.js', 'tcl-core.js', 'post-icon.js', 'scam-guard.js'];
 
 // 分頁 URL 的自我把關:tabs.query 的 url 篩選已經先擋一層，這裡再依同一組
 // 主機規則過濾一次，確保就算查詢條件被忽略(不同瀏覽器版本對 url 篩選的
@@ -225,7 +253,7 @@ if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChange
 // 訊息是否來自本擴充自己（content script 或擴充頁面皆可）。只看 sender.id
 // ——content script 的 sender.url 是它所在網頁的網址，比對擴充前綴會把
 // clipboard-guard 這條正常路徑整條擋掉。跨擴充訊息走的是 onMessageExternal，
-// 進不了這個 listener；沒宣告 externally_connectable 時網頁也送不進來，因此
+// 進不了 runtime.onMessage；沒宣告 externally_connectable 時網頁也送不進來，因此
 // sender.id 不等於自己就是不該回應的來源。
 // 需要更嚴的判準（只准擴充自己的頁面）時用 isExtensionPageSender，見下方。
 function isOwnExtensionSender(sender) {
@@ -233,45 +261,6 @@ function isOwnExtensionSender(sender) {
   const selfId = chrome.runtime && chrome.runtime.id;
   return typeof selfId === 'string' && selfId !== '' && sender.id === selfId;
 }
-
-// 回應 clipboard-guard.js 經 bridge.js 送來的短碼解析請求。本路徑不寫
-// 剪貼簿、不發通知，只負責解析並回傳結果；失敗一律回傳 ok:false，由
-// 呼叫端自行決定要不要用原始短碼放行。
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'resolveShare') {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  }
-  if (!isOwnExtensionSender(sender)) {
-    return false; // 不是自己人送來的，不回應、不解析。
-  }
-
-  handleResolveShareMessage(message)
-    .then(sendResponse)
-    .catch((err) => {
-      console.error('[threads-clean-link] resolveShare 處理失敗', err);
-      sendResponse({ ok: false, reason: 'internal-error' });
-    });
-
-  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
-});
-
-// clipboard-guard.js 實際把淨化後內容寫入剪貼簿後，經 bridge.js 送來這則
-// 通知——紀錄的其中一條入筆路徑，收到合法通知就無條件記錄，沒有「要不要
-// 顯示通知」的把關。
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'cleanedNotice') {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  }
-  if (!isOwnExtensionSender(sender)) {
-    return false; // 紀錄是使用者資料，不接受本擴充以外的來源寫入。
-  }
-
-  handleCleanedNotice(message).catch((err) => {
-    console.error('[threads-clean-link] cleanedNotice 處理失敗', err);
-  });
-
-  return false; // 不需要回應，同步處理完就結束，不佔用非同步通道。
-});
 
 // ------------------------------------------------------------
 // 雲端同步接線(docs/cloud-sync.md 第 5 節)
@@ -330,7 +319,6 @@ let unsavedDevice = null;
 function ensureDevice() {
   if (localDevicePromise !== null) return localDevicePromise;
   const pending = enqueueHistoryWrite(async () => {
-    if (!hasStorageLocal()) return null;
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const existing = stored && stored[DEVICE_KEY];
     const existingId =
@@ -367,7 +355,7 @@ function ensureDevice() {
 function persistDevice() {
   return enqueueHistoryWrite(async () => {
     const pending = unsavedDevice;
-    if (pending === null || !hasStorageLocal()) return;
+    if (pending === null) return;
     await chrome.storage.local.set({ [DEVICE_KEY]: pending });
     if (unsavedDevice === pending) unsavedDevice = null;
   }).catch((err) => {
@@ -422,7 +410,6 @@ async function rememberLocalDeviceName(deviceId, name) {
   if (!device || TCLCore.normalizeDeviceId(device.deviceId) !== deviceId) return;
   await persistDevice();
   await enqueueHistoryWrite(async () => {
-    if (!hasStorageLocal()) return;
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const current = stored && stored[DEVICE_KEY];
     if (!current || typeof current !== 'object') return;
@@ -450,8 +437,6 @@ const syncEngine =
         alarms: {
           create: (name, info) => chrome.alarms.create(name, info),
           clear: (name) => Promise.resolve(chrome.alarms.clear(name)),
-          get: (name) => Promise.resolve(chrome.alarms.get(name)),
-          getAll: () => Promise.resolve(chrome.alarms.getAll()),
         },
         // 廣播給 options/popup。沒有任何頁面開著時 sendMessage 會 reject，
         // 那是常態不是錯誤，安靜吞掉。
@@ -475,22 +460,13 @@ const syncEngine =
         capHistory: (list) => TCLCore.capHistory(list),
         setTimeout: (fn, ms) => setTimeout(fn, ms),
         clearTimeout: (handle) => clearTimeout(handle),
+        // 每個後端請求的逾時 signal(涵蓋到讀完回應本文)。
+        timeoutSignal: (ms) => AbortSignal.timeout(ms),
+        // 擴充功能版本，引擎據此帶 X-Client-Version 標頭。沒有 getManifest 的
+        // 環境(部分測試沙箱)給空字串，引擎就不帶這個標頭。
+        clientVersion: typeof chrome.runtime.getManifest === 'function' ? chrome.runtime.getManifest().version : '',
       })
     : null;
-
-// options/popup → background 的五個同步訊息。登入態與雲端資料是敏感面:
-// 只接受本擴充自己的頁面(sender.url 是 chrome-extension://<自己的 id>/ 開頭)，
-// content script 與其他擴充送來的一律不回應、不碰引擎。
-const SYNC_MESSAGE_HANDLERS = {
-  'sync.getState': (engine) => engine.getState(),
-  'sync.signIn': (engine) => engine.signIn(),
-  'sync.signOut': (engine) => engine.signOut(),
-  'sync.now': (engine) => engine.syncNow(),
-  'sync.deleteCloud': (engine) => engine.deleteCloud(),
-  'sync.devices.list': (engine, message) => handleDevicesList(engine, message),
-  'sync.devices.rename': (engine, message) => handleDevicesRename(engine, message),
-  'sync.devices.remove': (engine, message) => handleDevicesRemove(engine, message),
-};
 
 // 裝置名的合法範圍:trim 後 1–80 個 code point。上限算 code point 而非
 // String.prototype.length——40 個 emoji 的 length 是 80 卻只有 40 個字，用
@@ -547,7 +523,7 @@ async function handleDevicesRemove(engine, message) {
 // 不能用 `!sender.tab` 當條件:manifest 的 options_ui.open_in_tab 為 true，設定頁
 // 本身就是一個分頁，sender.tab 存在，五個 sync.* 會全被擋掉。改看 sender.url 前綴
 // ——content script 的 sender.url 是它所在網頁的網址(https://www.threads.com/...)，
-// 其他擴充走的是 onMessageExternal 進不了這個 listener，兩者都構不出
+// 其他擴充走的是 onMessageExternal 進不了 runtime.onMessage，兩者都構不出
 // chrome-extension://<自己的 id>/ 這個前綴。
 // 本判準假設 manifest 沒有 web_accessible_resources 與 externally_connectable；
 // 若日後新增 WAR，被網頁 iframe 的 WAR 頁面也會帶本擴充前綴，需回頭把判準收窄成
@@ -557,23 +533,6 @@ function isExtensionPageSender(sender) {
   const selfId = chrome.runtime.id;
   return typeof sender.url === 'string' && sender.url.indexOf('chrome-extension://' + selfId + '/') === 0;
 }
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || typeof message.type !== 'string') return false;
-  const handler = SYNC_MESSAGE_HANDLERS[message.type];
-  if (!handler) return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  if (!isExtensionPageSender(sender) || !syncEngine) return false;
-
-  Promise.resolve()
-    .then(() => handler(syncEngine, message))
-    .then(sendResponse)
-    .catch((err) => {
-      console.error(`[threads-clean-link] ${message.type} 處理失敗`, err);
-      sendResponse(undefined);
-    });
-
-  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
-});
 
 // 週期同步與去抖保底的 alarm 都轉進引擎，由它自己分辨名稱(D12)。
 if (chrome.alarms && chrome.alarms.onAlarm) {
@@ -637,8 +596,16 @@ const SCAM_DOC_IDENTITY_PROPERTIES = ['og:url', 'al:android:url'];
 // <meta> 標籤與其屬性。屬性順序（property 在前或 content 在前）與引號種類
 // （雙引號、單引號、無引號）在真實 HTML 都不固定，逐標籤拆屬性而非把單一形
 // 狀寫死進正則。
-const SCAM_META_TAG_PATTERN = /<meta\b([^>]*)>/gi;
-const SCAM_META_ATTR_PATTERN = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+//
+// 標籤起點用正則找「<meta」加字界，標籤結尾交給 indexOf 找下一個 `>`:起點
+// 到 `>` 之間寫成 `[^>]*` 時，一串沒有 `>` 收尾的 `<meta` 會讓每個起點各掃
+// 一次到文件尾端。
+const SCAM_META_OPEN_PATTERN = /<meta\b/gi;
+// 屬性名後面的「= 值」整段可選：每段屬性名一律整段吃掉(沒帶值的由呼叫端略
+// 過)，下一次比對從它後面接著找，屬性名字元不會從中間各個起點重掃一遍。取
+// 到的帶值屬性與「值為必要」的寫法相同:屬性名必須整段比對完才輪得到 `=`，
+// 從屬性名中間起頭的比對不可能成立。
+const SCAM_META_ATTR_PATTERN = /([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
 
 // 交叉驗證的比對視窗（以命中的 post_author_id 位置為中心，前後各這麼多字）。
 // 整份文字比對太寬：頁面任何角落出現過本人的 username，就會替一個不相干的
@@ -647,6 +614,8 @@ const SCAM_AUTHOR_ID_WINDOW = 2000;
 
 // 匿名備援的逾時：SW 不能掛在一個永遠不回的請求上。
 const SCAM_FETCH_TIMEOUT_MS = 8000;
+// 短碼解析(resolveFinalUrl)單次請求的逾時，與 SCAM_FETCH_TIMEOUT_MS 同量級。
+const RESOLVE_FETCH_TIMEOUT_MS = 10000;
 
 // 匿名備援的節流表：以 postUrl 為鍵存上次發請求的時間，同一篇 24 小時內只
 // 打一次。存 chrome.storage.session（SW 被回收也留著、瀏覽器關閉即清），沒
@@ -770,8 +739,7 @@ function validateScamHit(message) {
   };
 }
 
-// 總開關。呼叫端已先確認 storage.local 可用（storage 整組故障是
-// internal_error，不是「使用者把開關關掉了」）。
+// 總開關。讀取失敗時視為開啟。
 async function isScamGuardEnabled() {
   try {
     const stored = await chrome.storage.local.get({ [SCAM_ENABLED_KEY]: true });
@@ -782,11 +750,11 @@ async function isScamGuardEnabled() {
   }
 }
 
-// 節流表存放的區域。session 在舊版瀏覽器與測試替身可能缺席，退回 local。
+// 節流表存放的區域：session；缺 session 的環境退回 local。
 function scamThrottleArea() {
   const session = chrome.storage && chrome.storage.session;
   if (session && typeof session.get === 'function' && typeof session.set === 'function') return session;
-  return hasStorageLocal() ? chrome.storage.local : null;
+  return chrome.storage.local;
 }
 
 // 身分鍵的網域歸一：threads.net 與 threads.com 是同一個站的兩個網域，`www.`
@@ -816,24 +784,32 @@ function scamPostIdentityKey(url) {
 function scamDocIdentityUrls(scanText) {
   const urls = [];
   // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
-  SCAM_META_TAG_PATTERN.lastIndex = 0;
-  let tag = SCAM_META_TAG_PATTERN.exec(scanText);
-  while (tag !== null) {
+  SCAM_META_OPEN_PATTERN.lastIndex = 0;
+  let open = SCAM_META_OPEN_PATTERN.exec(scanText);
+  while (open !== null) {
+    const attrsStart = open.index + open[0].length;
+    const close = scanText.indexOf('>', attrsStart);
+    // 這個 <meta 之後再也沒有 `>`，後面的 <meta 也都收不了尾。
+    if (close === -1) break;
+    const attrs = scanText.slice(attrsStart, close);
     let property = '';
     let content = null;
     SCAM_META_ATTR_PATTERN.lastIndex = 0;
-    let attr = SCAM_META_ATTR_PATTERN.exec(tag[1]);
+    let attr = SCAM_META_ATTR_PATTERN.exec(attrs);
     while (attr !== null) {
-      const name = attr[1].toLowerCase();
       const value = attr[2] !== undefined ? attr[2] : attr[3] !== undefined ? attr[3] : attr[4];
-      if (name === 'property' || name === 'name') property = value.toLowerCase();
-      else if (name === 'content') content = value;
-      attr = SCAM_META_ATTR_PATTERN.exec(tag[1]);
+      if (value !== undefined) {
+        const name = attr[1].toLowerCase();
+        if (name === 'property' || name === 'name') property = value.toLowerCase();
+        else if (name === 'content') content = value;
+      }
+      attr = SCAM_META_ATTR_PATTERN.exec(attrs);
     }
     if (content !== null && SCAM_DOC_IDENTITY_PROPERTIES.indexOf(property) !== -1) {
       urls.push(decodeHtmlEntities(content));
     }
-    tag = SCAM_META_TAG_PATTERN.exec(scanText);
+    SCAM_META_OPEN_PATTERN.lastIndex = close + 1;
+    open = SCAM_META_OPEN_PATTERN.exec(scanText);
   }
   return urls;
 }
@@ -944,11 +920,10 @@ function enqueueScamFetchGate(fn) {
 // 在兩張表上各佔一個名額：逐篇 24 小時節流、全域每分鐘 SCAM_FETCH_RATE_MAX
 // 次。兩者都在發請求前就記下，成功與失敗一視同仁——撈不到 id 的原因（SPA
 // 殼、站方限流、貼文已刪）重試也不會變，只會替使用者多發網路請求。回 false
-// 代表本次不得發請求。讀寫失敗或沒有可用區域時放行：閘門是替站方節流用的，
+// 代表本次不得發請求。讀寫失敗時放行：閘門是替站方節流用的，
 // 不是功能開關，不該因為 storage 故障把備援整條關掉。
 async function reserveScamFetchSlot(postUrl) {
   const area = scamThrottleArea();
-  if (!area) return true;
   const now = Date.now();
 
   try {
@@ -997,7 +972,6 @@ async function resolveScamAuthorId(postUrl, handle) {
 // 生一組 deviceId 出來。讀不到（缺席、形狀不合、storage 抽風）一律回
 // undefined 讓證據不帶這一欄，絕不因此擋下整次寫入。
 async function readLocalDeviceId() {
-  if (!hasStorageLocal()) return undefined;
   try {
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const device = stored && stored[DEVICE_KEY];
@@ -1014,7 +988,6 @@ async function readLocalDeviceId() {
 async function handleScamHit(message) {
   const hit = validateScamHit(message);
   if (!hit) return { ok: false, code: 'bad_request' };
-  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
   if (!(await isScamGuardEnabled())) return { ok: false, code: 'disabled' };
 
   let userId = hit.userId;
@@ -1100,8 +1073,6 @@ async function handleScamHit(message) {
 async function handleScamBlocklistRemove(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
-  // storage 整組不可用是環境故障，不是「使用者把總開關關掉了」。
-  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
 
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
@@ -1133,8 +1104,6 @@ async function handleScamBlocklistRemove(message) {
 async function handleScamBlocklistRestore(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
-  // storage 整組不可用是環境故障，不是「使用者把總開關關掉了」。
-  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
 
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
@@ -1151,31 +1120,109 @@ async function handleScamBlocklistRestore(message) {
   });
 }
 
-// 只准擴充自己的頁面（選項頁）送的兩則訊息。
-const SCAM_PAGE_MESSAGE_HANDLERS = {
-  'scam.blocklist.remove': handleScamBlocklistRemove,
-  'scam.blocklist.restore': handleScamBlocklistRestore,
+// ------------------------------------------------------------
+// runtime.onMessage 路由表
+// ------------------------------------------------------------
+//
+// 本擴充收的所有 runtime 訊息都在這張表。每條路由:
+//   allow(sender)  寄件者判準，不過就不回應、不執行。
+//   engine         true 表示需要同步引擎；引擎未建立時視同不認得這則訊息。
+//   noReply        true 表示背景執行、不回應，例外只記 log。
+//   run(message, engine)  回傳值(可為 Promise)原樣交給 sendResponse。
+//   onError()      run 拋錯或 reject 時改回的內容，各路由沿用自己的失敗形狀。
+//
+// 寄件者判準分三級:isOwnExtensionSender(本擴充任何來源，含 content script)、
+// isExtensionPageSender(只准 options／popup 等擴充頁)、isScamContentScriptSender
+// (只准 threads 分頁上的 content script)。登入態、雲端資料與警示名單的使用者
+// 操作屬敏感面，一律走擴充頁判準。
+const ROUTES = {
+  // clipboard-guard.js 經 bridge.js 送來的短碼解析請求。本路徑不寫剪貼簿、
+  // 不發通知，只負責解析並回傳結果；失敗一律回 ok:false，由呼叫端自行決定
+  // 要不要用原始短碼放行。
+  resolveShare: {
+    allow: isOwnExtensionSender,
+    run: (message) => handleResolveShareMessage(message),
+    onError: () => ({ ok: false, reason: 'internal-error' }),
+  },
+  // clipboard-guard.js 實際把淨化後內容寫入剪貼簿後送來的通知——紀錄的其中
+  // 一條入筆路徑，收到合法通知就無條件記錄。紀錄是使用者資料，不接受本擴充
+  // 以外的來源寫入。
+  cleanedNotice: {
+    allow: isOwnExtensionSender,
+    noReply: true,
+    run: (message) => handleCleanedNotice(message),
+  },
+  // options/popup → background 的同步訊息。引擎結果原樣透出，失敗碼是 UI
+  // 分流的依據；例外時回 undefined。
+  'sync.getState': syncRoute((engine) => engine.getState()),
+  'sync.signIn': syncRoute((engine) => engine.signIn()),
+  'sync.signOut': syncRoute((engine) => engine.signOut()),
+  'sync.now': syncRoute((engine) => engine.syncNow()),
+  'sync.deleteCloud': syncRoute((engine) => engine.deleteCloud()),
+  'sync.devices.list': syncRoute((engine, message) => handleDevicesList(engine, message)),
+  'sync.devices.rename': syncRoute((engine, message) => handleDevicesRename(engine, message)),
+  'sync.devices.remove': syncRoute((engine, message) => handleDevicesRemove(engine, message)),
+  // threads 分頁上的詐騙偵測命中回報。
+  'scam.hit': {
+    allow: isScamContentScriptSender,
+    run: (message) => handleScamHit(message),
+    onError: scamInternalError,
+  },
+  // 選項頁的解除／復原。網頁端不得借道動名單。
+  'scam.blocklist.remove': {
+    allow: isExtensionPageSender,
+    run: (message) => handleScamBlocklistRemove(message),
+    onError: scamInternalError,
+  },
+  'scam.blocklist.restore': {
+    allow: isExtensionPageSender,
+    run: (message) => handleScamBlocklistRestore(message),
+    onError: scamInternalError,
+  },
 };
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || typeof message.type !== 'string') return false;
+// 同步路由的共同外殼:只准擴充頁、需要引擎、例外回 undefined。handler 以
+// (engine, message) 取參，與 handleDevices* 的簽名一致。
+function syncRoute(handler) {
+  return {
+    allow: isExtensionPageSender,
+    engine: true,
+    run: (message, engine) => handler(engine, message),
+    onError: () => undefined,
+  };
+}
 
-  let pending = null;
-  if (message.type === 'scam.hit') {
-    if (!isScamContentScriptSender(sender)) return false; // 不是 threads 分頁送來的，不回應、不寫。
-    pending = handleScamHit(message);
-  } else if (Object.prototype.hasOwnProperty.call(SCAM_PAGE_MESSAGE_HANDLERS, message.type)) {
-    if (!isExtensionPageSender(sender)) return false; // 網頁端不得借道動名單。
-    pending = SCAM_PAGE_MESSAGE_HANDLERS[message.type](message);
-  } else {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+function scamInternalError() {
+  return { ok: false, code: 'internal_error' };
+}
+
+// 路由查找只認 ROUTES 自有鍵:'constructor'、'__proto__' 這類原型上的名字
+// 不得命中。未知類型、寄件者被拒、需要引擎卻沒有引擎，一律回 false——不回應、
+// 不佔用 sendResponse 通道。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const type = message && message.type;
+  if (typeof type !== 'string' || !Object.hasOwn(ROUTES, type)) return false;
+  const route = ROUTES[type];
+  if (!route.allow(sender) || (route.engine && !syncEngine)) return false;
+
+  let pending;
+  try {
+    pending = Promise.resolve(route.run(message, syncEngine));
+  } catch (err) {
+    pending = Promise.reject(err);
+  }
+
+  if (route.noReply) {
+    pending.catch((err) => {
+      console.error(`[threads-clean-link] ${type} 處理失敗`, err);
+    });
+    return false;
   }
 
   pending.then(sendResponse).catch((err) => {
-    console.error(`[threads-clean-link] ${message.type} 處理失敗`, err);
-    sendResponse({ ok: false, code: 'internal_error' });
+    console.error(`[threads-clean-link] ${type} 處理失敗`, err);
+    sendResponse(route.onError());
   });
-
   return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
@@ -1415,6 +1462,12 @@ function escapeRegExp(str) {
 // 性值，property 可能在 content 之前或之後(不同頁面產生器順序不一定)，
 // 兩種順序都要能比對到。找不到回傳 null。正則沿用手機版 post-meta.ts 的
 // ogContent 寫法，只多了掃描長度上限這一層(見上方常數註解)。
+//
+// 這兩條由屬性名動態組成，不在 ReDoS 靜態閘門(test/regex-safety.test.js)
+// 的範圍內，列在該檔的動態建構白名單。`[^>]+` 夾著屬性字面值的形狀不是線
+// 性的，工作量由 OG_SCAN_LIMIT 封頂;改用 scamDocIdentityUrls 那套逐屬性拆
+// 解會改變吻合範圍(例如 `data-property="og:title"` 這類字面值落在別的屬
+// 性裡的寫法，這兩條會認、逐屬性拆解不認)，因此維持與手機版一致的寫法。
 function extractOgMeta(html, property) {
   if (typeof html !== 'string' || !html) return null;
   const scanText = html.slice(0, OG_SCAN_LIMIT);
@@ -1479,28 +1532,63 @@ function decodeHtmlEntities(value) {
 // 沒認得的帳號形狀樣式(例如又一種語系的新措辭)，整串塞進 author 只會產
 // 生「Threads 上的某某（@someone）」這類髒資料——寧缺勿錯，整欄放棄，讓
 // author 缺席即可(卡片自然只顯示 @handle)。
-const OG_TITLE_FULLWIDTH_HANDLE = /^(.*?)\s*（@([^）]+)）/;
 const OG_TITLE_LOCALE_PREFIX = /^Threads\s*上的\s*/;
-const OG_TITLE_EN_SUFFIX = /\s+on Threads$/i;
+const OG_TITLE_EN_SUFFIX_WORDS = /on Threads$/i;
 const OG_TITLE_HANDLE_RESIDUE = /[(（]@/;
+const LINE_TERMINATOR_PATTERN = /[\n\r\u2028\u2029]/;
+
+// 切出 og:title 第一組「(@handle)」:open／close 是一對括號字元(半形 '(' 與
+// ')'，或全形 '（' 與 '）')。回傳 [括號前的文字, handle] 或 null，語意與
+// /^(.*?)\s*\(@([^)]+)\)/ 相同:括號前的文字去掉緊貼括號的空白後不得含換行
+// (`.` 不吃換行，這段空白本身可以含);handle 至少一字、不含右括號，可以跨
+// 行;這一組括號裡是空的就往後找下一組。以 indexOf 逐組定位、往回數空白，
+// 整串最多各走一遍:寫成正則時 `.*?` 與 `\s*` 相鄰，同一段空白能拆給兩邊，
+// 比對失敗前每種拆法都要試過。
+function splitAtFirstHandle(text, open, close) {
+  const opener = open + '@';
+  const lineBreak = LINE_TERMINATOR_PATTERN.exec(text);
+  const firstBreak = lineBreak ? lineBreak.index : text.length;
+  let at = text.indexOf(opener);
+  while (at !== -1) {
+    let nameEnd = at;
+    while (nameEnd > 0 && text.charAt(nameEnd - 1).trim() === '') nameEnd--;
+    if (firstBreak < nameEnd) return null;
+    const end = text.indexOf(close, at + opener.length);
+    if (end === -1) return null;
+    if (end > at + opener.length) return [text.slice(0, nameEnd), text.slice(at + opener.length, end)];
+    at = text.indexOf(opener, at + 1);
+  }
+  return null;
+}
+
+// 剝掉結尾的「 on Threads」(前面至少一個空白，大小寫不拘)連同它前面整段空
+// 白，語意與 replace(/\s+on Threads$/i, '') 相同。尾綴字面值由錨定在結尾的
+// 正則判斷，空白交給 trimEnd:`\s+` 沒有起點錨定時，引擎從空白串的每個位置
+// 各掃一次。
+function stripOgTitleEnSuffix(text) {
+  if (!OG_TITLE_EN_SUFFIX_WORDS.test(text)) return text;
+  const head = text.slice(0, text.length - 'on Threads'.length);
+  const name = head.trimEnd();
+  return name.length < head.length ? name : text;
+}
 
 function parseOgTitle(ogTitle) {
   if (typeof ogTitle !== 'string' || !ogTitle) return null;
   const trimmed = ogTitle.trim();
-  const match = /^(.*?)\s*\(@([^)]+)\)/.exec(trimmed);
+  const match = splitAtFirstHandle(trimmed, '(', ')');
   if (match) {
-    return buildOgTitleResult(match[1], match[2]);
+    return buildOgTitleResult(match[0], match[1]);
   }
 
-  const fullwidth = OG_TITLE_FULLWIDTH_HANDLE.exec(trimmed);
+  const fullwidth = splitAtFirstHandle(trimmed, '（', '）');
   if (fullwidth) {
     // 括號前段才是顯示名稱的所在;再剝掉中文語系前綴，以及(理論上不會
     // 與全形樣式同時出現、但剝了無害的)英文尾綴。
-    const name = fullwidth[1].replace(OG_TITLE_LOCALE_PREFIX, '').replace(OG_TITLE_EN_SUFFIX, '');
-    return buildOgTitleResult(name, fullwidth[2]);
+    const name = stripOgTitleEnSuffix(fullwidth[0].replace(OG_TITLE_LOCALE_PREFIX, ''));
+    return buildOgTitleResult(name, fullwidth[1]);
   }
 
-  const fallbackAuthor = trimmed.replace(OG_TITLE_EN_SUFFIX, '').trim();
+  const fallbackAuthor = stripOgTitleEnSuffix(trimmed).trim();
   if (!fallbackAuthor || OG_TITLE_HANDLE_RESIDUE.test(fallbackAuthor)) return null;
   return { author: fallbackAuthor };
 }
@@ -1650,15 +1738,15 @@ function peekOgFields(cleanUrl) {
 }
 
 // 本地路徑(icon/strip)專用的 og 補強逾時:貼文按鈕複製與 ?xmt 剪參都是
-// 純本地判斷，原本不會觸發任何網路請求;這裡額外補一次 fetch 專門拿 og
+// 純本地判斷，本身不觸發網路請求;這裡額外補一次 fetch 專門拿 og
 // 資訊，逾時風格沿用 clipboard-guard.js 的 RESOLVE_TIMEOUT_MS(2.5 秒，
 // 本檔案獨立維護同一個數值，兩處環境不同沒有共用單一來源的機制)。
 const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
 
 // 本地路徑(icon/strip)專用:貼文按鈕複製與 ?xmt 剪參的 web 動態牆 DOM
-// 沒有個人顯示名稱(只有 username)，這兩條路徑原本 author 永遠等於
-// handle、被既有的重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還
-// 可能吸到讚數等雜訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
+// 沒有個人顯示名稱(只有 username)，單靠 DOM 的 author 永遠等於 handle、
+// 被重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還可能吸到讚數等雜
+// 訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
 // 重用既有的 extractOgFields／sanitizeOgFields 全鏈(長度雙層防線不變)。
 //
 // 節流(三層):
@@ -1926,17 +2014,6 @@ function applyHistorySchema(entry, previous, now) {
   return entry;
 }
 
-// ---- 紀錄 ----
-
-function hasStorageLocal() {
-  return !!(
-    chrome.storage &&
-    chrome.storage.local &&
-    typeof chrome.storage.local.get === 'function' &&
-    typeof chrome.storage.local.set === 'function'
-  );
-}
-
 // ---- 儲存上限 ----
 //
 // 位元組軟預算(8MB)＋筆數硬保險(10000 筆)、墓碑優先淘汰的完整實作在
@@ -1977,7 +2054,6 @@ function recordHistory(url, kind, extra) {
   const devicePending = ensureDevice();
   historyWriteChain = historyWriteChain
     .then(async () => {
-      if (!hasStorageLocal()) return;
       const settings = await getSettings();
       if (!settings.saveHistory) return;
       const device = await devicePending;
@@ -2059,10 +2135,8 @@ function recordHistory(url, kind, extra) {
 
 // ---- 一次性遷移:既有紀錄整平成永久合併形狀 ----
 //
-// 【動機】舊版以「url + 5 分鐘視窗」去重，同一篇貼文在使用者手上很可能已
-// 經散成好幾張卡(隔天再複製一次多一張、handle 改名前後又各一張、當年解析
-// 失敗的短碼原文再一張)。改成永久合併之後，**新**寫入自然只會有一張卡，
-// 但既有資料不會自己收斂——這支遷移在 onInstalled 跑一次，把舊資料整平。
+// 【用途】以「url + 5 分鐘視窗」去重時期留下的資料，同一篇貼文可能散成好
+// 幾張卡;新寫入已永久合併，這支遷移在 onInstalled 跑一次把既有資料整平。
 //
 // 【演算法】讀全表 → 依 historyDedupKey 分組(同一個 postKey 為一組，抽不
 // 出貼文代碼的以正規化網址 url:<host><path><query> 自成一組)→ 組內以 at
@@ -2210,7 +2284,6 @@ function adoptFailureEntriesInList(list) {
 function migrateHistoryMerge() {
   historyWriteChain = historyWriteChain
     .then(async () => {
-      if (!hasStorageLocal()) return;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       // 空表(首裝)與單卡表必然無可合併，連讀後計算都省。
@@ -2314,7 +2387,6 @@ function fillHistorySchema(entry) {
 function migrateHistorySchema() {
   historyWriteChain = historyWriteChain
     .then(async () => {
-      if (!hasStorageLocal()) return;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       if (list.length === 0) return;
@@ -2381,11 +2453,17 @@ async function handleResolveShareMessage(message) {
 // 訊(見上方 og 擷取區塊)，兩條呼叫路徑各自決定怎麼用(menu 路徑直接把
 // ogFields 餵給 extractHistoryExtraFields;share 路徑經
 // handleResolveShareMessage 寫入 og 快取橋接)。
+//
+// 逾時 RESOLVE_FETCH_TIMEOUT_MS 涵蓋到讀完本文:headers 階段逾時丟給呼叫端
+// (走既有的網路錯誤回報)，讀本文逾時由下方的 try 吞掉(ogFields 為空、
+// finalUrl 照回)。逾時只會提早結束同一個請求，不重試。SW 原生有
+// AbortSignal;沒有它的環境(部分測試沙箱)以 typeof 取值，不帶 signal。
 async function resolveFinalUrl(shareUrl) {
   const response = await fetch(shareUrl, {
     method: 'GET',
     credentials: 'omit',
     redirect: 'follow',
+    signal: typeof AbortSignal !== 'undefined' ? AbortSignal.timeout(RESOLVE_FETCH_TIMEOUT_MS) : undefined,
     // og:title 的語系鎖定，見 OG_FETCH_HEADERS。只影響本次背景請求擷取到
     // 的 og 內容，轉址跟隨(finalUrl)的行為不受影響。
     headers: OG_FETCH_HEADERS,

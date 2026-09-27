@@ -13,6 +13,14 @@ const { createChromeStorage, runInSandbox } = require('./support/helpers');
 const options = require(path.join(__dirname, '..', 'options.js'));
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
+// 選項頁的完整靜態原文：options.html 加上它載入的 theme.css 與 options.css。
+// 樣式規則的靜態檢查一律讀這份，CSS 放在哪個檔都不影響斷言。
+function readOptionsAll() {
+  return ['options.html', 'theme.css', 'options.css']
+    .map((file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8'))
+    .join('\n');
+}
+
 const URL_A = 'https://www.threads.com/@usera/post/AbC123_-xyz';
 const URL_B = 'https://www.threads.com/@user.b/post/DeF456';
 const URL_C = 'https://threads.net/@user_c/post/GhI789';
@@ -824,7 +832,7 @@ test('notifySuccess:OPTIONS_DEFAULT_SETTINGS/SETTING_IDS 不含這顆鍵，optio
 // 這條全域規則存在且用了 !important。
 test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important} 規則', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*;?\s*\}/m,
@@ -846,7 +854,7 @@ test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important}
 // 東西的假釘。
 test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊在詳細視窗之上)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*#confirmOverlay\s*\{[^}]*z-index[^}]*\}/m,
@@ -865,7 +873,7 @@ test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊
 // + m 旗標，避免本檔/HTML 註解散文提到同樣的 class 名稱時誤命中。
 test('頁首帳號鈕高度對齊:.signin-btn 應有 height:34px，與 .ghost-btn 同高', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\.signin-btn\s*\{[^}]*height\s*:\s*34px[^}]*\}/m,
@@ -875,7 +883,7 @@ test('頁首帳號鈕高度對齊:.signin-btn 應有 height:34px，與 .ghost-bt
 
 test('頁首帳號鈕高度對齊:.account-trigger 上下 padding 3px + 26px 頭像 + 邊框湊出 34px', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\.account-trigger\s*\{[^}]*padding\s*:\s*3px\s+10px\s+3px\s+3px[^}]*\}/m,
@@ -893,7 +901,7 @@ test('頁首帳號鈕高度對齊:.account-trigger 上下 padding 3px + 26px 頭
 // 頁首 flex 置中的是「按鈕＋空隔」，帳號鈕實測比 .ghost-btn 高出約 1px。
 test('頁首帳號鈕高度對齊:.account-area 需為 flex，消掉行內基線的 descender 空隔', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\.account-area\s*\{[^}]*display\s*:\s*flex[^}]*\}/m,
@@ -2943,7 +2951,7 @@ test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 若帶�
     lastError: 'internal_error',
     apiBase: '',
   });
-  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'internal_error');
+  assert.equal(doc.ids.toast.textContent, i18n.fmt('zh', 'opSyncErrServer', { code: 'internal_error' }));
 });
 
 test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 沒有 lastError 時，不覆蓋樂觀 toast', async () => {
@@ -3120,7 +3128,7 @@ test('帳號入口:status 為 error 時選單顯示 lastError 一行(含前綴)�
 
   assert.equal(doc.ids.statusDot.classList.contains('is-danger'), true);
   assert.equal(doc.ids.acctErrorRow.hidden, false);
-  assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'rate_limited');
+  assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opSyncErrRateLimit'));
   assert.equal(doc.ids.acctSyncNowBtn.disabled, false, '錯誤態的一般同步鈕不因此停用');
   assert.equal(
     doc.ids.acctSyncLabel.textContent,
@@ -3572,7 +3580,7 @@ test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → loc
 
 test('帳號入口:寬度切換——options.html 在 720px 斷點以 CSS 隱藏名字文字(不靠 JS 判斷寬度)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /@media \(max-width:\s*720px\)\s*\{[^}]*\.acc-name\s*\{[^}]*display:\s*none/,
@@ -3598,33 +3606,32 @@ function contrastRatio(hexA, hexB) {
 }
 
 test('色票對比:淺色 --warn 對 --surface 至少 3:1(WCAG 非文字元素門檻，狀態點/提示列都是純色塊，沒有文字襯托)', () => {
-  const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
-  const rootBlock = html.slice(html.indexOf(':root {'), html.indexOf('@media (prefers-color-scheme: dark)'));
-  const warnMatch = /--warn:\s*(#[0-9a-fA-F]{6})/.exec(rootBlock);
-  const surfaceMatch = /--surface:\s*(#[0-9a-fA-F]{6})/.exec(rootBlock);
-  assert.ok(warnMatch && surfaceMatch, '淺色 :root 區塊應同時定義 --warn 與 --surface');
+  const css = readOptionsAll();
+  // token 以 light-dark(淺色, 深色) 合寫，淺色取第一個參數。
+  const warnMatch = /--warn:\s*light-dark\(\s*(#[0-9a-fA-F]{6})\s*,/.exec(css);
+  const surfaceMatch = /--surface:\s*light-dark\(\s*(#[0-9a-fA-F]{6})\s*,/.exec(css);
+  assert.ok(warnMatch && surfaceMatch, 'theme.css 應以 light-dark() 同時定義 --warn 與 --surface');
   const ratio = contrastRatio(warnMatch[1], surfaceMatch[1]);
   assert.ok(ratio >= 3, `淺色 --warn(${warnMatch[1]}) 對 --surface(${surfaceMatch[1]}) 的對比度應 ≥ 3:1，實測 ${ratio.toFixed(2)}:1`);
 });
 
-test('色票定義:--warn 在三處色票區塊(淺色 :root/深色媒體查詢/data-theme=dark)都要定義，缺一處就會有某個主題下讀到未定義變數', () => {
-  const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
-  const matches = html.match(/--warn:\s*#[0-9a-fA-F]{6};/g) || [];
-  assert.equal(matches.length, 3, '--warn 應恰好在三處色票區塊各出現一次(淺色/深色媒體查詢/data-theme=dark)');
+test('色票定義:--warn 只在 theme.css 宣告一處，以 light-dark() 合寫深淺兩色，任何主題都讀得到', () => {
+  const css = readOptionsAll();
+  const matches = css.match(/--warn:\s*[^;]*;/g) || [];
+  assert.equal(matches.length, 1, '--warn 應恰好宣告一處(theme.css 的 :root)');
+  assert.ok(/^--warn:\s*light-dark\(/.test(matches[0]), `--warn 應以 light-dark() 合寫深淺兩色：${matches[0]}`);
 });
 
 test('.acct-warn-row 語意色改用 --warn(登入過期是黃色第三態，不該跟 --accent 共用變數)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(html, /\.acct-warn-row\s*\{[^}]*background:\s*var\(--warn-soft\)[^}]*color:\s*var\(--warn\)/);
   assert.match(html, /\.acct-warn-row \.link-btn\s*\{[^}]*color:\s*var\(--warn\)/);
 });
 
 test('同步轉圈尊重 prefers-reduced-motion:.avatar-wrap.is-syncing::after 的 animation 只在 no-preference 媒體查詢內生效，reduce 時顯示靜態外圈', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   const baseRuleMatch = /\.avatar-wrap\.is-syncing::after\s*\{([^}]*)\}/.exec(html);
   assert.ok(baseRuleMatch, '應有 .avatar-wrap.is-syncing::after 的基本規則(靜態外圈)');
   assert.doesNotMatch(baseRuleMatch[1], /animation/, '基本規則不該直接帶 animation，否則 reduce 時仍會轉動');
@@ -3637,13 +3644,13 @@ test('同步轉圈尊重 prefers-reduced-motion:.avatar-wrap.is-syncing::after �
 
 test('.avatar-circle.has-photo 底色透明(回歸:曾經是死類——JS 有 toggle 但 CSS 沒有對應規則)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(html, /\.avatar-circle\.has-photo\s*\{[^}]*background:\s*transparent/);
 });
 
 test('menu-item:disabled 有停用樣式(回歸:曾經完全沒有 :disabled 規則，同步中的 acctSyncNowBtn 看起來跟平常一樣可點)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /\.menu-item:disabled\s*\{[^}]*opacity:\s*0(\.\d+)?[^}]*cursor:\s*not-allowed/,
@@ -5258,7 +5265,7 @@ test('裝置管理:卡面不出現任何裝置圖示或裝置名(D27，防人手
   assert.equal(findByClass(card, 'entry-device-icon').length, 0, '卡面不得有裝置圖示節點');
   assert.equal(joinedText(card).includes('Pixel 8'), false, '卡面不得出現裝置名');
 
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.equal(html.includes('entry-device-icon'), false, 'options.html 不得留卡面裝置圖示的樣式/標記');
 });
 
@@ -6140,7 +6147,7 @@ test('警示名單卡:storage 沒有 scamBlocklist 時顯示空狀態、計數 0
   );
 });
 
-// 【斷言翻轉】原斷言為「第二行是『加入於 <日期>』(opScamAddedOn)」。副標列
+// 【斷言翻轉】原斷言為「第二行是『加入於 <日期>』」。副標列
 // 先併進標題列，使用者再定案為**不顯示**——`addedAt` 照存不動，只是畫面上不
 // 再出現。作者列改成 Threads 的貼文排法：顯示名、@handle、那篇的時間。
 test('警示名單卡:兩位作者依 addedAt 降冪各畫一列，作者列有 displayName ＋ @handle ＋ 貼文時間', async () => {
@@ -7445,35 +7452,24 @@ function signalOf(node) {
 test('證據卡文案:新增的 i18n 鍵 zh／en 都要備齊', () => {
   const expected = {
     opScamHitCount: ['命中 {n} 篇', '{n} hits'],
-    // 標題列的貼文日期(可點，連到最新那篇證據貼文)。
-    opScamPostedAt: ['貼文 {date}', 'Posted {date}'],
-    opScamSignalLink: ['連結', 'Link'],
-    opScamSignalLine: ['LINE', 'LINE'],
-    opScamSignalGroup: ['群組', 'Group'],
-    opScamSignalJoin: ['加入', 'Join'],
-    opScamSignalPitch: ['話術', 'Pitch'],
   };
   Object.keys(expected).forEach((key) => {
     assert.equal(i18n.t('zh', key), expected[key][0], key + ' 的 zh 文案');
     assert.equal(i18n.t('en', key), expected[key][1], key + ' 的 en 文案');
   });
 
-  // 【斷言翻轉】原本這裡還釘 opScamShowMore（details 摺疊區的 summary）、
-  // opScamLastHit（副標的「最近命中」）與 opScamSameText（同文異篇合併的
-  // 「出現在 N 篇」）。三者的 UI 在這一輪改版裡都沒了:摺疊區換成對話框、
-  // 副標整列撤掉、證據改為逐筆呈現不再合併。opScamLastHit 依 PM 指示留在
-  // 字典但不再有人用，不在此釘。
+  // 證據卡已不畫的文案鍵(貼文日期、訊號 chip、回串頭連結等)依 S5 自字典
+  // 刪除，不在此釘。
   //
-  // 這兩鍵的英文由實作定稿，只釘「鍵要存在且兩語不同於鍵名」——i18n.t 查無
+  // 這鍵的英文由實作定稿，只釘「鍵要存在且兩語不同於鍵名」——i18n.t 查無
   // 鍵時會退回鍵名本身，退回就代表字典沒補。
-  ['opScamEvidencePost', 'opScamEvidenceThread'].forEach((key) => {
+  ['opScamEvidencePost'].forEach((key) => {
     ['zh', 'en'].forEach((locale) => {
       assert.notEqual(i18n.t(locale, key), key, key + ' 的 ' + locale + ' 文案尚未進字典');
     });
   });
   // 日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去哪)。
   assert.ok(i18n.t('zh', 'opScamEvidencePost').includes('證據貼文'), 'opScamEvidencePost 的 zh 文案為「證據貼文」');
-  assert.ok(i18n.t('zh', 'opScamEvidenceThread').includes('整串'), 'opScamEvidenceThread 的 zh 文案為「整串」');
 });
 
 // ---- 卡頭:名稱連結、日期、命中數 ----
@@ -7923,9 +7919,9 @@ test('證據卡:右上角是 ⋯ 選項鈕(#i-more)，選單只放「解除」;�
   assert.equal(findByClass(rowA, 'scam-quick-btn').length, 0, '不得再畫 ⊖ 快捷鈕');
 });
 
-// 【斷言翻轉】原斷言為「證據區上方有 .scam-evidence-title 小標(opScamEvidence)」。
+// 【斷言翻轉】原斷言為「證據區上方有 .scam-evidence-title 小標」。
 // 卡片只剩一筆證據時，「證據」兩個字佔一整行卻不帶任何資訊，使用者看過預覽
-// 後決定拿掉。
+// 後決定拿掉。小標文案鍵已依 S5 自字典刪除，只釘節點不存在。
 test('證據卡:證據區不再畫「證據」小標', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
@@ -7933,10 +7929,6 @@ test('證據卡:證據區不再畫「證據」小標', async () => {
   [SCAM_ID_A, SCAM_ID_B].forEach((id) => {
     const row = scamRowById(ctx.doc, id);
     assert.equal(findByClass(row, 'scam-evidence-title').length, 0, '不得再畫證據小標');
-    assert.ok(
-      !joinedText(row).includes(i18n.t('zh', 'opScamEvidence')),
-      '「證據」小標文字不得出現在卡片上'
-    );
   });
 });
 
@@ -8166,7 +8158,7 @@ test('證據卡:片段含 <b> 時逐字呈現(createElement/textContent，不得
 // 『出現在 N 篇』」。證據改由對話框逐筆列出(主卡那筆與對話框每一筆走同一
 // 個 buildScamEvidenceItem，不另寫第二套渲染)，合併邏輯連帶撤掉:一位作者
 // 最多三筆證據，在可捲動的對話框裡各自成列不會擁擠，而合併會讓「每筆一個
-// 節點」這條共用結構破例。opScamSameText 依 PM 指示留在字典但不再有人用。
+// 節點」這條共用結構破例。對應的文案鍵已依 S5 自字典刪除。
 test('證據卡:片段逐字相同的多筆證據在對話框裡各自成列，不合併', async () => {
   const SAME = '加 LINE：ab12cd，我把你拉進群組一起聊，群裡不報明牌也不收費。';
   const list = scamCardFixture();
@@ -8405,7 +8397,7 @@ test('警示名單卡:說明視窗納入中央 Tab focus trap', async () => {
 // 這一輪整條 meta 列不畫，.scam-signal 與 .scam-evidence-thread 一併從清單
 // 移除。
 test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結、標記 pill、命中數、⋯ 鈕、錨點高亮、片段、對話框)', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   [
     '.scam-name-link',
     '.scam-evidence-head',
@@ -8439,7 +8431,7 @@ test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結�
 });
 
 test('警示名單卡:options.html 備妥資訊鈕與說明視窗(靜態節點與 #i-info symbol)', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
 
   assert.ok(/<symbol id="i-info"/.test(html), '頁面 SVG symbol 集合應有 #i-info（Lucide info）');
 
@@ -8804,8 +8796,8 @@ test('警示名單 v2:options.html 備妥狀態列落點(div.scam-disabled-bar[r
     '狀態列排在名單之前'
   );
 
-  assert.ok(html.includes('.scam-disabled-bar'), 'options.html 應有 .scam-disabled-bar 的樣式規則');
-  assert.ok(html.includes('.scam-enable-btn'), 'options.html 應有 .scam-enable-btn 的樣式規則');
+  assert.ok(readOptionsAll().includes('.scam-disabled-bar'), 'options.html 應有 .scam-disabled-bar 的樣式規則');
+  assert.ok(readOptionsAll().includes('.scam-enable-btn'), 'options.html 應有 .scam-enable-btn 的樣式規則');
 });
 
 // ---- 2. 已解除小節走 entry.state ----
@@ -9013,7 +9005,7 @@ test('警示名單 v2:缺片段說明的 en 文案', async () => {
 });
 
 test('警示名單 v2:options.html 備妥 .scam-evidence-missing 樣式(灰字，與片段本體分得出來)', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.ok(
     html.includes('.scam-evidence-missing'),
     'options.html 應有 .scam-evidence-missing 的樣式規則——沒有樣式的話灰字說明會長得跟真片段一樣'
@@ -9422,3 +9414,259 @@ test('S-a 刪雲端:廣播 signed_out 先到、回應 {ok,signedOut} 後到，�
   assert.equal(finals.length, 1, `定案 toast 只能出現一次，實得序列:${JSON.stringify(writes)}`);
   assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
 });
+
+// ============================================================
+// options 頁常開時的三個正確性問題(B1 登入態過期、B2 history 寫入重畫
+// 警示名單、B3 匯入對話框 Esc)。
+// ============================================================
+
+// 比照 options-init.js 的 chrome.storage.onChanged 接線:local 區帶 history
+// 先交給 setHistory，整包 changes 再交給 setLocalSettings;sync 區交給
+// setSyncSettings。測試以 storage.emitChange 觸發，走的是頁面實際收到的路徑。
+function wireStorageOnChanged(storage, controller) {
+  storage.api.onChanged.addListener((changes, areaName) => {
+    if (!changes) return;
+    if (areaName === 'local') {
+      if (changes.history) controller.setHistory(changes.history.newValue || []);
+      controller.setLocalSettings(changes);
+    } else if (areaName === 'sync') {
+      controller.setSyncSettings(changes);
+    }
+  });
+}
+
+function deleteFirstRow(doc) {
+  doc.ids.rows.children[0].fire('click');
+  doc.ids.detailDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+}
+
+function assertSingleTombstone(storage, id, label) {
+  const history = storage.localSnapshot().history;
+  assert.equal(history.length, 1, `${label}:已登入軟刪，entry 留在陣列等伺服器 ack`);
+  assert.equal(history[0].id, id, `${label}:軟刪不換 id`);
+  assert.equal(typeof history[0].deletedAt, 'number', `${label}:寫入 deletedAt`);
+  assert.ok(history[0].deletedAt > 0);
+  assert.equal(history[0].dirty, true, `${label}:墓碑是待上傳的變更`);
+}
+
+function hideAllOverlays(doc) {
+  [
+    'detailOverlay',
+    'timelineOverlay',
+    'overlay',
+    'confirmOverlay',
+    'devicesOverlay',
+    'scamHitsOverlay',
+    'scamInfoOverlay',
+  ].forEach((id) => {
+    doc.getElementById(id).hidden = true;
+  });
+}
+
+// ---- B1:登入態只在 init 讀一次 ----
+
+test('B1 刪除:頁面開著時經 storage.onChanged(local.syncState)轉為已登入，單筆刪除走軟刪留墓碑', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedOutState() });
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.storage.emitChange({ syncState: { newValue: signedInState(), oldValue: signedOutState() } }, 'local');
+  await settle();
+
+  deleteFirstRow(ctx.doc);
+  await settle();
+
+  assertSingleTombstone(ctx.storage, 'id-1000', 'onChanged 登入後刪除');
+  assert.equal(ctx.doc.ids.rows.children.length, 0, '墓碑不留在畫面上');
+});
+
+test('B1 刪除:setLocalSettings 帶來已登入的 syncState 後，單筆刪除走軟刪留墓碑', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedOutState() });
+  await ctx.controller.init();
+  await settle();
+
+  ctx.controller.setLocalSettings({ syncState: { newValue: signedInState(), oldValue: signedOutState() } });
+  await settle();
+
+  deleteFirstRow(ctx.doc);
+  await settle();
+
+  assertSingleTombstone(ctx.storage, 'id-1000', 'setLocalSettings 登入後刪除');
+});
+
+test('B1 清除全部:頁面開著時經 storage.onChanged(local.syncState)轉為已登入，逐筆轉墓碑', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)],
+    syncState: signedOutState(),
+  });
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.storage.emitChange({ syncState: { newValue: signedInState(), oldValue: signedOutState() } }, 'local');
+  await settle();
+
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const history = ctx.storage.localSnapshot().history;
+  assert.deepEqual(history.map((e) => e.id).sort(), ['id-1000', 'id-2000'], '墓碑留在 storage，id 不變');
+  history.forEach((e) => {
+    assert.equal(typeof e.deletedAt, 'number', `${e.id}:寫入刪除時戳`);
+    assert.equal(e.dirty, true, `${e.id}:待上傳的刪除意圖`);
+  });
+  assert.equal(ctx.doc.ids.rows.children.length, 0, '畫面清空');
+});
+
+test('B1 清除全部:setLocalSettings 帶來已登入的 syncState 後，逐筆轉墓碑', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)],
+    syncState: signedOutState(),
+  });
+  await ctx.controller.init();
+  await settle();
+
+  ctx.controller.setLocalSettings({ syncState: { newValue: signedInState(), oldValue: signedOutState() } });
+  await settle();
+
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const history = ctx.storage.localSnapshot().history;
+  assert.equal(history.length, 2, '已登入時清除全部不得硬刪');
+  history.forEach((e) => {
+    assert.equal(typeof e.deletedAt, 'number', `${e.id}:寫入刪除時戳`);
+    assert.equal(e.dirty, true, `${e.id}:待上傳的刪除意圖`);
+  });
+});
+
+test('B1 刪除:頁面開著時經 storage.onChanged 轉為登出，單筆刪除改走硬刪(反方向同樣跟上)', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedInState() });
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.storage.emitChange({ syncState: { newValue: signedOutState(), oldValue: signedInState() } }, 'local');
+  await settle();
+
+  deleteFirstRow(ctx.doc);
+  await settle();
+
+  assert.deepEqual(ctx.storage.localSnapshot().history, [], '登出後維持硬刪，不留墓碑');
+});
+
+// ---- B2:history 寫入不得打斷警示名單的對話框與選單 ----
+
+test('B2 警示名單:命中對話框開著時，storage.onChanged 帶來 history 變動，對話框維持開啟且焦點不動', async () => {
+  const ctx = makeScamCardCtx();
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  openScamHits(ctx, rowA);
+  const focused = ctx.doc.activeElement;
+  assert.ok(focused, '前置:開啟對話框後焦點落在對話框內');
+  assert.notEqual(focused, firstByClass(rowA, 'scam-hit-count'), '前置:焦點已離開 pill');
+
+  ctx.storage.emitChange({ history: { newValue: [s4Entry(URL_A, 1000)], oldValue: [] } }, 'local');
+  await settle();
+
+  assert.equal(ctx.doc.ids.rows.children.length, 1, '前置:history 變動確實送達(紀錄牆多一筆)');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, 'history 變動不得關掉命中對話框');
+  assert.equal(ctx.doc.activeElement, focused, '焦點留在對話框內原本的位置');
+  assert.equal(evidenceTexts(ctx.doc.ids.scamHitsList).length, 3, '對話框內容照舊');
+});
+
+test('B2 警示名單:命中對話框開著時直接 setHistory，對話框維持開啟且焦點不動', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  openScamHits(ctx, rowA);
+  const focused = ctx.doc.activeElement;
+
+  ctx.controller.setHistory([s4Entry(URL_A, 1000), s4Entry(URL_B, 2000)]);
+  await settle();
+
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, 'history 變動不得關掉命中對話框');
+  assert.equal(ctx.doc.activeElement, focused, '焦點不得被拉回 pill');
+});
+
+test('B2 警示名單:⋯ 選單開著時 history 變動，選單維持開啟(aria-expanded 仍為 true)', async () => {
+  const ctx = makeScamCardCtx();
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  firstByClass(rowA, 'scam-menu-btn').fire('click', { stopPropagation() {} });
+  assert.equal(firstByClass(rowA, 'scam-menu').hidden, false, '前置:⋯ 選單已開');
+
+  ctx.storage.emitChange({ history: { newValue: [s4Entry(URL_A, 1000)], oldValue: [] } }, 'local');
+  await settle();
+
+  const rowNow = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowNow, '名單列仍在');
+  assert.equal(firstByClass(rowNow, 'scam-menu').hidden, false, 'history 變動不得收起 ⋯ 選單');
+  assert.equal(
+    firstByClass(rowNow, 'scam-menu-btn').getAttribute('aria-expanded'),
+    'true',
+    '⋯ 鈕的 aria-expanded 維持 true'
+  );
+});
+
+test('B2 警示名單:scamBlocklist 變動照常重畫名單;之後 history 變動不重畫名單列', async () => {
+  const ctx = makeScamCardCtx();
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await initScamPage(ctx);
+
+  // 不退步:scamBlocklist 變動時名單重畫(移除 B 後只剩 A)。
+  const onlyA = scamCardFixture();
+  delete onlyA.entries[SCAM_ID_B];
+  delete onlyA.handleIndex['user.b'];
+  ctx.storage.emitChange({ scamBlocklist: { newValue: onlyA, oldValue: scamCardFixture() } }, 'local');
+  await settle();
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A],
+    'scamBlocklist 變動後名單即時重畫'
+  );
+  assert.equal(ctx.doc.ids.scamCount.textContent, i18n.fmt('zh', 'opScamListCount', { n: 1 }), '計數跟著更新');
+
+  // 只有 history 變動時，名單列不得被整份換掉。
+  const rowBefore = scamRowById(ctx.doc, SCAM_ID_A);
+  ctx.storage.emitChange({ history: { newValue: [s4Entry(URL_A, 1000)], oldValue: [] } }, 'local');
+  await settle();
+  assert.equal(scamRowById(ctx.doc, SCAM_ID_A), rowBefore, 'history 變動不得重畫警示名單列');
+});
+
+// ---- B3:匯入對話框 Esc ----
+
+test('B3 匯入對話框:開著時按 Esc 關閉，焦點回到觸發按鈕;確認框的 Esc 行為不變', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)] });
+  await ctx.controller.init();
+  await settle();
+  hideAllOverlays(ctx.doc);
+
+  // 不退步:既有確認框(清除全部)照樣由 Esc 關閉，匯入框不受波及。
+  ctx.doc.ids.clearBtn.fire('click');
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '前置:確認框已開');
+  ctx.doc.fire('keydown', { key: 'Escape' });
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, true, 'Esc 照常關閉確認框');
+  assert.equal(ctx.doc.ids.overlay.hidden, true, '匯入框維持關閉');
+
+  const importBtn = ctx.doc.getElementById('importBtn');
+  importBtn.focus();
+  importBtn.fire('click');
+  assert.equal(ctx.doc.ids.overlay.hidden, false, '前置:匯入框已開');
+  assert.notEqual(ctx.doc.activeElement, importBtn, '前置:焦點已移進匯入框');
+
+  ctx.doc.fire('keydown', { key: 'Escape' });
+
+  assert.equal(ctx.doc.ids.overlay.hidden, true, 'Esc 應關閉匯入框');
+  assert.equal(ctx.doc.activeElement, importBtn, '關閉後焦點回到觸發按鈕');
+});
+

@@ -34,6 +34,10 @@
     // 兩顆開關的核心行為不受影響。
     var i18n = deps.i18n || null;
     var openOptionsPage = typeof deps.openOptionsPage === 'function' ? deps.openOptionsPage : null;
+    // themeMirror 為選配:接線層注入 TCLTheme.remember(theme-init.js)，
+    // 以 chrome.storage.sync 的 themePref 校正 localStorage 的主題鏡像與當頁
+    // data-theme。popup 開啟時間短，不監聽之後的 themePref 變更。
+    var themeMirror = typeof deps.themeMirror === 'function' ? deps.themeMirror : null;
 
     function getCheckbox(id) {
       return document.getElementById(id);
@@ -62,8 +66,8 @@
 
     function init() {
       // 一次讀足:兩顆開關 + 語言偏好(langPref 未設定時為 null，交由
-      // resolveLocale 依瀏覽器語言偵測)。
-      var keys = Object.assign({ langPref: null }, DEFAULT_SETTINGS);
+      // resolveLocale 依瀏覽器語言偵測)+ 主題偏好(未設定時為 'auto')。
+      var keys = Object.assign({ langPref: null, themePref: 'auto' }, DEFAULT_SETTINGS);
       return Promise.resolve(storage.get(keys)).then(function (settings) {
         SETTING_IDS.forEach(function (id) {
           var el = getCheckbox(id);
@@ -84,6 +88,13 @@
         }
 
         if (i18n) applyI18n(i18n.resolveLocale(settings ? settings.langPref : null));
+
+        // 非 light／dark 一律當 auto:鏡像被清掉，當頁跟系統深淺色走。
+        // 沒有 documentElement 的文件(測試的最小 stub)不需要主題，略過。
+        if (themeMirror && document.documentElement) {
+          var pref = settings ? settings.themePref : null;
+          themeMirror(pref === 'light' || pref === 'dark' ? pref : 'auto');
+        }
       });
     }
 

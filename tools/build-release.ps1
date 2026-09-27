@@ -70,7 +70,11 @@ $includeFiles = @(
     'popup-init.js',
     'options.html',
     'options.js',
-    'options-init.js'
+    'options-init.js',
+    'theme.css',
+    'theme-init.js',
+    'options.css',
+    'popup.css'
 )
 
 foreach ($file in $includeFiles) {

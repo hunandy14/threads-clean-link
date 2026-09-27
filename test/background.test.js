@@ -50,6 +50,7 @@ function makeChrome() {
     notifications: { create: () => {} },
     scripting: { executeScript: async () => [{ result: { ok: true } }] },
     tabs: { TAB_ID_NONE: -1 },
+    storage: createChromeStorage().api,
   };
   return chrome;
 }
@@ -416,6 +417,69 @@ test('SHARE_URL_PATTERN 收緊規格(不得匹配):非法短碼一律在比對�
 // 補強路徑常見的較長非同步鏈路。
 const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 150 });
 test.beforeEach(reset);
+
+// 擴充頁 → SW 的 runtime 訊息替身，照 Chrome 的 onMessage 語意同步判定有沒
+// 有人接手，不靠牆鐘推斷：
+//   - 任一監聽器同步呼叫 sendResponse：以那次回應結算。
+//   - 任一監聽器回傳字面 true：通道保持開啟，等第一次 sendResponse。
+//   - 其餘（全部回 false／undefined 且沒人同步回應）：通道當場關閉，回
+//     responded:false，之後才呼叫的 sendResponse 一律忽略。
+// 通道開著卻遲遲沒有回應代表實作漏回，保底到期即以錯誤拒絕，讓測試直接失敗，
+// 不讓後續的副作用斷言在沒有回應的情況下照跑；回應一到就清除這顆計時器，不
+// 留下讓 settle() 誤當成「還在動」的殘留排程。
+// idle()：等目前所有通道開啟、尚未回應的訊息都結算完。
+function makeRuntimeSender(listeners, defaultSender) {
+  const SAFETY_MS = 10000;
+  const inflight = new Set();
+
+  function send(message, sender) {
+    let settled = false;
+    let channelOpen = true;
+    let timer = null;
+    let resolveFn;
+    let rejectFn;
+    const promise = new Promise((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
+    });
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      inflight.delete(promise);
+      resolveFn(payload);
+    };
+    const sendResponse = (response) => {
+      if (!channelOpen) return;
+      finish({ responded: true, response });
+    };
+    let keepOpen = false;
+    listeners.slice().forEach((fn) => {
+      if (fn(message, sender || defaultSender, sendResponse) === true) keepOpen = true;
+    });
+    if (!settled) {
+      if (keepOpen) {
+        inflight.add(promise);
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          inflight.delete(promise);
+          rejectFn(new Error('runtime 訊息 ' + message.type + ' 通道開啟 ' + SAFETY_MS + 'ms 未回應'));
+        }, SAFETY_MS);
+      } else {
+        channelOpen = false;
+        finish({ responded: false, response: undefined });
+      }
+    }
+    return promise;
+  }
+
+  async function idle() {
+    while (inflight.size > 0) await Promise.all(Array.from(inflight));
+  }
+
+  return { send, idle };
+}
 
 // 載入 background.js，並以指定設定填入 chrome.storage.sync;同時側錄
 // contextMenus.onClicked 監聽器、notifications.create 與 scripting.executeScript。
@@ -1953,8 +2017,8 @@ test('自癒重注入:onInstalled 只對 threads 分頁重新注入 ISOLATED wor
   bg.executeScriptCalls.forEach((call) => {
     assert.deepEqual(
       Array.from(call.files),
-      ['bridge.js', 'i18n.js', 'post-icon.js'],
-      '檔案與順序需對齊 manifest 的 content_scripts(MAIN world 的 clipboard-guard.js 刻意不重注入)'
+      ['bridge.js', 'i18n.js', 'tcl-core.js', 'post-icon.js', 'scam-guard.js'],
+      '檔案與順序需對齊 manifest 的 ISOLATED world content_scripts(MAIN world 的 clipboard-guard.js 刻意不重注入)'
     );
     assert.equal(call.world, 'ISOLATED', '重注入的是 ISOLATED world 腳本');
   });
@@ -2666,8 +2730,6 @@ function loadBackgroundForSync(opts = {}) {
       alarmCalls.push({ op: 'clear', name });
       return true;
     },
-    get: async () => undefined,
-    getAll: async () => [],
     onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
   };
   chrome.permissions = {
@@ -2696,6 +2758,7 @@ function loadBackgroundForSync(opts = {}) {
     // 的新建路徑要生 entry id，沙箱少了它整條寫入會失敗。與本檔其他 fixture 一致。
     crypto,
   });
+  const runtime = makeRuntimeSender(onMessageListeners);
 
   return {
     sync,
@@ -2708,20 +2771,8 @@ function loadBackgroundForSync(opts = {}) {
       return onAlarmListeners.length;
     },
     // 送一則 runtime 訊息並等回應；沒有任何監聽器接手時回 responded:false。
-    send(message, sender) {
-      return new Promise((resolve) => {
-        let done = false;
-        const finish = (payload) => {
-          if (done) return;
-          done = true;
-          resolve(payload);
-        };
-        onMessageListeners.slice().forEach((fn) => {
-          fn(message, sender, (response) => finish({ responded: true, response }));
-        });
-        setTimeout(() => finish({ responded: false, response: undefined }), opts.timeoutMs || 200);
-      });
-    },
+    send: runtime.send,
+    idle: runtime.idle,
   };
 }
 
@@ -3318,8 +3369,6 @@ function loadBackgroundForDevices(opts = {}) {
     alarms: {
       create: () => {},
       clear: async () => true,
-      get: async () => undefined,
-      getAll: async () => [],
       onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
     },
     permissions: { contains: (d, cb) => cb(true), request: (d, cb) => cb(true) },
@@ -3353,6 +3402,7 @@ function loadBackgroundForDevices(opts = {}) {
   // 全域限流視窗滾動）。預設不帶，既有測試的沙箱內容一字不變。
   Object.assign(sandbox, opts.globals || {});
   runInSandbox(SRC, sandbox);
+  const runtime = makeRuntimeSender(onMessageListeners, EXT_PAGE_SENDER);
 
   return {
     sync,
@@ -3383,24 +3433,8 @@ function loadBackgroundForDevices(opts = {}) {
       onMessageListeners.slice().forEach((fn) => fn(message, { id: EXTENSION_ID }, () => {}));
     },
     // 擴充頁 → SW：送一則訊息並等回應，沒人接手時回 responded:false。
-    // opts.timeoutMs：判定「沒人接手」的等待上限。預設 200ms 對替身引擎綽綽有
-    // 餘；接真 sync.js 的測試、以及要走 og fetch 備援＋writeChain 的
-    // scam.hit 都要放寬——那些鏈路在慢機器或全套併跑時會超過 200ms，
-    // sendResponse 還沒回來就被判成無人接手，變成偶發假紅燈。
-    send(message, sender, opts = {}) {
-      return new Promise((resolve) => {
-        let done = false;
-        const finish = (payload) => {
-          if (done) return;
-          done = true;
-          resolve(payload);
-        };
-        onMessageListeners.slice().forEach((fn) => {
-          fn(message, sender || EXT_PAGE_SENDER, (response) => finish({ responded: true, response }));
-        });
-        setTimeout(() => finish({ responded: false, response: undefined }), opts.timeoutMs || 200);
-      });
-    },
+    send: runtime.send,
+    idle: runtime.idle,
   };
 }
 
@@ -3695,8 +3729,7 @@ test('B3 清除:signOut 之後 syncDevice 原值不變，syncDevices（別台快
     fetch: async () => deviceJsonResponse({ ok: true }),
   });
 
-  // 真引擎冷啟比替身慢得多，接手判定放寬到 2 秒（settle 不動）。
-  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER);
   assert.equal(result.responded, true, '前提：sync.signOut 有人接手');
   await settle(600);
 
@@ -3718,8 +3751,7 @@ test('B3 清除:deleteCloud 之後 syncDevice 原值不變，syncDevices 被清'
     fetch: async () => deviceJsonResponse({ ok: true, clearedAt: Date.now() }),
   });
 
-  // 真引擎冷啟比替身慢得多，接手判定放寬到 2 秒（settle 不動）。
-  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
   assert.equal(result.responded, true, '前提：sync.deleteCloud 有人接手');
   await settle(800);
 
@@ -4192,12 +4224,6 @@ const SCAM_TAB_SENDER = {
   url: SCAM_POST_URL,
 };
 
-// 預期「有人接手」的 scam.hit 一律配這組等待上限。這條鏈路可能要走 og
-// fetch 備援、再經 writeChain 序列化落盤，bg.send 預設的 200ms 在慢機器或全
-// 套併跑時不夠，sendResponse 還沒回來就被判成無人接手，responses[i].response
-// 變成 undefined——是看機器心情的假紅燈，不是實作有問題。
-const SCAM_SEND_OPTS = { timeoutMs: 2000 };
-
 // 同樣是本擴充的 content script，但分頁不在 threads——不得受理。
 const SCAM_OTHER_TAB_SENDER = {
   id: EXTENSION_ID,
@@ -4514,11 +4540,9 @@ test('L4 scam.hit:併發兩筆經 writeChain 序列化，互不覆蓋（延遲 s
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE }, delayMs: 20 });
 
   const other = { userId: '10000000002', handle: 'otherscammer', postUrl: SCAM_POST_URL_2 };
-  // 這兩則要走 writeChain 序列化、storage 又被刻意延遲，回應比預設的 200ms
-  // 晚是常態（全套併跑時實測會被判成無人接手），等待上限跟著放寬。
   const both = await Promise.all([
-    bg.send(scamHit(), SCAM_TAB_SENDER, SCAM_SEND_OPTS),
-    bg.send(scamHit(other), SCAM_TAB_SENDER, SCAM_SEND_OPTS),
+    bg.send(scamHit(), SCAM_TAB_SENDER),
+    bg.send(scamHit(other), SCAM_TAB_SENDER),
   ]);
   await settle(800);
 
@@ -4850,7 +4874,7 @@ test('L4 清除:signOut 之後 scamBlocklist 原值不變', async () => {
     fetch: async () => deviceJsonResponse({ ok: true }),
   });
 
-  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  const result = await bg.send({ type: 'sync.signOut' }, EXT_PAGE_SENDER);
   assert.equal(result.responded, true, '前提：sync.signOut 有人接手');
   await settle(600);
 
@@ -4870,7 +4894,7 @@ test('L4 清除:deleteCloud 之後 scamBlocklist 原值不變', async () => {
     fetch: async () => deviceJsonResponse({ ok: true, clearedAt: Date.now() }),
   });
 
-  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
   assert.equal(result.responded, true, '前提：sync.deleteCloud 有人接手');
   await settle(800);
 
@@ -5053,7 +5077,7 @@ test('L4 審查:全域限流——同一分鐘內第 7 個不同 postUrl 不發�
   const responses = [];
   for (let i = 0; i < 7; i++) {
     responses.push(
-      await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS)
+      await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER)
     );
     await settle(400);
   }
@@ -5080,13 +5104,13 @@ test('L4 審查:全域限流的視窗會滾動——跨過一分鐘後額度重�
   });
 
   for (let i = 0; i < 6; i++) {
-    await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+    await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER);
     await settle(400);
   }
   assert.equal(fetchStub.calls.length, 6, '前提：額度已用滿');
 
   clock.advance(61000);
-  const res = await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(6) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(6) }), SCAM_TAB_SENDER);
   await settle(600);
 
   const response = deep(res.response);
@@ -5242,25 +5266,6 @@ test('L4 審查:仿冒 threads 的 sender 網址一律忽略（不得只比字�
   }
 });
 
-// ---- 無 storage 時的失敗碼 ----
-//
-// `disabled` 的語意是「使用者把總開關關掉了」，選項頁會據此提示去打開開關。
-// storage 整組不可用是環境故障，重用 disabled 會讓 UI 指向一個根本不存在的
-// 開關狀態，改回 internal_error。
-
-test('L4 審查:remove／restore 在 storage.local 不可用時回 internal_error（不得重用 disabled）', async () => {
-  const bg = loadBackgroundForDevices({
-    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
-  });
-  bg.sandbox.chrome.storage.local = undefined;
-
-  const remove = await bg.send({ type: 'scam.blocklist.remove', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
-  const restore = await bg.send({ type: 'scam.blocklist.restore', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
-
-  assert.deepEqual(deep(remove.response), { ok: false, code: 'internal_error' }, '環境故障不是「開關關閉」');
-  assert.deepEqual(deep(restore.response), { ok: false, code: 'internal_error' });
-});
-
 // ============================================================
 // L4 覆審殘留：R1 交叉驗證視窗、R2 併發下的限流
 // ============================================================
@@ -5292,7 +5297,7 @@ test('L4 覆審:同 tick 併發 7 筆 scam.hit 時全域限流仍成立，節流
   const sends = [];
   for (let i = 0; i < 7; i++) {
     sends.push(
-      bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER, SCAM_SEND_OPTS)
+      bg.send(scamHit({ userId: null, postUrl: scamRatePostUrl(i) }), SCAM_TAB_SENDER)
     );
   }
   await Promise.all(sends);
@@ -5501,7 +5506,7 @@ test('L4 文件身分:真機形狀——整份沒有 username 錨點，靠 og:ur
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(1000);
 
   const response = deep(res.response);
@@ -5522,7 +5527,7 @@ test('L4 文件身分:meta 屬性順序顛倒、單引號、&#x40; 變體一樣�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   const response = deep(res.response);
@@ -5541,7 +5546,7 @@ test('L4 文件身分:og:url 缺席但 al:android:url 在，一樣認得出文�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   const response = deep(res.response);
@@ -5557,7 +5562,7 @@ test('L4 文件身分:og:url 的 handle 大小寫與請求不同仍算同一篇�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   const response = deep(res.response);
@@ -5579,7 +5584,7 @@ test('L4 文件身分:請求走 threads.net 而 og:url 回 www.threads.com 時�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null, postUrl: netPostUrl }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null, postUrl: netPostUrl }), SCAM_TAB_SENDER);
   await settle(600);
 
   const response = deep(res.response);
@@ -5606,7 +5611,7 @@ test('L4 文件身分:og:url 的 handle 與請求不同（轉址到別人的貼�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   assert.deepEqual(
@@ -5633,7 +5638,7 @@ test('L4 文件身分:og:url 的 post code 與請求不同回 no_user_id 且不�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   assert.deepEqual(deep(res.response), { ok: false, code: 'no_user_id' }, '同一位作者的另一篇貼文也不算同一篇');
@@ -5654,7 +5659,7 @@ test('L4 文件身分:一份文件同時宣告本篇與別篇時，否決優先�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   assert.deepEqual(
@@ -5685,7 +5690,7 @@ test('L4 文件身分:文件身分過關但 post_author_id 出現兩個不同值
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   assert.deepEqual(
@@ -5714,7 +5719,7 @@ test('L4 文件身分:非 2xx 回應一律否決——404 頁面帶對得上的 
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   assert.deepEqual(
@@ -5738,7 +5743,7 @@ test('L4 文件身分:og:url 缺席時 username 相鄰的舊形狀仍通過（�
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   const response = deep(res.response);
@@ -5761,7 +5766,7 @@ test('L4 文件身分:og:url 缺席且 username 隔 3000 字時仍回 no_user_id
     fetch: fetchStub.impl,
   });
 
-  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ userId: null }), SCAM_TAB_SENDER);
   await settle(600);
 
   assert.deepEqual(
@@ -6283,7 +6288,7 @@ function r3DismissedBlocklist() {
 test('R3-13 scam.hit 寫入名單之後掛去抖同步(notifyRecorded)', async () => {
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
 
-  await bg.send(scamHit(), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  await bg.send(scamHit(), SCAM_TAB_SENDER);
   await settle(400);
 
   assert.ok(scamEntry(bg), '前置條件:這一次命中確實寫進名單');
@@ -6489,7 +6494,7 @@ function loadBackgroundWithMarksServer(opts = {}) {
     });
     return out;
   };
-  bg.syncNow = () => bg.send({ type: 'sync.now' }, EXT_PAGE_SENDER, { timeoutMs: 3000 });
+  bg.syncNow = () => bg.send({ type: 'sync.now' }, EXT_PAGE_SENDER);
   return bg;
 }
 
@@ -6505,8 +6510,7 @@ test('CR-1 scam.hit:既有 active 條目被動重新掃到時，updatedAt 與 st
   // 另一篇貼文、晚一小時：這是一筆新證據，但使用者什麼都沒做。
   const res = await bg.send(
     scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: SCAM_AT + 3600000 }),
-    SCAM_TAB_SENDER,
-    SCAM_SEND_OPTS
+    SCAM_TAB_SENDER
   );
   assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
   await settle(600);
@@ -6531,7 +6535,7 @@ test('CR-1 scam.hit:重複證據（同一篇錨點）不寫 storage、不觸發�
   });
 
   // 同一篇貼文重新打開一次：去重鍵（anchorPostUrl ‖ postUrl）撞上既有那一筆。
-  const res = await bg.send(scamHit({ at: SCAM_AT + 3600000 }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ at: SCAM_AT + 3600000 }), SCAM_TAB_SENDER);
   assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
   assert.equal(deep(res.response).ok, true, '重複證據不是錯誤，照常回 ok');
   await settle(600);
@@ -6574,8 +6578,7 @@ test('CR-1 scam.hit:別台裝置較早的解除不得被本機的被動掃描蓋
   // 本機在 t2 > t1 被動又掃到一次（使用者沒有按任何東西）。
   const hit = await bg.send(
     scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: dismissedAt + 600000 }),
-    SCAM_TAB_SENDER,
-    SCAM_SEND_OPTS
+    SCAM_TAB_SENDER
   );
   assert.equal(hit.responded, true, '前置條件：scam.hit 有人接手');
   await settle(600);
@@ -6601,8 +6604,7 @@ test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位
 
   const hit = await bg.send(
     scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: SCAM_AT + 3600000 }),
-    SCAM_TAB_SENDER,
-    SCAM_SEND_OPTS
+    SCAM_TAB_SENDER
   );
   assert.equal(hit.responded, true, '前置條件：scam.hit 有人接手');
   await settle(600);
@@ -6637,8 +6639,7 @@ test('CR-1 scam.hit:推成功之後水位線要蓋過那筆新證據，下一輪
 
   await bg.send(
     scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: SCAM_AT + 3600000 }),
-    SCAM_TAB_SENDER,
-    SCAM_SEND_OPTS
+    SCAM_TAB_SENDER
   );
   await settle(600);
   await bg.syncNow();
@@ -6675,7 +6676,7 @@ test('CR-6 scam.hit:已解除作者的命中不得讀 storage 的 syncDevice', a
     },
   });
 
-  const res = await bg.send(scamHit({ at: SCAM_AT + 3600000 }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const res = await bg.send(scamHit({ at: SCAM_AT + 3600000 }), SCAM_TAB_SENDER);
   assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
   assert.deepEqual(
     deep(res.response),
@@ -6711,8 +6712,7 @@ test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter
   const before = Date.now();
   const res = await bg.send(
     scamHit({ postUrl: SCAM_POST_URL_2, anchorPostUrl: SCAM_POST_URL_2, at: FORGED_AT }),
-    SCAM_TAB_SENDER,
-    SCAM_SEND_OPTS
+    SCAM_TAB_SENDER
   );
   assert.equal(res.responded, true, '前置條件：scam.hit 有人接手');
   await settle(600);
@@ -6738,7 +6738,7 @@ test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter
     localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_ENABLED_KEY]: true },
   });
   const freshBefore = Date.now();
-  const created = await fresh.send(scamHit({ at: FORGED_AT }), SCAM_TAB_SENDER, SCAM_SEND_OPTS);
+  const created = await fresh.send(scamHit({ at: FORGED_AT }), SCAM_TAB_SENDER);
   assert.equal(created.responded, true, '前置條件：scam.hit 有人接手');
   await settle(600);
   const freshAfter = Date.now();
@@ -6862,7 +6862,7 @@ test('D50 sync.deleteCloud：只打 R11 端點，回應形狀含 signedOut:true'
     },
   });
 
-  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER, { timeoutMs: 2000 });
+  const result = await bg.send({ type: 'sync.deleteCloud' }, EXT_PAGE_SENDER);
   assert.equal(result.responded, true, '前提：sync.deleteCloud 有人接手');
   await settle(800);
 

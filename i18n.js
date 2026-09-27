@@ -194,11 +194,18 @@
       // 碼對使用者沒有意義;設定錯誤重試無用，要讓他報得出這串碼。
       opAccountSignInFailed: '登入失敗，請稍後再試',
       opAccountSignInConfigError: '登入設定有誤，請回報錯誤碼：{code}',
+      // 同步錯誤依類別(TCLCore.errorCategoryOf)顯示的文案，帳號選單錯誤列與
+      // toast 共用。server 類帶出原始碼方便回報;auth 類沿用 opAccountExpired，
+      // 未分類的碼沿用 opAccountErrorPrefix + 錯誤碼。
+      opSyncErrQuota: '儲存空間已滿，同步暫停',
+      opSyncErrRateLimit: '同步太頻繁，稍後會自動重試',
+      opSyncErrNetwork: '無法連線到同步伺服器，稍後會自動重試',
+      opSyncErrServer: '同步伺服器發生錯誤，稍後會自動重試（{code}）',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
       opDeviceNoteSynced: '已連線至你的 Google 帳號',
       // 刪除雲端資料送出當下的進行中提示;最終依 sync.deleteCloud 回應
-      // { ok, signedOut, code } 定案，回應缺席才退回廣播判讀(錯誤沿用
-      // opAccountErrorPrefix + 錯誤碼，不另造重複鍵)。
+      // { ok, signedOut, code } 定案，回應缺席才退回廣播判讀(錯誤依類別取
+      // 上方 opSyncErr* 等同步錯誤文案，不另造重複鍵)。
       opToastCloudDeleted: '正在刪除雲端資料…',
       // 刪雲端成功並已登出的定案提示(D51)。
       opToastCloudDeletedSignedOut: '雲端資料已刪除，已登出',
@@ -264,37 +271,11 @@
       // ---- 選項頁:警示名單卡(警示名單分頁) ----
       opScamListTitle: '警示名單',
       opScamListCount: '{n} 位作者',
-      // 保留鍵:同一個日期的舊文案。
-      opScamAddedOn: '加入於 {d}',
-      // 保留鍵:貼文發布日期。標題列原本另外畫一段「貼文 YYYY-MM-DD」，但主
-      // 卡只放最新一筆證據，證據列上已經有同一個日期連結，兩者重複，改版後
-      // 只留證據列那一個(它只畫純日期，不套這句文案)。
-      opScamPostedAt: '貼文 {date}',
-      // 保留鍵:最近命中日期。改版後卡片只顯示貼文發布日期，這句已無人使
-      // 用，留著以免日後又要重新定稿一次文案。
-      opScamLastHit: '最近命中 {date}',
       // 標題列最右的 pill:這位作者留下幾筆證據。兩筆以上時可點，開證據對話
       // 框;對話框標題為「顯示名 @handle · 命中 N 篇」。
       opScamHitCount: '命中 {n} 篇',
-      // 保留鍵:證據區小標。改版後證據區只放最新一筆，小標佔一行卻不帶資
-      // 訊，已從版面拿掉。
-      opScamEvidence: '證據',
       // 證據日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去哪)。
       opScamEvidencePost: '證據貼文 ↗',
-      // 保留鍵:回串頭的連結。證據貼文連的就是錨點那一篇，回串頭是 Threads
-      // 自己的事，卡上多一條連結只是把兩個去處擺在一起讓人猶豫;threadUrl
-      // 照存不動，只是不畫。
-      opScamEvidenceThread: '整串 ↗',
-      // 保留鍵:同文異篇合併的篇數標示。改版後證據逐筆呈現不再合併。
-      opScamSameText: '出現在 {n} 篇',
-      // 保留鍵:訊號 chip(對應 detectScamPitch 的 signals 白名單)。那是判定
-      // 的內部分類，使用者看片段本身就知道為什麼被標記，已從版面拿掉;
-      // signals 照存不動，除錯與日後調參仍用得到。
-      opScamSignalLink: '連結',
-      opScamSignalLine: 'LINE',
-      opScamSignalGroup: '群組',
-      opScamSignalJoin: '加入',
-      opScamSignalPitch: '話術',
       opScamRemove: '解除',
       opScamRemoveTitle: '解除「{name}」的警示？',
       // 講清楚解除是永久的:該作者進 allowlist，日後再命中也不會自動加回。
@@ -465,11 +446,16 @@
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opAccountSignInFailed: 'Sign-in failed, please try again later',
       opAccountSignInConfigError: 'Sign-in is misconfigured. Please report this code: {code}',
+      opSyncErrQuota: 'Storage is full. Sync is paused.',
+      opSyncErrRateLimit: 'Syncing too often. Will retry automatically.',
+      opSyncErrNetwork: "Can't reach the sync server. Will retry automatically.",
+      opSyncErrServer: 'The sync server hit an error. Will retry automatically ({code}).',
       opDeviceNoteSynced: 'Connected to your Google account',
       // In-progress toast shown when delete-cloud is sent; the final toast is
       // decided by the sync.deleteCloud reply { ok, signedOut, code }, and
       // only falls back to reading the broadcast when the reply is missing
-      // (errors reuse opAccountErrorPrefix + code — no separate key).
+      // (errors pick the per-category sync error text such as opSyncErr* —
+      // no separate key).
       opToastCloudDeleted: 'Deleting cloud data…',
       opToastCloudDeletedSignedOut: 'Cloud data deleted. Signed out.',
 
@@ -516,20 +502,9 @@
       opScamListTitle: 'Warning list',
       // 人數是 1 的機率很高(第一次命中只有一位)，用不吃單複數的寫法。
       opScamListCount: '{n} author(s)',
-      opScamAddedOn: 'Added {d}',
-      opScamPostedAt: 'Posted {date}',
-      opScamLastHit: 'Last hit {date}',
       // 篇數是 1 的機率很高，用不吃單複數的寫法(比照 opScamListCount)。
       opScamHitCount: '{n} hits',
-      opScamEvidence: 'Evidence',
       opScamEvidencePost: 'Evidence post ↗',
-      opScamEvidenceThread: 'Full thread ↗',
-      opScamSameText: 'Seen in {n} posts',
-      opScamSignalLink: 'Link',
-      opScamSignalLine: 'LINE',
-      opScamSignalGroup: 'Group',
-      opScamSignalJoin: 'Join',
-      opScamSignalPitch: 'Pitch',
       opScamRemove: 'Remove',
       opScamRemoveTitle: 'Remove “{name}” from the warning list?',
       opScamRemoveDesc:

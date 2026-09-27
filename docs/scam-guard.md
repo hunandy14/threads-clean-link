@@ -11,7 +11,7 @@
 | 資料落點 | 警示名單與證據一律寫 `chrome.storage.local`，備援請求的節流表寫 `chrome.storage.session`（瀏覽器關閉即清）。名單**預設只存在這台裝置**；使用者登入雲端同步且總開關開啟時，才隨帳號同步到開發者自營後端（**貼文文字片段與當時開的頁面網址不上傳**，見 `docs/cloud-sync.md` D35–D40）。節流表、匯出／匯入檔一律不含名單，也不做社群回報或跨使用者共享 |
 | 觸發時機 | 只有使用者自己開啟某篇貼文的**詳情頁**才掃描該頁；不遍歷河道全文、不枚舉串文、不背景輪詢、不預先抓取 |
 | 掃描對象 | 該頁已經送到瀏覽器的內容（伺服器預載資料與頁面 DOM），不另外向 Threads 索取串文內容 |
-| 權限 | 沿用既有的 threads.com／threads.net content script 與 `storage` 權限，`manifest.json` 的**權限陣列零變更**；manifest 另新增 `minimum_chrome_version: "103"`（備援請求用的 `AbortSignal.timeout()` 自 Chrome 103 起才有）與 `tcl-core.js`、`scam-guard.js` 兩支 ISOLATED content script 新檔 |
+| 權限 | 沿用既有的 threads.com／threads.net content script 與 `storage` 權限，`manifest.json` 的**權限陣列零變更**；manifest 宣告 `minimum_chrome_version: "123"`（語法基準 ES2024；備援請求用的 `AbortSignal.timeout()` 自 Chrome 103 起即有，已涵蓋在內），並登記 `tcl-core.js`、`scam-guard.js` 兩支 ISOLATED content script |
 | 總開關 | 選項頁設定卡「LINE 群組引導警示」，**預設開啟**；關閉後不掃描、不標記、不寫入，也不發出任何請求 |
 | 判定位置 | 全部在本機完成，不呼叫任何伺服器做判斷，不含遠端程式碼、不含遠端規則更新 |
 
@@ -129,7 +129,7 @@
 
 1. **帳號型錨點的帳號段**（`賴：xxx`、`LINE ID：xxx`）——寫得最明確。
 2. **LINE／賴提及本體結尾起 24 字內（`SCAM_LIMITS.ID_WINDOW`，審查修訂後由 80 收緊為 24）的「ID／帳號／號碼＋冒號＋帳號段」**。視窗自提及本體的**結尾**起算，不是整段文字起算：24 字約是一句話的長度，再遠就不是同一句在講的事，超出視窗的 ID 欄位視為與這次的 LINE 提及無關。視窗限制**以樣式的匹配起點把關**（`labelled.index < ID_WINDOW`），不是靠切片邊界：實際切片會放寬到 `ID_WINDOW + LINE_ID_MAX + 8` 字再跑正則，因為切片剛好切在視窗邊界時，落在邊界上的 ID 欄位會被攔腰截斷，樣式在半截字串上照樣匹配得出一個短帳號——抓回半截帳號比抓不到更糟，它會用一個錯的鍵進跨帳號索引。
-   「ID／帳號／號碼」這三個標籤自己不挑歸屬，前面掛什麼詞就是誰的 ID——樣式前另加一道負向 lookbehind 黑名單，擋下**訂單／會員／銀行／手機／員工／編號／訂位／取件／付款／Apple／Pay／Google／Meta**這些有自己歸屬的 ID 欄位（容 0–2 個空白，「訂單 ID：」「訂單　ID：」都擋得下）：`LINE Pay ID：abc123` 因此不會被這一步當成 LINE 帳號（`Pay` 在黑名單裡），與 2.4 帳號型錨點繫詞封閉清單擋下同一句話是兩道獨立的防線。
+   「ID／帳號／號碼」這三個標籤自己不挑歸屬，前面掛什麼詞就是誰的 ID——`idLabelled` 命中後，取命中起點前 16 字（`SCAM_ID_LABEL_LOOKBACK`）交給排除詞樣式 `idLabelExclude` 判斷，吻合就跳過這個命中、從下一個位置續找，擋下**訂單／會員／銀行／手機／員工／編號／訂位／取件／付款／Order／Invoice／Ticket／Member／Customer／Case／Serial／Apple／Pay／Google／Meta**這些有自己歸屬的 ID 欄位（英文不分大小寫，容 0–2 個空白，「訂單 ID：」「訂單　ID：」「Order ID:」都擋得下）：`LINE Pay ID：abc123` 因此不會被這一步當成 LINE 帳號（`Pay` 在排除詞清單裡），與 2.4 帳號型錨點繫詞封閉清單擋下同一句話是兩道獨立的防線。
 3. **加好友深連結的路徑段**——只認 `ti/p` 與 `lin.ee`；`ti/g` 的路徑段是群組邀請 token，不是個人帳號，取了只會用一串誰都對不上的鍵把無關的人拖進 `lineIdIndex`。前導 `~`（深連結寫法）不算帳號本體。
 
 抓到的帳號段一律正規化：轉小寫、裁到 LINE ID 官方上限 20 字、剝掉尾端的 `.`／`_`／`-`（句讀不是帳號的一部分），剝完短於 3 字視為誤判，整段當作沒抓到。
@@ -162,7 +162,7 @@ DOM 取值只認**使用者看得到的貼文容器**：由河道以 SPA 進入�
 - 非 2xx 回應一律不採信——錯誤頁的內容不是貼文本身，不得拿來背書任何 id。
 - 同一篇貼文 24 小時內只發一次，另有每分鐘的全域上限；節流表本身也有筆數上限與過期淘汰。
 - 總開關關閉時**一律不發**。
-- 請求以 `AbortSignal.timeout()` 設逾時，不讓挂住的連線一直佔著節流名額；這支 API 自 Chrome 103 起才有，manifest 的 `minimum_chrome_version: "103"` 就是由它而來。
+- 請求以 `AbortSignal.timeout()` 設逾時，不讓挂住的連線一直佔著節流名額；這支 API 自 Chrome 103 起才有，涵蓋在 manifest 的 `minimum_chrome_version: "123"` 之內。
 - 取不到 id（請求失敗、交叉驗證不過、逾時）時，頁面上仍掛標記，但**不寫入警示名單**——沒有穩定主鍵的條目會破壞名單語意。
 
 處理輸入時的防呆上限：身分標籤（`og:url`／`al:android:url`）只掃回應的前 64 KB——meta 標籤在 `<head>` 裡，離文件開頭很近，再往後掃只是對整份頁面跑無界正則；作者識別碼則掃前 1 MB（登出態的回應實測約 581 KB，作者 id 落在文件中後段，上限太低會把它整段切在範圍外；仍保留天花板，不對超大回應做無界正則掃描）。預載資料的走訪另有深度與節點上限——頁面餵進來的是任意 JSON，沒有上限時畸形或刻意加深的結構會把主執行緒卡住。
@@ -217,10 +217,10 @@ v4（D46）另外派生一張 `lineIdIndex`（`{ lineId → userId }`），與 `
 
 | 上限 | 值 | 說明 |
 |---|---|---|
-| 名單筆數 | 5,000 位作者 | 依 `updatedAt` 降冪保留，最舊的先淘汰（**v2 起不看 `addedAt`**：解除、復原與證據補寫都會推進 `updatedAt`，用它淘汰才會留下使用者最近真的碰過的條目）。`state: 'active'` 與 `state: 'dismissed'` **共用同一個 5,000 名額**，不分開計數——v1 的 `MAX_ALLOWLIST` 廢止（常數保留，不再作為獨立天花板） |
+| 名單筆數 | 5,000 位作者 | 依 `updatedAt` 降冪保留，最舊的先淘汰（**v2 起不看 `addedAt`**：解除、復原與證據補寫都會推進 `updatedAt`，用它淘汰才會留下使用者最近真的碰過的條目）。`state: 'active'` 與 `state: 'dismissed'` **共用同一個 5,000 名額**，不分開計數——v1 的 `MAX_ALLOWLIST` 廢止 |
 | 每位作者的證據 | 3 筆 | 依時間降冪保留最新的；同一篇**錨點貼文**不重複記（去重鍵 `anchorPostUrl ‖ postUrl`）——同一串被從不同篇重新打開時 `postUrl` 是不同的一頁，錨點篇卻是同一篇，綁 `postUrl` 會讓同一次招攬吃掉三筆額度 |
 | 證據片段 | 120 字 | 儲存與顯示同一道天花板 |
-| 整包軟預算 | 2 MB | 以序列化後的 UTF-8 **位元組**計，超出即續裁最舊的條目。分母是 `chrome.storage.local` 的配額：Chrome 114 起為 10 MB，2 MB 約佔兩成；更早的版本為 5 MB，此時約佔四成。manifest 的下限 Chrome 103 落在 5 MB 配額的那幾版，四成仍在安全水位。證據放滿時實際可容約 900–1,600 位作者（證據補上錨點貼文／串頭連結、錨點本體、訊號與貼文發布時間後，每筆條目約增 45%），筆數上限先到或預算先到都會觸發淘汰。`state: 'dismissed'` 的條目**一併計入**這 2 MB 預算——它們與 active 條目存在同一個物件裡，不算進來就會低估實際佔用 |
+| 整包軟預算 | 2 MB | 以序列化後的 UTF-8 **位元組**計，超出即續裁最舊的條目。分母是 `chrome.storage.local` 的配額：Chrome 114 起為 10 MB，manifest 的下限 Chrome 123 一律適用，2 MB 約佔兩成。證據放滿時實際可容約 900–1,600 位作者（證據補上錨點貼文／串頭連結、錨點本體、訊號與貼文發布時間後，每筆條目約增 45%），筆數上限先到或預算先到都會觸發淘汰。`state: 'dismissed'` 的條目**一併計入**這 2 MB 預算——它們與 active 條目存在同一個物件裡，不算進來就會低估實際佔用 |
 
 正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛兩份唯讀派生視圖，讓既有讀者不必同時改寫：一份是由 `state === 'dismissed'` 的條目**派生的 `allowlist`**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`）；另一份是 v4（D46）新增的 **`lineIdIndex`**（`{ lineId → userId }`，只含 `state === 'active'` 的條目，由每筆條目證據上的 `lineId` 逐格派生，鍵一律小寫），與 `allowlist` 同款掛成普通可列舉鍵。這兩份視圖都是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它們拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，`lineIdIndex` 尤其不能落盤，下一輪讀回會把它當成未知欄位剝除、白算一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時**補 0**（不拿 `updatedAt` 充當——那是「最後一次動過」，不是「什麼時候解除的」，用它充當會讓一筆來歷不明的解除混進最近解除的那幾筆裡）：解除時間不明的條目寫 0，在「已解除」小節依時間降冪時自然排到最後；`addedAt`／`updatedAt` 只要有一個合法就以合法的那個補另一個缺失的欄位（例如 `updatedAt` 非有限數字時以 `addedAt` 補，反之亦然），兩者都不合法才丟棄整筆（R3-14）。`pushAfter` 是本機專有欄位，只放行有限數字、形狀不合就不落鍵；它參與整包的位元組預算，但 `toScamMark` 不送、`fromScamMark` 不讀回，跨裝置合併時保留本機那一邊的值（見 `docs/cloud-sync.md` §3.1 CR-1）。
 

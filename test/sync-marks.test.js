@@ -89,7 +89,7 @@ function createSyncStorage(localSeed = {}, sessionSeed = {}) {
   let seq = 0;
 
   function later(fn) {
-    setTimeout(fn, 0);
+    setImmediate(fn);
   }
 
   function makeArea(name, seed) {
@@ -398,10 +398,10 @@ function makeEnv(opts = {}) {
   };
 }
 
-/** 讓所有 setTimeout(0) 排程的 storage 結算跑完。 */
+/** 讓所有 setImmediate 排程的 storage 結算跑完。 */
 async function settle(rounds = 24) {
   for (let i = 0; i < rounds; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setImmediate(resolve));
   }
 }
 

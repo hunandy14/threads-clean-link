@@ -12,6 +12,9 @@ document.addEventListener('DOMContentLoaded', function () {
     syncStorage: chrome.storage.sync,
     localStorage: chrome.storage.local,
     i18n: TCLI18N,
+    // 主題鏡像:邏輯層讀到 sync 的 themePref 後回寫 localStorage，供
+    // head 裡的 theme-init.js 下次開頁同步套用(見 theme-init.js)。
+    themeMirror: TCLTheme.remember,
     // 分頁路由(總覽／貼文／標記)要讀寫 location.hash 並聽 hashchange;
     // options.js 不碰全域，兩者由這裡注入。
     window: window,

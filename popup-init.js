@@ -13,6 +13,9 @@ document.addEventListener('DOMContentLoaded', function () {
     document: document,
     storage: chrome.storage.sync,
     i18n: typeof TCLI18N !== 'undefined' ? TCLI18N : null,
+    // 主題鏡像:邏輯層讀到 sync 的 themePref 後回寫 localStorage，供
+    // head 裡的 theme-init.js 下次開頁同步套用(見 theme-init.js)。
+    themeMirror: TCLTheme.remember,
     openOptionsPage:
       typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.openOptionsPage
         ? function () {

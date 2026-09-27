@@ -1,0 +1,15 @@
+# 文字檔一律以 LF 存入 repo 並以 LF 簽出，跨平台行尾一致。
+* text=auto eol=lf
+
+# 二進位檔：不做行尾轉換、不做文字 diff。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.crx binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
