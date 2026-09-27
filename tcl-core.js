@@ -1564,9 +1564,8 @@
   }
 
   // 由 entries 重建三張派生表。handleIndex 只含 active:解除過的作者不該再
-  // 佔住反查鍵，河道也就不再替他標記。allowlist 是 dismissed 條目的唯讀視
-  // 圖，沿用 v1 的 { at, handle } 形狀讓既有讀者(content script 的解除比
-  // 對、選項頁的「已解除」小節)零改動;它只活在記憶體，不跟著落盤。
+  // 佔住反查鍵，河道也就不再替他標記。allowlist 是 dismissed 條目的派生視
+  // 圖({ at, handle })，產品端目前無讀者，只活在記憶體、不落盤。
   // lineIdIndex 是 { lineId → userId } 的反查表，與 handleIndex 同樣只含
   // active:使用者解除過的作者不該再靠一個 ID 把別人也拖下水。它與 allowlist
   // 同款，只活在記憶體、不跟著落盤(capScamBlocklist 落盤只挑三把鍵)。

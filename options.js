@@ -2336,11 +2336,11 @@
     // displayName 與證據片段都是他人貼文帶進來的字串:整張卡逐一
     // createElement ＋ textContent，不走 innerHTML。
 
-    // storage 讀回的黑名單:entries、handleIndex 與 allowlist 三張表都直接取
-    // TCLCore.normalizeScamBlocklist 的結果(與 background 寫入側共用同一把
-    // 尺)。allowlist 的 handle 與 entries 的 handle 同樣是他人帳號帶進來的字
-    // 串，清洗尺度只能有一把——本頁若另讀一份，摺疊空白與截長的規則就會與
-    // core 漂移，髒 handle 一路畫到「已解除」小節上。
+    // storage 讀回的黑名單直接取 TCLCore.normalizeScamBlocklist 的結果(與
+    // background 寫入側共用同一把尺)。「已解除」小節從 entries 挑 dismissed
+    // 條目來畫，entries 的 handle 是他人帳號帶進來的字串，清洗尺度只能有一
+    // 把——本頁若另讀一份，摺疊空白與截長的規則就會與 core 漂移，髒 handle
+    // 一路畫到「已解除」小節上。
     function readScamBlocklist(raw) {
       return TCLCore.normalizeScamBlocklist(raw);
     }
