@@ -1760,7 +1760,10 @@
     }
 
     function verifySession() {
+      // 權杖只比世代(seq 為 null):verify 與同時起跑的一輪並行是常態，不互相作廢。
+      var token = { gen: accountGeneration, seq: null };
       return loadContext().then(function (ctx) {
+        ctx.runToken = token;
         if (!ctx.token) return undefined;
         // 節流:SW 每次喚醒都會叫這支，距上次驗證未滿門檻就跳過（見
         // VERIFY_THROTTLE_MS）。token 真的失效時，任何 /api/v1/* 的 401 走的是
@@ -1780,23 +1783,31 @@
           return call(ctx, 'GET', '/api/auth/get-session');
         })
         .then(function (payload) {
+          // 回應落地前帳號已轉場:這份結果屬於上一個帳號，整份放棄。
+          if (!isCurrent(ctx)) return undefined;
           // api-spec 2.2:session 已被撤銷時回的是 200 ＋ null，不是 401。
           // 把 null 當成「還登入著」會讓失效的 token 一直留在本機。
           if (!payload || !payload.session) return handleSessionExpired();
           var user = payload.user || {};
-          if (typeof user.id === 'string') ctx.state.userId = user.id;
-          if (typeof user.email === 'string') ctx.state.email = user.email;
-          // D15:驗 token 時用 get-session 回應更新一次。只在後端這次真的帶
-          // 了該欄位才覆寫，缺席就沿用既有值(id_token 只在登入當下拿得到，
-          // 這裡沒有第二個來源可退)。
-          if (typeof user.name === 'string') ctx.state.displayName = TCLCoreRef.sanitizeDisplayName(user.name);
-          if (typeof user.image === 'string') ctx.state.avatarUrl = TCLCoreRef.sanitizeAvatarUrl(user.image);
-          return saveState(ctx.state, ctx.legacyMarks).then(function () {
-            return broadcastState();
+          // 只合併身分四欄到落地前重讀的 syncState:get-session 往返期間同時
+          // 起跑的一輪可能已前進游標、完成舊版 marks 遷移，拿啟動當下的 ctx
+          // 整包寫回會讓游標倒退、把 legacy 兩格帶回來。
+          return loadContext().then(function (fresh) {
+            if (!isCurrent(ctx)) return undefined;
+            if (typeof user.id === 'string') fresh.state.userId = user.id;
+            if (typeof user.email === 'string') fresh.state.email = user.email;
+            // D15:驗 token 時用 get-session 回應更新一次。只在後端這次真的帶
+            // 了該欄位才覆寫，缺席就沿用既有值(id_token 只在登入當下拿得到，
+            // 這裡沒有第二個來源可退)。
+            if (typeof user.name === 'string') fresh.state.displayName = TCLCoreRef.sanitizeDisplayName(user.name);
+            if (typeof user.image === 'string') fresh.state.avatarUrl = TCLCoreRef.sanitizeAvatarUrl(user.image);
+            return saveState(fresh.state, fresh.legacyMarks).then(function () {
+              return broadcastState();
+            });
           });
         })
         .catch(function (err) {
-          if (err && err.code === 'session_expired') return handleSessionExpired();
+          if (err && err.code === 'session_expired' && isCurrent(ctx)) return handleSessionExpired();
           return undefined;
         });
     }
