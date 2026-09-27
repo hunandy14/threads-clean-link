@@ -710,6 +710,55 @@
       return node;
     }
 
+    // HTML 元素工廠:建立 tag，依 props 設定屬性與事件，再依序掛上 children。
+    // 規則(與測試的最小 DOM stub 相容，違反會出現假紅或假綠):
+    // - 值為 null/undefined 的 prop 略過;false 照樣賦值(disabled/hidden
+    //   需要明確的 false)。children 裡的 null/undefined/false 略過，供條件節點用。
+    // - 單一文字一律走 text prop(textContent)，不當字串 child 傳:stub 的
+    //   textContent getter 不彙總子節點。只有文字與元素混排才用字串 child。
+    //   text 先於 children 設定，因為對 textContent 賦值會清空既有子節點。
+    // - class → className;dataset → 併入 el.dataset;onXxx → addEventListener('xxx')，
+    //   stopPropagation 等語意寫在 handler 內。
+    // - aria-*、data-*、role、tabindex 走 setAttribute(測試以 getAttribute 讀);
+    //   其餘(type/title/href/target/rel/disabled/hidden/value)直接屬性賦值。
+    // - 不處理 SVG namespace，圖示一律用 svgUse/svgEl 產生後當 child 傳入。
+    function h(tag, props, ...children) {
+      var el = document.createElement(tag);
+      var p = props || {};
+      Object.keys(p).forEach(function (k) {
+        var v = p[k];
+        if (v == null) return;
+        if (k === 'class') el.className = v;
+        else if (k === 'text') el.textContent = v;
+        else if (k === 'dataset') Object.assign(el.dataset, v);
+        else if (k.slice(0, 2) === 'on') el.addEventListener(k.slice(2), v);
+        else if (/^(aria-|data-)/.test(k) || k === 'role' || k === 'tabindex') el.setAttribute(k, String(v));
+        else el[k] = v;
+      });
+      children.forEach(function (c) {
+        if (c == null || c === false) return;
+        el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+      });
+      return el;
+    }
+
+    // 純圖示按鈕:type=button，title 與 aria-label 同為 label，內含單一 svgUse 圖示。
+    // extra 可覆寫或補上任何 prop(例如 aria-label 需要附帶對象名稱時)。
+    function iconButton(cls, href, label, onclick, extra) {
+      var props = { type: 'button', class: cls, title: label, 'aria-label': label, onclick: onclick };
+      return h('button', Object.assign(props, extra), svgUse(href, 'icon'));
+    }
+
+    // 外開文字連結:一律新分頁;rel 預設 noopener noreferrer(證據連到的是詐騙招攬
+    // 貼文，不讓對方頁面拿到 window.opener 與來源)。title、ariaLabel 為空時不設。
+    function externalLink(cls, href, text, opts) {
+      var o = opts || {};
+      return h('a', {
+        class: cls, href: href, target: '_blank', rel: o.rel || 'noopener noreferrer', text: text,
+        title: o.title || null, 'aria-label': o.ariaLabel || null,
+      });
+    }
+
     // ---- toast ----
     var toastTimer = null;
     function toast(msg) {
@@ -796,10 +845,9 @@
         weekMeta.textContent = '';
         if (stats.weekPrev > 0) {
           var delta = Math.round(((stats.week - stats.weekPrev) / stats.weekPrev) * 100);
-          var deltaEl = document.createElement('span');
-          if (delta >= 0) deltaEl.className = 'delta-up';
-          deltaEl.textContent = (delta >= 0 ? '▲ ' : '▼ ') + Math.abs(delta) + '%';
-          weekMeta.appendChild(deltaEl);
+          var up = delta >= 0;
+          var deltaText = (up ? '▲ ' : '▼ ') + Math.abs(delta) + '%';
+          weekMeta.appendChild(h('span', { class: up ? 'delta-up' : null, text: deltaText }));
           weekMeta.appendChild(document.createTextNode(' ' + tt('opVsLastWeek')));
         }
       }
@@ -1853,10 +1901,7 @@
     // 已移除裝置在紀錄側的淡字標記:接在原名後面，不取代原名——移除的本意
     // 只是整理清單，不該讓舊紀錄的來源變成「未知裝置」。
     function removedTagNode() {
-      var tag = document.createElement('span');
-      tag.className = 'device-removed-tag';
-      tag.textContent = tt('opDeviceRemovedTag');
-      return tag;
+      return h('span', { class: 'device-removed-tag', text: tt('opDeviceRemovedTag') });
     }
     // 本機這台從未改過名時 syncDevice.name 缺席，預設名由 background 隨清單
     // 回應以頂層 defaultName 帶回(§12 增補)——UI 端算不出 OS，只能拿它。別台
@@ -1953,99 +1998,49 @@
     function buildDeviceRow(device) {
       var current = isCurrentDevice(device);
       var name = deviceDisplayName(device);
+      var rename = function () {
+        startDeviceRename(device.deviceId);
+      };
       var refs = {};
 
-      var row = document.createElement('div');
-      row.className = 'device-row';
-      row.dataset.id = device.deviceId;
-
-      var iconWrap = document.createElement('span');
-      iconWrap.className = 'device-platform-icon';
-      iconWrap.appendChild(svgUse(devicePlatformIcon(device.platform), 'icon'));
-      row.appendChild(iconWrap);
-
-      var textWrap = document.createElement('div');
-      textWrap.className = 'device-text';
-      var nameRow = document.createElement('div');
-      nameRow.className = 'device-name-row';
-      refs.nameRow = nameRow;
-
       // 名稱本身就是改名的入口(點名稱＝改名)，外觀維持純文字。
-      var nameBtn = document.createElement('button');
-      nameBtn.type = 'button';
-      nameBtn.className = 'device-name';
-      nameBtn.dataset.act = 'rename';
-      nameBtn.textContent = name;
-      nameBtn.addEventListener('click', function () {
-        startDeviceRename(device.deviceId);
+      refs.nameBtn = h('button', {
+        type: 'button', class: 'device-name', dataset: { act: 'rename' }, text: name, onclick: rename,
       });
-      nameRow.appendChild(nameBtn);
-      refs.nameBtn = nameBtn;
-
-      if (current) {
-        var pill = document.createElement('span');
-        pill.className = 'device-pill';
-        pill.textContent = tt('opDeviceThisDevice');
-        nameRow.appendChild(pill);
-        refs.pill = pill;
-      }
-      textWrap.appendChild(nameRow);
+      if (current) refs.pill = h('span', { class: 'device-pill', text: tt('opDeviceThisDevice') });
+      refs.nameRow = h('div', { class: 'device-name-row' }, refs.nameBtn, refs.pill);
 
       // 第二行:「新增於 <日期> · 最後同步 <相對時間>」(§10)。相對時間開框
       // 時算一次就好，不進 60 秒 ticker。
-      var sub = document.createElement('div');
-      sub.className = 'device-sub';
-      var addedEl = document.createElement('span');
-      addedEl.textContent = tf('opDeviceAddedOn', { d: formatDateOnly(device.createdAt) });
-      sub.appendChild(addedEl);
-      var sepEl = document.createElement('span');
-      sepEl.textContent = ' · ';
-      sub.appendChild(sepEl);
-      var lastEl = document.createElement('span');
-      lastEl.textContent = tf('opDeviceLastSync', { t: relTime(device.lastSeenAt) });
-      sub.appendChild(lastEl);
-      textWrap.appendChild(sub);
-      row.appendChild(textWrap);
+      var addedEl = h('span', { text: tf('opDeviceAddedOn', { d: formatDateOnly(device.createdAt) }) });
+      var lastEl = h('span', { text: tf('opDeviceLastSync', { t: relTime(device.lastSeenAt) }) });
+      var sub = h('div', { class: 'device-sub' }, addedEl, h('span', { text: ' · ' }), lastEl);
 
       // 右側兩顆 ghost 圖示鈕，浮現規則比照紀錄卡的 .entry-quick。
-      var actions = document.createElement('div');
-      actions.className = 'device-actions';
-      var renameBtn = document.createElement('button');
-      renameBtn.type = 'button';
-      renameBtn.className = 'device-quick-btn';
-      renameBtn.dataset.act = 'rename';
-      renameBtn.title = tt('opDeviceRename');
-      renameBtn.setAttribute('aria-label', tt('opDeviceRename') + ' ' + name);
-      renameBtn.appendChild(svgUse('#i-pencil', 'icon'));
-      renameBtn.addEventListener('click', function () {
-        startDeviceRename(device.deviceId);
+      var renameLabel = tt('opDeviceRename');
+      refs.renameBtn = iconButton('device-quick-btn', '#i-pencil', renameLabel, rename, {
+        dataset: { act: 'rename' },
+        'aria-label': renameLabel + ' ' + name,
       });
-      actions.appendChild(renameBtn);
-      refs.renameBtn = renameBtn;
-
       // 正在使用的這台不可移除:按鈕 disabled，說明同時掛在外層 span 的
       // title(停用的按鈕不觸發原生提示)。
       var trashTitle = current ? tt('opDeviceRemoveDisabled') : tt('opDeviceRemove');
-      var slot = document.createElement('span');
-      slot.className = 'device-action-slot';
-      slot.title = trashTitle;
-      var removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'device-quick-btn danger';
-      removeBtn.dataset.act = 'remove';
-      removeBtn.title = trashTitle;
-      removeBtn.setAttribute('aria-label', trashTitle);
-      removeBtn.disabled = current;
-      removeBtn.appendChild(svgUse('#i-circle-minus', 'icon'));
-      removeBtn.addEventListener('click', function () {
+      var remove = function () {
         requestDeviceRemove(device.deviceId);
+      };
+      var removeBtn = iconButton('device-quick-btn danger', '#i-circle-minus', trashTitle, remove, {
+        dataset: { act: 'remove' }, disabled: current,
       });
-      slot.appendChild(removeBtn);
-      actions.appendChild(slot);
-      row.appendChild(actions);
+      var slot = h('span', { class: 'device-action-slot', title: trashTitle }, removeBtn);
 
       deviceRowRefs[device.deviceId] = refs;
-      return row;
+      return h(
+        'div',
+        { class: 'device-row', dataset: { id: device.deviceId } },
+        h('span', { class: 'device-platform-icon' }, svgUse(devicePlatformIcon(device.platform), 'icon')),
+        h('div', { class: 'device-text' }, refs.nameRow, sub),
+        h('div', { class: 'device-actions' }, refs.renameBtn, slot)
+      );
     }
 
     // 空狀態的圖示/文案/按鈕由 JS 重建:#deviceEmptySyncBtn 是靜態節點，
@@ -2056,9 +2051,7 @@
       var syncBtn = byId('deviceEmptySyncBtn');
       emptyEl.textContent = '';
       emptyEl.appendChild(svgUse('#i-monitor-smartphone', 'icon'));
-      var textEl = document.createElement('span');
-      textEl.textContent = tt('opDeviceEmpty');
-      emptyEl.appendChild(textEl);
+      emptyEl.appendChild(h('span', { text: tt('opDeviceEmpty') }));
       if (syncBtn) emptyEl.appendChild(syncBtn);
     }
 
@@ -2121,11 +2114,10 @@
       var device = deviceById(deviceId);
       if (!refs || !device || refs.input) return;
 
-      var input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'device-name-input';
-      input.value = deviceDisplayName(device);
-      input.setAttribute('aria-label', tt('opDeviceNameAria'));
+      var input = h('input', {
+        type: 'text', class: 'device-name-input', value: deviceDisplayName(device),
+        'aria-label': tt('opDeviceNameAria'),
+      });
       refs.input = input;
       refs.nameBtn.hidden = true;
       if (refs.pill) refs.pill.hidden = true;
@@ -2293,16 +2285,10 @@
       // 清空後再掛回去。
       row.textContent = '';
 
-      var keyEl = document.createElement('span');
-      keyEl.className = 'detail-key';
-      keyEl.textContent = tt('opDevicesTitle');
-      row.appendChild(keyEl);
-      var valueEl = document.createElement('div');
-      valueEl.className = 'detail-value detail-device-value';
-      valueEl.appendChild(svgUse(devicePlatformIcon(device ? device.platform : null), 'icon'));
-      valueEl.appendChild(nameEl);
-      if (isRemovedDevice(device)) valueEl.appendChild(removedTagNode());
-      row.appendChild(valueEl);
+      var icon = svgUse(devicePlatformIcon(device ? device.platform : null), 'icon');
+      var removedTag = isRemovedDevice(device) && removedTagNode();
+      row.appendChild(h('span', { class: 'detail-key', text: tt('opDevicesTitle') }));
+      row.appendChild(h('div', { class: 'detail-value detail-device-value' }, icon, nameEl, removedTag));
       row.hidden = false;
     }
 
@@ -2434,21 +2420,6 @@
       return postId === null ? '' : postId.slice(-6);
     }
 
-    // 外開連結的共用組法:一律新分頁 ＋ noopener noreferrer(證據連到的是詐騙
-    // 招攬貼文，不讓對方頁面拿到 window.opener 與來源)。
-    function buildScamExternalLink(cls, href, text, opts) {
-      var o = opts || {};
-      var link = document.createElement('a');
-      link.className = cls;
-      link.href = href;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.textContent = text;
-      if (o.title) link.title = o.title;
-      if (o.ariaLabel) link.setAttribute('aria-label', o.ariaLabel);
-      return link;
-    }
-
     // 證據上的時間文字，格式照 Threads 自己的貼文時間:一週內是極短的相對
     // 時間(「剛剛」「38分鐘」「3小時」「5天」——數字與單位之間不留空白、也
     // 不帶「前」字)，滿七天改絕對日期。
@@ -2475,24 +2446,13 @@
     function buildScamNameLink(entry) {
       var displayName = nonEmptyString(entry.displayName);
       var authorUrl = scamAuthorUrl(entry.handle);
-      var nameLink = document.createElement(authorUrl === null ? 'span' : 'a');
-      nameLink.className = 'scam-name-link';
-      if (authorUrl !== null) {
-        nameLink.href = authorUrl;
-        nameLink.target = '_blank';
-        nameLink.rel = 'noopener noreferrer';
-      }
-      if (displayName !== null) {
-        var nameEl = document.createElement('span');
-        nameEl.className = 'scam-name';
-        nameEl.textContent = displayName;
-        nameLink.appendChild(nameEl);
-      }
-      var handleEl = document.createElement('span');
-      handleEl.className = displayName === null ? 'scam-name' : 'scam-handle';
-      handleEl.textContent = scamHandleLabel(entry.handle);
-      nameLink.appendChild(handleEl);
-      return nameLink;
+      var nameEl = displayName !== null && h('span', { class: 'scam-name', text: displayName });
+      var handleEl = h('span', {
+        class: displayName === null ? 'scam-name' : 'scam-handle', text: scamHandleLabel(entry.handle),
+      });
+      if (authorUrl === null) return h('span', { class: 'scam-name-link' }, nameEl, handleEl);
+      var linkProps = { class: 'scam-name-link', href: authorUrl, target: '_blank', rel: 'noopener noreferrer' };
+      return h('a', linkProps, nameEl, handleEl);
     }
 
     // 作者列:顯示名、@handle，緊接著那篇的時間——時間本身就是永久連結，比照
@@ -2500,40 +2460,25 @@
     // 在 title 上(相對時間看不出是哪一天，同文異篇也分不出各篇)。連結文字只
     // 有一個時間，讀屏讀不出它連去哪，另補 aria-label。
     function buildScamEvidenceHead(entry, evidence) {
-      var head = document.createElement('div');
-      head.className = 'scam-evidence-head';
-      head.appendChild(buildScamNameLink(entry));
-
       var at = scamEvidenceDateAt(evidence);
       var href = scamEvidencePostUrl(evidence);
       var code = scamEvidenceCode(href);
+      var dateNode = null;
       if (at !== null) {
         var absolute = formatDateOnly(at);
-        if (href === null) {
-          var dateEl = document.createElement('span');
-          dateEl.className = 'scam-evidence-date';
-          dateEl.textContent = formatScamDate(at);
-          dateEl.title = absolute;
-          head.appendChild(dateEl);
-        } else {
-          head.appendChild(
-            buildScamExternalLink('scam-evidence-date', href, formatScamDate(at), {
-              title: code === '' ? absolute : absolute + ' · ' + code,
-              ariaLabel:
-                code === '' ? tt('opScamEvidencePost') : tt('opScamEvidencePost') + ' ' + code,
-            })
-          );
-        }
+        var suffix = code === '' ? '' : ' ' + code;
+        dateNode =
+          href === null
+            ? h('span', { class: 'scam-evidence-date', text: formatScamDate(at), title: absolute })
+            : externalLink('scam-evidence-date', href, formatScamDate(at), {
+                title: code === '' ? absolute : absolute + ' · ' + code,
+                ariaLabel: tt('opScamEvidencePost') + suffix,
+              });
       }
-
       // 作者列尾端的標記 pill，文案與貼文上那顆完全相同(scamTagLabel):使用
       // 者在 Threads 上看到的是這顆，名單裡再看到同一顆才認得出是同一件事。
-      var tag = document.createElement('span');
-      tag.className = 'scam-post-tag';
-      tag.textContent = tt('scamTagLabel');
-      tag.title = tt('scamTagTooltip');
-      head.appendChild(tag);
-      return head;
+      var tag = h('span', { class: 'scam-post-tag', text: tt('scamTagLabel'), title: tt('scamTagTooltip') });
+      return h('div', { class: 'scam-evidence-head' }, buildScamNameLink(entry), dateNode, tag);
     }
 
     // 片段本體。完整呈現不截斷(儲存端已保證 ≤120 字)，anchorMatch 在片段裡
@@ -2545,30 +2490,17 @@
     // 兩種都算「沒有片段」，一律改掛 span.scam-evidence-missing 的灰字說
     // 明，不留一個空白的 <p>。
     function buildScamEvidenceText(evidence) {
-      var el = document.createElement('p');
-      el.className = 'scam-evidence-text';
+      var cls = 'scam-evidence-text';
       var snippet = typeof evidence.snippet === 'string' ? evidence.snippet : '';
       if (snippet === '') {
-        var missing = document.createElement('span');
-        missing.className = 'scam-evidence-missing';
-        missing.textContent = tt('opScamEvidenceMissing');
-        el.appendChild(missing);
-        return el;
+        return h('p', { class: cls }, h('span', { class: 'scam-evidence-missing', text: tt('opScamEvidenceMissing') }));
       }
       var anchor = nonEmptyString(evidence.anchorMatch);
       var at = anchor === null ? -1 : snippet.indexOf(anchor);
-      if (at === -1) {
-        el.textContent = snippet;
-        return el;
-      }
-      if (at > 0) el.appendChild(document.createTextNode(snippet.slice(0, at)));
-      var mark = document.createElement('mark');
-      mark.className = 'scam-anchor';
-      mark.textContent = anchor;
-      el.appendChild(mark);
+      if (at === -1) return h('p', { class: cls, text: snippet });
       var tail = snippet.slice(at + anchor.length);
-      if (tail !== '') el.appendChild(document.createTextNode(tail));
-      return el;
+      var mark = h('mark', { class: 'scam-anchor', text: anchor });
+      return h('p', { class: cls }, at > 0 && snippet.slice(0, at), mark, tail !== '' && tail);
     }
 
     // 一筆證據 ＝ 一則貼文的樣子，就兩列:作者列(名字、時間連結、標記 pill)
@@ -2583,11 +2515,8 @@
     // 主卡上的那一筆與「命中 N 篇」對話框裡的每一筆都走這支，兩邊的結構與
     // class 因此逐一相同——證據長什麼樣只有一個定義，改版時不會有一邊被漏掉。
     function buildScamPostItem(entry, evidence) {
-      var block = document.createElement('div');
-      block.className = 'scam-evidence-item';
-      block.appendChild(buildScamEvidenceHead(entry, evidence));
-      block.appendChild(buildScamEvidenceText(evidence));
-      return block;
+      var head = buildScamEvidenceHead(entry, evidence);
+      return h('div', { class: 'scam-evidence-item' }, head, buildScamEvidenceText(evidence));
     }
 
     // 條目的證據依 at 降冪(最新在前)。storage 的正規化不保證順序。
@@ -2671,18 +2600,12 @@
       listEl.textContent = '';
       SCAM_INFO_KEYS.forEach(function (key) {
         var text = tt(key);
-        var li = document.createElement('li');
         var at = text.indexOf('|');
-        if (at === -1) {
-          li.textContent = text;
-        } else {
-          var lead = document.createElement('span');
-          lead.className = 'scam-info-lead';
-          lead.textContent = text.slice(0, at);
-          li.appendChild(lead);
-          li.appendChild(document.createTextNode(' ' + text.slice(at + 1)));
-        }
-        listEl.appendChild(li);
+        listEl.appendChild(
+          at === -1
+            ? h('li', { text: text })
+            : h('li', null, h('span', { class: 'scam-info-lead', text: text.slice(0, at) }), ' ' + text.slice(at + 1))
+        );
       });
     }
 
@@ -2728,38 +2651,39 @@
     // 對話框共用，而篇數講的是整位作者，對話框裡逐筆重複一次毫無意義。
     function buildScamActions(item) {
       var entry = item.entry;
-      var actions = document.createElement('div');
-      actions.className = 'scam-actions menu-wrap';
+      var author = scamAuthorLabel(entry);
 
       // 兩筆以上才畫——只有一筆時對話框裡看到的就是卡上那一筆，一顆點了沒變
       // 化的按鈕只會讓人以為壞了。
-      if (entry.evidence.length > 1) {
-        var hitCount = document.createElement('button');
-        hitCount.type = 'button';
-        hitCount.className = 'scam-hit-count';
-        hitCount.setAttribute('aria-haspopup', 'dialog');
-        hitCount.textContent = tf('opScamHitCount', { n: entry.evidence.length });
-        hitCount.addEventListener('click', function () {
-          closeScamMenu();
-          openScamHits(entry, hitCount);
+      var n = entry.evidence.length;
+      var hitCount =
+        n > 1 &&
+        h('button', {
+          type: 'button', class: 'scam-hit-count', 'aria-haspopup': 'dialog', text: tf('opScamHitCount', { n: n }),
+          onclick: function () {
+            closeScamMenu();
+            openScamHits(entry, hitCount);
+          },
         });
-        actions.appendChild(hitCount);
-      }
 
-      var menu = document.createElement('div');
-      menu.className = 'menu scam-menu';
-      menu.setAttribute('role', 'menu');
-      menu.hidden = true;
+      var removeLabel = tt('opScamRemove');
+      var removeBtn = h(
+        'button',
+        {
+          type: 'button', class: 'menu-item danger', dataset: { act: 'remove' }, role: 'menuitem',
+          title: removeLabel, 'aria-label': removeLabel + ' ' + author,
+          onclick: function () {
+            closeScamMenu();
+            requestScamRemove(item.userId);
+          },
+        },
+        svgUse('#i-circle-minus', 'icon'),
+        h('span', { text: removeLabel })
+      );
+      var menu = h('div', { class: 'menu scam-menu', role: 'menu', hidden: true }, removeBtn);
 
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'scam-menu-btn';
-      btn.title = tt('opMoreTitle');
-      btn.setAttribute('aria-haspopup', 'menu');
-      btn.setAttribute('aria-expanded', 'false');
-      btn.setAttribute('aria-label', tt('opMoreTitle') + ' ' + scamAuthorLabel(entry));
-      btn.appendChild(svgUse('#i-more', 'icon'));
-      btn.addEventListener('click', function (ev) {
+      var moreLabel = tt('opMoreTitle');
+      var toggleMenu = function (ev) {
         if (ev && ev.stopPropagation) ev.stopPropagation();
         var opening = menu.hidden;
         closeScamMenu();
@@ -2767,101 +2691,52 @@
         menu.hidden = false;
         btn.setAttribute('aria-expanded', 'true');
         openScamMenu = { menu: menu, btn: btn };
+      };
+      var btn = iconButton('scam-menu-btn', '#i-more', moreLabel, toggleMenu, {
+        'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': moreLabel + ' ' + author,
       });
-      actions.appendChild(btn);
 
-      var removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'menu-item danger';
-      removeBtn.dataset.act = 'remove';
-      removeBtn.setAttribute('role', 'menuitem');
-      removeBtn.title = tt('opScamRemove');
-      removeBtn.setAttribute('aria-label', tt('opScamRemove') + ' ' + scamAuthorLabel(entry));
-      removeBtn.appendChild(svgUse('#i-circle-minus', 'icon'));
-      var removeText = document.createElement('span');
-      removeText.textContent = tt('opScamRemove');
-      removeBtn.appendChild(removeText);
-      removeBtn.addEventListener('click', function () {
-        closeScamMenu();
-        requestScamRemove(item.userId);
-      });
-      menu.appendChild(removeBtn);
-
-      actions.appendChild(menu);
-      return actions;
+      return h('div', { class: 'scam-actions menu-wrap' }, hitCount, btn, menu);
     }
 
     function buildScamRow(item) {
       var entry = item.entry;
       var evidence = sortedScamEvidence(entry);
       var latest = evidence.length > 0 ? evidence[0] : null;
-
-      var row = document.createElement('div');
-      row.className = 'scam-row';
-      row.dataset.id = item.userId;
-
-      var textWrap = document.createElement('div');
-      textWrap.className = 'scam-text';
-
       // 主卡就是最新那一筆證據的貼文樣子(作者列、本文、整串與訊號)，其餘證
       // 據在「命中 N 篇」對話框裡。證據一筆都沒有時仍要看得到是誰，退回只畫
       // 作者列。
-      var evidenceWrap = document.createElement('div');
-      evidenceWrap.className = 'scam-evidence';
-      if (latest) {
-        evidenceWrap.appendChild(buildScamPostItem(entry, latest));
-      } else {
-        var head = document.createElement('div');
-        head.className = 'scam-evidence-head';
-        head.appendChild(buildScamNameLink(entry));
-        evidenceWrap.appendChild(head);
-      }
-      textWrap.appendChild(evidenceWrap);
-      row.appendChild(textWrap);
-
-      row.appendChild(buildScamActions(item));
-      return row;
+      var evidenceNode = latest
+        ? buildScamPostItem(entry, latest)
+        : h('div', { class: 'scam-evidence-head' }, buildScamNameLink(entry));
+      return h(
+        'div',
+        { class: 'scam-row', dataset: { id: item.userId } },
+        h('div', { class: 'scam-text' }, h('div', { class: 'scam-evidence' }, evidenceNode)),
+        buildScamActions(item)
+      );
     }
 
     function buildScamAllowRow(item) {
-      var row = document.createElement('div');
-      row.className = 'scam-allow-row';
-      row.dataset.id = item.userId;
-
-      var info = document.createElement('span');
-      info.className = 'scam-allow-info';
-
-      var handleEl = document.createElement('span');
-      handleEl.className = 'scam-handle';
-      handleEl.textContent = scamHandleLabel(item.handle);
-      info.appendChild(handleEl);
-
       // 解除時間:格式與算式同證據列上的時間(formatScamDate)，一週內相對
       // 時間、滿七天改絕對日期;絕對日期另留在 title。dismissedAt 缺席時
       // TCLCore 補成 0(見 finiteOr)，0 代表「解除時間不明」而非真的發生在
       // 1970 年——formatScamDate(0) 會照樣算出一個滿七天前的絕對日期，誤
       // 導使用者以為那是真實的解除時間，不明時乾脆不畫這個節點(審查 F1)。
       var dismissedAt = finiteOrNull(item.at);
-      if (dismissedAt !== null && dismissedAt > 0) {
-        var dateEl = document.createElement('span');
-        dateEl.className = 'scam-allow-date';
-        dateEl.textContent = formatScamDate(dismissedAt);
-        dateEl.title = formatDateOnly(dismissedAt);
-        info.appendChild(dateEl);
-      }
-
-      row.appendChild(info);
-
-      var restoreBtn = document.createElement('button');
-      restoreBtn.type = 'button';
-      restoreBtn.className = 'link-btn';
-      restoreBtn.dataset.act = 'restore';
-      restoreBtn.textContent = tt('opScamRestore');
-      restoreBtn.addEventListener('click', function () {
-        submitScamRestore(item.userId);
+      var dateEl =
+        dismissedAt !== null &&
+        dismissedAt > 0 &&
+        h('span', { class: 'scam-allow-date', text: formatScamDate(dismissedAt), title: formatDateOnly(dismissedAt) });
+      var handleEl = h('span', { class: 'scam-handle', text: scamHandleLabel(item.handle) });
+      var info = h('span', { class: 'scam-allow-info' }, handleEl, dateEl);
+      var restoreBtn = h('button', {
+        type: 'button', class: 'link-btn', dataset: { act: 'restore' }, text: tt('opScamRestore'),
+        onclick: function () {
+          submitScamRestore(item.userId);
+        },
       });
-      row.appendChild(restoreBtn);
-      return row;
+      return h('div', { class: 'scam-allow-row', dataset: { id: item.userId } }, info, restoreBtn);
     }
 
     // 空狀態的圖示與文案由 JS 重建(容器每次重畫都清空)，比照 renderDeviceEmpty。
@@ -2870,9 +2745,7 @@
       if (!emptyEl) return;
       emptyEl.textContent = '';
       emptyEl.appendChild(svgUse('#i-shield-check', 'icon'));
-      var textEl = document.createElement('div');
-      textEl.textContent = tt('opScamEmpty');
-      emptyEl.appendChild(textEl);
+      emptyEl.appendChild(h('div', { text: tt('opScamEmpty') }));
     }
 
     function renderScamList() {
@@ -2910,10 +2783,7 @@
       sectionEl.hidden = rows.length === 0;
       if (rows.length === 0) return;
 
-      var titleEl = document.createElement('div');
-      titleEl.className = 'scam-allow-title';
-      titleEl.textContent = tt('opScamAllowlistTitle');
-      sectionEl.appendChild(titleEl);
+      sectionEl.appendChild(h('div', { class: 'scam-allow-title', text: tt('opScamAllowlistTitle') }));
       rows.forEach(function (item) {
         sectionEl.appendChild(buildScamAllowRow(item));
       });
@@ -2937,22 +2807,17 @@
       }
       bar.hidden = false;
 
-      var textEl = document.createElement('span');
-      textEl.textContent = tt('opScamDisabledBar');
-      bar.appendChild(textEl);
-
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'scam-enable-btn';
-      btn.dataset.act = 'enable';
-      btn.textContent = tt('opScamEnable');
-      btn.title = tt('opScamEnable');
-      btn.addEventListener('click', function () {
+      var label = tt('opScamEnable');
+      var enable = function () {
         localStore.set({ scamGuardEnabled: true });
         if (toggle) toggle.checked = true;
         renderScamDisabledBar();
-      });
-      bar.appendChild(btn);
+      };
+      bar.appendChild(h('span', { text: tt('opScamDisabledBar') }));
+      bar.appendChild(h('button', {
+        type: 'button', class: 'scam-enable-btn', dataset: { act: 'enable' },
+        text: label, title: label, onclick: enable,
+      }));
     }
 
     // 雲端配額用罄而被淘汰(未上傳)的警示名單筆數(syncState.marksEvicted)，
@@ -3086,21 +2951,13 @@
     // 網址內容源頭是頁面可控管道，禁 innerHTML。紀錄卡片降級顯示(無
     // author/excerpt 時)靠這份拆解邏輯。
     function buildUrlNode(url, cls) {
-      var urlEl = document.createElement('div');
-      urlEl.className = cls || 'url';
+      var className = cls || 'url';
       // TLD(com/net)一併捕獲並如實顯示:網址本來就可能來自 threads.net
       // (POST_URL_PATTERN 同時允許 com 與 net)，不可硬寫死 'threads.com/'。
       var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(url);
-      if (handleMatch) {
-        urlEl.appendChild(document.createTextNode('threads.' + handleMatch[1] + '/'));
-        var handleEl = document.createElement('b');
-        handleEl.textContent = handleMatch[2];
-        urlEl.appendChild(handleEl);
-        urlEl.appendChild(document.createTextNode('/' + handleMatch[3]));
-      } else {
-        urlEl.textContent = url;
-      }
-      return urlEl;
+      if (!handleMatch) return h('div', { class: className, text: url });
+      var handleEl = h('b', { text: handleMatch[2] });
+      return h('div', { class: className }, 'threads.' + handleMatch[1] + '/', handleEl, '/' + handleMatch[3]);
     }
 
     // 複製是卡片高亮態快捷鈕/詳細視窗/original-removedParams 附加列共用的
@@ -3180,118 +3037,73 @@
     // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。卡片層級
     // 沒有刪除入口。
     function buildEntryCard(e) {
-      var card = document.createElement('div');
-      card.className = 'entry-card';
-      // 鍵盤可聚焦，讓 :focus-within 高亮態也能靠 Tab 觸發(不只滑鼠
-      // hover);role="button" + Enter/Space 觸發，補上瀏覽器對原生
-      // button/a 才有的鍵盤啟動行為(div 預設沒有)。
-      card.setAttribute('tabindex', '0');
-      card.setAttribute('role', 'button');
-      // 條目鍵(url|at):整面重建卡片時據此還原鍵盤焦點到同一條目。
-      card.dataset.entryKey = e.url + '|' + e.at;
-
-      var header = document.createElement('div');
-      header.className = 'entry-header';
-      var meta = document.createElement('div');
-      meta.className = 'entry-meta';
-      var badge = document.createElement('span');
-      badge.className = 'entry-badge';
-      badge.textContent = tt(KINDS[e.kind].key);
-      var headTime = document.createElement('span');
-      headTime.className = 'entry-time';
-      headTime.textContent = relTime(e.at);
       // 掛 data-at 並登錄到 timeNodes:60s ticker 走輕量刷新(refresh)只逐一
       // 改這些節點的 textContent，不重建卡片，才不會偷走焦點/文字選取。
-      headTime.setAttribute('data-at', String(e.at));
+      var headTime = h('span', { class: 'entry-time', text: relTime(e.at), 'data-at': String(e.at) });
       timeNodes.push({ node: headTime, at: e.at });
-      meta.appendChild(badge);
-      meta.appendChild(headTime);
-      header.appendChild(meta);
-      card.appendChild(header);
+      var badge = h('span', { class: 'entry-badge', text: tt(KINDS[e.kind].key) });
 
+      var body = [];
       if (hasCardPreview(e)) {
         var hasAuthor = typeof e.author === 'string' && e.author !== '';
         var hasHandle = typeof e.handle === 'string' && e.handle !== '';
         // author 或 handle 任一存在就顯示作者列——author===handle 時入庫端
         // 會把重複的 author 丟棄(只剩 handle)，列不能因此整個消失。
         if (hasAuthor || hasHandle) {
-          var authorRow = document.createElement('div');
-          authorRow.className = 'entry-author-row';
-          if (hasAuthor) {
-            var nameEl = document.createElement('span');
-            nameEl.className = 'entry-author-name';
-            nameEl.textContent = e.author;
-            authorRow.appendChild(nameEl);
-          }
-          if (hasHandle) {
-            var handleEl = document.createElement('span');
-            handleEl.className = 'entry-handle';
-            handleEl.textContent = e.handle;
-            authorRow.appendChild(handleEl);
-          }
-          card.appendChild(authorRow);
+          var nameEl = hasAuthor && h('span', { class: 'entry-author-name', text: e.author });
+          var handleEl = hasHandle && h('span', { class: 'entry-handle', text: e.handle });
+          body.push(h('div', { class: 'entry-author-row' }, nameEl, handleEl));
         }
         if (typeof e.excerpt === 'string' && e.excerpt !== '') {
-          var excerptEl = document.createElement('div');
-          excerptEl.className = 'entry-excerpt';
-          excerptEl.textContent = e.excerpt;
-          card.appendChild(excerptEl);
+          body.push(h('div', { class: 'entry-excerpt', text: e.excerpt }));
         }
       } else {
-        card.appendChild(buildUrlNode(e.url, 'entry-url'));
+        body.push(buildUrlNode(e.url, 'entry-url'));
       }
 
       // 高亮態右上浮出的兩顆快捷鈕:複製連結(對應手機 Copy)、開啟貼文
       // (對應手機 Share2——web 沒有原生分享)。注意這跟詳細視窗底部動作列
       // 的「分享→複製」映射是兩件事，不強行統一。平時態靠 CSS
       // display:none 隱藏，兩顆按鈕都要 stopPropagation，否則點下去會被
-      // 卡片自己的 click 冒泡到，順手把詳細視窗也開了。
-      var quickWrap = document.createElement('div');
-      quickWrap.className = 'entry-quick';
-
-      var quickCopyBtn = document.createElement('button');
-      quickCopyBtn.type = 'button';
-      quickCopyBtn.className = 'entry-quick-btn';
-      quickCopyBtn.title = tt('opQuickCopyTitle');
-      quickCopyBtn.setAttribute('aria-label', tt('opQuickCopyTitle'));
-      quickCopyBtn.appendChild(svgUse('#i-copy'));
-      quickCopyBtn.addEventListener('click', function (ev) {
+      // 卡片自己的 click 冒泡到，順手把詳細視窗也開了。開啟鈕交給瀏覽器原生
+      // <a> 行為，handler 只擋冒泡。
+      var stop = function (ev) {
         if (ev && ev.stopPropagation) ev.stopPropagation();
+      };
+      var quickCopyBtn = iconButton('entry-quick-btn', '#i-copy', tt('opQuickCopyTitle'), function (ev) {
+        stop(ev);
         copyEntryUrl(e);
       });
-      quickWrap.appendChild(quickCopyBtn);
+      var openLabel = tt('opOpenTitle');
+      var openProps = {
+        class: 'entry-quick-btn', href: e.url, target: '_blank', rel: 'noopener',
+        title: openLabel, 'aria-label': openLabel, onclick: stop,
+      };
+      var quickOpenBtn = h('a', openProps, svgUse('#i-external-link'));
 
-      var quickOpenBtn = document.createElement('a');
-      quickOpenBtn.className = 'entry-quick-btn';
-      quickOpenBtn.href = e.url;
-      quickOpenBtn.target = '_blank';
-      quickOpenBtn.rel = 'noopener';
-      quickOpenBtn.title = tt('opOpenTitle');
-      quickOpenBtn.setAttribute('aria-label', tt('opOpenTitle'));
-      quickOpenBtn.appendChild(svgUse('#i-external-link'));
-      quickOpenBtn.addEventListener('click', function (ev) {
-        if (ev && ev.stopPropagation) ev.stopPropagation();
-        // 開啟交給瀏覽器原生 <a> 行為，這裡只需要擋掉冒泡。
-      });
-      quickWrap.appendChild(quickOpenBtn);
-
-      card.appendChild(quickWrap);
-
-      // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress。
-      card.addEventListener('click', function (ev) {
-        var target = ev && ev.target;
-        if (target && target.closest && target.closest('.entry-quick')) return;
-        openEntryDetail(e);
-      });
-      card.addEventListener('keydown', function (ev) {
-        if (!ev || (ev.key !== 'Enter' && ev.key !== ' ')) return;
-        var target = ev.target;
-        if (target && target.closest && target.closest('.entry-quick')) return;
-        ev.preventDefault();
-        openEntryDetail(e);
-      });
-
-      return card;
+      // 點卡片本身(排除快捷鈕區)開詳細視窗，對齊手機版 onPress;Enter/Space
+      // 同樣觸發。
+      var fromQuick = function (target) {
+        return !!(target && target.closest && target.closest('.entry-quick'));
+      };
+      // 鍵盤可聚焦，讓 :focus-within 高亮態也能靠 Tab 觸發(不只滑鼠 hover);
+      // role="button" 補上瀏覽器對原生 button/a 才有的鍵盤啟動行為(div 預設
+      // 沒有)。dataset.entryKey 是條目鍵(url|at)，整面重建卡片時據此還原鍵盤
+      // 焦點到同一條目。
+      var cardProps = {
+        class: 'entry-card', tabindex: '0', role: 'button', dataset: { entryKey: e.url + '|' + e.at },
+        onclick: function (ev) {
+          if (!fromQuick(ev && ev.target)) openEntryDetail(e);
+        },
+        onkeydown: function (ev) {
+          if (!ev || (ev.key !== 'Enter' && ev.key !== ' ') || fromQuick(ev.target)) return;
+          ev.preventDefault();
+          openEntryDetail(e);
+        },
+      };
+      var header = h('div', { class: 'entry-header' }, h('div', { class: 'entry-meta' }, badge, headTime));
+      var quickWrap = h('div', { class: 'entry-quick' }, quickCopyBtn, quickOpenBtn);
+      return h('div', cardProps, header, ...body, quickWrap);
     }
 
     // ---- 詳細視窗:結構/間距/字級/圓角/按鈕樣式一律照手機版
@@ -3448,27 +3260,17 @@
     // 沒有 accent 強調。複製鈕直接複製該列的原始值(copyValue)，不是
     // formatDisplayUrl 過的顯示值。
     function buildExtraRowEl(row) {
-      var wrap = document.createElement('div');
-      wrap.className = 'detail-kv';
-      var keyEl = document.createElement('span');
-      keyEl.className = 'detail-key';
-      keyEl.textContent = row.type === 'original' ? tt('opOriginalLabel') : tf('opTrackingParamLabel', { name: row.name });
-      wrap.appendChild(keyEl);
-      var linkRow = document.createElement('div');
-      linkRow.className = 'detail-linkrow';
-      var valueEl = document.createElement('span');
-      valueEl.className = 'detail-value ellipsis';
-      valueEl.textContent = row.display;
-      linkRow.appendChild(valueEl);
-      var copyBtn = document.createElement('button');
-      copyBtn.className = 'copy-btn';
-      copyBtn.textContent = tt('opCopyShort');
-      copyBtn.addEventListener('click', function () {
-        copyText(row.copyValue);
+      var label = row.type === 'original' ? tt('opOriginalLabel') : tf('opTrackingParamLabel', { name: row.name });
+      var copyBtn = h('button', {
+        class: 'copy-btn',
+        text: tt('opCopyShort'),
+        onclick: function () {
+          copyText(row.copyValue);
+        },
       });
-      linkRow.appendChild(copyBtn);
-      wrap.appendChild(linkRow);
-      return wrap;
+      var valueEl = h('span', { class: 'detail-value ellipsis', text: row.display });
+      var linkRow = h('div', { class: 'detail-linkrow' }, valueEl, copyBtn);
+      return h('div', { class: 'detail-kv' }, h('span', { class: 'detail-key', text: label }), linkRow);
     }
 
     // 時間軸每一列:軌道+圓點(最新一筆實心主色，其餘空心)+ 時間(絕對
@@ -3476,51 +3278,26 @@
     // (沿用既有 KINDS 文案;kind 不在白名單內就不附標籤，只顯示時間)。
     // isFirst/isLast 決定圓點是否填色、要不要接續軌道線。
     function buildTimelineRow(record, isFirst, isLast) {
-      var row = document.createElement('div');
-      row.className = 'timeline-row';
-
-      var rail = document.createElement('div');
-      rail.className = 'timeline-rail';
-      var dot = document.createElement('div');
-      dot.className = 'timeline-dot' + (isFirst ? ' filled' : '');
-      rail.appendChild(dot);
-      if (!isLast) {
-        var line = document.createElement('div');
-        line.className = 'timeline-line';
-        rail.appendChild(line);
-      }
-      row.appendChild(rail);
-
-      // 時間/來源標籤各自用獨立 span 直接賦值 textContent(不是拼接單一
-      // 字串塞給 textEl)，比照本檔一貫寫法(見 buildEntryCard 的 badge/
-      // headTime 等)——controller smoke 測試組的最小 DOM stub，.textContent
-      // 的 getter 只讀直接賦值過的內部字串，不會遞迴聚合子節點內容，得
-      // 靠這個結構才驗證得到。
-      var textEl = document.createElement('div');
-      textEl.className = 'timeline-text' + (isFirst ? '' : ' secondary');
-      var timeSpan = document.createElement('span');
-      timeSpan.textContent = formatAbsoluteTime(record.at);
-      textEl.appendChild(timeSpan);
-      if (Object.prototype.hasOwnProperty.call(KINDS, record.kind)) {
-        var kindSpan = document.createElement('span');
-        kindSpan.className = 'timeline-kind';
-        kindSpan.textContent = '　· ' + tt(KINDS[record.kind].key);
-        textEl.appendChild(kindSpan);
-      }
+      var hasKind = Object.prototype.hasOwnProperty.call(KINDS, record.kind);
       // 該筆事件的來源裝置(§12 增補:時間軸逐事件各自顯示)。缺 deviceId 的
       // 早期事件不畫這個 span，不寫「未知裝置」(D27)。
       var deviceInfo = seenDeviceInfo(record);
-      if (deviceInfo !== null) {
-        var deviceSpan = document.createElement('span');
-        deviceSpan.className = 'timeline-device';
-        deviceSpan.textContent = deviceInfo.name;
-        // 已移除標記掛在 .timeline-device 之內，不另加兄弟節點:整列的結構
-        // (時間 / kind / 裝置)維持不變。
-        if (deviceInfo.removed) deviceSpan.appendChild(removedTagNode());
-        textEl.appendChild(deviceSpan);
-      }
-      row.appendChild(textEl);
-      return row;
+      var dot = h('div', { class: 'timeline-dot' + (isFirst ? ' filled' : '') });
+      var rail = h('div', { class: 'timeline-rail' }, dot, !isLast && h('div', { class: 'timeline-line' }));
+      // 時間/來源標籤各自用獨立 span 直接賦值 textContent(不是拼接單一字串)——
+      // controller smoke 測試組的最小 DOM stub，.textContent 的 getter 只讀直接
+      // 賦值過的內部字串，不會遞迴聚合子節點內容，得靠這個結構才驗證得到。
+      // 已移除標記掛在 .timeline-device 之內，不另加兄弟節點:整列的結構
+      // (時間 / kind / 裝置)維持不變。
+      var textEl = h(
+        'div',
+        { class: 'timeline-text' + (isFirst ? '' : ' secondary') },
+        h('span', { text: formatAbsoluteTime(record.at) }),
+        hasKind && h('span', { class: 'timeline-kind', text: '　· ' + tt(KINDS[record.kind].key) }),
+        deviceInfo !== null &&
+          h('span', { class: 'timeline-device', text: deviceInfo.name }, deviceInfo.removed && removedTagNode())
+      );
+      return h('div', { class: 'timeline-row' }, rail, textEl);
     }
 
     // 時間軸子層視窗:收合(重置內容並隱藏)。openEntryDetail 切換條目時、
