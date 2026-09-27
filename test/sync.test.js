@@ -1410,7 +1410,7 @@ test('T3 單飛：同時三次 syncNow 只跑一輪往返', async () => {
   assert.equal(env.syncPosts().length, 1);
 });
 
-test('T3 單飛：進行中旗標存 chrome.storage.session（SW 回收即自然過期）', async () => {
+test('T3 單飛：只在 SW 記憶體，進行中 session 與 local 都不落 inflight 類鍵', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const release = env.server.holdNext(1);
@@ -1418,27 +1418,24 @@ test('T3 單飛：進行中旗標存 chrome.storage.session（SW 回收即自然
   const running = engine.syncNow();
   await settle(4);
 
-  const sessionKeys = Object.keys(env.storage.sessionData);
-  assert.ok(sessionKeys.length >= 1, '進行中旗標必須落 session，不能只放模組變數');
-  const localKeys = Object.keys(env.storage.localData);
+  const flagKey = /inflight|running|syncing/i;
   assert.equal(
-    localKeys.some((k) => /inflight|running|syncing/i.test(k)),
+    Object.keys(env.storage.sessionData).some((k) => flagKey.test(k)),
     false,
-    '旗標不得寫 local，否則 SW 被殺會永久卡死'
+    '單飛旗標不得落 session：session 在 SW 重啟後仍在，殘留會擋住新實例'
+  );
+  assert.equal(
+    Object.keys(env.storage.localData).some((k) => flagKey.test(k)),
+    false,
+    '單飛旗標不得寫 local'
   );
 
   release();
   await running;
   await settle();
-  assert.equal(
-    Object.keys(env.storage.sessionData).some((k) => /inflight|running|syncing/i.test(k)) &&
-      JSON.stringify(env.storage.sessionData).includes('true'),
-    false,
-    '結束後要把旗標放回去'
-  );
 });
 
-test('T3 SW 中斷：旗標殘留但 session 已清空時，新引擎照樣跑得動', async () => {
+test('T3 SW 中斷：瀏覽器重啟清空 session 後，新引擎照樣跑得動', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const release = env.server.holdNext(1);
@@ -1447,11 +1444,11 @@ test('T3 SW 中斷：旗標殘留但 session 已清空時，新引擎照樣跑�
   await settle(4);
   assert.equal(env.syncPosts().length, 1);
 
-  // SW 被回收：session 區整個消失，local 保留。
+  // 瀏覽器重啟（或擴充停用、重載）：session 區清空，記憶體歸零，local 保留。
   const revived = env.recreate(TCLSync, false);
   await revived.syncNow();
   await settle(10);
-  assert.equal(env.syncPosts().length, 2, 'session 過期即解除單飛，不得永久卡死');
+  assert.equal(env.syncPosts().length, 2, '新實例從 idle 起跑，不得被前一輪卡死');
 
   release(1);
   await abandoned.catch(() => {});
@@ -2425,20 +2422,20 @@ test('T9/L6 rejectedIds：該 entry 清 dirty，下一輪不再進 upserts', asy
   second.forEach((r) => assert.deepEqual(r.body.upserts, [], '下一輪不得再送被拒收的那一筆'));
 });
 
-test('T9/L6 跨引擎單飛：第一台持有未過期旗標時，第二台 syncNow 零請求', async () => {
+test('T9/L6 SW 重啟後的新實例不被舊實例擋', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const release = env.server.holdNext(1);
   const first = TCLSync.create(env.deps);
   const running = first.syncNow();
   await settle(4);
-  assert.equal(env.syncPosts().length, 1, '前置：第一台已把旗標搶下並發出請求');
+  assert.equal(env.syncPosts().length, 1, '前置：舊實例的請求已發出、回應暫緩');
 
-  // 同一份 storage（session 沒消失）＝另一個 SW 實例／另一個引擎。
+  // 同一份 storage（session 保留）＝SW 被驅逐後重啟，舊實例的那一輪已隨之作廢。
   const second = env.recreate(TCLSync);
   await second.syncNow();
   await settle(6);
-  assert.equal(env.syncPosts().length, 1, '單飛旗標未過期時第二台一個請求都不該發');
+  assert.equal(env.syncPosts().length, 2, '單飛只在記憶體：新實例照樣發出請求');
 
   release();
   await running;
@@ -2573,7 +2570,7 @@ test('T10/F2 殘留守衛讀不懂：本輪照常成功，不記 clear_guard_inv
   assert.deepEqual(guardWrites(env, 'syncClearGuard'), [], '不得重置成待定');
 });
 
-test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally 語意）', async () => {
+test('T10/L3 失敗收尾自己也炸掉時，phase 照樣歸位（finally 語意）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   env.server.failNext({ kind: 'network' });
@@ -2584,7 +2581,7 @@ test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally
       local: Object.assign({}, env.deps.storage.local, {
         set(items) {
           // 失敗收尾寫 syncState 時炸一次：catch 內的寫入失敗會沿著同一條鏈往外
-          // 冒，只掛成功回呼的 releaseInflight 就永遠不會跑。
+          // 冒，只掛成功回呼的話 phase 會卡在 running。
           if (boom && Object.prototype.hasOwnProperty.call(items, 'syncState')) {
             boom = false;
             return Promise.reject(new Error('storage 壞了'));
@@ -2597,11 +2594,13 @@ test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally
   const engine = TCLSync.create(deps);
   await engine.syncNow().catch(() => {});
   await settle(10);
+  const before = env.syncPosts().length;
 
-  assert.equal(
-    env.storage.sessionData.syncInflight,
-    undefined,
-    '旗標沒放回去的話，TTL 到期前這台裝置的同步全被擋掉'
+  await engine.syncNow().catch(() => {});
+  await settle(10);
+  assert.ok(
+    env.syncPosts().length > before,
+    'phase 沒歸位的話，看門狗到期前這台裝置的同步全被擋掉'
   );
 });
 
