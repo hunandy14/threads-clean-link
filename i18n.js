@@ -578,11 +578,34 @@
     });
   }
 
+  // 靜態文案的 DOM 套用(options 與 popup 共用):四組 data-i18n 屬性各寫進
+  // 對應的落點，再設 documentElement.lang。只動傳入的 doc，不碰全域(本檔也
+  // 會被 service worker 與 content script 載入);沒有 querySelectorAll 的
+  // doc(測試的最小 stub)直接返回。
+  var DOM_BINDINGS = [
+    ['[data-i18n]', 'data-i18n', null],
+    ['[data-i18n-ph]', 'data-i18n-ph', 'placeholder'],
+    ['[data-i18n-title]', 'data-i18n-title', 'title'],
+    ['[data-i18n-aria]', 'data-i18n-aria', 'aria-label'],
+  ];
+  function applyDom(doc, locale) {
+    if (!doc || typeof doc.querySelectorAll !== 'function') return;
+    DOM_BINDINGS.forEach(function (b) {
+      doc.querySelectorAll(b[0]).forEach(function (node) {
+        var text = t(locale, node.getAttribute(b[1]));
+        if (b[2] === null) node.textContent = text;
+        else node.setAttribute(b[2], text);
+      });
+    });
+    if (doc.documentElement) doc.documentElement.lang = locale === 'zh' ? 'zh-Hant' : 'en';
+  }
+
   var api = {
     STRINGS: STRINGS,
     resolveLocale: resolveLocale,
     t: t,
     fmt: fmt,
+    applyDom: applyDom,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

@@ -88,6 +88,23 @@
 //   重新登入不撤銷既有 token；`sign-out` 只撤銷請求用的那一枚。
 // - api-spec 2.2 明寫 `get-session` 未登入回 `null`（200），**不是** 401。
 //   預設行為照此；要模擬 401 請用 `failNext({ status: 401 })`。
+//
+// ============================================================================
+// 同步紀元（epoch）——後端決策 36，2026-09-27 定稿
+// ============================================================================
+// - `POST /api/v1/links/sync`、`POST /api/v1/marks/sync`、`GET /api/v1/links`
+//   的 200 回應頂層一律帶 `epoch`（非負整數，只增不減，從未刪除過＝0，空變更
+//   集也帶）。同一使用者 links 與 marks 共用同一個 epoch，依 `user.id` 分開記。
+// - 請求可選帶 epoch：POST 放 body 頂層 `epoch`，GET 放 query `?epoch=`。不帶
+//   ＝相容模式不校驗；壞值 400 `{ error:"bad_epoch" }`；與伺服器目前值不符
+//   409 `{ error:"epoch_mismatch", epoch:<目前值> }`，零寫入（校驗排在認證與
+//   限流之後、任何寫入之前，連 device 區塊都不 upsert）。
+// - `CLOUD_DATA_CONTRACT` 每次成功讓該使用者的 epoch +1。後端契約只列上面三
+//   個端點帶 epoch，刪雲端回應維持 `{ ok, revokedSessions }` 兩鍵不加欄。
+// - `GET /api/v1/marks` 不在契約三端點之列：query 的 `epoch` 不校驗、回應不帶。
+// - 測試開關 `server.epoch`：`value()`／`set(n)`／`bump()` 直接讀寫伺服器值
+//   （模擬別台裝置刪雲端）；`validate(false)` 只回報不校驗；`report(false)`
+//   代言還沒升上決策 36 的舊後端——回應不帶 epoch、請求帶了也不理會。
 'use strict';
 
 // 契約 R11（D50）的端點與回應鍵名。後端定稿前的暫定值，**只在這裡定義一次**，
@@ -524,6 +541,12 @@ function createMockSyncServer(options = {}) {
   // 末端的伺服器位置，讓回填到底的插件把它當增量起點。`false` 時整個鍵不
   // 出現，用來代言「還沒升上 R4 的舊後端」。
   let marksListCursor = options.marksListCursor !== false;
+  // 同步紀元（後端決策 36）：userId → 非負整數，缺席＝0。
+  const epochs = new Map();
+  // `false` 時代言舊後端：回應不帶 epoch、請求帶了也不校驗。
+  let epochReport = options.epoch !== false;
+  // `false` 時照樣回報但不校驗請求（測「回應 epoch 與本機不同」那一條防禦路徑）。
+  let epochValidate = true;
 
   const state = {
     token: options.token || null,
@@ -570,6 +593,31 @@ function createMockSyncServer(options = {}) {
   function tick() {
     clock = Math.max(clock + 1, now());
     return clock;
+  }
+
+  function currentEpoch() {
+    return epochs.get(user.id) || 0;
+  }
+
+  /**
+   * 請求端 epoch 校驗。`raw` 為 undefined 代表沒帶（相容模式），回 null 放行；
+   * 壞值回 400、不符回 409（帶伺服器目前值），呼叫端原樣回傳即零寫入。
+   */
+  function epochGate(raw) {
+    if (!epochReport || !epochValidate || raw === undefined) return null;
+    if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 0) {
+      return jsonResponse(400, { error: 'bad_epoch' });
+    }
+    if (raw !== currentEpoch()) {
+      return jsonResponse(409, { error: 'epoch_mismatch', epoch: currentEpoch() });
+    }
+    return null;
+  }
+
+  /** 200 回應體掛上頂層 epoch（舊後端模式不掛）。 */
+  function withEpoch(body) {
+    if (epochReport) body.epoch = currentEpoch();
+    return body;
   }
 
   function issueToken() {
@@ -783,6 +831,8 @@ function createMockSyncServer(options = {}) {
     }
     if (!authed(headers)) return unauthorized();
     if (rateLimited(at)) return rateLimitedResponse();
+    const epochReject = epochGate(body.epoch);
+    if (epochReject) return epochReject;
 
     const upserts = Array.isArray(body.upserts) ? body.upserts : [];
     const deletes = [...new Set(Array.isArray(body.deletes) ? body.deletes : [])].filter(
@@ -932,7 +982,7 @@ function createMockSyncServer(options = {}) {
       }
     }
 
-    return jsonResponse(200, { cursor, applied, changes, evicted });
+    return jsonResponse(200, withEpoch({ cursor, applied, changes, evicted }));
   }
 
   // ---- 端點：POST /api/v1/marks/sync（警示名單契約） ----
@@ -946,6 +996,8 @@ function createMockSyncServer(options = {}) {
     }
     if (!authed(headers)) return unauthorized();
     if (rateLimited(at)) return rateLimitedResponse();
+    const epochReject = epochGate(body.epoch);
+    if (epochReject) return epochReject;
 
     const upserts = Array.isArray(body.upserts) ? body.upserts : [];
     const deletes = [...new Set(Array.isArray(body.deletes) ? body.deletes : [])].filter(
@@ -1071,7 +1123,7 @@ function createMockSyncServer(options = {}) {
       }
     }
 
-    return jsonResponse(200, { cursor, applied, changes, evicted });
+    return jsonResponse(200, withEpoch({ cursor, applied, changes, evicted }));
   }
 
   // ---- 端點：GET /api/v1/marks（回填分頁，形狀比照 GET /api/v1/links） ----
@@ -1129,6 +1181,10 @@ function createMockSyncServer(options = {}) {
     if (!authed(headers)) return unauthorized();
     if (rateLimited(at)) return rateLimitedResponse();
     const params = url.searchParams;
+    // query 值一律是字串：純數字才轉成整數交給校驗，其餘原樣交出去判成壞值。
+    const epochRaw = params.get('epoch');
+    const epochReject = epochGate(epochRaw === null ? undefined : /^\d+$/.test(epochRaw) ? Number(epochRaw) : epochRaw);
+    if (epochReject) return epochReject;
     let limit = Number(params.get('limit'));
     if (!Number.isInteger(limit) || limit <= 0) limit = PAGE_SIZE_DEFAULT;
     limit = Math.min(limit, PAGE_SIZE_MAX);
@@ -1151,7 +1207,7 @@ function createMockSyncServer(options = {}) {
     const page = after.slice(0, limit);
     const last = page[page.length - 1];
     const nextCursor = after.length > limit && last ? encodeCursor(last.receivedAt, last.id) : null;
-    return jsonResponse(200, { items: page.map(publicItem), nextCursor });
+    return jsonResponse(200, withEpoch({ items: page.map(publicItem), nextCursor }));
   }
 
   // ---- 端點：DELETE /api/v1/links（api-spec 4.4:459-467） ----
@@ -1183,6 +1239,7 @@ function createMockSyncServer(options = {}) {
     state.devices.clear();
     state.clearedAt = null;
     state.marksClearedAt = null;
+    epochs.set(user.id, currentEpoch() + 1);
     const revoked = revokeAllSessions();
     return jsonResponse(200, { ok: true, [CLOUD_DATA_CONTRACT.revokedKey]: revoked });
   }
@@ -1541,6 +1598,38 @@ function createMockSyncServer(options = {}) {
       /** CR-10：切掉 `GET /api/v1/marks` 的頂層 `cursor`（代言舊後端）。 */
       listCursor(on) {
         marksListCursor = on !== false;
+        return this;
+      },
+    },
+
+    /**
+     * 同步紀元（後端決策 36）的測試開關，作用在目前的 `user.id`（`setUser` 換人
+     * 後各算各的）。
+     */
+    epoch: {
+      /** 伺服器目前的 epoch。可指定 userId 查別的帳號。 */
+      value(userId) {
+        return epochs.get(userId === undefined ? user.id : userId) || 0;
+      },
+      /** 直接設值（模擬別台裝置已刪過雲端）。 */
+      set(value, userId) {
+        epochs.set(userId === undefined ? user.id : userId, value);
+        return this;
+      },
+      /** +1，等同別台裝置剛打完一次刪雲端（不動資料與 session）。 */
+      bump(userId) {
+        const id = userId === undefined ? user.id : userId;
+        epochs.set(id, (epochs.get(id) || 0) + 1);
+        return this;
+      },
+      /** `false`：回應照樣帶 epoch，但不校驗請求帶來的值。 */
+      validate(on) {
+        epochValidate = on !== false;
+        return this;
+      },
+      /** `false`：舊後端——回應不帶 epoch，請求帶了也不理會。 */
+      report(on) {
+        epochReport = on !== false;
         return this;
       },
     },
