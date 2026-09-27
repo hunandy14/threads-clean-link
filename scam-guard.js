@@ -297,8 +297,7 @@
   // parentElement 逐層檢查——display:none 不繼承，但整棵子樹都不產生 box。
   //
   // 判準只讀屬性與行內樣式，不用 checkVisibility() 或 getComputedStyle()：
-  // 前者 Chrome 105 才有（本擴充的下限是 103），後者要真正的排版引擎，Node
-  // 測試環境給不出來。closest 缺席的環境由迴圈內的 hasAttribute 兜底。
+  // 兩者都要真正的排版引擎，Node 測試環境給不出來。closest 缺席的環境由迴圈內的 hasAttribute 兜底。
   function isHiddenNode(node) {
     if (!node || node.nodeType !== 1) return false;
     var hasClosest = typeof node.closest === 'function';
