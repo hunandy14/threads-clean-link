@@ -566,9 +566,21 @@
     // ---- 切批(api-spec 7.2) ----
 
     /**
+     * 一筆 entry 的版本指紋：at、seen 筆數、deletedAt 三者組成的字串(記值不
+     * 記參照)。history 紀錄沒有 updatedAt，recordHistory 再次複製會推進 at
+     * 並追加 seen，刪除會寫下 deletedAt，三者任一變動即視為另一個版本。
+     */
+    function versionOf(entry) {
+      var seenCount = entry && Array.isArray(entry.seen) ? entry.seen.length : 0;
+      var deletedAt = entry && typeof entry.deletedAt === 'number' ? entry.deletedAt : null;
+      return [entry ? entry.at : null, seenCount, deletedAt].join('|');
+    }
+
+    /**
      * @returns {{batches: object[], dropped: string[]}} dropped 是送不上雲的
      *   entry id(見 isUploadable):它們的 dirty 必須就地清掉，否則每一輪重送
-     *   一次卻永遠等不到 ack。
+     *   一次卻永遠等不到 ack。每個 batch 另帶 versions:以送出的 id 為鍵、
+     *   切批當下的版本指紋(見 versionOf)為值，供 applyResponse 比對 ack。
      */
     function buildBatches(history) {
       var upserts = [];
@@ -585,13 +597,14 @@
           if (typeof entry.id === 'string') dropped.push(entry.id);
           return;
         }
-        upserts.push(TCLCoreRef.toSyncItem(entry));
+        var item = TCLCoreRef.toSyncItem(entry);
+        upserts.push({ item: item, version: versionOf(entry) });
       });
 
       var batches = [];
       var current = null;
       function open() {
-        if (!current) current = { upserts: [], deletes: [], seenRows: 0 };
+        if (!current) current = { upserts: [], deletes: [], seenRows: 0, versions: {} };
       }
       function flush() {
         if (current) batches.push(current);
@@ -603,19 +616,21 @@
         open();
         current.deletes.push(id);
       });
-      upserts.forEach(function (item) {
+      upserts.forEach(function (planned) {
+        var item = planned.item;
         var rows = Array.isArray(item.seen) ? item.seen.length : 0;
         if (current && (current.upserts.length + 1 > MAX_UPSERTS || current.seenRows + rows > MAX_SEEN_ROWS)) {
           flush();
         }
         open();
         current.upserts.push(item);
+        current.versions[item.id] = planned.version;
         current.seenRows += rows;
       });
       flush();
       // 沒有待推的東西也要發一次:一次往返同時處理推與拉，少發這一次就拉不
       // 到別台裝置的新資料。
-      if (!batches.length) batches.push({ upserts: [], deletes: [], seenRows: 0 });
+      if (!batches.length) batches.push({ upserts: [], deletes: [], seenRows: 0, versions: {} });
       return { batches: batches, dropped: dropped };
     }
 
@@ -646,10 +661,16 @@
      * 把 applied(ack)與 changes(增量)套回本機 history。整段讀改寫包在注入
      * 的 writeChain 內，與 recordHistory 串行。
      *
-     * 【只清本輪快照】ack 一律以「伺服器回報的 id」比對，往返期間 recordHistory
-     * 新寫入的 entry 不在回應裡，自然保持 dirty，下一輪才上雲。
+     * 【只清送出的那一版】ack 以「伺服器回報的 id」找到本機 entry 後，重讀該筆
+     * 現值與切批快照(versions，鍵為送出的 id)比對版本指紋:相同才清 dirty;
+     * 不同代表往返期間又被改動(再次複製、刪成墓碑)，改名與 serverUpdatedAt
+     * 照常套用但 dirty 保持 true，下一輪送出最新內容。查無快照一律保持
+     * dirty。往返期間新寫入的 entry 不在回應裡，自然保持 dirty。
+     *
+     * @param {object} [versions] 該批切批當下的版本快照;純拉取的往返不帶。
      */
-    function applyResponse(body, ctx) {
+    function applyResponse(body, ctx, versions) {
+      var sentVersions = versions || {};
       return writeChain(function () {
         return readHistory().then(function (list) {
           var applied = (body && body.applied) || {};
@@ -676,12 +697,15 @@
             // 被殺時墓碑還在，下次照樣送得出去。
             if (TCLCoreRef.isTombstone(entry) && deletedIds[entry.id]) return;
             if (canonical[entry.id] !== undefined) {
+              var unchanged =
+                Object.prototype.hasOwnProperty.call(sentVersions, entry.id) &&
+                sentVersions[entry.id] === versionOf(entry);
               next.push(
                 Object.assign({}, entry, {
                   // canonicalId:雲端同一篇貼文早有一張卡時就地改名，否則下
                   // 次同步又分裂一張。
                   id: canonical[entry.id],
-                  dirty: false,
+                  dirty: unchanged ? false : entry.dirty,
                   // serverUpdatedAt 只是「這一輪已上傳」的標記，不是比較用的
                   // 判準——後端契約(api-spec 3.1)的 ShareHistoryItem 沒有
                   // updatedAt 欄位。新舊一律以 SyncResponse.cursor 與 changes
@@ -738,6 +762,10 @@
               // 整形後仍不合格就維持本機原樣(有既有卡)或整筆不收(沒有):寫進
               // 一筆 options 讀不出來的資料，比不寫更糟。
               if (!merged) return;
+              // 本機同 key 仍 dirty(ack 版本比對未過、或尚未送出)時合併後維持
+              // dirty:合併結果是雲端與本機 seen 的聯集，本機那份尚未上雲的事件
+              // 要靠下一輪再送。
+              if (index !== -1 && next[index].dirty === true) merged.dirty = true;
               if (index === -1) next.push(merged);
               else next[index] = merged;
             });
@@ -816,7 +844,7 @@
                 // 寫入失敗（配額、storage 壞掉）時失敗路徑的 saveState 會把已
                 // 前進的游標寫進去，這一頁的增量從此再也拉不回來——伺服器只認
                 // 游標，不會重送。
-                return applyResponse(payload, ctx).then(function () {
+                return applyResponse(payload, ctx, batch.versions).then(function () {
                   if (payload && isCursor(payload.cursor)) ctx.state.cursor = payload.cursor;
                   lastChanges = payload ? payload.changes : null;
                 });
