@@ -2627,7 +2627,7 @@ test.describe('警示名單 v2:capScamBlocklist', () => {
     const out = C.capScamBlocklist(list);
     assert.equal(Object.keys(out.entries).length, 2, '未超量時兩態都留著');
     assert.equal(C.SCAM_LIMITS.MAX_ENTRIES, 5000, 'MAX_ENTRIES 不變，只是改成兩態共用');
-    assert.equal(C.SCAM_LIMITS.MAX_ALLOWLIST, 5000, 'MAX_ALLOWLIST 廢止但常數保留');
+    // MAX_ALLOWLIST 沒有讀者，已依 CS-2 刪除，不再釘。
   });
 
   test('capScamBlocklist:位元組預算把 dismissed 一起算進去', () => {

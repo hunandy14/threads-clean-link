@@ -240,9 +240,6 @@
     marksBackfillCursor: null,
   };
 
-  // chrome.storage.local.syncAuth 的預設形狀(D10:bearer token 明文存 local)。
-  var DEFAULT_SYNC_AUTH = { token: null };
-
   function optionalString(value) {
     return typeof value === 'string' ? value : null;
   }
@@ -889,11 +886,9 @@
   // 900-1,600 位(含證據五欄)，由位元組預算先觸發淘汰，MAX_ENTRIES 5000 是
   // 證據稀疏時的筆數硬保險。
   //
-  // MAX_ENTRIES 自 v2 起由 active 與 dismissed 兩態共用;MAX_ALLOWLIST 隨著
-  // allowlist 降為派生視圖而廢止，常數保留只為不讓舊呼叫端讀到 undefined。
+  // MAX_ENTRIES 自 v2 起由 active 與 dismissed 兩態共用。
   var SCAM_LIMITS = {
     MAX_ENTRIES: 5000,
-    MAX_ALLOWLIST: 5000,
     MAX_EVIDENCE: 3,
     SNIPPET_MAX: 120,
     SNIPPET_CONTEXT: 40,
@@ -2131,7 +2126,6 @@
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
-    DEFAULT_SYNC_AUTH: DEFAULT_SYNC_AUTH,
     normalizeSyncState: normalizeSyncState,
     sanitizeDisplayName: sanitizeDisplayName,
     sanitizeAvatarUrl: sanitizeAvatarUrl,
