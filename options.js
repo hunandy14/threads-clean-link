@@ -14,11 +14,7 @@
   var TCLCore =
     typeof module !== 'undefined' && module.exports ? require('./tcl-core.js') : root.TCLCore;
 
-  // 本頁的開關取自 TCLCore.SETTINGS_SCHEMA 裡 pages 含 'options' 的四顆:
-  // sync 區的 autoClean／saveHistory／postCopyEnabled，與 local 區的
-  // scamGuardEnabled。checkbox 的 id 即 storage 鍵，讀值、綁定與 onChanged
-  // 回填都照這張表走(見 createOptionsController 的 bindSettings 與
-  // onStorageChanged)。OPTIONS_DEFAULT_SETTINGS 是 sync 區三顆的預設值。
+  // 取 pages 含 'options' 的開關，細節見 TCLCore.SETTINGS_SCHEMA。
   var SETTINGS = TCLCore.SETTINGS_SCHEMA.filter(function (s) {
     return s.pages.indexOf('options') !== -1;
   });
@@ -1367,19 +1363,10 @@
       });
     }
 
-    // 帳號區的 view-model:把 normalizeSyncCardState 的結果換算成要寫進 DOM 的
-    // 每一欄，純函式(只讀 locale 與 now，不讀寫 DOM 或其他狀態)。五態共用同
-    // 一份觸發鈕與選單 DOM，靠 hidden 切換;未登入態每一欄都給明確的重設值
-    // (清空文字、收起列、頭像退回空字母)，觸發鈕雖然 hidden，任何路徑下次
-    // 顯示前都不會露出上一態的舊資料。
-    //   text      textContent 表
-    //   hidden    hidden 表
-    //   disabled  disabled 表(未登入不碰「立即同步」)
-    //   avatar    頭像首字母與大頭照網址(未登入為 '' 與 null)
-    //   dotClass  狀態點顏色:error 紅、expired 黃，其餘無
-    //   devices   'reset' 丟掉裝置快取(帳號沒了)、'refetch' 只標記下次要重打
-    //             (同一個帳號 token 過期，快取留給紀錄詳細 join 裝置名)
-    //   closeDevices 沒有可用的工作階段就拉不到清單，開著的裝置對話框收起
+    // 未登入態每一欄都給明確的重設值:觸發鈕雖然 hidden，任何路徑下次顯示前
+    // 都不會露出上一態的舊資料。devices:'reset' 丟掉裝置快取(帳號沒了)，
+    // 'refetch' 只標記下次要重打(同一帳號 token 過期，快取留給紀錄詳細 join
+    // 裝置名)。
     function accountView(s) {
       var mode = accountMode(s);
       var signedOut = mode === 'signedOut';
@@ -3076,10 +3063,8 @@
       showDialog('detailOverlay');
     }
 
-    // storage 變動(onStorageChanged 的 relocateDetailEntry)時原地刷新:只把 detailEntry 換成清單裡的
-    // 新物件並重畫內容，不重置使用者正在看的時間軸子層/excerpt 展開態
-    // (別處寫入無關紀錄不該把使用者互動態打回原形)。detailEntry 換成新
-    // 物件也讓 url+at 精準刪除拿到不過期的 at。只在開著時重畫，不得重新開啟。
+    // 原地刷新詳細視窗內容，見 relocateDetailEntry。detailEntry 換成新物件也
+    // 讓 url+at 精準刪除拿到不過期的 at。只在開著時重畫，不得重新開啟。
     function refreshDetail(e) {
       if (!isDialogOpen('detailOverlay')) return;
       detailEntry = e;
@@ -3214,26 +3199,14 @@
     }
 
     // ---- 視圖分派 ----
-    //
-    // 頁面切成六個視圖，各自只依賴一份狀態:
-    //   i18n     HTML 靜態文案(data-i18n 系列)與語言鈕   ← locale
-    //   history  統計磚、圖表、紀錄牆                    ← entries
-    //   scam     警示名單與已解除小節                    ← scamBlocklist
-    //   scamBar  名單卡的「掃描已關閉」狀態列             ← scamGuardEnabled 開關
-    //   account  帳號入口、deviceNote、名單淘汰提示       ← syncState(廣播)
-    //   devices  裝置對話框(只在開著時重畫)              ← 裝置快取、locale
-    // 狀態變了只重畫吃那份狀態的視圖:history 寫入不碰名單列節點(使用者開著的
-    // ⋯ 選單與命中對話框因此不受影響)，也不跑 i18n(確認框開著時，標題與確認
-    // 鈕不會被 data-i18n 初值蓋回去)。
+    // 每個視圖只依賴一份狀態，狀態變了只重畫吃它的視圖。
     var VIEWS = {
-      i18n: function () { applyI18nDom(); },
-      history: function () { renderChart(renderStats()); renderList(); },
-      scam: function () { renderScamList(); renderScamAllowlist(); },
-      scamBar: function () { renderScamDisabledBar(); },
-      account: function () { renderAccount(syncState); renderScamEvictedHint(syncState); },
-      // 裝置列是 JS 產生的，i18n 掃不到;對話框開著時切語言靠這裡重畫。關著
-      // 時不必重建，下次開框本身就會 renderDevices。
-      devices: function () { if (isDialogOpen('devicesOverlay')) renderDevices(); },
+      i18n: function () { applyI18nDom(); }, // ← locale:data-i18n 靜態文案與語言鈕
+      history: function () { renderChart(renderStats()); renderList(); }, // ← entries
+      scam: function () { renderScamList(); renderScamAllowlist(); }, // ← scamBlocklist
+      scamBar: function () { renderScamDisabledBar(); }, // ← scamGuardEnabled 開關
+      account: function () { renderAccount(syncState); renderScamEvictedHint(syncState); }, // ← syncState 廣播
+      devices: function () { if (isDialogOpen('devicesOverlay')) renderDevices(); }, // 只在開著時重畫
     };
     // 同一輪畫多個視圖時的固定順序。i18n 必須最先:它用 data-i18n 初值重設
     // 靜態文字(deviceNote 等)，account 排在它之後才能把登入態文案蓋回去;
@@ -3253,15 +3226,9 @@
       render(VIEW_ORDER);
     }
 
-    // storage 鍵 → 要重畫的視圖。SETTINGS_SCHEMA 的開關不列在這裡:它們在
-    // onStorageChanged 直接回填 checkbox，帶 view 的(scamGuardEnabled →
-    // scamBar)由 schema 併入。
-    //   local.history        紀錄視圖
-    //   local.scamBlocklist  名單視圖
-    //   local.syncState      不重畫:只換刪除分流(軟刪／硬刪)用的 syncAccount;
-    //                        帳號區畫的是 background 廣播的卡片狀態(setSyncState)
-    //   sync.langPref        全部(文案全面換新)
-    //   sync.themePref       不重畫:applyTheme 只改 data-theme 與主題鈕圖示
+    // syncState 不重畫:只換刪除分流(軟刪／硬刪)用的 syncAccount，帳號區畫的是
+    // background 廣播的卡片狀態(setSyncState)。themePref 不重畫:applyTheme
+    // 只改 data-theme 與主題鈕圖示。
     var KEY_VIEWS = {
       local: { history: ['history'], scamBlocklist: ['scam'], syncState: [] },
       sync: { langPref: VIEW_ORDER, themePref: [] },

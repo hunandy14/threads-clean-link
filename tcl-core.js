@@ -119,7 +119,7 @@
   // 量測)，本表只驅動讀值、change 綁定與 storage.onChanged 回填:
   //   key    checkbox 的 id，同時是 storage 鍵
   //   area   值存哪一區('sync' 跟帳號跨裝置同步，'local' 只留這台裝置)
-  //   def    缺值或非布林時的退回值;sync 區四顆與 DEFAULT_SETTINGS 一致
+  //   def    缺值或非布林時的退回值;sync 區三顆與 DEFAULT_SETTINGS 一致
   //   pages  哪幾頁有這顆控件('options'／'popup')
   //   label  HTML 靜態列所用 i18n 鍵的對照(文件用途，不參與渲染)
   //   view   值變動時 options 頁要額外重畫的視圖(見 options.js 的 VIEWS)
