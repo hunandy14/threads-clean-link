@@ -1000,9 +1000,9 @@
     }
 
     // persistHistory 失敗的統一善後:回滾已在 persistHistory 內完成，這裡
-    // 重繪回滾後的畫面並發專屬失敗 toast(配額/一般兩種文案)。
+    // 重繪回滾後的紀錄視圖並發專屬失敗 toast(配額/一般兩種文案)。
     function onPersistFailed(res) {
-      renderAll();
+      renderHistoryViews();
       toast(tt(res && res.quota ? 'opToastStorageFull' : 'opToastSaveFailed'));
     }
 
@@ -1019,6 +1019,13 @@
       if (prev && typeof prev.focus === 'function') {
         try { prev.focus(); } catch (e) {}
       }
+    }
+    // 關閉匯入對話框並把焦點還給開框前的元素(通常是「匯入」鈕)。關閉鈕、
+    // 點遮罩、匯入成功與集中式 Esc 鏈共用這一條。
+    function closeImport() {
+      var overlay = byId('overlay');
+      if (overlay) overlay.hidden = true;
+      restoreFocus('import');
     }
     function focusInto(overlayId, focusId) {
       var el = (focusId && byId(focusId)) || byId(overlayId);
@@ -3162,13 +3169,13 @@
       });
       if (!hit) return;
       if (detailEntry && detailEntry.url === e.url && detailEntry.at === e.at) closeEntryDetail();
-      // persistHistory 先同步把 entries 換成 next，再 renderAll 才畫到新清單;
-      // 寫入結果非同步回來，成功發「已刪除」，失敗回滾 + 失敗 toast。
+      // persistHistory 先同步把 entries 換成 next，再 renderHistoryViews 才畫到
+      // 新清單;寫入結果非同步回來，成功發「已刪除」，失敗回滾 + 失敗 toast。
       persistHistory(next).then(function (res) {
         if (res.ok) toast(tt('opToastDeleted'));
         else onPersistFailed(res);
       });
-      renderAll();
+      renderHistoryViews();
     }
 
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
@@ -3598,7 +3605,8 @@
       // 對話框鍵盤:
       //   - Tab/Shift+Tab:把焦點循環鎖在最上層開著的對話框內(focus trap)。
       //   - Esc:逐層關閉。確認框最上層(刪除確認會疊在詳細視窗上)先關，
-      //     再輪時間軸子層，最後才關詳細視窗本身(比照手機版巢狀 Modal
+      //     再輪時間軸子層，接著是頂層的匯入框與裝置框，最後才關詳細視窗
+      //     本身(順序比照 topmostOverlayId 的疊放序;比照手機版巢狀 Modal
       //     逐層關閉的直覺;手機版 DialogShell 走 Modal 的 onRequestClose，
       //     web 沒有對應原生事件，這裡以 keydown 補同義行為)。
       if (typeof document.addEventListener === 'function') {
@@ -3618,6 +3626,11 @@
           var timelineOverlay = byId('timelineOverlay');
           if (timelineOverlay && !timelineOverlay.hidden) {
             dismissTimelineOverlay();
+            return;
+          }
+          var importOverlay = byId('overlay');
+          if (importOverlay && !importOverlay.hidden) {
+            closeImport();
             return;
           }
           var devicesOverlay = byId('devicesOverlay');
@@ -3652,11 +3665,22 @@
       if (countHint) countHint.textContent = tf('opShowing', { a: visible.length, b: matched.length });
     }
 
-    function renderAll() {
-      applyI18nDom();
+    // 紀錄(history)衍生的視圖:統計、圖表與紀錄牆。history 的任何寫入
+    // (setHistory、刪除、清除全部、匯入、寫入失敗回滾)只走這條，不碰警示
+    // 名單卡——名單只由 scamBlocklist 決定，整份重畫會換掉列節點並收起使用者
+    // 正開著的 ⋯ 選單與命中對話框(見 renderScamList)。
+    function renderHistoryViews() {
       var stats = renderStats();
       renderChart(stats);
       renderList();
+    }
+
+    // 整頁重畫:只給首次繪製(init)與切換語言用。文案全面換新時，所有 JS
+    // 產生、沒有 data-i18n 可掃的區塊都得跟著重建。其餘狀態變動各走對應的
+    // 局部重畫(renderHistoryViews、renderScamBlocklist、renderAccount)。
+    function renderAll() {
+      applyI18nDom();
+      renderHistoryViews();
       // 黑名單卡整張是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃:
       // 排在 applyI18nDom 之後，切語言時跟著整張重畫。
       renderScamBlocklist();
@@ -3667,9 +3691,8 @@
       // 裝置列整批是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃，
       // applyI18nDom 掃不到它們。對話框開著時切語言，「這台裝置」pill 與動作
       // 鈕的 aria-label 會停在舊語言，而且沒有「關掉再開」以外的自我修復。
-      // 只在開著時重畫:關著時重建整份清單毫無用處，卻會在每一次 renderAll
-      // (setHistory／設定變更)把使用者正開著的行內改名 input 換掉。開框本身
-      // 就會 renderDevices，關著期間錯過的語言變更下次開框補得回來。
+      // 只在開著時重畫:關著時重建整份清單毫無用處。開框本身就會
+      // renderDevices，關著期間錯過的語言變更下次開框補得回來。
       var devicesOverlay = byId('devicesOverlay');
       if (devicesOverlay && !devicesOverlay.hidden) renderDevices();
     }
@@ -3765,10 +3788,6 @@
 
       // 匯入:對話框(選檔或貼上)。
       var overlay = byId('overlay');
-      function closeImport() {
-        if (overlay) overlay.hidden = true;
-        restoreFocus('import');
-      }
       on('importBtn', 'click', function () {
         closeMenu();
         var textEl = byId('modalText');
@@ -3812,7 +3831,7 @@
             onPersistFailed(res);
             return;
           }
-          renderAll();
+          renderHistoryViews();
           closeImport();
           toast(
             result.skipped
@@ -3857,7 +3876,7 @@
               }
               // 線上時立刻推一次，墓碑不必等下一個週期 alarm 才傳到其他裝置。
               if (signedIn) sendSyncAction({ type: 'sync.now' });
-              renderAll();
+              renderHistoryViews();
               toast(tt('opToastCleared'));
             });
           },
@@ -4035,8 +4054,9 @@
     // 看的時間軸子層/展開全文——別處寫入無關紀錄不該打斷正在閱讀的人)，
     // 找不到(已被刪除/清除)就關閉詳細視窗。條目真的換了(url 不同)才走
     // 完整重置 openEntryDetail;此處以 url 定位，理論上恆為同 url，保留分支
-    // 只為語意清楚與防禦。renderAll 會整面重建卡片，順帶保存/還原鍵盤焦點
-    // 對應的條目(見 captureFocusedEntryKey/restoreFocusedEntry)。
+    // 只為語意清楚與防禦。renderHistoryViews 會整面重建紀錄卡片(警示名單卡
+    // 不動)，順帶保存/還原鍵盤焦點對應的條目(見 captureFocusedEntryKey/
+    // restoreFocusedEntry)。
     function setHistory(list) {
       var focusKey = captureFocusedEntryKey();
       entries = sanitizeEntries(list);
@@ -4055,7 +4075,7 @@
           closeEntryDetail();
         }
       }
-      renderAll();
+      renderHistoryViews();
       restoreFocusedEntry(focusKey);
     }
 
@@ -4138,6 +4158,14 @@
         var change = changes[SCAM_BLOCKLIST_KEY];
         scamBlocklist = readScamBlocklist(change && change.newValue);
         renderScamBlocklist();
+      }
+      // 帳號登入/登出由 background 改寫 syncState:刪除與清除全部依它分流
+      // 軟刪(留墓碑)或硬刪，頁面開著期間必須跟上，否則會照開頁當下的
+      // 登入態處理。這裡只換判斷依據，不重畫——畫面上的帳號卡片走
+      // setSyncState 那條(background 推送的卡片狀態)。
+      if (Object.prototype.hasOwnProperty.call(changes, SYNC_ACCOUNT_KEY)) {
+        var accountChange = changes[SYNC_ACCOUNT_KEY];
+        syncAccount = TCLCore.normalizeSyncState(accountChange && accountChange.newValue);
       }
     }
 

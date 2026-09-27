@@ -9422,3 +9422,259 @@ test('S-a 刪雲端:廣播 signed_out 先到、回應 {ok,signedOut} 後到，�
   assert.equal(finals.length, 1, `定案 toast 只能出現一次，實得序列:${JSON.stringify(writes)}`);
   assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastCloudDeletedSignedOut'));
 });
+
+// ============================================================
+// options 頁常開時的三個正確性問題(B1 登入態過期、B2 history 寫入重畫
+// 警示名單、B3 匯入對話框 Esc)。
+// ============================================================
+
+// 比照 options-init.js 的 chrome.storage.onChanged 接線:local 區帶 history
+// 先交給 setHistory，整包 changes 再交給 setLocalSettings;sync 區交給
+// setSyncSettings。測試以 storage.emitChange 觸發，走的是頁面實際收到的路徑。
+function wireStorageOnChanged(storage, controller) {
+  storage.api.onChanged.addListener((changes, areaName) => {
+    if (!changes) return;
+    if (areaName === 'local') {
+      if (changes.history) controller.setHistory(changes.history.newValue || []);
+      controller.setLocalSettings(changes);
+    } else if (areaName === 'sync') {
+      controller.setSyncSettings(changes);
+    }
+  });
+}
+
+function deleteFirstRow(doc) {
+  doc.ids.rows.children[0].fire('click');
+  doc.ids.detailDeleteBtn.fire('click');
+  doc.ids.confirmOk.fire('click');
+}
+
+function assertSingleTombstone(storage, id, label) {
+  const history = storage.localSnapshot().history;
+  assert.equal(history.length, 1, `${label}:已登入軟刪，entry 留在陣列等伺服器 ack`);
+  assert.equal(history[0].id, id, `${label}:軟刪不換 id`);
+  assert.equal(typeof history[0].deletedAt, 'number', `${label}:寫入 deletedAt`);
+  assert.ok(history[0].deletedAt > 0);
+  assert.equal(history[0].dirty, true, `${label}:墓碑是待上傳的變更`);
+}
+
+function hideAllOverlays(doc) {
+  [
+    'detailOverlay',
+    'timelineOverlay',
+    'overlay',
+    'confirmOverlay',
+    'devicesOverlay',
+    'scamHitsOverlay',
+    'scamInfoOverlay',
+  ].forEach((id) => {
+    doc.getElementById(id).hidden = true;
+  });
+}
+
+// ---- B1:登入態只在 init 讀一次 ----
+
+test('B1 刪除:頁面開著時經 storage.onChanged(local.syncState)轉為已登入，單筆刪除走軟刪留墓碑', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedOutState() });
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.storage.emitChange({ syncState: { newValue: signedInState(), oldValue: signedOutState() } }, 'local');
+  await settle();
+
+  deleteFirstRow(ctx.doc);
+  await settle();
+
+  assertSingleTombstone(ctx.storage, 'id-1000', 'onChanged 登入後刪除');
+  assert.equal(ctx.doc.ids.rows.children.length, 0, '墓碑不留在畫面上');
+});
+
+test('B1 刪除:setLocalSettings 帶來已登入的 syncState 後，單筆刪除走軟刪留墓碑', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedOutState() });
+  await ctx.controller.init();
+  await settle();
+
+  ctx.controller.setLocalSettings({ syncState: { newValue: signedInState(), oldValue: signedOutState() } });
+  await settle();
+
+  deleteFirstRow(ctx.doc);
+  await settle();
+
+  assertSingleTombstone(ctx.storage, 'id-1000', 'setLocalSettings 登入後刪除');
+});
+
+test('B1 清除全部:頁面開著時經 storage.onChanged(local.syncState)轉為已登入，逐筆轉墓碑', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)],
+    syncState: signedOutState(),
+  });
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.storage.emitChange({ syncState: { newValue: signedInState(), oldValue: signedOutState() } }, 'local');
+  await settle();
+
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const history = ctx.storage.localSnapshot().history;
+  assert.deepEqual(history.map((e) => e.id).sort(), ['id-1000', 'id-2000'], '墓碑留在 storage，id 不變');
+  history.forEach((e) => {
+    assert.equal(typeof e.deletedAt, 'number', `${e.id}:寫入刪除時戳`);
+    assert.equal(e.dirty, true, `${e.id}:待上傳的刪除意圖`);
+  });
+  assert.equal(ctx.doc.ids.rows.children.length, 0, '畫面清空');
+});
+
+test('B1 清除全部:setLocalSettings 帶來已登入的 syncState 後，逐筆轉墓碑', async () => {
+  const ctx = makeController({
+    history: [s4Entry(URL_A, 2000), s4Entry(URL_B, 1000)],
+    syncState: signedOutState(),
+  });
+  await ctx.controller.init();
+  await settle();
+
+  ctx.controller.setLocalSettings({ syncState: { newValue: signedInState(), oldValue: signedOutState() } });
+  await settle();
+
+  ctx.doc.ids.clearBtn.fire('click');
+  ctx.doc.ids.confirmOk.fire('click');
+  await settle();
+
+  const history = ctx.storage.localSnapshot().history;
+  assert.equal(history.length, 2, '已登入時清除全部不得硬刪');
+  history.forEach((e) => {
+    assert.equal(typeof e.deletedAt, 'number', `${e.id}:寫入刪除時戳`);
+    assert.equal(e.dirty, true, `${e.id}:待上傳的刪除意圖`);
+  });
+});
+
+test('B1 刪除:頁面開著時經 storage.onChanged 轉為登出，單筆刪除改走硬刪(反方向同樣跟上)', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)], syncState: signedInState() });
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await ctx.controller.init();
+  await settle();
+
+  ctx.storage.emitChange({ syncState: { newValue: signedOutState(), oldValue: signedInState() } }, 'local');
+  await settle();
+
+  deleteFirstRow(ctx.doc);
+  await settle();
+
+  assert.deepEqual(ctx.storage.localSnapshot().history, [], '登出後維持硬刪，不留墓碑');
+});
+
+// ---- B2:history 寫入不得打斷警示名單的對話框與選單 ----
+
+test('B2 警示名單:命中對話框開著時，storage.onChanged 帶來 history 變動，對話框維持開啟且焦點不動', async () => {
+  const ctx = makeScamCardCtx();
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  openScamHits(ctx, rowA);
+  const focused = ctx.doc.activeElement;
+  assert.ok(focused, '前置:開啟對話框後焦點落在對話框內');
+  assert.notEqual(focused, firstByClass(rowA, 'scam-hit-count'), '前置:焦點已離開 pill');
+
+  ctx.storage.emitChange({ history: { newValue: [s4Entry(URL_A, 1000)], oldValue: [] } }, 'local');
+  await settle();
+
+  assert.equal(ctx.doc.ids.rows.children.length, 1, '前置:history 變動確實送達(紀錄牆多一筆)');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, 'history 變動不得關掉命中對話框');
+  assert.equal(ctx.doc.activeElement, focused, '焦點留在對話框內原本的位置');
+  assert.equal(evidenceTexts(ctx.doc.ids.scamHitsList).length, 3, '對話框內容照舊');
+});
+
+test('B2 警示名單:命中對話框開著時直接 setHistory，對話框維持開啟且焦點不動', async () => {
+  const ctx = makeScamCardCtx();
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  openScamHits(ctx, rowA);
+  const focused = ctx.doc.activeElement;
+
+  ctx.controller.setHistory([s4Entry(URL_A, 1000), s4Entry(URL_B, 2000)]);
+  await settle();
+
+  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, 'history 變動不得關掉命中對話框');
+  assert.equal(ctx.doc.activeElement, focused, '焦點不得被拉回 pill');
+});
+
+test('B2 警示名單:⋯ 選單開著時 history 變動，選單維持開啟(aria-expanded 仍為 true)', async () => {
+  const ctx = makeScamCardCtx();
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await initScamPage(ctx);
+
+  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
+  firstByClass(rowA, 'scam-menu-btn').fire('click', { stopPropagation() {} });
+  assert.equal(firstByClass(rowA, 'scam-menu').hidden, false, '前置:⋯ 選單已開');
+
+  ctx.storage.emitChange({ history: { newValue: [s4Entry(URL_A, 1000)], oldValue: [] } }, 'local');
+  await settle();
+
+  const rowNow = scamRowById(ctx.doc, SCAM_ID_A);
+  assert.ok(rowNow, '名單列仍在');
+  assert.equal(firstByClass(rowNow, 'scam-menu').hidden, false, 'history 變動不得收起 ⋯ 選單');
+  assert.equal(
+    firstByClass(rowNow, 'scam-menu-btn').getAttribute('aria-expanded'),
+    'true',
+    '⋯ 鈕的 aria-expanded 維持 true'
+  );
+});
+
+test('B2 警示名單:scamBlocklist 變動照常重畫名單;之後 history 變動不重畫名單列', async () => {
+  const ctx = makeScamCardCtx();
+  wireStorageOnChanged(ctx.storage, ctx.controller);
+  await initScamPage(ctx);
+
+  // 不退步:scamBlocklist 變動時名單重畫(移除 B 後只剩 A)。
+  const onlyA = scamCardFixture();
+  delete onlyA.entries[SCAM_ID_B];
+  delete onlyA.handleIndex['user.b'];
+  ctx.storage.emitChange({ scamBlocklist: { newValue: onlyA, oldValue: scamCardFixture() } }, 'local');
+  await settle();
+  assert.deepEqual(
+    scamRows(ctx.doc).map((r) => r.dataset.id),
+    [SCAM_ID_A],
+    'scamBlocklist 變動後名單即時重畫'
+  );
+  assert.equal(ctx.doc.ids.scamCount.textContent, i18n.fmt('zh', 'opScamListCount', { n: 1 }), '計數跟著更新');
+
+  // 只有 history 變動時，名單列不得被整份換掉。
+  const rowBefore = scamRowById(ctx.doc, SCAM_ID_A);
+  ctx.storage.emitChange({ history: { newValue: [s4Entry(URL_A, 1000)], oldValue: [] } }, 'local');
+  await settle();
+  assert.equal(scamRowById(ctx.doc, SCAM_ID_A), rowBefore, 'history 變動不得重畫警示名單列');
+});
+
+// ---- B3:匯入對話框 Esc ----
+
+test('B3 匯入對話框:開著時按 Esc 關閉，焦點回到觸發按鈕;確認框的 Esc 行為不變', async () => {
+  const ctx = makeController({ history: [s4Entry(URL_A, 1000)] });
+  await ctx.controller.init();
+  await settle();
+  hideAllOverlays(ctx.doc);
+
+  // 不退步:既有確認框(清除全部)照樣由 Esc 關閉，匯入框不受波及。
+  ctx.doc.ids.clearBtn.fire('click');
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '前置:確認框已開');
+  ctx.doc.fire('keydown', { key: 'Escape' });
+  assert.equal(ctx.doc.ids.confirmOverlay.hidden, true, 'Esc 照常關閉確認框');
+  assert.equal(ctx.doc.ids.overlay.hidden, true, '匯入框維持關閉');
+
+  const importBtn = ctx.doc.getElementById('importBtn');
+  importBtn.focus();
+  importBtn.fire('click');
+  assert.equal(ctx.doc.ids.overlay.hidden, false, '前置:匯入框已開');
+  assert.notEqual(ctx.doc.activeElement, importBtn, '前置:焦點已移進匯入框');
+
+  ctx.doc.fire('keydown', { key: 'Escape' });
+
+  assert.equal(ctx.doc.ids.overlay.hidden, true, 'Esc 應關閉匯入框');
+  assert.equal(ctx.doc.activeElement, importBtn, '關閉後焦點回到觸發按鈕');
+});
+
