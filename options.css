@@ -283,7 +283,7 @@ body {
 }
 /* hover 只用 filter 微調底色亮度，不放大(不加 transform:scale)。 */
 .account-trigger:hover { border-color: var(--baseline); filter: brightness(1.08); }
-.account-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.account-area:has(.acct-menu:popover-open) .account-trigger { border-color: var(--accent); }
 .avatar-wrap { position: relative; width: 26px; height: 26px; flex-shrink: 0; }
 .avatar-circle {
   width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-contrast);
@@ -328,21 +328,26 @@ body {
    renderAvatars。 */
 .avatar-photo { display: block; width: 100%; height: 100%; object-fit: cover; }
 
-/* 帳號下拉選單:寬 280px，右對齊頁首，其餘沿用 .menu 圓角/陰影。開合
-   動效:淡入 + 從 0.96 縮放到 1，transform-origin 右上，約 120ms;尊重
-   prefers-reduced-motion，該設定開啟時不套用 transition，瞬間切換。
-   顯示/隱藏仍靠 [hidden] 屬性做無障礙層級的開關，動畫只發生在 [hidden]
-   被移除之後、加上 .is-open 之前那一小段時間窗(見 openAcctMenu/
-   closeAcctMenu)。 */
+/* 帳號下拉選單:寬 280px，右對齊觸發鈕，其餘沿用 .menu 圓角/陰影。開合
+   動效:淡入 + 從 0.96 縮放到 1，transform-origin 右上，約 120ms。進場起點
+   由 @starting-style 給，退場靠 overlay/display 的 allow-discrete 讓元素
+   在過渡結束後才離開 top layer;prefers-reduced-motion 開啟時不套用
+   transition，瞬間切換。 */
 .acct-menu {
   width: 280px; min-width: 280px; padding: 10px;
   transform-origin: top right;
   opacity: 0;
   transform: scale(0.96);
 }
-.acct-menu.is-open { opacity: 1; transform: scale(1); }
+.acct-menu:popover-open { opacity: 1; transform: scale(1); }
+@starting-style {
+  .acct-menu:popover-open { opacity: 0; transform: scale(0.96); }
+}
 @media (prefers-reduced-motion: no-preference) {
-  .acct-menu { transition: opacity 0.12s ease, transform 0.12s ease; }
+  .acct-menu {
+    transition: opacity 0.12s ease, transform 0.12s ease,
+      overlay 0.12s allow-discrete, display 0.12s allow-discrete;
+  }
 }
 /* 選單頂部的帳號列:頭像 + 名字/email 兩行，純展示、不可點。 */
 .acct-menu-header { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; cursor: default; }
@@ -436,11 +441,12 @@ body {
 
 /* ---- ⋯ 選單與篩選下拉 ---- */
 .menu-wrap { position: relative; display: flex; align-items: center; gap: 10px; }
+/* 四個選單都是 auto popover，開啟時進 top layer、脫離 .menu-wrap 的定位
+   脈絡。Chrome 123 沒有 CSS anchor positioning，top/right 由 options.js
+   的 wirePopover 在 beforetoggle 依觸發鈕位置寫入;這裡蓋掉 UA 的
+   inset:0 與 margin:auto，color 改回繼承(UA 給的是 CanvasText)。 */
+.menu[popover] { position: absolute; inset: auto; margin: 0; color: inherit; }
 .menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 5;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -695,7 +701,6 @@ body {
    dialog-shell.tsx 的字面 token 值。 ---- */
 .modal-detail {
   position: relative;
-  max-width: 420px;
   border-radius: 12px;
   border-color: var(--card-outline);
   padding: 16px;
@@ -890,36 +895,21 @@ footer.about a {
 footer.about a:hover { color: var(--ink-1); }
 
 /* ---- 對話框 ----
-   遮罩透明度 0.55，照手機版 dialog-shell.tsx 的單一共用 DialogShell
-   (全 app 唯一的 dialog 外殼，三個對話框——匯入/清除確認/詳細視窗
-   一致採用，不是只套用在詳細視窗)。 */
-.overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  z-index: 10;
-}
-/* .overlay[hidden] 這條窄規則已被上面全域的 [hidden]{display:none
-   !important} 收斂取代，不再需要逐一補。 */
-/* 時間軸子層視窗疊在詳細視窗之上(照手機版巢狀 Modal 的做法)，z-index
-   取高一階，DOM 順序本身其實已經夠(接在 detailOverlay 後面)，這裡明寫
-   出來避免日後調順序時踩到。 */
-#timelineOverlay { z-index: 11; }
-/* 確認框可疊在詳細視窗之上(詳細視窗的「刪除這筆」會開這個框)，z-index
-   再高一階。少了這條就會撞上 DOM 順序:#confirmOverlay 寫在
-   #detailOverlay 前面，同為 z-index:10 時後者贏，確認框整個被遮住——
-   畫面看似沒反應、焦點靜默落在看不見的取消鈕、點遮罩還關錯視窗。 */
-#confirmOverlay { z-index: 12; }
+   7 個對話框都是 <dialog class="dlg">，以 showModal 開進 top layer，疊放
+   順序即開啟順序(詳細→時間軸、詳細→確認、裝置→確認)。dialog 本身只是
+   透明外框，外觀畫在內層 .modal;遮罩透明度 0.55，照手機版
+   dialog-shell.tsx 的單一共用 DialogShell。dialog.dlg 不得寫 display，
+   否則會壓過 UA 的 dialog:not([open]){display:none}。UA 的 max-height 與
+   overflow:auto 保留，內容太長時由 dialog 自己捲動。 */
+/* 左右各留 20px:百分比以視窗(不含捲軸)為準，等同遮罩四周各留 20px 的舊版面。 */
+dialog.dlg { padding: 0; border: 0; background: none; color: inherit; width: fit-content; max-width: calc(100% - 40px); }
+dialog.dlg::backdrop { background: rgb(0 0 0 / 0.55); }
 
-/* ---- 裝置對話框(#devicesOverlay):面板沿用 .modal-detail 的外觀，只把
-   寬度放寬到 480px。每列約 52px:左 24px 平台圖示、中間名稱/時間兩行、
+/* ---- 裝置對話框(#devicesOverlay):面板沿用 .modal-detail 的外觀，寬度
+   沿用 .modal 的 520px。每列約 52px:左 24px 平台圖示、中間名稱/時間兩行、
    右側改名與移除兩顆 ghost 圖示鈕——右側按鈕的浮現規則完全比照紀錄卡的
    .entry-quick(平時 display:none，不吃 hit-test 也不會被 Tab 掃到，
    hover 或 focus-within 才 display:flex)。 ---- */
-.modal-devices { max-width: 480px; }
 /* 標題列:左「裝置」、右「N 台裝置正在同步」;右側預留 ✕ 鈕的位置。 */
 .devices-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-right: 30px; }
 .devices-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
@@ -1100,8 +1090,8 @@ mark.scam-anchor {
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: var(--shadow);
-  width: 100%;
-  max-width: 520px;
+  width: 520px;
+  max-width: 100%;
   padding: 18px;
 }
 .modal h3 {
@@ -1135,14 +1125,17 @@ mark.scam-anchor {
   margin-top: 12px;
   flex-wrap: wrap;
 }
-.modal-sm { max-width: 380px; }
+/* 確認框較窄;詳細、裝置等其餘對話框沿用 .modal 的 520px。 */
+.modal-sm { width: 380px; }
 .modal-sm .desc { margin-bottom: 4px; }
 .danger-ink { color: var(--danger); }
 
+/* #toast 是 manual popover:每次顯示都重新 showPopover，排到 top layer
+   最上層，對話框開著時才不會被遮罩蓋住。這裡蓋掉 UA 的 inset:0、
+   margin:auto 與邊框，定位寫在同一條規則裡(id 權重高於 .toast，分開寫
+   會被 inset:auto 蓋掉);淡入起點由 @starting-style 給，淡出靠移除 .show。 */
+#toast { position: fixed; inset: auto; left: 50%; bottom: 28px; margin: 0; border: 0; overflow: visible; }
 .toast {
-  position: fixed;
-  left: 50%;
-  bottom: 28px;
   transform: translate(-50%, 20px);
   background: var(--ink-1);
   color: var(--plane);
@@ -1155,6 +1148,9 @@ mark.scam-anchor {
   max-width: 90vw;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+@starting-style {
+  .toast.show { opacity: 0; transform: translate(-50%, 20px); }
+}
 
 .sr-only {
   position: absolute;
