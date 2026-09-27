@@ -10,18 +10,12 @@ const path = require('node:path');
 // background.js 模組層的 const 只存在於 vm context 的全域詞法環境，不會變成
 // sandbox 物件的屬性;要斷言常數值（例如掃描上限）只能在同一個 context 內求值。
 const vm = require('node:vm');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
-// background.js 依賴共用 i18n 與 tcl-core 模組(真實環境靠 importScripts
-// 載入);測試把 i18n.js 與 tcl-core.js 原始碼接在前面，三支腳本共用同一個
-// sandbox 全域(TCLI18N / TCLCore 已存在，background 的 importScripts 條件式便
-// 不執行)。
-const SRC =
-  fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+// background.js 依賴共用 i18n 與 tcl-core 等模組(真實環境靠 importScripts
+// 載入);測試一律經 test/support/sw-sources.js 的 loadSwSources 依 SW 的真實
+// 順序逐檔載進同一個 sandbox，重現腳本邊界。
 
 // 本擴充自己的 id。訊息入口只認 sender.id（見 background.js 的
 // isOwnExtensionSender），mock 與送出的 sender 都以這一枚為準。
@@ -112,7 +106,7 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
   };
   // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，vm sandbox
   // 預設不含這個全域，這裡明確注入。
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
   return {
     storage,
@@ -172,7 +166,7 @@ function loadBackground() {
   // 的行為與真實瀏覽器/Service Worker 環境一致(兩者原生都有
   // URL/URLSearchParams)。fetchOgFieldsForLocalKind 內部用 setTimeout 做
   // 逾時競速，一併注入。
-  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -291,7 +285,7 @@ function makeAlwaysSucceedFetch(calls) {
 function loadBackgroundAlwaysSucceed() {
   const chrome = makeChrome();
   const calls = [];
-  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -529,7 +523,7 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   // 入，同樣需要注入 URL/URLSearchParams。fetchOgFieldsForLocalKind
   // 內部用 setTimeout 做逾時競速，一併注入。
   const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto };
-  runInSandbox(SRC, sandbox);
+  loadSwSources(sandbox);
 
   return {
     storage,
@@ -1357,7 +1351,7 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
     }
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     executeScriptCalls,
@@ -1553,7 +1547,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
     };
     // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入
     // (此測試雖走右鍵路徑不會觸發，維持一致性)。
-    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+    loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
     onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
     await settle(400);
@@ -1964,7 +1958,7 @@ function loadBackgroundForReinject(tabs, opts = {}) {
     },
   };
   chrome.storage = createChromeStorage({}).api;
-  runInSandbox(SRC, {
+  loadSwSources({
     chrome,
     fetch: async () => {
       throw new Error('unexpected fetch');
@@ -2372,7 +2366,7 @@ function loadBackgroundOgMulti() {
     if (/\/post\//.test(url)) return fetchResult(url, NO_OG_HTML);
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     fetchCalls,
@@ -2435,7 +2429,7 @@ function loadBackgroundForMigration(localHistory) {
   chrome.scripting = { executeScript: async () => [{}] };
   const storage = createChromeStorage({ saveHistory: true }, localHistory ? { history: localHistory } : {});
   chrome.storage = storage.api;
-  runInSandbox(SRC, {
+  loadSwSources({
     chrome,
     fetch: async () => {
       throw new Error('unexpected fetch');
@@ -2745,7 +2739,7 @@ function loadBackgroundForSync(opts = {}) {
   );
   chrome.storage = storage.api;
 
-  runInSandbox(SRC, {
+  loadSwSources({
     chrome,
     // 沙箱內先放好 TCLSync，background.js 的 importScripts 條件式便不執行。
     TCLSync: sync.api,
@@ -3402,7 +3396,7 @@ function loadBackgroundForDevices(opts = {}) {
   // opts.globals：逐案覆寫沙箱全域（例如以假的 Date 控制時鐘，驗每分鐘的
   // 全域限流視窗滾動）。預設不帶，既有測試的沙箱內容一字不變。
   Object.assign(sandbox, opts.globals || {});
-  runInSandbox(SRC, sandbox);
+  loadSwSources(sandbox);
   const runtime = makeRuntimeSender(onMessageListeners, EXT_PAGE_SENDER);
 
   return {

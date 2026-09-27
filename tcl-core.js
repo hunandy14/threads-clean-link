@@ -1640,7 +1640,7 @@
   }
 
   // entries(與 v1 allowlist)的鍵形狀:Threads 的作者主鍵是純數字字串、1-20 位
-  // (與 background 的 SCAM_USER_ID_PATTERN 同一把尺)。storage 是使用者可編
+  // (與伺服器同一把尺;SW 端經 isScamUserId 共用本判準)。storage 是使用者可編
   // 輯、也可能被他處寫髒的地方，不驗鍵形狀時任意字串(handle、路徑、標記字
   // 串)都能混進 entries 當成一筆作者，查表永遠對不上寫入側的 userId。
   var SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
@@ -2382,6 +2382,7 @@
     toScamMark: toScamMark,
     fromScamMark: fromScamMark,
     isScamMarkHandle: isScamMarkHandle,
+    isScamUserId: isScamUserIdKey,
     mergeScamEntry: mergeScamEntry,
     markScamEntryDirty: markScamEntryDirty,
   };

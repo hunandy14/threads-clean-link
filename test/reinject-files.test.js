@@ -13,19 +13,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'manifest.json'), 'utf8'));
-
-// background.js 依賴 i18n 與 tcl-core（真實環境靠 importScripts），比照
-// background.test.js 把兩支原始碼接在前面、共用同一個 sandbox 全域。
-const SRC =
-  fs.readFileSync(path.join(ROOT_DIR, 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(ROOT_DIR, 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(ROOT_DIR, 'background.js'), 'utf8');
 
 const RUN_AT_ORDER = ['document_start', 'document_end', 'document_idle'];
 
@@ -79,7 +71,7 @@ function loadBackground() {
     },
     storage: createChromeStorage({}).api,
   };
-  const sandbox = runInSandbox(SRC, {
+  const sandbox = loadSwSources({
     chrome,
     fetch: async () => {
       throw new Error('unexpected fetch');
