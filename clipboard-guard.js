@@ -31,7 +31,7 @@
   // 或 strip 剝參前的原網址)；removedParams(選填，僅 strip 分支算得出)
   // 是被剝除的查詢參數清單。這裡只做最基本的存在性判斷(與 cleanUrl 相同
   // 就不夾帶——沒有額外資訊，省一點 postMessage payload)，真正的型別/
-  // 長度 sanitize 交給 background.js(信任邊界)。
+  // 長度 sanitize 交給 tcl-core.js(信任邊界)。
   function notifyCleaned(cleanUrl, kind, original, removedParams) {
     try {
       var payload = { type: CLEANED_NOTICE_TYPE, cleanUrl: cleanUrl, kind: kind };
@@ -51,9 +51,9 @@
   // 一律用預設值運作(autoClean=false 時自動淨化／短碼解析整段不啟用，
   // 與 bridge.js 的 SETTINGS_DEFAULTS 同步)。saveHistory:recordOnly
   // (autoClean 關閉)流程是「先原生寫入、事後 fire-and-forget 補發解析
-  // 請求」，若 saveHistory 也關閉，解析結果反正不會被 background.js
+  // 請求」，若 saveHistory 也關閉，解析結果反正不會被 sw-history.js
   // 收下，直接省掉整個解析請求，不浪費一次網路往返(見下方 writeText／
-  // write 的 recordOnly 分支)。預設 true，對齊 background.js 的
+  // write 的 recordOnly 分支)。預設 true，對齊 sw-history.js 的
   // DEFAULT_SETTINGS.saveHistory。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
   var currentSettings = {
@@ -229,7 +229,7 @@
           if (isShareUrl(data)) {
             // share 分支只拿得到「短碼原文」當 original，沒有
             // removedParams——伺服器端重新導向前的網址帶了哪些查詢參數，
-            // guard 這一層無從得知(那是 background.js 解析短碼時才看得到
+            // guard 這一層無從得知(那是 sw-og.js 解析短碼時才看得到
             // 的資訊，這裡不硬造)。
             var shareOriginal = data.trim();
 
@@ -239,7 +239,7 @@
               // 秒的橋接逾時、甚至因分頁失焦而 NotAllowedError——原生寫入
               // 立刻執行，成功後才「事後」發解析請求補記錄(fire-and-forget，
               // 不 await、不阻塞這次 writeText 的回傳)。saveHistory 也
-              // 關閉時，解析結果反正不會被 background.js 的 recordHistory
+              // 關閉時，解析結果反正不會被 sw-history.js 的 recordHistory
               // 收下，直接省掉整個解析請求，不浪費一次網路往返。
               return Promise.resolve(nativeWriteText(data)).then(function (result) {
                 if (currentSettings.saveHistory) {

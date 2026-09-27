@@ -1573,7 +1573,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
 //   - 舊資料沒有 seen 欄位:合併時照手機版語意補種一筆起始紀錄
 //     [{ at: existing.at }](對齊 existing.seen ?? [{ at:
 //     existing.receivedAt }] 的等效寫法)，種子紀錄不帶 kind，再疊上本
-//     次事件(見 background.js 內 mergeHistoryEntry 註解)。
+//     次事件(見 sw-history.js 內 mergeHistoryEntry 註解)。
 //
 // 【永久合併規格取代】原本的 5 分鐘去重視窗(DEDUP_WINDOW_MS)整組拆除:與手
 // 機版的「url + 5 分鐘窗」刻意分岔，同一篇貼文永遠只有一張卡。相關的視窗外
@@ -1742,7 +1742,7 @@ test('紀錄永久合併(postKeyOf):既有卡的 url 帶尾斜線,與本次乾�
 // 級聯第二層:失敗卡收編。當年解析失敗、以短碼原文入庫的卡片(url 就是
 // /share/XXXX)，在同一個短碼日後解析成功時被收編進同文卡——短碼在那一刻才
 // 第一次與貼文對上號。收編只認 original 吻合分享短碼樣式的情況(見
-// background.js findOriginalAdoptIndex:original 是頁面可控輸入，放行任意值
+// sw-history.js findOriginalAdoptIndex:original 是頁面可控輸入，放行任意值
 // 等於讓惡意頁面點名吞掉別篇貼文的卡)。
 // ------------------------------------------------------------
 
@@ -4149,7 +4149,7 @@ test('B5 getLocalDevice:本機改名後同一實例立即回新名（不必等 S
 // ---- 審查預警 N3：遷移時的 seen 重新消毒 ----
 //
 // fillHistorySchema 目前用「消毒前後的陣列長度是否相同」決定要不要換上新的
-// seen（background.js 的 fillHistorySchema）。髒 deviceId 只會讓該筆事件少一個
+// seen（sw-history.js 的 fillHistorySchema）。髒 deviceId 只會讓該筆事件少一個
 // 鍵、不會讓整筆被丟掉，陣列長度不變，於是舊陣列原樣留下，髒值躲過遷移繼續留
 // 在 storage、之後照樣上雲。判準必須改成逐筆比較，或一律以消毒結果為準。
 test('B6 遷移:seen 事件帶髒 deviceId（陣列長度不變）經 migrateHistorySchema 後仍須被剝除', async () => {

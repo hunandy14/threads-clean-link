@@ -46,7 +46,7 @@ const NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverU
 // og fetch 補強經 fetchOgFieldsForLocalKind 的 setTimeout 逾時競速)跑完就
 // 斷言、閒時又白等，兩頭不討好;連同其餘五份逐字或近乎逐字相同的版本收斂
 // 進 test/support/settle.js 一份共用實作(原理與各項取捨的完整說明見該檔
-// 頭註解)。本檔經 loadSwSources 載入同一份 background.js(含
+// 頭註解)。本檔經 loadSwSources 載入 SW 全部腳本(含
 // fetchOgFieldsForLocalKind 的長效逾時計時器與 TCLSync 引擎的 setTimeout
 // 注入)，defaultMs 150 與 background.test.js 一致。
 const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 150 });

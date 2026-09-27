@@ -491,7 +491,7 @@ test('R1-2:找不到對應容器時，靜默省略欄位，仍照常轉發最小
 // 紀錄資料層補齊 original/removedParams(對齊手機 ShareHistoryItem):bridge
 // 純透傳 guard 已經算好的 original/removedParams，規則與上面的
 // author/handle/excerpt 透傳一致——不做任何型別/長度驗證，真正的 sanitize
-// 交給 background.js(信任邊界)。
+// 交給 tcl-core.js(信任邊界)。
 
 test('F 案:MAIN world 送來的 original/removedParams 原樣透傳給 service worker', async () => {
   const { win, sentMessages } = loadBridgeForNotice();
