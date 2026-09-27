@@ -2,11 +2,11 @@
 // 契約。目標函式尚未實作，本檔為紅燈骨架。
 //
 // 規格出處:
-//   - 手機端規則本體:C:\gitRepos\meta-link-clearer\src\lib\post-key.ts
+//   - 手機端規則本體:手機端 repo 的 src/lib/post-key.ts
 //     (全檔;postKeyOf 本體第 52-72 行，hostnameEndsWith 第 11-14 行，
 //     urlKey 第 41-46 行，THREADS_POST/INSTAGRAM_POST/FACEBOOK_* 第 17-28 行)
 //   - 手機端既有測試(對照表案例的交叉核對來源):
-//     C:\gitRepos\meta-link-clearer\src\lib\post-key.test.ts
+//     手機端 repo 的 src/lib/post-key.test.ts
 //   - 每一組期望值皆用手機原始碼實際跑出(scratchpad 一次性腳本以 Node
 //     type-stripping import 直接載入 post-key.ts，見任務對話紀錄)，不是手
 //     打推算。
