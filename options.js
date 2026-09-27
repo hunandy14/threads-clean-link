@@ -758,6 +758,9 @@
       }
       var icon = byId('themeIcon');
       if (icon) icon.setAttribute('href', THEME_ICONS[themePref] || THEME_ICONS.auto);
+      // 回寫 localStorage 的主題鏡像（theme-init.js 的 TCLTheme.remember），
+      // 下次開頁由 head 裡的 theme-init.js 同步套用，第一幀就是正確配色。
+      deps.themeMirror?.(themePref);
     }
 
     // ---- 相對時間 ----

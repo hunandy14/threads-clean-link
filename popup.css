@@ -1,0 +1,78 @@
+/* popup.css — 工具列 popup(popup.html)的版面。主題 token 與兩頁共用的外觀
+   (body、[hidden]、.setting-row、.switch)在 theme.css，本檔在它之後載入，
+   只引用 token、不宣告 token。
+
+   尺寸守則:Chrome 的擴充 popup 上限 800×600，超出就出捲軸。寬度由 body
+   固定 280px，高度隨內容撐開;新增列時留意總高遠低於 600。 */
+body {
+  width: 280px;
+  background: var(--surface);
+  font-size: 13px;
+}
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+header h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+header .version {
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.settings {
+  padding: 8px 14px 4px;
+  display: flex;
+  flex-direction: column;
+}
+.setting-row {
+  padding: 8px 0;
+}
+/* 標籤過長時在自己這一側折行，不把靠右的 switch 擠出列外。 */
+.setting-row-label {
+  min-width: 0;
+}
+/* popup 空間窄，描述用小字疊在名稱下方，同一顆 <label> 內兩行都能點擊
+   觸發 switch。 */
+.setting-row-label .name { display: block; }
+.setting-row-label .desc {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  margin-top: 2px;
+  font-weight: 400;
+}
+/* 導航列:沿用 .setting-row 的版式，但它是按鈕不是開關——右側放 chevron
+   而非打勾控件(iOS 設定/Chrome 自家 popup 的慣例)，點了跳去 options 頁。
+   這裡先重設 button 的原生外觀，flex 版式由 .setting-row 提供。 */
+.nav-row {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+/* chevron(Lucide，inline SVG):currentColor 取次要字色，垂直置中靠
+   .setting-row 的 align-items: center。 */
+.nav-chev {
+  color: var(--ink-2);
+  flex-shrink: 0;
+}
+footer {
+  padding: 8px 14px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.5;
+}
