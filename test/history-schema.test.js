@@ -569,9 +569,10 @@ test('S6 配額:schema 遷移寫入超出配額時優雅降級——console.warn
 // S5：syncState／syncAuth 與雲端 SyncItem 雙向映射
 // ============================================================
 
-// S5：兩個 storage key 的預設形狀（計劃 4.2）。欄位少一個、多一個，車道 D
-// 的同步引擎就會讀到 undefined 而不是 null。
-test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
+// S5：syncState 的預設形狀（計劃 4.2）。欄位少一個、多一個，車道 D
+// 的同步引擎就會讀到 undefined 而不是 null。syncAuth 的預設常數沒有讀者，依
+// CS-2 刪除。
+test('S5 常數:DEFAULT_SYNC_STATE 形狀', () => {
   assert.deepEqual(C.DEFAULT_SYNC_STATE, {
     userId: null,
     email: null,
@@ -592,7 +593,6 @@ test('S5 常數:DEFAULT_SYNC_STATE / DEFAULT_SYNC_AUTH 形狀', () => {
     // 卡在回填、一筆都推不出去。
     marksBackfillCursor: null,
   });
-  assert.deepEqual(C.DEFAULT_SYNC_AUTH, { token: null });
 });
 
 // CR-2：新欄位要走 normalizeSyncState 的白名單，否則整包寫回 storage 時被當成

@@ -1154,7 +1154,7 @@
           list = null;
         }
         // 沒有任何可查的作者時查表側留 null，可以立刻收工、不走訪 DOM；解除
-        // 名單的檢查另外拿完整的 list，條目被移進 allowlist 後 handleIndex
+        // 名單的檢查另外拿完整的 list，條目轉為 dismissed 後 handleIndex
         // 可能已經空了。
         //
         // 兩張反查表任一非空就要留著：handleIndex 空、lineIdIndex 非空的名單
@@ -1172,22 +1172,27 @@
       // 側一致：解除只影響之後的掛載。
       //
       // 比對主鍵是 userId；SSR 取不到而由 background 走匿名備援補查時本頁只
-      // 有 handle，改以解除紀錄自己存的 handle 比對（解除會把條目移出
-      // entries，handleIndex 那條路這時已經查不到）。
+      // 有 handle，改以 dismissed 條目自己存的 handle 比對（dismissed 條目
+      // 不在 handleIndex，那條路查不到）。
       function releaseAllowlistedScan(list) {
         if (!lastScan || !lastScan.tagged) return;
-        if (!list || !list.allowlist) return;
+        if (!list || !list.entries) return;
+        var entries = list.entries;
         if (lastScan.userId) {
-          if (Object.prototype.hasOwnProperty.call(list.allowlist, lastScan.userId)) {
+          if (
+            Object.prototype.hasOwnProperty.call(entries, lastScan.userId) &&
+            entries[lastScan.userId].state === 'dismissed'
+          ) {
             lastScan.tagged = false;
           }
           return;
         }
         var wanted = normalizeHandle(lastScan.handle);
         if (!wanted) return;
-        var ids = Object.keys(list.allowlist);
+        var ids = Object.keys(entries);
         for (var i = 0; i < ids.length; i++) {
-          if (normalizeHandle(list.allowlist[ids[i]].handle) === wanted) {
+          var entry = entries[ids[i]];
+          if (entry.state === 'dismissed' && normalizeHandle(entry.handle) === wanted) {
             lastScan.tagged = false;
             return;
           }
@@ -1219,14 +1224,12 @@
         return blocklist.lineIdIndex[lineId];
       }
 
-      // 一次 O(1) 查表：handle 小寫化後查 handleIndex 得 userId，userId 不在
-      // allowlist（使用者已解除封鎖）才算命中。
+      // 一次 O(1) 查表：handle 小寫化後查 handleIndex。handleIndex 只含
+      // active 條目，查得到即命中；使用者解除的 dismissed 條目天生不在表內。
       function isBlockedHandle(handle) {
         if (!blocklist) return false;
         var key = normalizeHandle(handle);
-        if (!key || !Object.prototype.hasOwnProperty.call(blocklist.handleIndex, key)) return false;
-        var userId = blocklist.handleIndex[key];
-        return !Object.prototype.hasOwnProperty.call(blocklist.allowlist, userId);
+        return !!key && Object.prototype.hasOwnProperty.call(blocklist.handleIndex, key);
       }
 
       // ---- 逐張卡片查表。
