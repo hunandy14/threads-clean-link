@@ -86,15 +86,7 @@ function makeCtx(opts) {
 
 // 比照 options-init.js 的 chrome.storage.onChanged 接線。
 function wireStorageOnChanged(storage, controller) {
-  storage.api.onChanged.addListener((changes, areaName) => {
-    if (!changes) return;
-    if (areaName === 'local') {
-      if (changes.history) controller.setHistory(changes.history.newValue || []);
-      controller.setLocalSettings(changes);
-    } else if (areaName === 'sync') {
-      controller.setSyncSettings(changes);
-    }
-  });
+  storage.api.onChanged.addListener((changes, areaName) => controller.onStorageChanged(changes, areaName));
 }
 
 function walkNodes(node, out) {

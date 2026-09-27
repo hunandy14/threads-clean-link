@@ -813,9 +813,9 @@ CROSS_LAYER_URL_CASES.forEach(({ label, url, expectSurvive }) => {
 // ---- 設定頁不再出現 notifySuccess 控件 ----
 //
 // 成功通知整組拆除後 notifySuccess 零讀取端。這裡從兩個角度釘住它不會
-// 再出現:純函式層的 SETTING_IDS/OPTIONS_DEFAULT_SETTINGS 不含這顆鍵，以及
+// 再出現:純函式層的 OPTIONS_DEFAULT_SETTINGS 不含這顆鍵，以及
 // options.html 原文不再有 id="notifySuccess" 的控件(靜態檢查)。
-test('notifySuccess:OPTIONS_DEFAULT_SETTINGS/SETTING_IDS 不含這顆鍵，options.html 原文也不再有對應控件(成功通知已整組移除)', () => {
+test('notifySuccess:OPTIONS_DEFAULT_SETTINGS 不含這顆鍵，options.html 原文也不再有對應控件(成功通知已整組移除)', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(options.OPTIONS_DEFAULT_SETTINGS, 'notifySuccess'), false);
 
   const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
@@ -1576,7 +1576,7 @@ test('R7 a11y:開啟詳細視窗時焦點移入關閉鈕', async () => {
   assert.equal(closeFocused, 1, '開啟詳細視窗時焦點應移到關閉鈕');
 });
 
-// aria-label 走 i18n:options.html 用 data-i18n-aria，applyI18nDom 有對應
+// aria-label 走 i18n:options.html 用 data-i18n-aria，i18n.applyDom 有對應
 // 通道，i18n 有 key(zh/en)。DOM stub 的 querySelectorAll 回空陣列測不到
 // applyI18nDom 的實際套用，改用靜態原文 + 字典檢查。
 test('R7 a11y:關閉鈕/統計磚的 aria-label 改走 data-i18n-aria(不再硬編中文)', () => {
@@ -1585,8 +1585,8 @@ test('R7 a11y:關閉鈕/統計磚的 aria-label 改走 data-i18n-aria(不再硬�
   assert.match(html, /id="timelineClose"[^>]*data-i18n-aria="opClose"/, '時間軸關閉鈕改掛 data-i18n-aria');
   assert.match(html, /class="stats"[^>]*data-i18n-aria="opStatsAria"/, '統計磚區塊改掛 data-i18n-aria');
 
-  const js = fs.readFileSync(path.join(__dirname, '..', 'options.js'), 'utf8');
-  assert.match(js, /\[data-i18n-aria\]/, 'applyI18nDom 應處理 data-i18n-aria 通道');
+  const js = fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8');
+  assert.match(js, /\[data-i18n-aria\]/, 'i18n.applyDom 應處理 data-i18n-aria 通道');
 
   assert.equal(i18n.t('zh', 'opStatsAria'), '統計摘要');
   assert.equal(i18n.t('en', 'opStatsAria'), 'Statistics');
@@ -5551,7 +5551,7 @@ test('裝置軟刪除:升級前的舊快取列沒有 removedAt 鍵時一律當�
 //
 // 與設定卡既有三顆(autoClean/saveHistory/postCopyEnabled)不同:那三顆存
 // chrome.storage.sync、會跟著帳號跨裝置同步;警示名單與這顆總開關是純本機
-// 功能(不上雲)，值存 chrome.storage.local，故不掛進 SETTING_IDS，讀寫都
+// 功能(不上雲)，area 為 local(見 TCLCore.SETTINGS_SCHEMA)，讀寫都
 // 走 localStorage 那一區。
 //
 // 預設開(缺席視為 true):storage 裡沒有這顆鍵時開關必須是 checked，否則
@@ -9128,19 +9128,11 @@ test('S-a 刪雲端:廣播 signed_out 先到、回應 {ok,signedOut} 後到，�
 // 警示名單、B3 匯入對話框 Esc)。
 // ============================================================
 
-// 比照 options-init.js 的 chrome.storage.onChanged 接線:local 區帶 history
-// 先交給 setHistory，整包 changes 再交給 setLocalSettings;sync 區交給
-// setSyncSettings。測試以 storage.emitChange 觸發，走的是頁面實際收到的路徑。
+// 比照 options-init.js 的 chrome.storage.onChanged 接線:changes 與 areaName
+// 原封交給 controller.onStorageChanged。測試以 storage.emitChange 觸發，走的
+// 是頁面實際收到的路徑。
 function wireStorageOnChanged(storage, controller) {
-  storage.api.onChanged.addListener((changes, areaName) => {
-    if (!changes) return;
-    if (areaName === 'local') {
-      if (changes.history) controller.setHistory(changes.history.newValue || []);
-      controller.setLocalSettings(changes);
-    } else if (areaName === 'sync') {
-      controller.setSyncSettings(changes);
-    }
-  });
+  storage.api.onChanged.addListener((changes, areaName) => controller.onStorageChanged(changes, areaName));
 }
 
 function deleteFirstRow(doc) {
