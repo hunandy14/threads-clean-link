@@ -18,7 +18,7 @@
 //
 // 【遷移】原始 syncState 帶 `marksPushedAt` 鍵視為舊版。runMarksRound 開頭一次
 // mutate 依舊規則標 dirty：sel = max(updatedAt, pushAfter)；
-// `pushedAt === null || (sel > pushedAt && rejected[key] !== sel)` 就標，並刪掉
+// `(pushedAt === null || sel > pushedAt) && rejected[key] !== sel` 就標，並刪掉
 // pushAfter。下一次 saveState 把舊欄位清掉。登出態不遷移，登入後第一輪才遷
 // 移（登入本來就全部標 dirty）。遷移與推送之間被殺只多推一次。
 //
@@ -1145,6 +1145,34 @@ test('MD8 遷移：成功的一輪只推舊規則選中的條目（回歸保護�
     LEGACY_DIRTY.map((id) => 'threads:' + id).sort(),
     '遷移前後推送的集合一致：舊版升級不漏推、不重推整份名單'
   );
+});
+
+test('MD8 遷移：水位線為 null 時被拒映射照樣生效（對齊 0.10.0 選批規則）', async () => {
+  const TCLSync = loadSync();
+  const env = makeEnv({
+    signedIn: true,
+    scamGuardEnabled: true,
+    blocklist: blocklist({
+      1001: localEntry({ handle: 'u1001', updatedAt: T0 - DAY }),
+      // 被拒映射記的正是這一版：0.10.0 的 planMarkBatches 不論水位線是否 null 都跳過。
+      1002: localEntry({ handle: 'u1002', updatedAt: T0 - 2 * DAY }),
+      // 被拒映射記的是較舊的一版：照樣要推。
+      1003: localEntry({ handle: 'u1003', updatedAt: T0 - DAY + 7 }),
+    }),
+  });
+  env.storage.localData.syncState = Object.assign(signedInState({ marksCursor: '0' }), {
+    marksPushedAt: null,
+    marksRejected: { 'threads:1002': T0 - 2 * DAY, 'threads:1003': T0 - DAY },
+  });
+  env.failPath(MARKS_SYNC_PATH, { kind: 'network' });
+
+  await TCLSync.create(env.deps).syncNow();
+  await settle();
+
+  const entries = env.storage.entries();
+  assert.equal(entries['1001'].dirty, true, '水位線 null：沒被拒的條目全推');
+  assert.notEqual(entries['1002'].dirty, true, '水位線 null 也不重送被拒的同一版');
+  assert.equal(entries['1003'].dirty, true, '被拒的是較舊一版，本機已改過，照樣要推');
 });
 
 test('MD8 遷移：登出態不遷移，登入後第一輪才遷移（登入本來就全部標 dirty）', async () => {

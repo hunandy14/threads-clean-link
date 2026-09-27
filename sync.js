@@ -375,8 +375,8 @@
         return {
           state: TCLCoreRef.normalizeSyncState(rawState),
           // 舊版 syncState 的推送水位線與被拒映射(原始物件帶 marksPushedAt 鍵
-          // 即舊版，值為 null 也算)。marks 通道改成逐筆 dirty 之後，這兩格只
-          // 剩 migrateLegacyMarks 讀;遷移落地前 saveState 原樣帶著它們寫回，
+          // 即舊版，值為 null 也算)。這兩格只供 migrateLegacyMarks 讀;遷移落
+          // 地前 saveState 原樣帶著它們寫回，
           // 否則 links 那一步失敗的一輪就會在遷移之前把它們清掉。
           legacyMarks:
             rawState && typeof rawState === 'object' && Object.prototype.hasOwnProperty.call(rawState, 'marksPushedAt')
@@ -1204,8 +1204,9 @@
 
     /**
      * 舊版 syncState(帶 marksPushedAt 鍵，見 loadContext)的一次性升級:依舊的
-     * 水位線規則——選批時戳 sel = max(updatedAt, pushAfter)，水位線為 null 或
-     * sel 大於水位線且不是被拒的那一版就該推——把該推未推的條目標 dirty，並刪
+     * 選批規則——選批時戳 sel = max(updatedAt, pushAfter)，水位線為 null 或 sel
+     * 大於水位線，且不論水位線是否為 null 都不是被拒的那一版，就該推——把該推
+     * 未推的條目標 dirty，並刪
      * 掉 pushAfter。只標髒不清髒:落地之後、舊欄位清掉之前被殺，重跑時 pushAfter
      * 已不在，再算一次不會把已標的條目洗回乾淨，至多多推一次。落地後
      * ctx.legacyMarks 歸 null，下一次 saveState 就不再帶舊欄位。
@@ -1225,7 +1226,7 @@
           if (hinted && entry.pushAfter > sel) sel = entry.pushAfter;
           var key = 'threads:' + userId;
           var sameRejected = Object.prototype.hasOwnProperty.call(rejected, key) && rejected[key] === sel;
-          var pending = pushedAt === null || (sel > pushedAt && !sameRejected);
+          var pending = (pushedAt === null || sel > pushedAt) && !sameRejected;
           if (!hinted && (!pending || entry.dirty === true)) return;
           var next = Object.assign({}, entry);
           delete next.pushAfter;
