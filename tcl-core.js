@@ -2120,6 +2120,34 @@
     return 0;
   }
 
+  // ---- 同步錯誤碼分類 ----
+  //
+  // 錯誤碼 → 類別的對照表，options 選文案與同步引擎判斷可否重試共用。分類原則
+  // 對齊後端 api-spec §4.5:401 為 auth、配額為 quota、429 為 rate_limit、
+  // 5xx 為 server、連線失敗為 network;可重試的只有 rate_limit、network、
+  // server。表外的碼(其餘 4xx、本機產生的碼、未來新增的碼)一律歸 unknown，
+  // 不可重試。
+  var ERROR_CATEGORY_BY_CODE = {
+    session_expired: 'auth',
+    unauthorized: 'auth',
+    storage_quota: 'quota',
+    rate_limited: 'rate_limit',
+    network_error: 'network',
+    internal_error: 'server',
+    misconfigured: 'server',
+    gone: 'server',
+  };
+  var RETRYABLE_ERROR_CATEGORIES = ['rate_limit', 'network', 'server'];
+
+  /** 錯誤碼的類別與可重試旗標;非字串或表外的碼回 { category: 'unknown', retryable: false }。 */
+  function errorCategoryOf(code) {
+    var category =
+      typeof code === 'string' && Object.prototype.hasOwnProperty.call(ERROR_CATEGORY_BY_CODE, code)
+        ? ERROR_CATEGORY_BY_CODE[code]
+        : 'unknown';
+    return { category: category, retryable: RETRYABLE_ERROR_CATEGORIES.indexOf(category) !== -1 };
+  }
+
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
     isCleanPostUrl: isCleanPostUrl,
@@ -2152,6 +2180,7 @@
     resolveReceivedAt: resolveReceivedAt,
     isTombstone: isTombstone,
     isQuotaExceededError: isQuotaExceededError,
+    errorCategoryOf: errorCategoryOf,
     HISTORY_LIMITS: HISTORY_LIMITS,
     capHistory: capHistory,
     SCAM_LIMITS: SCAM_LIMITS,

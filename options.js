@@ -1160,17 +1160,29 @@
       return Promise.resolve(undefined);
     }
 
-    // 同步錯誤碼的 toast 文案:session 過期走既有的登入過期文案，其餘以錯誤
-    // 前綴帶出錯誤碼。
-    function syncErrorToastText(code) {
-      if (code === 'session_expired') return tt('opAccountExpired');
+    // 同步錯誤碼的文案(帳號選單的錯誤列與 toast 共用)，依 TCLCore.errorCategoryOf
+    // 的類別挑選:auth 走登入過期文案，quota／rate_limit／network 各有專屬文案，
+    // server 帶出原始碼，unknown 以錯誤前綴帶出錯誤碼。
+    var SYNC_ERROR_KEY_BY_CATEGORY = {
+      auth: 'opAccountExpired',
+      quota: 'opSyncErrQuota',
+      rate_limit: 'opSyncErrRateLimit',
+      network: 'opSyncErrNetwork',
+    };
+
+    function syncErrorText(code) {
+      var category = TCLCore.errorCategoryOf(code).category;
+      if (Object.prototype.hasOwnProperty.call(SYNC_ERROR_KEY_BY_CATEGORY, category)) {
+        return tt(SYNC_ERROR_KEY_BY_CATEGORY[category]);
+      }
+      if (category === 'server') return tf('opSyncErrServer', { code: code });
       return tt('opAccountErrorPrefix') + code;
     }
 
     // 刪除雲端資料的定案 toast，依 sync.deleteCloud 的回應 { ok, signedOut, code }。
     function deleteCloudToastText(res) {
       if (res.ok) return tt(res.signedOut === true ? 'opToastCloudDeletedSignedOut' : 'opToastCloudDeleted');
-      return syncErrorToastText(typeof res.code === 'string' && res.code ? res.code : 'internal_error');
+      return syncErrorText(typeof res.code === 'string' && res.code ? res.code : 'internal_error');
     }
 
     // 顯示名字:displayName 優先，缺席退回 email 的 @ 前段;兩者皆缺回
@@ -1437,7 +1449,7 @@
       var errorRow = byId('acctErrorRow');
       var errorText = byId('acctErrorText');
       if (errorRow) errorRow.hidden = !hasError;
-      if (errorText) errorText.textContent = hasError ? tt('opAccountErrorPrefix') + s.lastError : '';
+      if (errorText) errorText.textContent = hasError ? syncErrorText(s.lastError) : '';
 
       var expiredRow = byId('acctExpiredRow');
       var expiredText = byId('acctExpiredText');
@@ -1541,7 +1553,7 @@
       // 程，帶的 lastError 可能是上一輪留下的，不拿來判讀。
       if (pendingDeleteCloudToast && syncState.status !== 'syncing') {
         pendingDeleteCloudToast = false;
-        if (syncState.lastError) deleteCloudFallbackText = syncErrorToastText(syncState.lastError);
+        if (syncState.lastError) deleteCloudFallbackText = syncErrorText(syncState.lastError);
         else if (accountMode(syncState) === 'signedOut') deleteCloudFallbackText = tt('opToastCloudDeletedSignedOut');
         if (deleteCloudFallbackText !== null) toast(deleteCloudFallbackText);
       }

@@ -2943,7 +2943,7 @@ test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 若帶�
     lastError: 'internal_error',
     apiBase: '',
   });
-  assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'internal_error');
+  assert.equal(doc.ids.toast.textContent, i18n.fmt('zh', 'opSyncErrServer', { code: 'internal_error' }));
 });
 
 test('帳號入口:刪除雲端資料送出後，下一次 stateChanged 沒有 lastError 時，不覆蓋樂觀 toast', async () => {
@@ -3120,7 +3120,7 @@ test('帳號入口:status 為 error 時選單顯示 lastError 一行(含前綴)�
 
   assert.equal(doc.ids.statusDot.classList.contains('is-danger'), true);
   assert.equal(doc.ids.acctErrorRow.hidden, false);
-  assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opAccountErrorPrefix') + 'rate_limited');
+  assert.equal(doc.ids.acctErrorText.textContent, i18n.t('zh', 'opSyncErrRateLimit'));
   assert.equal(doc.ids.acctSyncNowBtn.disabled, false, '錯誤態的一般同步鈕不因此停用');
   assert.equal(
     doc.ids.acctSyncLabel.textContent,

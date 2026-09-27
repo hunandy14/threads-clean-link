@@ -527,10 +527,10 @@
     }
 
     function httpError(res, payload) {
-      var code =
-        payload && typeof payload.error === 'string' && payload.error
-          ? payload.error
-          : defaultCodeFor(res.status);
+      // body.error 與登入交換同一道夾擠(見 ERROR_CODE_PATTERN)，不合樣式退回
+      // 狀態碼的預設碼。
+      var raw = payload && typeof payload.error === 'string' ? payload.error : null;
+      var code = raw !== null && ERROR_CODE_PATTERN.test(raw) ? raw : defaultCodeFor(res.status);
       var err = syncError(code);
       // HTTP 狀態碼與錯誤碼分開帶:removeDevice 的冪等判定看的是 404 這個
       // 狀態，不是後端剛好回了哪一個 body.error。
