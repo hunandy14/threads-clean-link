@@ -82,7 +82,7 @@ const T0 = 1_700_000_000_000;
 // ---- storage 替身 ----
 //
 // 【時序紀律】比照 test/support/helpers.js 的 createChromeStorage：get/set/remove
-// 一律以 setTimeout(0) 延遲結算，絕不在同一個 tick 直接 resolve——同 tick 假綠燈
+// 一律以 setImmediate 延遲到下一輪結算，絕不在同一個 tick 直接 resolve——同 tick 假綠燈
 // 是本專案已知風險。另外側錄每次寫入（區域、鍵、是否在 writeChain 內），供
 // 「history 寫入走序列鏈、不交錯」的斷言使用。
 function createSyncStorage(localSeed = {}, sessionSeed = {}) {
@@ -91,7 +91,7 @@ function createSyncStorage(localSeed = {}, sessionSeed = {}) {
   let seq = 0;
 
   function later(fn) {
-    setTimeout(fn, 0);
+    setImmediate(fn);
   }
 
   function makeArea(name, seed) {
@@ -417,10 +417,10 @@ function makeEnv(opts = {}) {
   };
 }
 
-/** 讓所有 setTimeout(0) 排程的 storage 結算跑完。 */
+/** 讓所有 setImmediate 排程的 storage 結算跑完。 */
 async function settle(rounds = 8) {
   for (let i = 0; i < rounds; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setImmediate(resolve));
   }
 }
 
@@ -2056,7 +2056,7 @@ test('T8 mock：holdNext 延遲回應到下一個 tick 才結算（競態測試�
       return res;
     });
 
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false, 'release 之前不得結算');
   assert.equal(server.pendingCount(), 1);
   release();
@@ -3051,7 +3051,7 @@ function makeDeviceEnv(opts = {}) {
   if (opts.omitGetLocalDevice !== true) {
     env.deps.getLocalDevice = function () {
       env.getLocalDeviceCalls.push(env.now());
-      return new Promise((resolve) => setTimeout(() => resolve(device), 0));
+      return new Promise((resolve) => setImmediate(() => resolve(device)));
     };
   }
 
@@ -3131,7 +3131,7 @@ function chainedGetLocalDevice(env) {
   env.deps.getLocalDevice = function () {
     env.getLocalDeviceCalls.push(env.now());
     return env.deps.writeChain(function () {
-      return new Promise((resolve) => setTimeout(() => resolve(env.localDevice), 0));
+      return new Promise((resolve) => setImmediate(() => resolve(env.localDevice)));
     });
   };
 }
@@ -3151,7 +3151,7 @@ async function settledWithin(promise, rounds = 300) {
     }
   );
   for (let i = 0; i < rounds && !done; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setImmediate(resolve));
   }
   return done;
 }
