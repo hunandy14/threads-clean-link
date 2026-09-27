@@ -472,9 +472,7 @@ function signedInState(over = {}) {
       lastSyncedAt: T0 - 10 * 60_000,
       lastError: null,
       marksCursor: null,
-      marksPushedAt: null,
       marksEvicted: null,
-      marksRejected: null,
     },
     over
   );
@@ -673,7 +671,7 @@ function makeMarksEnv() {
   const env = makeEnv({
     signedIn: true,
     scamGuardEnabled: true,
-    syncState: { marksCursor: '0', marksPushedAt: T0 },
+    syncState: { marksCursor: '0' },
     blocklist: blocklist({}),
   });
   env.server.marks.seed([REMOTE_MARK]);
