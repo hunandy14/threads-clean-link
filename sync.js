@@ -81,6 +81,13 @@
   // 同步紀元(§3.3)：`{ userId, epoch }`，本機最後確認的雲端 epoch。不屬於帳號
   // 五鍵——登出、過期、刪雲端都不清，只在採用另一個帳號的值時整筆覆寫。
   var EPOCH_KEY = 'syncEpoch';
+  // 重建鏡像待辦(D58):刪雲端遠端已成功(雲端清空、epoch +1)但本機帳號鍵寫
+  // 入失敗時落下 true。本機這時可能仍握著舊 epoch(下次撞 409 會重建)，也可
+  // 能根本沒有 epoch(下次採用新值、已 ack 的舊卡就永遠不再上雲)，旗標讓後者
+  // 也重建。下一次登入或同步起跑看到它就視同本機沒有這個帳號的 epoch:全量
+  // 標髒、重設游標、清掉 syncEpoch 與旗標，第一個 POST 不帶 epoch 並採用回應
+  // 的值，請求數與一般的首次登入相同。
+  var REBUILD_KEY = 'syncRebuildPending';
   // 「刪除雲端資料」的單一端點(契約 R11):硬刪該帳號全部雲端資料並撤銷所有
   // session，回 `{ ok, revokedSessions }`。
   var CLOUD_DATA_PATH = '/api/v1/cloud-data';
@@ -383,6 +390,7 @@
       defaults[BACKOFF_KEY] = null;
       defaults[VERIFIED_AT_KEY] = null;
       defaults[EPOCH_KEY] = null;
+      defaults[REBUILD_KEY] = null;
       return localGet(defaults).then(function (got) {
         var authRecord = got[AUTH_KEY];
         var backoff = got[BACKOFF_KEY];
@@ -394,6 +402,8 @@
           // 請求不帶 epoch。epochRecord 是原始紀錄，供 finishSignIn 對新帳號判讀。
           epoch: epochFor(got[EPOCH_KEY], state.userId),
           epochRecord: got[EPOCH_KEY],
+          // 重建鏡像待辦(見 REBUILD_KEY)。
+          rebuildPending: got[REBUILD_KEY] === true,
           // 舊版 syncState 的推送水位線與被拒映射(原始物件帶 marksPushedAt 鍵
           // 即舊版，值為 null 也算)。這兩格只供 migrateLegacyMarks 讀;遷移落
           // 地前 saveState 原樣帶著它們寫回，
@@ -856,6 +866,33 @@
       }
       if (isPost) ctx.budget.left -= 1;
       return true;
+    }
+
+    /**
+     * 同步起跑時消化重建鏡像待辦(D58，見 REBUILD_KEY):視同本機沒有這個帳號
+     * 的 epoch。history 與名單全部標髒、links 游標回 '0'、marks 兩格游標歸
+     * null，再以單一 set 清掉 syncEpoch 與旗標;本輪第一個 POST 不帶 epoch、
+     * 採用回應的值。不發任何請求。寫入順序是標髒 → syncState → 清旗標:中途
+     * 被殺時旗標仍在，下一輪重來一次。
+     */
+    function applyRebuild(ctx) {
+      ctx.state.cursor = '0';
+      ctx.state.marksCursor = null;
+      ctx.state.marksBackfillCursor = null;
+      return resetMirrorFields()
+        .then(function () {
+          return saveState(ctx.state, ctx.legacyMarks);
+        })
+        .then(function () {
+          var items = {};
+          items[EPOCH_KEY] = null;
+          items[REBUILD_KEY] = null;
+          return localSet(items);
+        })
+        .then(function () {
+          ctx.epoch = null;
+          ctx.rebuildPending = false;
+        });
     }
 
     /**
@@ -1527,10 +1564,11 @@
      * 4. 廣播 status。
      *
      * @param {string} kind RESET 的鍵。
-     * @param {{token?: string, identity?: object, prevState?: object, switched?: boolean, markDirty?: boolean}} [args]
+     * @param {{token?: string, identity?: object, prevState?: object, switched?: boolean, markDirty?: boolean, rebuild?: boolean}} [args]
      *   token:signIn 的新 token;identity:signIn 的身分四欄;prevState:
      *   expired 合併 patch 的底;switched:signIn 是否換了帳號;markDirty:覆寫
-     *   表上的 markDirty。
+     *   表上的 markDirty;rebuild:消化重建鏡像待辦(見 REBUILD_KEY)，同一次
+     *   set 一併清掉 syncEpoch 與旗標。
      * @returns {Promise<void>} 標髒或帳號鍵寫入失敗時 reject，alarm 與廣播不跑。
      */
     function resetAccount(kind, args) {
@@ -1550,6 +1588,10 @@
           items[VERIFIED_AT_KEY] = spec.verifiedAt === 'now' ? now() : null;
           if (spec.devices === 'clear' || (spec.devices === 'ifSwitched' && opts.switched)) {
             items[DEVICES_CACHE_KEY] = null;
+          }
+          if (opts.rebuild) {
+            items[EPOCH_KEY] = null;
+            items[REBUILD_KEY] = null;
           }
           return localSet(items);
         })
@@ -1658,13 +1700,16 @@
       // 全部標 dirty，第一趟不帶 epoch、採用回應的值。有的話不標髒:第一個 POST
       // 帶本機 epoch，雲端若被清過會撞 409，由 resetForEpoch 標髒重傳。游標與回
       // 填位置一律隨 syncState 整包重設。伺服器端的 upsert 與墓碑冪等，重傳不會
-      // 長出重複資料。別台裝置的清單屬於前一個帳號(D25):換人時清掉。
+      // 長出重複資料。別台裝置的清單屬於前一個帳號(D25):換人時清掉。重建鏡
+      // 像待辦(D58，見 REBUILD_KEY)視同本機沒有 epoch:標髒，並在帳號鍵那一次
+      // set 裡清掉 syncEpoch 與旗標。
       var switched = ctx.state.userId !== null && userId !== null && ctx.state.userId !== userId;
       return resetAccount('signIn', {
         token: exchange.authToken,
         identity: { userId: userId, email: email, displayName: displayName, avatarUrl: avatarUrl },
         switched: switched,
-        markDirty: epochFor(ctx.epochRecord, userId) === null,
+        markDirty: ctx.rebuildPending || epochFor(ctx.epochRecord, userId) === null,
+        rebuild: ctx.rebuildPending,
       }).then(function () {
         // 登入完成就跑一次:首次綁定的全量上傳(D3)與雲端既有資料的首輪拉
         // 取都在這一次完成，不必等第一個 alarm。
@@ -1767,6 +1812,9 @@
         return readLocalDevice()
           .then(function (device) {
             ctx.device = device;
+            return ctx.rebuildPending ? applyRebuild(ctx) : undefined;
+          })
+          .then(function () {
             return runRound(ctx);
           })
           .then(function () {
@@ -1817,7 +1865,9 @@
      * 不動，syncEpoch 也不動:伺服器 epoch 已 +1，下次登入第一個 POST 撞 409，
      * 由 resetForEpoch 標髒重傳(D54／§3.3)。本機身分 syncDevice 不動。寫入失
      * 敗回 storage_write_failed、token 保留，使用者看得到錯誤，可以再按一次(端
-     * 點冪等);伺服器 session 已撤銷，下一次請求會 401，走過期出口。
+     * 點冪等);伺服器 session 已撤銷，下一次請求會 401，走過期出口。寫入失敗
+     * 時另以單鍵落下重建鏡像待辦(D58，見 REBUILD_KEY):本機沒有 epoch 可撞
+     * 409 時，下一次登入或同步照樣全量重傳。
      *
      * 失敗(非 2xx／斷網)不登出、本機一格不動，只記 lastError;401 走 session
      * 過期的統一出口。
@@ -1848,7 +1898,18 @@
                 return { ok: true, signedOut: true };
               },
               function () {
-                return failDelete('storage_write_failed');
+                // 雲端已清空，本機卻沒登出:落下重建鏡像待辦(D58，見
+                // REBUILD_KEY)，下一次登入或同步把本機全量重傳。單鍵獨立寫
+                // 入;這次也失敗就只記 warn，退回靠 epoch 409 重建。
+                var flag = {};
+                flag[REBUILD_KEY] = true;
+                return localSet(flag)
+                  .catch(function (err) {
+                    console.warn('[threads-clean-link] 重建鏡像待辦寫入失敗', err);
+                  })
+                  .then(function () {
+                    return failDelete('storage_write_failed');
+                  });
               }
             );
           },
