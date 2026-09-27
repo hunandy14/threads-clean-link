@@ -89,7 +89,7 @@ local 需要**兩個終端機**:終端機 1 在後端目錄跑 `npm run dev`(wra
 
 ### 切換環境必須清掉上一個環境的狀態
 
-寫入新的連線目標之前，若目前指向的是另一個環境，先清掉舊的登入憑證與同步狀態(本專案是 `storage.local` 的 `syncAuth`／`syncState`／`syncVerifiedAt`／`syncBackoff`，加上 `storage.session` 的單飛旗標、去抖、nonce)，並印一行「已切換環境，清除舊登入狀態」。
+寫入新的連線目標之前，若目前指向的是另一個環境，先清掉舊的登入憑證與同步狀態(本專案是 `storage.local` 的 `syncAuth`／`syncState`／`syncVerifiedAt`／`syncBackoff`，加上 `storage.session` 的 nonce，以及舊版遺留的單飛、去抖旗標；現行版本的單飛與去抖只在 SW 記憶體)，並印一行「已切換環境，清除舊登入狀態」。
 
 理由是這些狀態全都綁在特定後端上:token 是另一台伺服器簽的，同步游標與清除水位線指向另一份資料庫。留著不會讓人「省一次登入」，只會讓同步一直失敗，而失敗訊息看起來像新環境的問題，於是查錯查半天。三個環境互切都適用，不是只有進出 local 才清。
 

@@ -106,20 +106,19 @@
 
   // 單輪同步 POST 的上限(links/sync 與 marks/sync 合計)。登入後的全量重傳可能
   // 切出上百批，一輪連發會撞後端限流桶(與手機端共用)。達上限就結束本輪，
-  // 以 30 秒保底 alarm 排下一輪續跑，直到沒有待推的批次。
+  // 以 CONTINUE_DELAY_MS 後的保底 alarm 排下一輪續跑，直到沒有待推的批次。
   var MAX_ROUND_POSTS = 12;
-
-  // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
-  // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
-  var INFLIGHT_KEY = 'syncInflight';
   // 單次請求的逾時(含讀回應本文)。到期中止連線並視為 network_error，走既有
   // 退避;沒有這一道，一個不回應的連線會讓整輪永遠停在半路。
   var CALL_TIMEOUT_MS = 30000;
-  var DEBOUNCE_KEY = 'syncDebounce';
-  // 單飛旗標的時效，必須大於單輪最長時間，否則還在跑的一輪會被第二輪搶走。
-  // 一輪最多 MAX_ROUND_POSTS 個同步 POST，每次最長 CALL_TIMEOUT_MS:12×30 秒
-  // 為 6 分鐘，再加 marks 回填的少數 GET 與 storage 往返，取 8 分鐘。
-  var INFLIGHT_TTL_MS = 480000;
+  // 一輪的期限:任何請求(POST 與 marks 回填的 GET)發出前若最壞情況會超過期限
+  // 就收手，排 continue 續跑。一輪因此最長 MAX_ROUND_POSTS 次逾時的時間。
+  var ROUND_DEADLINE_MS = MAX_ROUND_POSTS * CALL_TIMEOUT_MS;
+  // 記憶體看門狗:phase 停在 running 超過此值視為被遺棄(例如 fetch 卡死不回)，
+  // 新的請求可重入。期限之外留兩次逾時的緩衝，涵蓋 storage 往返與收尾。
+  var RUN_STALE_MS = ROUND_DEADLINE_MS + 2 * CALL_TIMEOUT_MS;
+  // 額度或期限用完後的續跑間隔，取 alarm 的下限。
+  var CONTINUE_DELAY_MS = 30000;
 
   // get-session 的節流:SW 每次被喚醒都會啟動驗一次，而喚醒在瀏覽期間非常
   // 頻繁（每一則訊息、每一個 alarm）。後端限流桶(與手機端共用)容量有限，
@@ -297,9 +296,21 @@
     // 照跑，只是請求不帶 device 區塊。
     var getLocalDevice = typeof deps.getLocalDevice === 'function' ? deps.getLocalDevice : null;
 
-    // 同一個 SW 實例內的單飛:三次 syncNow 同時進來時共用同一個 promise。
-    // 跨實例的單飛靠 session 旗標(claimInflight)。
-    var inflight = null;
+    // 排程狀態機(見 request／setNext)。單飛只在 SW 記憶體:MV3 一個 profile
+    // 同時只有一個 SW 實例，SW 被驅逐重啟後記憶體歸零、舊的一輪隨之作廢，新實
+    // 例從 idle 起跑;跨重啟的續接交給游標與冪等 ack，不靠任何落地旗標。
+    //
+    // phase:'idle' | 'running'。runStartedAt 供看門狗判斷被遺棄的一輪。
+    var phase = 'idle';
+    var runStartedAt = 0;
+    // 進行中那一輪的 promise，併入的請求共用它。
+    var current = null;
+    // 進行中收到 manual／recorded 請求:輪末走一次 2 秒去抖補跑。
+    var rerunPending = false;
+    // 去抖待辦(soon／continue)。null＝本實例剛啟動、不知道有沒有待辦(保底
+    // alarm 到期照跑);true／false＝記憶體已知。計時器與保底 alarm 誰先到誰
+    // 跑，另一條到期時看到 false 就跳過。
+    var soonPending = null;
     // 去抖計時器 handle(SW 存活期路徑)，只留最後一次排程。
     var debounceTimer = null;
 
@@ -310,15 +321,6 @@
     }
     function localSet(items) {
       return Promise.resolve(storage.local.set(items));
-    }
-    function sessionGet(defaults) {
-      return Promise.resolve(storage.session.get(defaults));
-    }
-    function sessionSet(items) {
-      return Promise.resolve(storage.session.set(items));
-    }
-    function sessionRemove(keys) {
-      return Promise.resolve(storage.session.remove(keys));
     }
 
     function readHistory() {
@@ -382,7 +384,7 @@
     // 空白名字＋紅點＋「同步失敗:」的幽靈帳號卡片，上頭每一顆按鈕都是死的。
     function statusOf(ctx) {
       if (!ctx.token) return 'signed_out';
-      if (inflight) return 'syncing';
+      if (phase === 'running') return 'syncing';
       return ctx.state.lastError ? 'error' : 'signed_in';
     }
 
@@ -783,20 +785,22 @@
     // ---- 一輪推拉往返 ----
 
     /**
-     * 從本輪的 POST 額度扣一次。額度用完回 false 並記下「尚有待推」，runSync
-     * 收尾時據此排一次 alarm 續跑。
+     * 發請求前的關卡。POST 從本輪額度扣一次;任何請求在最壞情況(再等滿一次
+     * CALL_TIMEOUT_MS)會超過本輪期限時一律不發。擋下時回 false 並記下「尚有待
+     * 推」，runSync 收尾時據此排 continue 續跑。
      */
-    function takePost(ctx) {
-      if (ctx.budget.left <= 0) {
+    function takeCall(ctx, isPost) {
+      if ((isPost && ctx.budget.left <= 0) || now() + CALL_TIMEOUT_MS > ctx.deadline) {
         ctx.budget.exhausted = true;
         return false;
       }
-      ctx.budget.left -= 1;
+      if (isPost) ctx.budget.left -= 1;
       return true;
     }
 
     function runRound(ctx) {
       ctx.budget = { left: MAX_ROUND_POSTS, exhausted: false };
+      ctx.deadline = now() + ROUND_DEADLINE_MS;
       var chain = Promise.resolve();
       // D23:一輪只在**第一個** POST 掛 device 區塊。後端拿它做 upsert，續頁
       // 再帶一次只是重複同一筆寫入。
@@ -814,7 +818,7 @@
           planned.batches.forEach(function (batch) {
             step = step.then(function () {
               // 額度用完:剩下的批次維持 dirty，下一輪再送。
-              if (!takePost(ctx)) return undefined;
+              if (!takeCall(ctx, true)) return undefined;
               var body = {
                 upserts: batch.upserts,
                 deletes: batch.deletes,
@@ -848,7 +852,7 @@
           function more() {
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
             // 游標停在已落地的那一頁，下一輪從這裡續拉。
-            if (!takePost(ctx)) return Promise.resolve();
+            if (!takeCall(ctx, true)) return Promise.resolve();
             rounds += 1;
             return call(ctx, 'POST', '/api/v1/links/sync', { since: ctx.state.cursor }).then(function (payload) {
               // 同上:先落地再前進游標。
@@ -1204,7 +1208,8 @@
       var position = null;
       function page(cursor) {
         // 只有「還有下一頁」才遞迴得到這裡，因此撞上限就代表沒拉完。
-        if (rounds >= MAX_PULL_ROUNDS) {
+        // 本輪期限用完同樣停在這一頁，由 continue 接著填(GET 不扣 POST 額度)。
+        if (rounds >= MAX_PULL_ROUNDS || !takeCall(ctx, false)) {
           ctx.state.marksBackfillCursor = cursor;
           return Promise.resolve(false);
         }
@@ -1243,7 +1248,7 @@
       batches.forEach(function (batch) {
         step = step.then(function () {
           // 額度用完:沒送出的批次仍在推送水位線之上，下一輪選得到。
-          if (!takePost(ctx)) return undefined;
+          if (!takeCall(ctx, true)) return undefined;
           return postMarks(ctx, batch, floor, round).then(function (changes) {
             lastChanges = changes;
           });
@@ -1255,7 +1260,7 @@
           var rounds = 0;
           function more() {
             if (!lastChanges || !lastChanges.hasMore || rounds >= MAX_PULL_ROUNDS) return Promise.resolve();
-            if (!takePost(ctx)) return Promise.resolve();
+            if (!takeCall(ctx, true)) return Promise.resolve();
             rounds += 1;
             return postMarks(ctx, emptyMarkBatch(), floor, round).then(function (changes) {
               lastChanges = changes;
@@ -1294,46 +1299,110 @@
       });
     }
 
-    // ---- 單飛旗標 ----
+    // ---- 排程 ----
 
-    function claimInflight() {
-      var defaults = {};
-      defaults[INFLIGHT_KEY] = null;
-      return sessionGet(defaults).then(function (got) {
-        var record = got[INFLIGHT_KEY];
-        // 時效是第二道保險:SW 在往返途中被殺時 session 通常整區消失，但萬一
-        // 旗標留了下來，過期後照樣解除，不讓同步永久卡死。
-        if (record && typeof record.at === 'number' && now() - record.at < INFLIGHT_TTL_MS) {
-          return false;
-        }
-        var items = {};
-        items[INFLIGHT_KEY] = { at: now() };
-        return sessionSet(items).then(function () {
-          return true;
-        });
+    function clearAlarm(name) {
+      return Promise.resolve(alarms.clear(name)).catch(function () {});
+    }
+
+    function clearDebounceTimer() {
+      if (debounceTimer === null) return;
+      clearTimer(debounceTimer);
+      debounceTimer = null;
+    }
+
+    /**
+     * 排定下一次同步的唯一出口。兩支 alarm 各司其職:ALARM_NAME 是週期(或退避
+     * 時的一次性)排程，DEBOUNCE_ALARM_NAME 是去抖與續跑的保底。
+     *
+     * - periodic:建週期 alarm。
+     * - backoff :週期 alarm 改排一次性 when(退避曲線或夾過的 Retry-After)，
+     *             並把連續失敗次數 arg.failures 落地。
+     * - continue:額度或期限用完，CONTINUE_DELAY_MS 後以保底 alarm 續跑。
+     * - soon    :新紀錄的 2 秒去抖;計時器與 30 秒保底 alarm 一起重排。
+     * - fatal   :不可重試的錯誤，只清週期 alarm。
+     * - none    :帳號登出類轉場，兩支 alarm、計時器與所有待辦一併作廢。
+     *
+     * @returns {Promise<void>}
+     */
+    function setNext(kind, arg) {
+      if (kind === 'periodic') {
+        alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
+        return Promise.resolve();
+      }
+      if (kind === 'backoff') {
+        // Retry-After 同樣夾在退避曲線的上限內:這個值來自後端標頭，一個誤設
+        // 的大數字(或惡意中間人)會把下一次同步推遲到幾天以後，等於單一標頭就
+        // 能讓同步停擺。封頂之後最壞情況只是提早重試一次，由 429 再退一步。
+        var delay = finiteNumber(arg.retryAfterMs) && arg.retryAfterMs > 0
+          ? Math.min(arg.retryAfterMs, POLL_BACKOFF_MAX_MS)
+          : pollIntervalFor(arg.failures);
+        alarms.create(ALARM_NAME, { when: now() + delay });
+        return saveFailures(arg.failures);
+      }
+      if (kind === 'continue') {
+        soonPending = true;
+        alarms.create(DEBOUNCE_ALARM_NAME, { when: now() + CONTINUE_DELAY_MS });
+        return Promise.resolve();
+      }
+      if (kind === 'soon') {
+        soonPending = true;
+        clearDebounceTimer();
+        debounceTimer = setTimer(function () {
+          debounceTimer = null;
+          return fireSoon('recorded');
+        }, DEBOUNCE_MS);
+        alarms.create(DEBOUNCE_ALARM_NAME, { when: now() + DEBOUNCE_GUARD_MS });
+        return Promise.resolve();
+      }
+      if (kind === 'fatal') return clearAlarm(ALARM_NAME);
+      // none
+      soonPending = false;
+      rerunPending = false;
+      clearDebounceTimer();
+      return Promise.all([clearAlarm(ALARM_NAME), clearAlarm(DEBOUNCE_ALARM_NAME)]).then(function () {});
+    }
+
+    /**
+     * 去抖待辦到期(計時器或保底 alarm)。待辦為 true 或 null(剛重啟、不知道)
+     * 才跑，跑之前先標成 false 並清掉保底 alarm，另一條路到期時就會跳過。
+     */
+    function fireSoon(reason) {
+      if (soonPending === false) return Promise.resolve();
+      soonPending = false;
+      return clearAlarm(DEBOUNCE_ALARM_NAME).then(function () {
+        return request(reason);
       });
     }
 
-    function releaseInflight() {
-      return sessionRemove(INFLIGHT_KEY).catch(function () {});
-    }
-
-    // ---- 排程 ----
-
-    function scheduleSuccess() {
-      alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
-      return saveFailures(0);
-    }
-
-    function scheduleBackoff(failures, retryAfterMs) {
-      // Retry-After 同樣夾在退避曲線的上限內:這個值來自後端標頭，一個誤設
-      // 的大數字(或惡意中間人)會把下一次同步推遲到幾天以後，等於單一標頭就
-      // 能讓同步停擺。封頂之後最壞情況只是提早重試一次，由 429 再退一步。
-      var delay = finiteNumber(retryAfterMs) && retryAfterMs > 0
-        ? Math.min(retryAfterMs, POLL_BACKOFF_MAX_MS)
-        : pollIntervalFor(failures);
-      alarms.create(ALARM_NAME, { when: now() + delay });
-      return saveFailures(failures);
+    /**
+     * 同步的單一入口。reason:manual／recorded／alarm／continue／signIn／stale。
+     *
+     * 進行中(且未被看門狗判為遺棄)的請求一律併入正在跑的那一輪;其中 manual 與
+     * recorded 代表這一輪的快照可能漏掉新資料，記 rerunPending，輪末走 soon
+     * 補跑(2 秒去抖，不立即連發)。alarm、stale 等排程類請求併入即可。
+     */
+    function request(reason) {
+      if (phase === 'running' && now() - runStartedAt < RUN_STALE_MS) {
+        if (reason === 'manual' || reason === 'recorded') rerunPending = true;
+        return current;
+      }
+      phase = 'running';
+      runStartedAt = now();
+      rerunPending = false;
+      var run = runSync().finally(function () {
+        // 被看門狗取代的舊一輪收尾時不得動新一輪的狀態。
+        if (current !== run) return;
+        phase = 'idle';
+        current = null;
+        if (rerunPending) {
+          rerunPending = false;
+          return setNext('soon');
+        }
+        return undefined;
+      });
+      current = run;
+      return run;
     }
 
     // ---- 登出／失效 ----
@@ -1353,8 +1422,9 @@
      * - verifiedAt:'now' 記下這一刻(剛換到的 token 等同剛驗過);null 清掉。
      * - devices:別台裝置的顯示快取。'clear' 一律清;'ifSwitched' 只在換帳號
      *   時清(D25)。本機身分 syncDevice 不在此列(D21)。
-     * - next:'periodic' 建週期 alarm;'none' 週期與去抖兩支都清(留著去抖
-     *   alarm 會在登出後照樣喚醒 SW，白跑一輪什麼也做不了)。
+     * - next:交給 setNext 的 kind。'periodic' 建週期 alarm;'none' 清兩支
+     *   alarm 與去抖計時器、作廢待辦(留著會在登出後照樣喚醒 SW，白跑一輪
+     *   什麼也做不了)。
      * - status:收尾廣播的狀態。
      *
      * 【過期為合併 patch】session 過期是一次轉場，不是換帳號也不是刪資料:整
@@ -1411,14 +1481,7 @@
           return localSet(items);
         })
         .then(function () {
-          if (spec.next === 'periodic') {
-            alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
-            return undefined;
-          }
-          return Promise.all([
-            Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
-            Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
-          ]);
+          return setNext(spec.next);
         })
         .then(function () {
           return broadcastState(spec.status);
@@ -1444,7 +1507,7 @@
           // 註解)，每開一次頁就拿同一份必然失敗的請求去敲共用的限流桶。
           var fatal = ctx.state.lastError !== null && FATAL_ERRORS.indexOf(ctx.state.lastError) !== -1;
           if (ctx.token && !fatal && (ctx.state.lastSyncedAt === null || now() - ctx.state.lastSyncedAt >= STALE_MS)) {
-            syncNow().catch(function () {});
+            request('stale').catch(function () {});
           }
           return state;
         });
@@ -1525,7 +1588,7 @@
       }).then(function () {
         // 登入完成就跑一次:首次綁定的全量上傳(D3)與雲端既有資料的首輪拉
         // 取都在這一次完成，不必等第一個 alarm。
-        return syncNow();
+        return request('signIn');
       });
     }
 
@@ -1598,88 +1661,63 @@
         });
     }
 
+    /** 手動同步(以及對外的 syncNow)。 */
     function syncNow() {
-      if (inflight) return inflight;
-      inflight = runSync().then(
-        function (value) {
-          inflight = null;
-          return value;
-        },
-        function (err) {
-          inflight = null;
-          throw err;
-        }
-      );
-      return inflight;
+      return request('manual');
     }
 
+    /** 一輪同步本體。排程狀態由 request 管，這裡只負責往返與收尾的 setNext。 */
     function runSync() {
       var ctx;
-      return loadContext()
-        .then(function (loaded) {
-          ctx = loaded;
-          // 未登入是常態，不是錯誤:零請求、不廣播 error(D6)。
-          if (!ctx.token) return false;
-          // 【死鎖守則】本機身分在整輪的任何 writeChain 之前先取好(§12 增補
-          // 四):getLocalDevice 自己也要排進同一條序列鏈。
-          return readLocalDevice().then(function (device) {
+      return loadContext().then(function (loaded) {
+        ctx = loaded;
+        // 未登入是常態，不是錯誤:零請求、不廣播 error(D6)。
+        if (!ctx.token) return undefined;
+        // 【死鎖守則】本機身分在整輪的任何 writeChain 之前先取好(§12 增補
+        // 四):getLocalDevice 自己也要排進同一條序列鏈。
+        return readLocalDevice()
+          .then(function (device) {
             ctx.device = device;
-            return claimInflight();
+            return runRound(ctx);
+          })
+          .then(function () {
+            ctx.state.lastSyncedAt = now();
+            ctx.state.lastError = null;
+            return saveState(ctx.state)
+              .then(function () {
+                return setNext('periodic');
+              })
+              .then(function () {
+                return saveFailures(0);
+              })
+              .then(function () {
+                return broadcastState('signed_in');
+              })
+              .then(function () {
+                // 本輪額度或期限用完:排 continue 續跑，直到沒有待推的批次。
+                if (ctx.budget && ctx.budget.exhausted) return setNext('continue');
+                return undefined;
+              });
+          })
+          .catch(function (err) {
+            if (err && err.code === 'session_expired') return handleSessionExpired();
+            var code = err && err.code ? err.code : 'internal_error';
+            ctx.state.lastError = code;
+            return saveState(ctx.state)
+              .then(function () {
+                // 不可重試的錯誤只記碼，並且要把既有的週期 alarm 一起清掉:
+                // 只是不排退避是不夠的——登入成功那一輪建的 periodInMinutes
+                // 重複 alarm 還在，403 之後就變成每 5 分鐘拿同一份必然失敗的
+                // 請求去敲後端限流桶（與手機端共用同一桶）。使用者重新登入或
+                // 手動同步成功時會重新建回來。
+                if (FATAL_ERRORS.indexOf(code) !== -1) return setNext('fatal');
+                return setNext('backoff', { failures: ctx.failures + 1, retryAfterMs: err && err.retryAfterMs });
+              })
+              .then(function () {
+                return broadcastState('error');
+              });
           });
-        })
-        .then(function (claimed) {
-          if (!claimed) return undefined;
-          return runRound(ctx)
-            .then(function () {
-              ctx.state.lastSyncedAt = now();
-              ctx.state.lastError = null;
-              return saveState(ctx.state)
-                .then(scheduleSuccess)
-                .then(function () {
-                  return broadcastState('signed_in');
-                })
-                .then(function () {
-                  // 本輪 POST 額度用完:排保底 alarm 續跑，直到沒有待推的批次。
-                  if (ctx.budget && ctx.budget.exhausted) return scheduleContinuation();
-                  return undefined;
-                });
-            })
-            .catch(function (err) {
-              if (err && err.code === 'session_expired') return handleSessionExpired();
-              var code = err && err.code ? err.code : 'internal_error';
-              ctx.state.lastError = code;
-              return saveState(ctx.state)
-                .then(function () {
-                  // 不可重試的錯誤只記碼，並且要把既有的週期 alarm 一起清掉:
-                  // 只跳過 scheduleBackoff 是不夠的——登入成功那一輪建的
-                  // periodInMinutes 重複 alarm 還在，403 之後就變成每 5 分鐘拿
-                  // 同一份必然失敗的請求去敲後端限流桶（與手機端共用同一
-                  // 桶）。使用者重新登入或手動同步時會重新建回來。
-                  if (FATAL_ERRORS.indexOf(code) !== -1) {
-                    return Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {});
-                  }
-                  return scheduleBackoff(ctx.failures + 1, err && err.retryAfterMs);
-                })
-                .then(function () {
-                  return broadcastState('error');
-                });
-            })
-            // finally 語意:上面的 catch 自己也會寫 storage、排 alarm，那幾步
-            // 一旦失敗就走到這裡的失敗分支——只掛成功回呼的話單飛旗標會留在
-            // session 裡，直到 TTL 到期前所有同步全被擋掉。
-            .then(
-              function (value) {
-                return releaseInflight().then(function () {
-                  return value;
-                });
-              },
-              function (err) {
-                return releaseInflight().then(function () {
-                  throw err;
-                });
-              }
-            );
-        });
+      });
     }
 
     /**
@@ -1975,73 +2013,25 @@
     // ---- 去抖(D12) ----
 
     /**
-     * recordHistory 之後的掛鉤。雙保險:注入的 setTimeout 走 SW 存活期的 2 秒
-     * 去抖，另排一個 30 秒的 alarm 當 SW 被回收時的保底;待辦旗標落 session，
-     * 兩條路任一先到就清掉旗標並跑同步，另一條到期時看到旗標已清就不重跑。
-     * 連續寫入只留最後一次排程(計時器與保底 alarm 一起重排)。
+     * recordHistory 之後的掛鉤，即 setNext('soon')。雙保險:注入的 setTimeout
+     * 走 SW 存活期的 2 秒去抖，另排一個 30 秒的 alarm 當 SW 被回收時的保底;
+     * 待辦只記在記憶體(soonPending)，兩條路任一先到就跑，另一條看到待辦已消
+     * 化就跳過。SW 重啟後記憶體不知道有沒有待辦，保底 alarm 到期照跑。連續寫
+     * 入只留最後一次排程(計時器與保底 alarm 一起重排)。
      */
     function notifyRecorded() {
-      if (debounceTimer !== null) {
-        clearTimer(debounceTimer);
-        debounceTimer = null;
-      }
-      debounceTimer = setTimer(function () {
-        debounceTimer = null;
-        return fireDebounce();
-      }, DEBOUNCE_MS);
-      alarms.create(DEBOUNCE_ALARM_NAME, { when: now() + DEBOUNCE_GUARD_MS });
-      var items = {};
-      items[DEBOUNCE_KEY] = { at: now() };
-      return sessionSet(items);
-    }
-
-    /**
-     * 額度用完後的續跑:只排 30 秒保底 alarm(不排 2 秒計時器)，兩輪之間至少
-     * 隔 DEBOUNCE_GUARD_MS，不對後端限流桶連發。待辦旗標與去抖共用，到期時
-     * 由 fireDebounce 認領;期間有新紀錄進來的話，照去抖的節奏提早跑。
-     */
-    function scheduleContinuation() {
-      alarms.create(DEBOUNCE_ALARM_NAME, { when: now() + DEBOUNCE_GUARD_MS });
-      var items = {};
-      items[DEBOUNCE_KEY] = { at: now() };
-      return sessionSet(items);
-    }
-
-    /** 認領去抖待辦。搶到才跑同步，另一條路到期時就會撲空。 */
-    function claimDebounce() {
-      var defaults = {};
-      defaults[DEBOUNCE_KEY] = null;
-      return sessionGet(defaults).then(function (got) {
-        if (!got[DEBOUNCE_KEY]) return false;
-        return sessionRemove(DEBOUNCE_KEY).then(function () {
-          return true;
-        });
-      });
-    }
-
-    function fireDebounce() {
-      return claimDebounce().then(function (claimed) {
-        if (!claimed) return undefined;
-        return Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME))
-          .catch(function () {})
-          .then(function () {
-            return syncNow();
-          });
-      });
+      return setNext('soon');
     }
 
     function onAlarm(alarm) {
       if (!alarm || typeof alarm.name !== 'string') return Promise.resolve();
       if (alarm.name === DEBOUNCE_ALARM_NAME) {
-        if (debounceTimer !== null) {
-          clearTimer(debounceTimer);
-          debounceTimer = null;
-        }
-        return fireDebounce();
+        clearDebounceTimer();
+        return fireSoon('continue');
       }
       // 別人的 alarm(其他功能、其他擴充的殘留)一律忽略。
       if (alarm.name !== ALARM_NAME) return Promise.resolve();
-      return syncNow();
+      return request('alarm');
     }
 
     return {
@@ -2065,6 +2055,10 @@
     DEBOUNCE_ALARM_NAME: DEBOUNCE_ALARM_NAME,
     DEBOUNCE_MS: DEBOUNCE_MS,
     MAX_ROUND_POSTS: MAX_ROUND_POSTS,
+    CALL_TIMEOUT_MS: CALL_TIMEOUT_MS,
+    ROUND_DEADLINE_MS: ROUND_DEADLINE_MS,
+    RUN_STALE_MS: RUN_STALE_MS,
+    CONTINUE_DELAY_MS: CONTINUE_DELAY_MS,
     SYNC_PERIOD_MINUTES: SYNC_PERIOD_MINUTES,
     API_BASE_PRODUCTION: API_BASE_PRODUCTION,
     API_BASE_STAGING: API_BASE_STAGING,
