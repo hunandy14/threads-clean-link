@@ -925,7 +925,8 @@
   // createMutator({ area, enqueue }):回傳 mutate(key, fn, opts)，一次單鍵讀
   // 改寫，整段在 enqueue 佇列內執行。area 只需 get／set(chrome.storage 區域
   // 或其轉接)。
-  //   opts.normalize(raw)  讀出的原始值(鍵缺席時為 null)先過它再交給 fn。
+  //   opts.normalize(raw)  讀出的原始值(鍵缺席時為 null)先過它再交給 fn;缺
+  //                        席時原樣交出。opts 整個缺席也可以。
   //   fn(current)          回 undefined＝不寫，結果 { written:false };回
   //                        { next, result }＝寫 next，結果 { written:true,
   //                        result, value }，value 是實際落盤的內容(過 cap 後)。
@@ -933,16 +934,22 @@
   //                        cap(next, 1) 收緊再寫一次。沒有 cap 不重試——同一
   //                        份內容再寫一次照樣撞。
   //   opts.onQuota         收緊後仍撞配額(或沒有 cap)時:'skip' 回 { written:
-  //                        false, result, quota:true };'throw' 拋 code
-  //                        storage_quota。
+  //                        false, result, quota:true, cause }(cause 是原
+  //                        配額錯誤);'throw' 拋 code storage_quota。
   // 非配額的寫入錯誤一律拋 code storage_write_failed，cause 帶原錯誤，不重試。
   // 讀取錯誤與 fn 拋出的錯誤原樣往外拋。
   //
   // 【死鎖守則】fn 在佇列內執行，fn 內不得呼叫任何會 enqueue 到同一條佇列的
   // 函式(background 的 ensureDevice／getLocalDevice 即是):佇列要等本次結算
   // 才放行下一個，fn 等它就是等自己。需要的值在呼叫 mutate 之前先取好。
+  function identity(value) {
+    return value;
+  }
+
   function createMutator(deps) {
     return function mutate(key, fn, opts) {
+      opts = opts || {};
+      var normalize = typeof opts.normalize === 'function' ? opts.normalize : identity;
       return deps.enqueue(function () {
         var query = {};
         query[key] = null;
@@ -951,7 +958,7 @@
             return deps.area.get(query);
           })
           .then(function (got) {
-            return fn(opts.normalize(got ? got[key] : null));
+            return fn(normalize(got ? got[key] : null));
           })
           .then(function (plan) {
             if (!plan) return { written: false, result: undefined };
@@ -974,7 +981,7 @@
             function (err) {
               if (!isQuotaExceededError(err)) throw storageError('storage_write_failed', err);
               if (level === 0 && opts.cap) return write(plan, 1);
-              if (opts.onQuota === 'skip') return { written: false, result: plan.result, quota: true };
+              if (opts.onQuota === 'skip') return { written: false, result: plan.result, quota: true, cause: err };
               throw storageError('storage_quota', err);
             }
           );
