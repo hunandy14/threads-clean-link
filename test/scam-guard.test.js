@@ -2205,8 +2205,8 @@ test('S4：tag 被外力移除後，同鍵的下一次觸發會補回一顆（�
 //     `chrome.storage.onChanged`（local 區）更新那份快取。只有 background
 //     寫這顆鍵，本段一律唯讀。
 //   查表：每張 `div[data-pressable-container]` 抽出作者 handle →
-//     `handleIndex[handle.toLowerCase()]` → 命中得到 userId → userId 不在
-//     `allowlist`（使用者已解除封鎖）才算命中。
+//     `handleIndex[handle.toLowerCase()]` 查得到即命中（handleIndex 只含
+//     active 條目，使用者解除的 dismissed 條目不在表內）。
 //   標記：命中即掛 `.tcl-scam-tag`，文字 `scamTagLabel`、title
 //     `scamBlockedByList`（與詳情頁掃描的 `scamTagTooltip` 不同——這顆說的
 //     是「這個帳號在你的黑名單中」，不是「這串貼文疑似詐騙」）。一張卡只

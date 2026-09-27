@@ -11,8 +11,8 @@ if (typeof TCLI18N === 'undefined' && typeof importScripts === 'function') {
 // 共用核心 lib(網址樣式、欄位消毒、常數):SW 環境用 importScripts 載入;
 // 測試 sandbox 由測試端先把 tcl-core.js 原始碼載進同一個 sandbox(TCLCore
 // 已存在)，此條件式便不執行。SHARE_URL_PATTERN、乾淨貼文網址的權威判定
-// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore，不再
-// 於本檔養一份鏡像(原本 background 與 options 各養一份，漂移一處即分裂)。
+// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore，不在
+// 本檔養鏡像:background 與 options 共用單一權威，漂移一處即分裂。
 if (typeof TCLCore === 'undefined' && typeof importScripts === 'function') {
   importScripts('tcl-core.js');
 }
@@ -319,7 +319,6 @@ let unsavedDevice = null;
 function ensureDevice() {
   if (localDevicePromise !== null) return localDevicePromise;
   const pending = enqueueHistoryWrite(async () => {
-    if (!hasStorageLocal()) return null;
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const existing = stored && stored[DEVICE_KEY];
     const existingId =
@@ -356,7 +355,7 @@ function ensureDevice() {
 function persistDevice() {
   return enqueueHistoryWrite(async () => {
     const pending = unsavedDevice;
-    if (pending === null || !hasStorageLocal()) return;
+    if (pending === null) return;
     await chrome.storage.local.set({ [DEVICE_KEY]: pending });
     if (unsavedDevice === pending) unsavedDevice = null;
   }).catch((err) => {
@@ -411,7 +410,6 @@ async function rememberLocalDeviceName(deviceId, name) {
   if (!device || TCLCore.normalizeDeviceId(device.deviceId) !== deviceId) return;
   await persistDevice();
   await enqueueHistoryWrite(async () => {
-    if (!hasStorageLocal()) return;
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const current = stored && stored[DEVICE_KEY];
     if (!current || typeof current !== 'object') return;
@@ -439,8 +437,6 @@ const syncEngine =
         alarms: {
           create: (name, info) => chrome.alarms.create(name, info),
           clear: (name) => Promise.resolve(chrome.alarms.clear(name)),
-          get: (name) => Promise.resolve(chrome.alarms.get(name)),
-          getAll: () => Promise.resolve(chrome.alarms.getAll()),
         },
         // 廣播給 options/popup。沒有任何頁面開著時 sendMessage 會 reject，
         // 那是常態不是錯誤，安靜吞掉。
@@ -736,8 +732,7 @@ function validateScamHit(message) {
   };
 }
 
-// 總開關。呼叫端已先確認 storage.local 可用（storage 整組故障是
-// internal_error，不是「使用者把開關關掉了」）。
+// 總開關。讀取失敗時視為開啟。
 async function isScamGuardEnabled() {
   try {
     const stored = await chrome.storage.local.get({ [SCAM_ENABLED_KEY]: true });
@@ -748,11 +743,11 @@ async function isScamGuardEnabled() {
   }
 }
 
-// 節流表存放的區域。session 在舊版瀏覽器與測試替身可能缺席，退回 local。
+// 節流表存放的區域：session；缺 session 的環境退回 local。
 function scamThrottleArea() {
   const session = chrome.storage && chrome.storage.session;
   if (session && typeof session.get === 'function' && typeof session.set === 'function') return session;
-  return hasStorageLocal() ? chrome.storage.local : null;
+  return chrome.storage.local;
 }
 
 // 身分鍵的網域歸一：threads.net 與 threads.com 是同一個站的兩個網域，`www.`
@@ -918,11 +913,10 @@ function enqueueScamFetchGate(fn) {
 // 在兩張表上各佔一個名額：逐篇 24 小時節流、全域每分鐘 SCAM_FETCH_RATE_MAX
 // 次。兩者都在發請求前就記下，成功與失敗一視同仁——撈不到 id 的原因（SPA
 // 殼、站方限流、貼文已刪）重試也不會變，只會替使用者多發網路請求。回 false
-// 代表本次不得發請求。讀寫失敗或沒有可用區域時放行：閘門是替站方節流用的，
+// 代表本次不得發請求。讀寫失敗時放行：閘門是替站方節流用的，
 // 不是功能開關，不該因為 storage 故障把備援整條關掉。
 async function reserveScamFetchSlot(postUrl) {
   const area = scamThrottleArea();
-  if (!area) return true;
   const now = Date.now();
 
   try {
@@ -971,7 +965,6 @@ async function resolveScamAuthorId(postUrl, handle) {
 // 生一組 deviceId 出來。讀不到（缺席、形狀不合、storage 抽風）一律回
 // undefined 讓證據不帶這一欄，絕不因此擋下整次寫入。
 async function readLocalDeviceId() {
-  if (!hasStorageLocal()) return undefined;
   try {
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const device = stored && stored[DEVICE_KEY];
@@ -988,7 +981,6 @@ async function readLocalDeviceId() {
 async function handleScamHit(message) {
   const hit = validateScamHit(message);
   if (!hit) return { ok: false, code: 'bad_request' };
-  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
   if (!(await isScamGuardEnabled())) return { ok: false, code: 'disabled' };
 
   let userId = hit.userId;
@@ -1074,8 +1066,6 @@ async function handleScamHit(message) {
 async function handleScamBlocklistRemove(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
-  // storage 整組不可用是環境故障，不是「使用者把總開關關掉了」。
-  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
 
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
@@ -1107,8 +1097,6 @@ async function handleScamBlocklistRemove(message) {
 async function handleScamBlocklistRestore(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
-  // storage 整組不可用是環境故障，不是「使用者把總開關關掉了」。
-  if (!hasStorageLocal()) return { ok: false, code: 'internal_error' };
 
   return enqueueHistoryWrite(async () => {
     const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
@@ -1743,15 +1731,15 @@ function peekOgFields(cleanUrl) {
 }
 
 // 本地路徑(icon/strip)專用的 og 補強逾時:貼文按鈕複製與 ?xmt 剪參都是
-// 純本地判斷，原本不會觸發任何網路請求;這裡額外補一次 fetch 專門拿 og
+// 純本地判斷，本身不觸發網路請求;這裡額外補一次 fetch 專門拿 og
 // 資訊，逾時風格沿用 clipboard-guard.js 的 RESOLVE_TIMEOUT_MS(2.5 秒，
 // 本檔案獨立維護同一個數值，兩處環境不同沒有共用單一來源的機制)。
 const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
 
 // 本地路徑(icon/strip)專用:貼文按鈕複製與 ?xmt 剪參的 web 動態牆 DOM
-// 沒有個人顯示名稱(只有 username)，這兩條路徑原本 author 永遠等於
-// handle、被既有的重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還
-// 可能吸到讚數等雜訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
+// 沒有個人顯示名稱(只有 username)，單靠 DOM 的 author 永遠等於 handle、
+// 被重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還可能吸到讚數等雜
+// 訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
 // 重用既有的 extractOgFields／sanitizeOgFields 全鏈(長度雙層防線不變)。
 //
 // 節流(三層):
@@ -2019,17 +2007,6 @@ function applyHistorySchema(entry, previous, now) {
   return entry;
 }
 
-// ---- 紀錄 ----
-
-function hasStorageLocal() {
-  return !!(
-    chrome.storage &&
-    chrome.storage.local &&
-    typeof chrome.storage.local.get === 'function' &&
-    typeof chrome.storage.local.set === 'function'
-  );
-}
-
 // ---- 儲存上限 ----
 //
 // 位元組軟預算(8MB)＋筆數硬保險(10000 筆)、墓碑優先淘汰的完整實作在
@@ -2070,7 +2047,6 @@ function recordHistory(url, kind, extra) {
   const devicePending = ensureDevice();
   historyWriteChain = historyWriteChain
     .then(async () => {
-      if (!hasStorageLocal()) return;
       const settings = await getSettings();
       if (!settings.saveHistory) return;
       const device = await devicePending;
@@ -2152,10 +2128,8 @@ function recordHistory(url, kind, extra) {
 
 // ---- 一次性遷移:既有紀錄整平成永久合併形狀 ----
 //
-// 【動機】舊版以「url + 5 分鐘視窗」去重，同一篇貼文在使用者手上很可能已
-// 經散成好幾張卡(隔天再複製一次多一張、handle 改名前後又各一張、當年解析
-// 失敗的短碼原文再一張)。改成永久合併之後，**新**寫入自然只會有一張卡，
-// 但既有資料不會自己收斂——這支遷移在 onInstalled 跑一次，把舊資料整平。
+// 【用途】以「url + 5 分鐘視窗」去重時期留下的資料，同一篇貼文可能散成好
+// 幾張卡;新寫入已永久合併，這支遷移在 onInstalled 跑一次把既有資料整平。
 //
 // 【演算法】讀全表 → 依 historyDedupKey 分組(同一個 postKey 為一組，抽不
 // 出貼文代碼的以正規化網址 url:<host><path><query> 自成一組)→ 組內以 at
@@ -2303,7 +2277,6 @@ function adoptFailureEntriesInList(list) {
 function migrateHistoryMerge() {
   historyWriteChain = historyWriteChain
     .then(async () => {
-      if (!hasStorageLocal()) return;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       // 空表(首裝)與單卡表必然無可合併，連讀後計算都省。
@@ -2407,7 +2380,6 @@ function fillHistorySchema(entry) {
 function migrateHistorySchema() {
   historyWriteChain = historyWriteChain
     .then(async () => {
-      if (!hasStorageLocal()) return;
       const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
       const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       if (list.length === 0) return;

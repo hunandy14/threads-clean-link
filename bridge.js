@@ -297,12 +297,9 @@
         // MV3 下不帶 callback 呼叫 sendMessage 會回傳 Promise：background
         // 的 cleanedNotice 監聽器 return false(同步處理完即關通道)，該
         // Promise 會以「message port closed」reject，不接 .catch 就會在
-        // 頁面 console 留下 unhandled promise rejection。回傳值先防禦性
-        // 檢查是不是真的 Promise 再接空 .catch 吞掉。
-        var maybePromise = chrome.runtime.sendMessage(payload);
-        if (maybePromise && typeof maybePromise.catch === 'function') {
-          maybePromise.catch(function () {});
-        }
+        // 頁面 console 留下 unhandled promise rejection，這裡接空 .catch
+        // 吞掉。
+        chrome.runtime.sendMessage(payload).catch(function () {});
       } catch (e) {
         // 轉發失敗不影響其餘橋接流程：background 端的通知本來就是盡力而
         // 為。仍留一則 console.warn，孤兒情境才有跡可循。

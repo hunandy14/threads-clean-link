@@ -285,11 +285,9 @@
 
   var api = {
     GOOGLE_AUTH_ENDPOINT: GOOGLE_AUTH_ENDPOINT,
-    SCOPE: SCOPE,
     permissionsFor: permissionsFor,
     containsPermissions: containsPermissions,
     generateNonce: generateNonce,
-    codeForLastError: codeForLastError,
     buildAuthorizeUrl: buildAuthorizeUrl,
     extractIdTokenFromRedirect: extractIdTokenFromRedirect,
     decodeJwtPayload: decodeJwtPayload,

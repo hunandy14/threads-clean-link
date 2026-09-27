@@ -105,7 +105,7 @@ test('scamGuard:zh 文案一律全形逗號「，」，不得出現半形 ","', 
 
 // ---- 警示名單卡(v1 計畫 §5;選項頁車道 L6)的文案 ----
 //
-// 卡片整張的文案都靠這十顆 key:卡頭(標題/計數)、列(加入時間/證據/解除鈕)、
+// 卡片整張的文案都靠這八顆 key:卡頭(標題/計數)、列(解除鈕)、
 // 解除確認框三句、空狀態，以及「已解除」小節的標題與復原鈕。漏一顆的症狀
 // 是 UI 上直接顯示裸 key，parity 測試(兩邊同時漏同一顆仍全綠)擋不住，這裡
 // 逐顆釘住存在性。
@@ -113,9 +113,7 @@ const SCAM_OPTIONS_KEYS = [
   // 卡頭:標題與右側「{n} 位作者」計數。
   'opScamListTitle',
   'opScamListCount',
-  // 列:第二行「加入於 {d}」、證據區標題、右側解除鈕的 title。
-  'opScamAddedOn',
-  'opScamEvidence',
+  // 列:右側解除鈕的 title。(S5)
   'opScamRemove',
   // 解除確認框:標題「解除「{name}」的標記？」與內文。
   'opScamRemoveTitle',
@@ -127,7 +125,7 @@ const SCAM_OPTIONS_KEYS = [
   'opScamRestore',
 ];
 
-test('警示名單卡:十顆選項頁文案 key 在 zh 與 en 兩份字典皆存在且非空', () => {
+test('警示名單卡:八顆選項頁文案 key 在 zh 與 en 兩份字典皆存在且非空', () => {
   for (const locale of ['zh', 'en']) {
     for (const key of SCAM_OPTIONS_KEYS) {
       const value = i18n.STRINGS[locale][key];
@@ -145,13 +143,11 @@ test('警示名單卡:zh 文案一律全形逗號「，」，不得出現半形 
   }
 });
 
-// 帶插值的三顆 key 必須留著各自的佔位符:少了佔位符不會炸，只會在畫面上
-// 少一段(計數少了數字、加入時間少了日期、確認框標題少了作者名)，靜態釘住
-// 比較划算。
-test('警示名單卡:帶插值的文案在 zh 與 en 都保留佔位符({n}/{d}/{name})', () => {
+// 帶插值的兩顆 key 必須留著各自的佔位符:少了佔位符不會炸，只會在畫面上
+// 少一段(計數少了數字、確認框標題少了作者名)，靜態釘住比較划算。(S5)
+test('警示名單卡:帶插值的文案在 zh 與 en 都保留佔位符({n}/{name})', () => {
   const PLACEHOLDERS = {
     opScamListCount: '{n}',
-    opScamAddedOn: '{d}',
     opScamRemoveTitle: '{name}',
   };
   for (const locale of ['zh', 'en']) {

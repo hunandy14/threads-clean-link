@@ -27,9 +27,9 @@
   // token 送去別人家。local 指向開發機自己跑的 wrangler dev，只有
   // tools/dev-browser.mjs 產出的 manifest 副本才宣告 localhost 的 host
   // 權限，商店版連要求該權限都做不到，因此白名單多這一項不擴大攻擊面。
-  var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
-  var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
-  var API_BASE_LOCAL = 'http://localhost:8787';
+  var API_BASE_PRODUCTION = TCLCoreRef.API_BASE_PRODUCTION;
+  var API_BASE_STAGING = TCLCoreRef.API_BASE_STAGING;
+  var API_BASE_LOCAL = TCLCoreRef.API_BASE_LOCAL;
   var API_BASE_ALLOWED = [API_BASE_PRODUCTION, API_BASE_STAGING, API_BASE_LOCAL];
 
   // D5:Google Web client(公開值)。後端把 staging 與 production 的 client
@@ -293,8 +293,8 @@
     };
     var setTimer = deps.setTimeout;
     var clearTimer = deps.clearTimeout;
-    // 本機裝置身分(§12 增補二)。舊版接線沒有這支，整組裝置歸屬功能就靜默
-    // 缺席——同步照跑，只是請求不帶 device 區塊。
+    // 本機裝置身分(§12 增補二)。未注入時整組裝置歸屬功能靜默缺席——同步
+    // 照跑，只是請求不帶 device 區塊。
     var getLocalDevice = typeof deps.getLocalDevice === 'function' ? deps.getLocalDevice : null;
 
     // 同一個 SW 實例內的單飛:三次 syncNow 同時進來時共用同一個 promise。
@@ -2074,10 +2074,6 @@
     CLIENT_ID_BY_API_BASE: CLIENT_ID_BY_API_BASE,
     SIGN_IN_CANCELLED: SIGN_IN_CANCELLED,
     SIGN_IN_TRANSIENT: SIGN_IN_TRANSIENT,
-    signInKindOf: signInKindOf,
-    MAX_UPSERTS: MAX_UPSERTS,
-    MAX_DELETES: MAX_DELETES,
-    MAX_SEEN_ROWS: MAX_SEEN_ROWS,
     pollIntervalFor: pollIntervalFor,
   };
 

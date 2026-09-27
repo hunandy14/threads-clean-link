@@ -1048,10 +1048,7 @@
             if (info.handle !== undefined) payload.handle = info.handle;
             if (info.excerpt !== undefined) payload.excerpt = info.excerpt;
 
-            var maybePromise = chrome.runtime.sendMessage(payload);
-            if (maybePromise && typeof maybePromise.catch === 'function') {
-              maybePromise.catch(handleSendError);
-            }
+            chrome.runtime.sendMessage(payload).catch(handleSendError);
           } catch (err) {
             handleSendError(err);
           }
@@ -1171,49 +1168,45 @@
       //   - scanFailFirstAt:每個容器「第一次」失敗的時間戳(Date.now())，
       //     成功注入後連同 scanFailCounts 一併歸零；只有在達到次數門檻
       //     「且」超過時間門檻時才會被判定永久跳過。
-      var hasWeakCollections = typeof WeakMap !== 'undefined' && typeof WeakSet !== 'undefined';
-      var injectedContainers = hasWeakCollections ? new WeakSet() : null;
-      var skippedContainers = hasWeakCollections ? new WeakSet() : null;
-      var scanFailCounts = hasWeakCollections ? new WeakMap() : null;
-      var scanFailFirstAt = hasWeakCollections ? new WeakMap() : null;
+      var injectedContainers = new WeakSet();
+      var skippedContainers = new WeakSet();
+      var scanFailCounts = new WeakMap();
+      var scanFailFirstAt = new WeakMap();
       var MAX_SCAN_FAILURES = 3;
       var MAX_SCAN_FAILURES_MIN_AGE_MS = 2000;
 
       // ---- 對單一貼文容器做冪等注入 ----
       function injectIntoContainer(container) {
-        if (injectedContainers && injectedContainers.has(container)) return;
-        if (skippedContainers && skippedContainers.has(container)) return;
+        if (injectedContainers.has(container)) return;
+        if (skippedContainers.has(container)) return;
 
         if (hasExistingIcon(container)) {
-          if (injectedContainers) injectedContainers.add(container);
+          injectedContainers.add(container);
           return;
         }
 
         var row = findActionRow(container);
         if (!row) {
-          if (scanFailCounts) {
-            var failCount = (scanFailCounts.get(container) || 0) + 1;
-            scanFailCounts.set(container, failCount);
-            if (scanFailFirstAt && !scanFailFirstAt.has(container)) {
-              scanFailFirstAt.set(container, Date.now());
-            }
-            // 次數與時間都要達標才永久跳過:只看次數的話，debounce 掃描
-            // 間隔短，3 輪很可能在 React 晚渲染完成前就跑完，會把還沒補
-            // 上互動列的貼文誤判死。
-            var firstFailAt = scanFailFirstAt ? scanFailFirstAt.get(container) : undefined;
-            if (
-              failCount >= MAX_SCAN_FAILURES &&
-              skippedContainers &&
-              typeof firstFailAt === 'number' &&
-              Date.now() - firstFailAt >= MAX_SCAN_FAILURES_MIN_AGE_MS
-            ) {
-              skippedContainers.add(container);
-            }
+          var failCount = (scanFailCounts.get(container) || 0) + 1;
+          scanFailCounts.set(container, failCount);
+          if (!scanFailFirstAt.has(container)) {
+            scanFailFirstAt.set(container, Date.now());
+          }
+          // 次數與時間都要達標才永久跳過:只看次數的話，debounce 掃描
+          // 間隔短，3 輪很可能在 React 晚渲染完成前就跑完，會把還沒補
+          // 上互動列的貼文誤判死。
+          var firstFailAt = scanFailFirstAt.get(container);
+          if (
+            failCount >= MAX_SCAN_FAILURES &&
+            typeof firstFailAt === 'number' &&
+            Date.now() - firstFailAt >= MAX_SCAN_FAILURES_MIN_AGE_MS
+          ) {
+            skippedContainers.add(container);
           }
           return;
         }
         if (hasExistingIcon(row)) {
-          if (injectedContainers) injectedContainers.add(container);
+          injectedContainers.add(container);
           return;
         }
 
@@ -1224,9 +1217,9 @@
         applyNativeColor(icon, row);
         row.insertBefore(icon, lastWrapper.nextSibling);
 
-        if (scanFailCounts) scanFailCounts.delete(container);
-        if (scanFailFirstAt) scanFailFirstAt.delete(container);
-        if (injectedContainers) injectedContainers.add(container);
+        scanFailCounts.delete(container);
+        scanFailFirstAt.delete(container);
+        injectedContainers.add(container);
       }
 
       // ---- 全頁掃描:找出所有貼文容器並補注入。postCopyEnabled 關閉時整
@@ -1299,20 +1292,9 @@
             finish(null);
             return;
           }
-          var maybePromise = chrome.storage.sync.get({ langPref: null }, function (items) {
+          chrome.storage.sync.get({ langPref: null }, function (items) {
             finish(items && typeof items === 'object' ? items.langPref : null);
           });
-          // 部分環境(例如 Promise-only 的 storage 實作)不吃回呼引數，
-          // get() 本身回傳 Promise，改吃這個分支。
-          if (maybePromise && typeof maybePromise.then === 'function') {
-            maybePromise
-              .then(function (items) {
-                finish(items && typeof items === 'object' ? items.langPref : null);
-              })
-              .catch(function () {
-                finish(null);
-              });
-          }
         } catch (e) {
           finish(null);
         }
@@ -1348,7 +1330,6 @@
       }
 
       function startObserver() {
-        if (typeof MutationObserver === 'undefined') return;
         try {
           var target = document.body || document.documentElement;
           if (!target) return;
@@ -1405,18 +1386,9 @@
             finish(true);
             return;
           }
-          var maybePromise = chrome.storage.sync.get({ postCopyEnabled: true }, function (items) {
+          chrome.storage.sync.get({ postCopyEnabled: true }, function (items) {
             finish(items && typeof items === 'object' ? items.postCopyEnabled : true);
           });
-          if (maybePromise && typeof maybePromise.then === 'function') {
-            maybePromise
-              .then(function (items) {
-                finish(items && typeof items === 'object' ? items.postCopyEnabled : true);
-              })
-              .catch(function () {
-                finish(true);
-              });
-          }
         } catch (e) {
           finish(true);
         }
@@ -1432,12 +1404,10 @@
           for (var i = 0; i < icons.length; i++) {
             if (icons[i].parentNode) icons[i].parentNode.removeChild(icons[i]);
           }
-          if (hasWeakCollections) {
-            injectedContainers = new WeakSet();
-            skippedContainers = new WeakSet();
-            scanFailCounts = new WeakMap();
-            scanFailFirstAt = new WeakMap();
-          }
+          injectedContainers = new WeakSet();
+          skippedContainers = new WeakSet();
+          scanFailCounts = new WeakMap();
+          scanFailFirstAt = new WeakMap();
         } catch (e) {
           console.warn('[threads-clean-link] 移除已注入 icon 失敗', e);
         }

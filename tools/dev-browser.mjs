@@ -41,10 +41,11 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-// sync.js 是 CommonJS／UMD 雙棲模組(見該檔檔頭)，這裡用 createRequire 借道
-// 讀它的 CLIENT_ID_BY_API_BASE 對照表，橫幅才不會與 sync.js 的常數各存一份、
-// 改一邊漏改另一邊。
+// sync.js 與 tcl-core.js 是 CommonJS／UMD 雙棲模組(見各檔檔頭)，這裡用
+// createRequire 借道讀 tcl-core 的 API base 常數與 sync.js 的
+// CLIENT_ID_BY_API_BASE 對照表，不與擴充功能的常數各存一份。
 const require = createRequire(import.meta.url);
+const TCLCore = require('../tcl-core.js');
 
 const EXPECTED_EXTENSION_ID = 'hehokicokbgajpanjcajhmflaennnmdj';
 
@@ -52,9 +53,9 @@ const EXPECTED_EXTENSION_ID = 'hehokicokbgajpanjcajhmflaennnmdj';
 const ENVIRONMENTS = ['local', 'staging', 'production'];
 
 const API_BASE = {
-  local: 'http://localhost:8787',
-  staging: 'https://api-staging.metalinkclearer.workers.dev',
-  production: 'https://api.metalinkclearer.workers.dev',
+  local: TCLCore.API_BASE_LOCAL,
+  staging: TCLCore.API_BASE_STAGING,
+  production: TCLCore.API_BASE_PRODUCTION,
 };
 
 // 只注入 dev-build-local 副本 manifest 的 host 權限。商店版 manifest 不含
