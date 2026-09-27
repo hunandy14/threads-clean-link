@@ -134,13 +134,6 @@ function checkAllInParallel(items) {
 const DYNAMIC_REGEXP_ALLOWLIST = {
   // 兩段字面值夾一個經 escapeRegExp 跳脫的 handle，無量詞。
   "sw-scam.js:'\"username\":\"' + escapeRegExp(handle)": '跳脫後的字面值比對，無量詞',
-  // og meta 擷取，屬性名經 escapeRegExp 跳脫。以 og:title 代入、用本檔的
-  // RECHECK_PARAMS 試跑 recheck：property 在前的一條 vulnerable（automaton
-  // 判定三次方），content 在前的一條 vulnerable（fuzz 判定二次方）。輸入是
-  // fetch 回來的 HTML，工作量由 sw-og.js 的 OG_SCAN_LIMIT 封頂，屬未納
-  // 入閘門的已知風險（不改寫的理由見 sw-og.js extractOgMeta 的註解）。
-  'sw-og.js:`<meta[^>]+property="${escaped}"': 'og meta 擷取（property 在前），未納入閘門',
-  'sw-og.js:`<meta[^>]+content="([^"]*)"': 'og meta 擷取（content 在前），未納入閘門',
   // 由常數字元清單組出的單一字元類，無量詞。
   "tcl-core.js:'[' + cls + ']'": '單一字元類，無量詞',
   // 以既有正則的 source／flags 複製出 g 旗標版本；來源正則本身已在掃描範圍內。
@@ -411,5 +404,35 @@ test('G1 recheck：所有產品檔正則必須為 safe（線性）', async () =>
     failures.length,
     0,
     '共掃描 ' + ALL_REGEXES.length + ' 條正則，' + failures.length + ' 條非 safe：\n' + failures.join('\n')
+  );
+});
+
+// ============================================================
+// 【H2（D5）】extractOgMeta 在短連結解析熱路徑（resolveShare／右鍵）上，
+// 不得再用動態組出的非線性正則擷取 og meta；改走 indexOf 版的線性 meta 掃
+// 描後，白名單同步縮減。og 語料的行為等價由 test/background.test.js 既有
+// 的 og 測試守住。
+// ============================================================
+
+test('H2（D5）：sw-og.js 不再以 new RegExp 組 og meta 樣式，動態白名單縮到只剩無量詞的三條', () => {
+  const keys = Object.keys(DYNAMIC_REGEXP_ALLOWLIST);
+  assert.deepEqual(
+    keys.filter((k) => k.startsWith('sw-og.js:')),
+    [],
+    'og meta 擷取的兩條動態正則應自白名單移除（改走線性掃描後不再需要豁免）'
+  );
+  assert.deepEqual(
+    keys.slice().sort(),
+    [
+      "sw-scam.js:'\"username\":\"' + escapeRegExp(handle)",
+      "tcl-core.js:'[' + cls + ']'",
+      'tcl-core.js:pattern.source, pattern.flags',
+    ].sort(),
+    '動態 RegExp 白名單應只剩三條無量詞的建構'
+  );
+  assert.deepEqual(
+    DYNAMIC_REGEXPS.filter((d) => d.file === 'sw-og.js').map((d) => d.line + '  ' + d.head),
+    [],
+    'sw-og.js 不得再有動態組字串的 new RegExp(…)'
   );
 });
