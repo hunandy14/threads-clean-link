@@ -9,15 +9,19 @@
 //       detail { script: 腳本名, instanceId: 隨機字串 }。腳本名的欄位名
 //              本檔接受 script／scriptName／name 三者之一，值須能辨識出
 //              post-icon 或 scam-guard；instanceId 為非空字串且每次載入不同。
-//   - 舊實例監聽同一事件，收到「同腳本名且 instanceId 不是自己」才退場
-//     （別支腳本的事件、自己發的事件都不理會）。退場內容同 R1：斷
-//     observer、清計時器、移除自己插入的節點與標記。
+//   - 舊實例監聽同一事件，但只在自己已是孤兒（判活失敗）時才退場；活實
+//     例對任何交棒事件一律不理（頁面腳本可偽造同名事件，跨 world 讀
+//     detail 會結構化複製、內容照樣讀得到，見 test/handoff-hardening
+//     .test.js 的 H1 契約）。退場內容同 R1：斷 observer、清計時器、移除自
+//     己插入的節點與標記。
 //   - cleanup 統一掛在一個 AbortController 上：交棒監聽器本身也隨退場移
 //     除，頁面上同一事件的 document 監聽器只剩新實例那一個。
-//   - post-icon 既有的 root.__tclPostIconDispose 可保留一版相容，但交棒
-//     不得依賴它：擴充功能更新後，舊實例留在已失效的舊 ISOLATED world，
-//     重注入的新實例跑在新 world，兩者只共用 DOM、不共用 window 全域——
-//     本檔以「兩個 sandbox 共用同一個 document」模擬這個情境。
+//   - 同一 ISOLATED world 內的取代走 world 全域握把
+//     root.__tclPostIconDispose（新實例先呼叫握把、再派交棒事件）。擴充功
+//     能更新後，舊實例留在已失效的舊 ISOLATED world，重注入的新實例跑在
+//     新 world，兩者只共用 DOM、不共用 window 全域，握把碰不到，舊實例靠
+//     交棒事件退場——本檔以「兩個 sandbox 共用同一個 document」模擬這個
+//     情境。
 // 【R4】重注入後頁面上只有一組 icon／tag、只有一個活著的 observer，SPA
 // 換頁後只有一個實例在掃描（只送一則 scam.hit）。
 // ============================================================
@@ -120,7 +124,7 @@ test('R4 post-icon（回歸）：同一 world 載入兩次後，每張卡只有�
   }
 });
 
-test('R3 post-icon：交棒不依賴 window.__tclPostIconDispose——拿掉全域握把，舊實例仍要靠 CustomEvent 退場', async () => {
+test('R3 post-icon：拿掉 window.__tclPostIconDispose 後再載入，活著的舊實例不因交棒事件退場（D1）', async () => {
   const env = createPageEnv({ pathname: '/', page: createFeedPage(2) });
   try {
     env.loadPostIcon();
@@ -131,15 +135,15 @@ test('R3 post-icon：交棒不依賴 window.__tclPostIconDispose——拿掉全�
     env.loadPostIcon();
     await wait(50);
 
-    assert.equal(env.observers[0].disconnected, true, '舊實例應收到交棒事件而斷開 observer');
-    assert.equal(env.liveObservers().length, 1, '頁面上只能有一個活著的 observer');
-    assert.deepEqual(iconsPerCard(env), [1, 1], '每張卡恰好一顆 icon');
+    // 同一 world 的取代只認握把；交棒事件頁面也派得出來，活實例一律不理。
+    assert.equal(env.observers[0].disconnected, false, '活著的舊實例不得因交棒事件斷開 observer');
+    assert.equal(env.liveObservers().length, 2, '握把被拿掉時沒有任何路徑讓活著的舊實例退場');
   } finally {
     env.dispose();
   }
 });
 
-test('R3 post-icon：只對「同腳本名、不同 instanceId」的交棒事件退場，自己發的與別支腳本的一律不理', async () => {
+test('R3 post-icon：活實例不理任何交棒事件（含同腳本名、不同 instanceId），孤兒化後收到才退場', async () => {
   const env = createPageEnv({ pathname: '/', page: createFeedPage(2) });
   try {
     env.loadPostIcon();
@@ -164,14 +168,25 @@ test('R3 post-icon：只對「同腳本名、不同 instanceId」的交棒事件
     assert.equal(env.observers[0].disconnected, false, '自己或別支腳本的事件不得讓本實例退場');
     assert.equal(env.icons().length, 2, 'icon 不得被收掉');
 
-    // 同腳本、不同 instanceId：退場。
+    // 同腳本、不同 instanceId：活實例仍不理（頁面可偽造，D1）。
     env.document.dispatchEvent(
       new CustomEvent(own.type, {
         detail: Object.assign({}, own.detail, { instanceId: 'newer-instance' }),
       })
     );
     await wait(20);
-    assert.equal(env.observers[0].disconnected, true, '同腳本新實例的事件應讓本實例斷開 observer');
+    assert.equal(env.observers[0].disconnected, false, '活實例不得因同腳本、不同 instanceId 的事件退場');
+    assert.equal(env.icons().length, 2, '活實例的 icon 不得被收掉');
+
+    // 孤兒化後再收到同一則事件：退場。
+    env.orphan();
+    env.document.dispatchEvent(
+      new CustomEvent(own.type, {
+        detail: Object.assign({}, own.detail, { instanceId: 'newer-instance' }),
+      })
+    );
+    await wait(20);
+    assert.equal(env.observers[0].disconnected, true, '孤兒收到交棒事件應斷開 observer');
     assert.equal(env.icons().length, 0, '退場應移除本實例注入的 icon');
   } finally {
     env.dispose();

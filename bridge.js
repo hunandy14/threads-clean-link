@@ -8,10 +8,14 @@
   //
   // 同一頁面上可能同時有本腳本的舊實例在跑(擴充功能更新後的自癒重注入，
   // 或「使用者手動 F5 × 自癒重注入」的毫秒級競態造成同頁雙注入)。新實例
-  // 啟動時在 document 上派送交棒事件，舊實例收到後讓 message listener 下
-  // 線，由新實例接手，消除「雙 listener → 雙轉發 cleanedNotice → 時間軸多
-  // 一筆假事件」。更新後的重注入讓新舊實例分處不同的 ISOLATED world、只共
-  // 用 DOM，交棒因此走 DOM 事件而不走 window 全域。
+  // 啟動時讓舊實例的 message listener 下線，由新實例接手，消除「雙
+  // listener → 雙轉發 cleanedNotice → 時間軸多一筆假事件」。取代分兩條路:
+  //   - 同一 ISOLATED world:呼叫 world 全域握把 window.__tclBridgeDispose。
+  //     頁面腳本碰不到 ISOLATED world 的全域，這條路無法偽造。
+  //   - 跨 world(擴充功能更新後的重注入):新舊實例只共用 DOM，握把碰不到;
+  //     新實例在 document 上派送交棒事件，舊實例此時已是孤兒，收到即下線。
+  // 交棒事件頁面也派得出來，且跨 world 讀 detail 會結構化複製、內容可偽造，
+  // 所以活實例一律不理交棒事件，只有判活失敗的孤兒才依它下線。
   //
   // 不用「if (window.__tclBridgeLoaded) return」這種永久旗標:那會讓更新
   // 後的自癒重注入因旗標仍在而整支 return、不註冊新 listener，share 解析
@@ -133,23 +137,16 @@
     }
   }
 
-  // 交棒事件:detail 為純值 { script, instanceId }，收到「同腳本、
-  // instanceId 不是自己」就下線。跨 world 時 detail 可能讀成 null，此時不
-  // 依 detail 下線，改由判活決定:本實例已是孤兒就照樣下線。
-  function onHandoff(event) {
+  // 交棒事件:只在本實例已是孤兒(判活失敗)時下線，不看 detail。為何只在
+  // 孤兒時下線:頁面腳本可偽造同名事件與任意 detail，活實例若依 detail 下
+  // 線，頁面就能關掉 bridge。同一 world 的取代改走 window.__tclBridgeDispose。
+  function onHandoff() {
     if (disposed) return;
-    if (isContextLost()) {
-      disposeBridge();
-      return;
-    }
-    var detail = event ? event.detail : null;
-    if (!detail || typeof detail !== 'object') return;
-    if (detail.script !== SCRIPT_NAME) return;
-    if (typeof detail.instanceId !== 'string' || !detail.instanceId) return;
-    if (detail.instanceId === INSTANCE_ID) return;
-    disposeBridge();
+    if (isContextLost()) disposeBridge();
   }
 
+  // 派送交棒事件，讓其他 world 裡已成孤兒的舊實例下線。detail 保留
+  // { script, instanceId } 供除錯辨識，接收端不依它做判斷。
   function announceHandoff() {
     if (!hasDocumentEvents() || typeof CustomEvent !== 'function') return;
     try {
@@ -411,17 +408,20 @@
     return;
   }
 
-  // 交棒:先派送交棒事件讓舊實例下線，再註冊本實例的監聽。
-  announceHandoff();
-  // 相容握把:同一 world 裡只認 window.__tclBridgeDispose 的舊版實例靠它下
-  // 線;交棒事件已生效時，這裡呼叫到的是已下線實例的冪等 no-op。
-  if (typeof window !== 'undefined' && typeof window.__tclBridgeDispose === 'function') {
+  // 取代:先呼叫同一 world 的握把讓舊實例下線，再派送交棒事件讓其他 world
+  // 的孤兒下線，最後註冊本實例的監聽。
+  if (
+    typeof window !== 'undefined' &&
+    typeof window.__tclBridgeDispose === 'function' &&
+    window.__tclBridgeDispose !== disposeBridge
+  ) {
     try {
       window.__tclBridgeDispose();
     } catch (e) {
       // 舊實例下線失敗不影響新實例接手。
     }
   }
+  announceHandoff();
   if (typeof window !== 'undefined') {
     window.__tclBridgeDispose = disposeBridge;
   }

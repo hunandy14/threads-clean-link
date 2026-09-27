@@ -220,6 +220,7 @@ const SHARED_NAMES = [
   { name: 'OG_SCAN_LIMIT', provider: 'sw-og.js' },
   { name: 'escapeRegExp', provider: 'sw-og.js', consumers: ['sw-scam.js'] },
   { name: 'decodeHtmlEntities', provider: 'sw-og.js', consumers: ['sw-scam.js'] },
+  { name: 'scanMetaTags', provider: 'sw-og.js', consumers: ['sw-scam.js'] },
   { name: 'syncEngine', provider: 'background.js', consumers: ['sw-history.js'], lateBound: true },
 ];
 
