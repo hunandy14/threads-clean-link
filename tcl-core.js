@@ -248,12 +248,11 @@
     cursor: null,
     lastSyncedAt: null,
     lastError: null,
-    // D38:警示名單(marks)通道的水位線。與 links 的 cursor 並存於同一包
-    // syncState，兩條通道各自獨立推進。
+    // D38:警示名單(marks)通道的下行游標與淘汰提示。與 links 的 cursor 並存
+    // 於同一包 syncState，兩條通道各自獨立推進。上行待推改記在名單條目的
+    // dirty 上(見 normalizeBlocklistEntry)。
     marksCursor: null,
-    marksPushedAt: null,
     marksEvicted: null,
-    marksRejected: null,
     // 回填的續填位置。單輪翻不完時記下停在哪一頁，下一輪從這裡接著填;回填到
     // 底後清回 null。
     marksBackfillCursor: null,
@@ -345,48 +344,12 @@
       cursor: optionalCursor(raw.cursor),
       lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
       lastError: optionalString(raw.lastError),
-      // D38:marks 通道的水位線。cursor 是伺服器發的不透明字串、pushedAt 是
-      // 本機推送水位線、evicted 是雲端淘汰筆數(純 UI 提示)、rejected 是被拒
-      // key → 被拒當下的 updatedAt 映射、backfillCursor 是回填的續填位置。
+      // D38:marks 通道。cursor 是伺服器發的不透明字串、evicted 是雲端淘汰筆
+      // 數(純 UI 提示)、backfillCursor 是回填的續填位置。
       marksCursor: optionalCursor(raw.marksCursor),
-      marksPushedAt: optionalFiniteNumber(raw.marksPushedAt),
       marksEvicted: optionalFiniteNumber(raw.marksEvicted),
-      marksRejected: normalizeMarksRejected(raw.marksRejected),
       marksBackfillCursor: optionalCursor(raw.marksBackfillCursor),
     };
-  }
-
-  // marksRejected 的筆數上限，與本機名單的 MAX_ENTRIES 同級:被拒的 key 最多
-  // 就是整份名單那麼多筆，再多代表映射本身壞了。
-  var MARKS_REJECTED_MAX = 5000;
-
-  // D38:被拒警示的映射(key → 被拒當下的 updatedAt)。逐項夾擠成「字串鍵 →
-  // 有限數字」，形狀不對的整項剝除;非物件一律回 null。**每次回傳新物件**
-  // ——與整包 syncState 同一條紀律，回傳輸入的參照會讓呼叫端就地改到 storage
-  // 讀回來的那份。
-  function normalizeMarksRejected(value) {
-    if (!isPlainObject(value)) return null;
-    var kept = [];
-    var keys = Object.keys(value);
-    for (var i = 0; i < keys.length; i++) {
-      if (isUnsafeMapKey(keys[i])) continue;
-      if (typeof value[keys[i]] === 'number' && isFinite(value[keys[i]])) {
-        kept.push({ key: keys[i], at: value[keys[i]] });
-      }
-    }
-    // 超過上限時留下被拒時間最新的那些:映射整包寫回 storage，沒有上限就會隨著
-    // 被拒的 key 一路長到配額爆掉。舊的那些對應的本機條目多半早就又動過(那時
-    // updatedAt 已前進，映射也就失效)，先丟。
-    if (kept.length > MARKS_REJECTED_MAX) {
-      kept.sort(function (a, b) {
-        if (a.at !== b.at) return b.at - a.at;
-        return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
-      });
-      kept = kept.slice(0, MARKS_REJECTED_MAX);
-    }
-    var out = {};
-    for (var j = 0; j < kept.length; j++) out[kept[j].key] = kept[j].at;
-    return out;
   }
 
   // UUID v4 生成器。三種載入環境(service worker、擴充頁面、Node 測試)的全域
@@ -1634,10 +1597,16 @@
     entry.addedAt = addedAt === null ? updatedAt : addedAt;
     entry.updatedAt = updatedAt === null ? entry.addedAt : updatedAt;
     entry.source = raw.source === 'manual' ? 'manual' : 'auto';
-    // 本機專有的推送提示。被動再掃到已列名的作者時只併證據、不推進
-    // updatedAt，新證據靠這一格讓下一輪的推送批選得到(選批水位線取 updatedAt
-    // 與它的較大者)。不上雲:toScamMark 不送、fromScamMark 不讀回。形狀不是有
-    // 限數字時整個鍵不落。
+    // 本機專有的待推旗標:dirty 為 true 代表這一筆有改動還沒上雲，dirtyAt 是
+    // 標髒當下的版本戳，ack 回來時比對它，往返期間又改過的就不清。逐筆記而非
+    // 整份名單一條時戳水位線:被動補證據不推進 updatedAt、墓碑守衛要讓位、被
+    // 拒要停送，這些都是單筆的事，水位線只能靠層層夾擠去近似。不上雲:
+    // toScamMark 不送、fromScamMark 不讀回。乾淨的條目不落這兩個鍵。
+    if (raw.dirty === true) {
+      entry.dirty = true;
+      entry.dirtyAt = finiteOr(raw.dirtyAt, 0);
+    }
+    // 舊版的推送提示，只留給 sync.js 的一次性遷移讀(見 migrateLegacyMarks)。
     if (typeof raw.pushAfter === 'number' && isFinite(raw.pushAfter)) entry.pushAfter = raw.pushAfter;
     return entry;
   }
@@ -2267,12 +2236,23 @@
     out.evidence = mergeScamEvidenceLists(a.evidence, b.evidence);
     out.addedAt = scamEarlier(a.addedAt, b.addedAt);
     out.updatedAt = Math.max(finiteOr(a.updatedAt, 0), finiteOr(b.updatedAt, 0));
-    // pushAfter 與 snippet 同屬本機專有:它記的是「這台裝置還有一筆新證據沒推
-    // 上去」，與雲端那一份的新舊無關。純量落敗就把它洗掉的話，遠端對同一條目
-    // 的變更只要比本機的推送早一步到，那筆新證據就再也選不進推送批。
-    var pushAfter = Math.max(finiteOr(a.pushAfter, 0), finiteOr(b.pushAfter, 0));
-    if (pushAfter > 0) out.pushAfter = pushAfter;
+    // dirty／dirtyAt 只認本機那一份:它記的是「這台裝置還有改動沒推上去」，
+    // 與雲端那一份的新舊無關，純量落敗也照留;遠端帶來的一律不採信。
+    if (a.dirty === true) {
+      out.dirty = true;
+      out.dirtyAt = finiteOr(a.dirtyAt, 0);
+    }
     return out;
+  }
+
+  // 把條目標成待推(就地改寫並回傳同一個物件)。dirtyAt 取 now，但已經 dirty
+  // 的條目至少前進 1:往返期間同一毫秒內再改一次，版本戳也得換，ack 才認得出
+  // 送出去的不是最新版。
+  function markScamEntryDirty(entry, now) {
+    var prev = entry.dirty === true ? finiteOr(entry.dirtyAt, -Infinity) : -Infinity;
+    entry.dirty = true;
+    entry.dirtyAt = Math.max(now, prev + 1);
+    return entry;
   }
 
   // 兩個時戳取較早的一個。只有一邊是有限數字時取那一邊(缺席不是 0——拿 0 當
@@ -2374,6 +2354,7 @@
     fromScamMark: fromScamMark,
     isScamMarkHandle: isScamMarkHandle,
     mergeScamEntry: mergeScamEntry,
+    markScamEntryDirty: markScamEntryDirty,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
