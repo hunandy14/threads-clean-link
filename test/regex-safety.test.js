@@ -9,6 +9,14 @@
 // recheck 以 pure 後端執行（純 JS，不依賴 Java 或平台原生執行檔），並固定
 // randomSeed，讓 fuzz 階段在各平台的結果可重現。
 //
+// checker 用 recheck 的 'auto'：樣式能建成大小合理的自動機時走 automaton（純
+// 靜態、毫秒級），含 lookaround 或 `{1,80}` 這類大範圍計數時改走 fuzz。硬性
+// 先跑 automaton 對後者沒有好處——lookaround 直接回 unsupported，大計數要把
+// timeout 整段耗完才回 unknown，再跑 fuzz 反而更久。
+//
+// pure 後端逐條分析是單執行緒的 CPU 工作，各條互不相依，因此分給
+// worker_threads 並行（工作佇列逐條派發，重的幾條不會卡在同一個 worker）。
+//
 // 動態組字串的 `new RegExp(…)` 無法靜態取得完整樣式，列在
 // DYNAMIC_REGEXP_ALLOWLIST 並逐條註明原因；清單外出現新的動態建構時本檔
 // 會失敗，逼新增者補上說明（或改寫成可分析的形狀）。
@@ -21,7 +29,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { checkSync } = require('recheck');
+const os = require('node:os');
+const { Worker } = require('node:worker_threads');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -39,7 +48,73 @@ const PRODUCT_FILES = [
   'i18n.js',
 ];
 
-const RECHECK_PARAMS = { randomSeed: 42, timeout: 5000 };
+// 時間型上限（timeout／attackTimeout／incubationTimeout）一律關掉，只留
+// recheck 的步數型上限：時間上限的結果取決於機器當下的負載，同一條樣式在忙
+// 碌的機器上會因為逾時而變成 unknown，或把「跑得慢」誤當成攻擊成立；步數上
+// 限配固定 randomSeed，結果與機器快慢無關。
+const RECHECK_PARAMS = {
+  randomSeed: 42,
+  checker: 'auto',
+  timeout: null,
+  attackTimeout: null,
+  incubationTimeout: null,
+};
+
+// worker 端：逐條收 { index, source, flags }，回傳分析結果的可序列化摘要。
+const WORKER_SOURCE = `
+  const { parentPort, workerData } = require('node:worker_threads');
+  const { checkSync } = require(workerData.recheckPath);
+  parentPort.on('message', (job) => {
+    const result = checkSync(job.source, job.flags, workerData.params);
+    parentPort.postMessage({
+      index: job.index,
+      status: result.status,
+      complexity: result.complexity ? result.complexity.summary : null,
+      errorKind: result.error ? result.error.kind : null,
+      attack: result.attack ? result.attack.pattern : null,
+    });
+  });
+`;
+
+// 以 worker 池並行分析 items，回傳與 items 同序的結果陣列。
+function checkAllInParallel(items) {
+  const cores = os.availableParallelism ? os.availableParallelism() : os.cpus().length;
+  // 留一顆核心給主執行緒與同時在跑的其他測試檔，上限 6：再多就被 worker
+  // 各自載入 recheck 的成本吃掉。
+  const poolSize = Math.max(1, Math.min(items.length, cores - 1, 6));
+  const results = new Array(items.length);
+  let next = 0;
+  let done = 0;
+  return new Promise((resolve, reject) => {
+    const workers = [];
+    const finish = (err) => {
+      for (const w of workers) w.terminate();
+      if (err) reject(err);
+      else resolve(results);
+    };
+    const dispatch = (worker) => {
+      if (next >= items.length) return;
+      const index = next++;
+      worker.postMessage({ index, source: items[index].source, flags: items[index].flags });
+    };
+    for (let k = 0; k < poolSize; k++) {
+      const worker = new Worker(WORKER_SOURCE, {
+        eval: true,
+        workerData: { recheckPath: require.resolve('recheck'), params: RECHECK_PARAMS },
+        env: { ...process.env, RECHECK_BACKEND: 'pure' },
+      });
+      worker.on('message', (msg) => {
+        results[msg.index] = msg;
+        done++;
+        if (done === items.length) finish();
+        else dispatch(worker);
+      });
+      worker.on('error', finish);
+      workers.push(worker);
+      dispatch(worker);
+    }
+  });
+}
 
 // 動態建構的 new RegExp：key 是「檔名:建構式第一個引數的開頭片段」，以前綴
 // 比對，不綁行號，避免無關改動讓清單失效。這些樣式不在 G1 閘門內（G1 只管
@@ -302,14 +377,16 @@ test('G1 動態建構的 new RegExp 都在白名單內並註明原因', () => {
   );
 });
 
-test('G1 recheck：所有產品檔正則必須為 safe（線性）', () => {
+test('G1 recheck：所有產品檔正則必須為 safe（線性）', async () => {
   const failures = [];
-  for (const r of ALL_REGEXES) {
-    const result = checkSync(r.source, r.flags, RECHECK_PARAMS);
+  const results = await checkAllInParallel(ALL_REGEXES);
+  for (let k = 0; k < ALL_REGEXES.length; k++) {
+    const r = ALL_REGEXES[k];
+    const result = results[k];
     if (result.status !== 'safe') {
-      const complexity = result.complexity ? result.complexity.summary : '—';
-      const reason = result.status === 'unknown' && result.error ? '（' + result.error.kind + '）' : '';
-      const attack = result.attack ? '  攻擊字串：' + result.attack.pattern : '';
+      const complexity = result.complexity || '—';
+      const reason = result.status === 'unknown' && result.errorKind ? '（' + result.errorKind + '）' : '';
+      const attack = result.attack ? '  攻擊字串：' + result.attack : '';
       failures.push(
         r.file + ':' + r.line + '  [' + r.kind + ']  /' + r.source + '/' + r.flags +
           '\n    status=' + result.status + reason + '  complexity=' + complexity + attack
