@@ -159,10 +159,11 @@ function readPopupHtml() {
   return fsR13.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
 }
 
+// popup 載入的樣式：共用主題 theme.css 加上 popup 自己的 popup.css。
 function readPopupStyle() {
-  const html = readPopupHtml();
-  const match = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
-  return match ? match[1] : '';
+  return ['theme.css', 'popup.css']
+    .map((file) => fsR13.readFileSync(path.join(__dirname, '..', file), 'utf8'))
+    .join('\n');
 }
 
 test('R1-3:popup.html 只有兩個開關控件，id 為 autoClean 與 postCopyEnabled', () => {
@@ -204,10 +205,13 @@ test('R1-3:switch 具備開啟狀態樣式與滑動過場', () => {
 test('R1-3:深色主題仍成立，且 switch 顏色一律走 CSS 變數不得硬編色碼', () => {
   const style = readPopupStyle();
 
+  // 深色改由 theme.css 的 light-dark() token 提供：popup 必須載入 theme.css，
+  // 且 :root 宣告 color-scheme: light dark 才會跟系統深淺色走。
   assert.ok(
-    /@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)/i.test(style),
-    '深色主題區塊不得在改版時弄丟'
+    /<link\b(?=[^>]*\brel\s*=\s*["']?stylesheet)(?=[^>]*\bhref\s*=\s*["']theme\.css["'])[^>]*>/i.test(readPopupHtml()),
+    'popup.html 應載入 theme.css，深色主題才不會在改版時弄丟'
   );
+  assert.ok(/color-scheme\s*:\s*light\s+dark/i.test(style), '樣式應宣告 color-scheme: light dark');
 
   // 逐條規則檢查:凡選擇器明確指向 input／switch 的規則，宣告區塊內不得
   // 出現硬編十六進位色碼——硬編就代表該顏色只有一種主題會成立。
@@ -355,7 +359,7 @@ test('popup 不讀同步狀態:storage 只讀兩顆開關與語言偏好', async
   }
   assert.deepEqual(
     requested.sort(),
-    ['autoClean', 'langPref', 'postCopyEnabled'],
+    ['autoClean', 'langPref', 'postCopyEnabled', 'themePref'],
     'popup 的 storage 讀取不得含 syncState／syncAuth'
   );
 });

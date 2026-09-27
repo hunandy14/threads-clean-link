@@ -1,0 +1,1177 @@
+/* options.css — 選項頁(options.html)的版面與元件樣式。主題 token 與兩頁
+   共用的外觀(body、[hidden]、.setting-row、.switch)在 theme.css，本檔在它
+   之後載入，只引用 token、不宣告 token。 */
+body {
+  font-size: 14px;
+  line-height: 1.55;
+}
+.page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+.icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  vertical-align: -3px;
+}
+
+/* ---- 外觀類別 ----
+   多個元件共用同一套外觀時以 selector list 合併成一條，各元件自己的規則只
+   補差異(尺寸、位置、配色)。不在 JS 另加共用 class:卡片與列的 className
+   是渲染契約的一部分。本區塊排在各元件規則之前，同 specificity 時元件自己
+   的宣告勝出。 */
+/* 28×28 圖示鈕:紀錄卡快捷鈕、裝置列動作鈕、名單列 ⋯ 鈕、對話框 ✕ 鈕。 */
+.entry-quick-btn, .device-quick-btn, .scam-menu-btn, .detail-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.entry-quick-btn:hover, .device-quick-btn:hover, .detail-close:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+/* 全圓角 pill:環境標籤、裝置「本機」標記、名單作者列的標記。 */
+.env-badge, .device-pill, .scam-post-tag {
+  border-radius: 999px;
+  font-weight: 600;
+}
+/* 取消原生按鈕外觀的文字型按鈕:外觀全由各自規則決定。 */
+.link-btn, .scam-hit-count, .scam-info-btn, .menu-item, .chip {
+  appearance: none;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+/* 高亮態(hover 或鍵盤焦點落在內部)才浮出的動作鈕組，平時 display:none，
+   不吃 hit-test 也不會被 Tab 掃到。 */
+.entry-card:is(:hover, :focus-within) .entry-quick,
+.device-row:is(:hover, :focus-within) .device-actions {
+  display: flex;
+}
+
+/* ---- 頂欄 ---- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 20px;
+}
+/* 品牌盾牌鏈節(#i-brand)是自帶固定雙色的圖形，不再套橘色底 chip——
+   否則橘盾疊在橘底上會糊掉。改成透明框，讓盾牌自身的橘色直接對比
+   header 底(--plane)，深淺主題都浮得出來。 */
+.logo {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+/* 盾牌在 40px 透明框裡置中，22px 相對標題字重偏小，放大到 28px 取得平衡。 */
+.logo .icon { width: 28px; height: 28px; }
+.topbar .titles { min-width: 0; flex: 1; }
+/* h1 改 flex 排列,讓環境標籤跟標題文字同列、垂直置中(文字節點在 flex
+   容器內會自動包成匿名 flex item,不需額外包一層 wrapper)。 */
+.topbar h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+  display: flex;
+  align-items: center;
+}
+.topbar .sub {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+/* 標題旁的環境標籤(僅 staging/local 顯示,見 options.js renderEnvBadge):
+   跟帳號選單 .acct-warn-row 同一套「主色 + 淡底變體」慣例,深淺主題靠
+   既有 --warn/--accent 系列變數自動換色,不寫死色碼。 */
+.env-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 12px;
+  vertical-align: middle;
+}
+.env-badge-staging { background: var(--warn-soft); color: var(--warn); }
+.env-badge-local { background: var(--accent-soft); color: var(--accent); }
+/* 「紀錄」卡頭旁那顆(#envBadgeHistory)比大標題旁小一號,其餘樣式共用
+   上面的 .env-badge。 */
+.env-badge-sm { font-size: 11px; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.ghost-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font: inherit;
+}
+.ghost-btn:hover { color: var(--ink-1); border-color: var(--baseline); }
+.lang-btn { width: auto; padding: 0 10px; font-size: 12px; font-weight: 600; }
+
+/* ---- 分頁列 ----
+   文字 ＋ 底線指示，選中態走 --accent。左內距 16px 讓第一顆分頁的文字與
+   卡片內容(.card-head 同為 16px)切齊;與下方卡片的間距比照 .stats／.duo
+   的 12px。 */
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding-left: 16px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+/* 分頁鈕的下邊框就是指示線，負 margin 讓它壓在 .tabs 的底線上而不是疊在
+   它下面，選中與未選中兩態的文字基線才不會差一像素。 */
+.tabs button[role="tab"] {
+  appearance: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 8px 12px 9px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tabs button[role="tab"]:hover { color: var(--ink-1); }
+.tabs button[role="tab"][aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+/* 未選中的面板不得佔位:section 的預設 display 會蓋掉 UA 的 [hidden]。 */
+[role="tabpanel"][hidden] { display: none; }
+
+/* ---- 統計磚 ---- */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px 12px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.tile .label {
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tile .label .icon { width: 14px; height: 14px; color: var(--ink-3); }
+.tile .value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+.tile .meta {
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.tile .delta-up { color: var(--good); font-weight: 600; }
+
+/* ---- 卡片與雙欄 ---- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.duo {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+/* 左卡高度跟隨右卡:圖表區吃滿剩餘高度並垂直置中，不留下方空洞。 */
+.chart-card { display: flex; flex-direction: column; }
+.chart-card .chart-wrap { flex: 1; display: flex; align-items: center; }
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px 0;
+}
+.card-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+}
+.card-head .hint { font-size: 12px; color: var(--ink-3); }
+
+/* ---- 圖表 ---- */
+.chart-wrap { padding: 8px 12px 6px; position: relative; }
+.chart-wrap svg { display: block; width: 100%; height: auto; }
+.bar { fill: var(--accent); }
+.bar.hot { opacity: 0.85; }
+.bar-band { fill: transparent; cursor: pointer; }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+.baseline { stroke: var(--baseline); stroke-width: 1; }
+.axis-text { fill: var(--ink-3); font-size: 10px; }
+.bar-label { fill: var(--ink-2); font-size: 10px; font-weight: 600; }
+.tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--ink-1);
+  color: var(--plane);
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 4px 9px;
+  white-space: nowrap;
+  transform: translate(-50%, -110%);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.tooltip.show { opacity: 1; }
+
+/* =========================================================
+   頁首帳號入口(車道 B):觸發鈕依 data-state 概念切換未登入/已登入/
+   同步中/錯誤/登入過期，DOM 結構與動效沿用核准 demo
+   (account-header-demo.html)，見 options.js 的 renderAccount。
+   ========================================================= */
+/* 當 flex 容器而不是 block：裡面的觸發鈕是 inline-flex，放在 block
+   裡會坐在行內基線上，行盒底部多出一段 descender 空隔，把頁首
+   flex 置中的基準從按鈕換成「按鈕＋空隔」，帳號鈕因此比
+   .ghost-btn 高出約 1px。改成 flex 後沒有行盒，三顆鈕 top 對齊。 */
+.account-area { position: relative; display: flex; align-items: center; }
+/* 高度對齊頁首其餘三顆鈕(.ghost-btn 的固定 34px):.btn 本身靠 padding
+   撐出的高度只有約 32.6px，這裡明寫 height 蓋過，讓四顆鈕同高、同一
+   基線;.btn 既有的 inline-flex + align-items:center 會在新高度裡把
+   G 圖示與文字重新置中，不需要動 padding。 */
+.signin-btn { height: 34px; }
+.signin-btn .g-icon { width: 16px; height: 16px; }
+
+.account-trigger {
+  appearance: none; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px;
+  /* 3(padding)+26(avatar-wrap)+3(padding)+2(border)=34px，跟
+     .ghost-btn/.signin-btn 同高、同基線。頭像比容器小 8px，四周
+     留白均勻，綠點與同步圈都落在邊框內。 */
+  padding: 3px 10px 3px 3px; display: inline-flex; align-items: center;
+  gap: 8px; cursor: pointer; font: inherit;
+}
+/* hover 只用 filter 微調底色亮度，不放大(不加 transform:scale)。 */
+.account-trigger:hover { border-color: var(--baseline); filter: brightness(1.08); }
+.account-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.avatar-wrap { position: relative; width: 26px; height: 26px; flex-shrink: 0; }
+.avatar-circle {
+  width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-contrast);
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; user-select: none;
+  overflow: hidden;
+}
+/* 有大頭照時底色透明:img 本來就 100%/100% + overflow:hidden 蓋滿整個
+   圓框，--accent 背景平時被完全遮住看不見，但 img 載入失敗會先
+   onerror 才退回字母(見 options.js 的 renderAvatars)，這段時間縫隙裡
+   露出的應該是透明，不是誤導使用者「這裡本來有色塊」的實色。 */
+.avatar-circle.has-photo { background: transparent; }
+/* 下拉選單頂部帳號列用的 40px 大頭像變體，只覆寫尺寸與字級，其餘沿用
+   .avatar-circle。字級另寫 13px：頁首頭像縮到 26px 後基底的
+   .avatar-circle 是 12px，這裡補回 40px 圓框原本的字母大小。 */
+.avatar-circle.acct-menu-avatar { width: 40px; height: 40px; flex-shrink: 0; font-size: 13px; }
+/* 同步中:外圈疊在頭像外緣的 2px 弧線。預設(含 prefers-reduced-motion:
+   reduce)只畫靜態淡色圓環;轉動效果收進下面的 no-preference 媒體查詢，
+   一併帶出頂色對比，reduce 時保留「正在同步」的視覺提示但不轉動。 */
+.avatar-wrap.is-syncing::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 50%;
+  border: 2px solid var(--accent-soft);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .avatar-wrap.is-syncing::after {
+    border-top-color: var(--accent);
+    animation: acct-spin 0.85s linear infinite;
+  }
+}
+@keyframes acct-spin { to { transform: rotate(360deg); } }
+.status-dot {
+  position: absolute; right: 0; bottom: 0; width: 8px; height: 8px; border-radius: 50%;
+  border: 2px solid var(--surface); background: var(--good);
+}
+.status-dot.is-danger { background: var(--danger); }
+.status-dot.is-warning { background: var(--warn); }
+.acc-name { font-size: 12px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+@media (max-width: 720px) {
+  .acc-name { display: none; }
+  .account-trigger { padding-right: 3px; gap: 0; }
+}
+/* 頭像大頭照(avatarUrl):img 與字母備援互斥顯示，見 options.js 的
+   renderAvatars。 */
+.avatar-photo { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* 帳號下拉選單:寬 280px，右對齊頁首，其餘沿用 .menu 圓角/陰影。開合
+   動效:淡入 + 從 0.96 縮放到 1，transform-origin 右上，約 120ms;尊重
+   prefers-reduced-motion，該設定開啟時不套用 transition，瞬間切換。
+   顯示/隱藏仍靠 [hidden] 屬性做無障礙層級的開關，動畫只發生在 [hidden]
+   被移除之後、加上 .is-open 之前那一小段時間窗(見 openAcctMenu/
+   closeAcctMenu)。 */
+.acct-menu {
+  width: 280px; min-width: 280px; padding: 10px;
+  transform-origin: top right;
+  opacity: 0;
+  transform: scale(0.96);
+}
+.acct-menu.is-open { opacity: 1; transform: scale(1); }
+@media (prefers-reduced-motion: no-preference) {
+  .acct-menu { transition: opacity 0.12s ease, transform 0.12s ease; }
+}
+/* 選單頂部的帳號列:頭像 + 名字/email 兩行，純展示、不可點。 */
+.acct-menu-header { display: flex; align-items: center; gap: 10px; padding: 2px 4px 10px; cursor: default; }
+.acct-menu-header-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.acct-menu-header-text .acct-menu-name,
+.acct-menu-header-text .acct-menu-email {
+  padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acct-menu-name { font-size: 13px; font-weight: 650; color: var(--ink-1); padding: 2px 4px 0; }
+.acct-menu-email { font-size: 12px; color: var(--ink-3); word-break: break-all; padding: 0 4px 8px; }
+.acct-menu-sub { font-size: 12px; color: var(--ink-3); padding: 0 4px 8px; }
+.acct-menu .menu-sep { margin: 6px 4px; }
+.acct-error-row, .acct-warn-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border-radius: 8px; padding: 7px 9px; margin: 0 0 8px; font-size: 12px; font-weight: 600;
+}
+.acct-error-row { background: var(--danger-soft); color: var(--danger); }
+.acct-error-row .link-btn { color: var(--danger); font-size: 12px; flex-shrink: 0; }
+/* 語意色改用 --warn(登入過期是黃色第三態，跟 --accent 純屬巧合撞色，
+   不是同一件事——狀態點/這一列都該用同一顆 --warn 變數)。 */
+.acct-warn-row { background: var(--warn-soft); color: var(--warn); }
+.acct-warn-row .link-btn { color: var(--warn); font-size: 12px; flex-shrink: 0; }
+.acct-error-row .link-btn:hover, .acct-warn-row .link-btn:hover { text-decoration: underline; }
+
+/* ---- 設定列 ---- */
+.settings-body { padding: 6px 16px 14px; }
+.setting-row {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--grid);
+}
+.setting-row:last-of-type { border-bottom: none; }
+.setting-row .txt { min-width: 0; }
+.setting-row .name { font-size: 13px; font-weight: 550; }
+.setting-row .desc { font-size: 12px; color: var(--ink-3); }
+/* 標題列(名稱 + 同頁導覽連結)。space-between 讓連結貼齊標題右側;寬度不
+   夠時 flex-wrap 讓連結整個換到下一行(此時只剩它一個 item，
+   space-between 退化成靠左)，不會推動同一 label 內右側的開關。 */
+.name-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  column-gap: 10px;
+  row-gap: 2px;
+}
+/* 設定列內的同頁導覽連結(目前只有「管理警示名單」)。 */
+.setting-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.setting-link:hover { text-decoration: underline; }
+.setting-link .icon { width: 14px; height: 14px; }
+
+/* ---- 按鈕 ---- */
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 9px;
+  padding: 6px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.btn .icon { width: 14px; height: 14px; }
+.btn:hover { color: var(--ink-1); border-color: var(--baseline); }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+.btn-primary:hover { color: var(--accent-contrast); border-color: var(--accent); opacity: 0.9; }
+.btn-danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #ffffff;
+}
+.btn-danger-solid:hover { color: #ffffff; border-color: var(--danger); opacity: 0.9; }
+
+/* ---- ⋯ 選單與篩選下拉 ---- */
+.menu-wrap { position: relative; display: flex; align-items: center; gap: 10px; }
+.menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 5;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  min-width: 190px;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  font-size: 13px;
+  color: var(--ink-1);
+  padding: 8px 10px;
+  border-radius: 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+.menu-item .icon { width: 15px; height: 15px; color: var(--ink-3); }
+.menu-item:hover { background: var(--plane); }
+/* 選單項右側的次要數字(目前只有「管理裝置」用):靠 margin-left:auto 推到
+   最右，ink-3 小字;0 台時整個 span 收掉不留空位。 */
+.menu-item .menu-item-count { margin-left: auto; padding-left: 10px; font-size: 12px; font-weight: 500; color: var(--ink-3); }
+.menu-item.danger, .menu-item.danger .icon { color: var(--danger); }
+.menu-item.danger:hover { background: var(--danger-soft); }
+/* 停用態(如同步中的 acctSyncNowBtn):維持不可點的視覺訊號，hover 不
+   換底色，免得看起來還能點。 */
+.menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.menu-item:disabled:hover { background: none; }
+.menu-sep { border: none; border-top: 1px solid var(--grid); margin: 4px 6px; }
+.chips-menu { padding: 8px; min-width: max-content; }
+.chips { display: flex; gap: 6px; flex-wrap: nowrap; }
+.chip {
+  border: 1px solid var(--border);
+  color: var(--ink-2);
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 5px 12px;
+}
+.chip.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+  font-weight: 600;
+}
+/* 篩選生效(非「全部」)時，收合狀態也看得出來。 */
+#filterBtn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---- 紀錄清單 ---- */
+.history { margin-bottom: 20px; }
+.history-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 12px;
+}
+.search {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--plane);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 7px 11px;
+  color: var(--ink-3);
+}
+.search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink-1);
+  font: inherit;
+  width: 100%;
+  padding: 0;
+}
+.page-size { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--ink-3); }
+.ps {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+.ps:hover { color: var(--ink-1); }
+.ps.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.list-foot {
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--grid);
+  color: var(--ink-3);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--ink-3);
+  border-top: 1px solid var(--grid);
+}
+.empty .icon { width: 26px; height: 26px; margin-bottom: 6px; }
+
+/* ---- 紀錄卡片牆(唯一數值權威見上方 :root 註解) ----
+   版面/字級數值與手機版 history-card.tsx + constants/theme.ts 逐項核對:
+   card gap = Spacing.one(4)、padding = Spacing.three(16)、borderRadius =
+   PanelRadius(12)。卡片為「純外框線」風格:背景 transparent、邊框色
+   --card-outline，不填 --surface 底色。
+
+   互動模型照手機版「選中態」:手機沒有 web 的常駐 ⋮ 選單，是
+   hover/press 時邊框轉主色、寬度 1→1.5，右上浮出兩顆快捷 icon
+   (複製/開啟，對應手機 Copy/Share2)；web 用 :hover 與 :focus-within
+   模擬(:focus-within 讓鍵盤 Tab 到卡片上也能觸發同一套高亮視覺)。刪除
+   動作只在詳細視窗做，照手機版 DialogActions 的位置。 */
+
+/* 一排固定兩欄。窄螢幕降欄沿用既有斷點系統，見檔尾
+   @media(max-width:720px)與 .duo 同一個斷點收成一欄。 */
+.entry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 12px 16px 16px;
+}
+.entry-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 124px;
+  padding: 16px;
+  border: 1px solid var(--card-outline);
+  border-radius: 12px;
+  background: transparent;
+  min-width: 0;
+  cursor: pointer;
+}
+.entry-card:hover,
+.entry-card:focus-within {
+  border-color: var(--card-selected-border);
+  border-width: 1.5px;
+  outline: none;
+}
+/* 高亮態右上浮出的兩顆快捷鈕(複製連結/開啟貼文)，平時態不佔版面
+   (display:none，不是 opacity/visibility——不高亮時完全不吃 hit-test，
+   也不會被 Tab 意外聚焦到)。浮出規則見「外觀類別」。 */
+.entry-quick {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: none;
+  gap: 4px;
+}
+.entry-quick-btn { text-decoration: none; }
+.entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* 卡頭徽章:比照手機版平台徽章的尺寸與樣式(pill 觀感，但實際圓角值取
+   PanelRadius=12，不是全圓角 999——以手機版代碼數值為準)。淨化紀錄
+   沒有「未知來源」情境，KINDS 一定有標籤，徽章恆常顯示，不像手機版
+   platform badge 會有 null 隱藏的狀況。 */
+.entry-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 500;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.entry-time {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.entry-author-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.entry-author-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.entry-handle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.entry-excerpt {
+  font-size: 13.5px;
+  line-height: 1.48;
+  font-weight: 500;
+  color: var(--ink-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.entry-url {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry-url b { color: var(--accent); font-weight: 600; }
+
+/* ---- 卡片詳細視窗(唯一數值權威見上方 :root 註解):結構/行為與間距/
+   字級/圓角/按鈕樣式一律照手機版 history-detail-dialog.tsx +
+   dialog-shell.tsx 的字面 token 值。 ---- */
+.modal-detail {
+  position: relative;
+  max-width: 420px;
+  border-radius: 12px;
+  border-color: var(--card-outline);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton(top:10,right:10,
+   28x28,radius:8)。 */
+.detail-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 15px;
+  line-height: 18px;
+  z-index: 1;
+}
+/* head:gap = Spacing.one(4)、paddingBottom = Spacing.two(8)。 */
+.detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--grid);
+}
+/* 作者列:16px/600(ThemedText type="default" 基底 16px + fontWeight:600
+   覆寫)、handle 14px/500(ThemedText type="small" 的基底值，色套
+   textSecondary)。與卡片牆的 .entry-author-name/.entry-handle
+   (14px/600、14px/500)數值不同——卡片牆不在這條 kv 的權威來源範圍內
+   (卡片有卡片自己的字級規格)，兩邊各自忠於各自的來源，不強行同步，
+   故仍另立一組 detail 專屬 class。 */
+.detail-author-row { display: flex; align-items: baseline; min-width: 0; }
+.detail-author-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-handle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-3);
+  margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.detail-excerpt .excerpt-link {
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+.detail-excerpt .excerpt-link:hover {
+  text-decoration: underline;
+}
+.detail-excerpt {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 15;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+.detail-excerpt.expanded { -webkit-line-clamp: unset; }
+/* 展開全文:主色 + 靠左展開圖示(Lucide 風;手機版用「⤢」字元，web 改用
+   現有 SVG symbol 語彙保持整頁圖示系統一致，同一個視覺意圖)。 */
+.link-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.link-btn:hover { text-decoration: underline; }
+.link-btn .icon { width: 13px; height: 13px; }
+/* kv:標籤在上、數值在下的堆疊排版(照手機版 CopyRow 的 styles.kv)。 */
+.detail-kv { display: flex; flex-direction: column; gap: 3px; }
+.detail-key { font-size: 11px; letter-spacing: 0.05em; color: var(--ink-3); }
+.detail-value { font-size: 13.5px; line-height: 1.5; color: var(--ink-1); word-break: break-all; }
+/* 淨化後連結是唯一「accent 強調」的一列(CopyRow 呼叫時帶 accent
+   prop)，原始連結/追蹤參數兩列沒有這個修飾。 */
+#detailUrlValue { color: var(--accent); }
+.detail-linkrow { display: flex; align-items: center; gap: 8px; }
+.detail-linkrow .detail-value { flex: 1; }
+/* 「裝置」列的值是平台圖示 + 裝置名並排，不是純文字。 */
+.detail-device-value { display: flex; align-items: center; gap: 6px; }
+.detail-device-value .icon { width: 14px; height: 14px; color: var(--ink-3); }
+.ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal !important;
+}
+.copy-btn {
+  appearance: none;
+  border: 1px solid var(--card-outline);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.copy-btn:hover { background: var(--plane); color: var(--ink-1); }
+/* 時間軸子層視窗(疊在詳細視窗上，照手機版巢狀 Modal)內的逐列軌道+
+   圓點:最新一筆實心主色圓點，其餘空心主色圓圈，點與點之間垂直細線
+   相連——字面值照手機版 timelineDot/timelineLine(寬高10、
+   borderWidth1.5、線寬1.5)。 */
+.timeline-row { display: flex; gap: 12px; }
+.timeline-rail { width: 10px; display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 5px;
+  border: 1.5px solid var(--accent);
+  margin-top: 5px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.timeline-dot.filled { background: var(--accent); }
+.timeline-line {
+  flex: 1;
+  width: 1.5px;
+  margin-top: 2px;
+  margin-bottom: -3px;
+  background: var(--card-outline);
+}
+.timeline-text {
+  font-size: 13.5px;
+  line-height: 20px;
+  padding-bottom: 10px;
+  color: var(--ink-1);
+}
+.timeline-text.secondary { color: var(--ink-3); }
+.timeline-kind { color: var(--ink-3); }
+/* 時間軸列尾的裝置名:接在事件種類之後的 ink-3 小字，該筆事件沒有
+   deviceId 時整個 span 不畫(見 buildTimelineRow)。 */
+.timeline-device { color: var(--ink-3); font-size: 12px; margin-left: 8px; }
+/* 已移除裝置的淡字標記:接在原名之後(時間軸掛在 .timeline-device 之內、
+   詳細視窗掛在裝置名旁)，取最淡的 ink-3，讓原名仍是主體。 */
+/* 時間軸上這枚標記掛在 .timeline-device 之內、與它同色，再淡一階才分得出
+   哪一段是原名、哪一段是標記。 */
+.device-removed-tag { color: var(--ink-3); font-size: 12px; margin-left: 6px; opacity: .75; }
+/* 底部動作列:對齊 dialog-shell.tsx 的 DialogActions/DialogButton——
+   等寬(flex:1)、outline 邊框、圓角 PanelRadius(12)，destructive 只變
+   文字色不是實心底色。 */
+.dialog-actions { display: flex; gap: 8px; }
+.dialog-btn {
+  flex: 1;
+  text-align: center;
+  appearance: none;
+  border: 1px solid var(--card-outline);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 0;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+.dialog-btn:hover { background: var(--plane); }
+.dialog-btn.destructive { color: var(--danger); }
+
+footer.about {
+  color: var(--ink-3);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+footer.about a {
+  color: inherit;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+footer.about a:hover { color: var(--ink-1); }
+
+/* ---- 對話框 ----
+   遮罩透明度 0.55，照手機版 dialog-shell.tsx 的單一共用 DialogShell
+   (全 app 唯一的 dialog 外殼，三個對話框——匯入/清除確認/詳細視窗
+   一致採用，不是只套用在詳細視窗)。 */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  z-index: 10;
+}
+/* .overlay[hidden] 這條窄規則已被上面全域的 [hidden]{display:none
+   !important} 收斂取代，不再需要逐一補。 */
+/* 時間軸子層視窗疊在詳細視窗之上(照手機版巢狀 Modal 的做法)，z-index
+   取高一階，DOM 順序本身其實已經夠(接在 detailOverlay 後面)，這裡明寫
+   出來避免日後調順序時踩到。 */
+#timelineOverlay { z-index: 11; }
+/* 確認框可疊在詳細視窗之上(詳細視窗的「刪除這筆」會開這個框)，z-index
+   再高一階。少了這條就會撞上 DOM 順序:#confirmOverlay 寫在
+   #detailOverlay 前面，同為 z-index:10 時後者贏，確認框整個被遮住——
+   畫面看似沒反應、焦點靜默落在看不見的取消鈕、點遮罩還關錯視窗。 */
+#confirmOverlay { z-index: 12; }
+
+/* ---- 裝置對話框(#devicesOverlay):面板沿用 .modal-detail 的外觀，只把
+   寬度放寬到 480px。每列約 52px:左 24px 平台圖示、中間名稱/時間兩行、
+   右側改名與移除兩顆 ghost 圖示鈕——右側按鈕的浮現規則完全比照紀錄卡的
+   .entry-quick(平時 display:none，不吃 hit-test 也不會被 Tab 掃到，
+   hover 或 focus-within 才 display:flex)。 ---- */
+.modal-devices { max-width: 480px; }
+/* 標題列:左「裝置」、右「N 台裝置正在同步」;右側預留 ✕ 鈕的位置。 */
+.devices-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-right: 30px; }
+.devices-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.devices-head .hint { font-size: 12px; color: var(--ink-3); }
+/* 取清單失敗的錯誤列:既有的列保留不清掉，只在清單上方多這一句。 */
+.devices-error { font-size: 12px; color: var(--danger); padding: 4px 0; }
+.device-list { padding: 2px 0 0; }
+.device-row {
+  position: relative; display: flex; align-items: center; gap: 12px; min-height: 52px;
+  padding: 6px 0; border-bottom: 1px solid var(--grid);
+}
+.device-row:last-child { border-bottom: none; }
+.device-platform-icon { width: 24px; display: grid; place-items: center; color: var(--ink-3); flex-shrink: 0; }
+.device-platform-icon .icon { width: 18px; height: 18px; }
+.device-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.device-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 名稱本身就是按鈕(點名稱＝改名)，但外觀維持純文字，不畫按鈕框。 */
+.device-name {
+  appearance: none; border: none; background: none; padding: 0; margin: 0; font: inherit;
+  font-size: 13.5px; font-weight: 650; color: var(--ink-1); cursor: text; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; border-radius: 4px;
+}
+.device-name:hover { text-decoration: underline; text-decoration-color: var(--baseline); }
+.device-name-input {
+  font: inherit; font-size: 13.5px; font-weight: 650; color: var(--ink-1);
+  background: var(--plane); border: 1px solid var(--accent); border-radius: 8px;
+  padding: 2px 8px; width: 100%; max-width: 260px; outline: none;
+}
+.device-pill {
+  display: inline-flex; align-items: center; flex-shrink: 0; padding: 1px 7px;
+  background: var(--accent-soft); color: var(--accent); font-size: 11px; line-height: 16px;
+}
+.device-sub { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-actions { display: none; gap: 4px; flex-shrink: 0; }
+.device-quick-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+.device-quick-btn:disabled { opacity: 0.4; cursor: default; }
+.device-quick-btn:disabled:hover { background: transparent; color: var(--ink-3); }
+/* 停用的按鈕在多數瀏覽器不觸發原生 title 提示，外面再包一層 span 掛同一
+   句說明，滑鼠停在停用的垃圾桶上仍看得到 tooltip。 */
+.device-action-slot { display: inline-flex; }
+/* 空狀態:置中、灰字，語彙比照上方的 .empty。 */
+.device-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 26px 16px 24px; color: var(--ink-3); font-size: 13px; text-align: center;
+}
+.device-empty .icon { width: 26px; height: 26px; }
+
+/* ---- 警示名單卡 ----
+   列的骨架與互動語彙沿用裝置列(.device-row):列高、分隔線、右側 ghost
+   圖示鈕的浮現規則一致，只有證據連結區是本卡獨有。 */
+/* 與下一張卡的間距比照 .duo 的 12px。 */
+.scam-blocklist { margin-bottom: 12px; }
+/* 左右內距與 .card-head／.empty 同為 16px，列不貼卡緣;卡底 12px 由本區
+   收尾，allowlist 非空時改由 .scam-allow 接手(見該規則)。 */
+.scam-list { padding: 2px 16px 12px; }
+.scam-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 10px 0; border-bottom: 1px solid var(--grid);
+}
+.scam-row:last-child { border-bottom: none; }
+.scam-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* 一筆證據排成一則貼文的樣子:作者列、本文、本文下方的整串與訊號。 */
+.scam-evidence-head {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0; flex-wrap: wrap;
+}
+/* 顯示名與 @handle 整塊是作者頁連結:底線收掉，hover 才以主色強調。 */
+.scam-name-link {
+  display: inline-flex; align-items: baseline; gap: 6px; min-width: 0;
+  text-decoration: none; color: inherit;
+}
+.scam-name-link:hover .scam-name { color: var(--accent); text-decoration: underline; }
+.scam-name {
+  font-size: 13.5px; font-weight: 650; color: var(--ink-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.scam-handle { font-size: 12.5px; color: var(--ink-3); }
+/* 命中篇數:純文字小字鈕(不是 pill)，點下去開證據對話框。與 ⋯ 鈕同在
+   .scam-actions 裡，一起靠在列的右緣、與作者列同一條水平線。 */
+.scam-hit-count {
+  padding: 0; font-size: 11px; color: var(--ink-3); white-space: nowrap;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.scam-hit-count:hover { color: var(--accent); }
+.scam-evidence { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.scam-evidence-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* 作者列的時間:緊接帳號之後的小字灰，本身就是那篇的永久連結(比照
+   Threads)。絕對日期與貼文代碼尾碼留在 title 上。 */
+.scam-evidence-date { font-size: 12px; color: var(--ink-3); text-decoration: none; white-space: nowrap; }
+/* 作者列尾端的標記 pill:尺寸與形狀照內容腳本掛在貼文上那一顆(13px、
+   padding 1px 8px、圓角 9999px、600 字重)，使用者在 Threads 上看到的是同
+   一顆。配色改走選項頁自己的警示色票(--warn／--warn-soft)，跟著主題走。 */
+.scam-post-tag {
+  display: inline-flex; align-items: center; white-space: nowrap;
+  padding: 1px 8px;
+  font-size: 13px; line-height: 1.3;
+  color: var(--warn); background: var(--warn-soft);
+}
+a.scam-evidence-date:hover { color: var(--accent); text-decoration: underline; }
+/* 證據片段完整呈現(儲存端已裁到 120 字)，可換行、行高放寬才讀得下去。 */
+.scam-evidence-text {
+  margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+/* 雲端同步來的證據沒有片段(片段只留在掃到它的那台裝置)時的灰字說明:
+   灰階＋斜體，一眼就分得出這不是真的片段內容。 */
+.scam-evidence-missing { color: var(--ink-3); font-style: italic; }
+/* 錨點高亮:<mark> 的瀏覽器預設是螢光黃底黑字，深色主題下刺眼且文字色不跟
+   著主題走;改用暖色淡底並繼承文字色。 */
+mark.scam-anchor {
+  background: var(--accent-soft); color: inherit;
+  border-radius: 3px; padding: 0 2px;
+}
+/* 列右上角的「命中 N 篇」與 ⋯ 選項鈕。.scam-actions 同時是 .menu-wrap
+   (選單靠它定位);.scam-row 是 align-items:flex-start，這一塊因此與作者
+   列對齊在同一條水平線上。 */
+.scam-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.scam-menu-btn:hover { background: var(--plane); color: var(--ink-1); }
+.scam-menu { min-width: 140px; }
+/* 卡頭標題右邊的資訊鈕:尺寸與標題文字對齊，平時灰、hover 才強調。
+   margin-right:auto 讓它緊貼標題，右側的計數 hint 照舊推到最右
+   (.card-head 是 justify-content:space-between)。 */
+.scam-info-btn {
+  padding: 0; margin-right: auto; display: inline-flex; align-items: center;
+  color: var(--ink-3);
+}
+.scam-info-btn .icon { width: 15px; height: 15px; }
+.scam-info-btn:hover { color: var(--accent); }
+/* 說明視窗的五段條列。 */
+.scam-info-list {
+  margin: 12px 0 0; padding-left: 22px;
+  display: flex; flex-direction: column; gap: 12px;
+  max-height: 70vh; overflow: auto;
+  font-size: 13px; line-height: 1.6; color: var(--ink-2);
+}
+.scam-info-list li::marker { color: var(--ink-3); font-weight: 650; }
+/* 每段的開頭句:斷句本身就是重點，粗體讓人掃得動。 */
+.scam-info-lead { font-weight: 650; color: var(--ink-1); }
+/* 證據對話框的列表:三筆完整片段疊起來輕易超過一個螢幕，容器自己捲。 */
+.scam-hits-list {
+  display: flex; flex-direction: column; gap: 14px;
+  max-height: 70vh; overflow: auto;
+  margin-top: 12px;
+}
+.scam-hits-list .scam-evidence-item { gap: 4px; }
+/* 空狀態語彙比照紀錄卡的 .empty(同 class)，這裡只補圖示與文字的排版。 */
+.scam-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  font-size: 13px; padding: 26px 16px 24px;
+}
+/* 「已解除」小節:與名單之間拉一條分隔線，整節在 allowlist 為空時隱藏。
+   顯示時它是卡片的收尾塊，左右 16px、卡底 12px 與 .scam-list 同一組數值。 */
+.scam-allow {
+  border-top: 1px solid var(--grid); padding: 10px 16px 12px; margin-top: 4px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.scam-allow-title { font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: 0.02em; }
+.scam-allow-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.scam-allow-row .scam-handle { font-size: 12.5px; }
+.scam-allow-info { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.scam-allow-date { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+/* 總開關關閉時的狀態列:與 .scam-list 同寬(左右 16px)，暖色淡底與作者列
+   上的標記 pill(.scam-post-tag)同一套警示色票，跟著主題走。 */
+.scam-disabled-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  margin: 0 16px 8px; padding: 8px 12px; border-radius: 10px;
+  font-size: 12.5px; line-height: 1.5; color: var(--warn); background: var(--warn-soft);
+}
+.scam-enable-btn {
+  appearance: none; border: none; border-radius: 8px; cursor: pointer;
+  padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 600;
+  color: var(--warn); background: var(--surface); white-space: nowrap;
+}
+.scam-enable-btn:hover { background: var(--plane); }
+/* 淘汰提示緊接在計數 hint 之後，同一列小字，不搶主標題的視覺份量。 */
+.scam-evicted-hint { margin-left: 4px; }
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 520px;
+  padding: 18px;
+}
+.modal h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal .desc { font-size: 12px; color: var(--ink-3); margin-bottom: 12px; }
+.modal textarea {
+  width: 100%;
+  height: 180px;
+  resize: vertical;
+  background: var(--plane);
+  color: var(--ink-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  outline: none;
+}
+.modal textarea:focus { border-color: var(--accent); }
+.modal .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.modal-sm { max-width: 380px; }
+.modal-sm .desc { margin-bottom: 4px; }
+.danger-ink { color: var(--danger); }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 20px);
+  background: var(--ink-1);
+  color: var(--plane);
+  font-size: 13px;
+  border-radius: 10px;
+  padding: 9px 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  max-width: 90vw;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .duo { grid-template-columns: 1fr; }
+  .entry-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 460px) {
+  .page { padding: 16px 12px 40px; }
+  /* 手機寬仍要三顆分頁並排:收窄左右內距，文字本身不換行。 */
+  .tabs { padding-left: 12px; }
+  .tabs button[role="tab"] { padding: 8px 9px 9px; }
+}
