@@ -43,10 +43,6 @@
 'use strict';
 
 const test = require('node:test');
-// chrome.storage 替身的 setTimeout(0) 落盤與本檔 settle() 的逐輪讓出都走假時
-// 間（test/support/settle.js），每一輪不再吃作業系統計時器顆粒。
-const fakeClock = require('./support/settle').installSettle();
-test.beforeEach(fakeClock.reset);
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

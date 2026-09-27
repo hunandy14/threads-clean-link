@@ -44,15 +44,17 @@
 // 駐的分派函式，未啟用假時間時（測試之外）一律轉給原生計時器。每個呼叫檔
 // 各自安裝一次，各檔的狀態互不干擾。
 //
-// 【限制】虛擬時鐘只管 setTimeout／setInterval。Date 不跟著跳（vm sandbox
-// 自帶一份 Date，本來就不受主 realm 的 mock 影響）；AbortSignal.timeout
-// 走 Node 內部計時器，也不受影響。依賴真實 I/O（本機 HTTP 伺服器、非同步
+// 【限制】本檔只接管 setTimeout／setInterval，任何 realm 的 Date.now 都是牆
+// 鐘，不隨虛擬時鐘跳躍；AbortSignal.timeout 走 Node 內部計時器，也不受影響。依賴真實 I/O（本機 HTTP 伺服器、非同步
 // 檔案讀寫等）的檔案不應掛載本檔：settle() 看不到 I/O，會在回應抵達前就收
 // 尾。
 'use strict';
 
 // installSettle({ defaultMs }) — defaultMs 是 settle() 不給參數時的 ms（各檔
 // 沿用原本的預設值：background／history-schema 為 150，其餘為 30）。
+// advanceUntil() 允許虛擬時鐘推進的上限（毫秒），超過即判定 promise 不會落地。
+const ADVANCE_UNTIL_LIMIT_MS = 60000;
+
 function installSettle({ defaultMs = 30 } = {}) {
   const nodeTest = require('node:test');
   const { mock } = nodeTest;
@@ -312,20 +314,43 @@ function installSettle({ defaultMs = 30 } = {}) {
     }
   }
 
-  // advanceUntil(promise)：等 promise 落地，期間虛擬時鐘不設窗口、下一顆計時
-  // 器一律直接跳過去觸發。供「呼叫本身就卡在內部逾時上」的寫法使用（例如
-  // await 一個要等 2.5 秒逾時才 resolve 的 API）：牆鐘寫法是直接 await 它、
-  // 真的等滿，這裡改成假時間推進到它落地為止。promise 落地後（同一輪微任務
-  // 內）窗口即撤銷，之後到期的計時器不會被順手觸發。
+  // advanceUntil(promise)：等 promise 落地，期間下一顆計時器只要落在虛擬時間
+  // 上限（ADVANCE_UNTIL_LIMIT_MS）內就直接跳過去觸發。供「呼叫本身就卡在內部
+  // 逾時上」的寫法使用（例如 await 一個要等 2.5 秒逾時才 resolve 的 API）：牆
+  // 鐘寫法是直接 await 它、真的等滿，這裡改成假時間推進到它落地為止。promise
+  // 落地後（同一輪微任務內）窗口即撤銷，之後到期的計時器不會被順手觸發。
+  // promise 永不落地時，虛擬時鐘推過上限、或上限內已沒有計時器可觸發，都會
+  // 拋出帶訊息的錯誤，而不是一路掛到測試框架逾時。
   async function advanceUntil(promise) {
     if (!active) return promise;
     const mine = generation;
-    horizon = Infinity;
+    const limit = virtualNow() + ADVANCE_UNTIL_LIMIT_MS;
+    let settled = false;
+    const tracked = Promise.resolve(promise).finally(() => {
+      settled = true;
+    });
+    horizon = limit;
     kick();
     try {
-      return await promise;
+      // 看門狗：每輪讓出一次，promise 未落地而上限內已無計時器可推進時判定卡死。
+      const watchdog = (async () => {
+        let idle = 0;
+        while (!settled && mine === generation) {
+          await immediate();
+          if (settled) return;
+          const next = earliestDue();
+          const stuck = ready.length === 0 && (next === null || next >= limit);
+          idle = stuck ? idle + 1 : 0;
+          if (idle >= 3) {
+            throw new Error(
+              'advanceUntil：虛擬時間推進 ' + ADVANCE_UNTIL_LIMIT_MS + 'ms 內 promise 仍未落地'
+            );
+          }
+        }
+      })();
+      return await Promise.race([tracked, watchdog.then(() => tracked)]);
     } finally {
-      if (mine === generation) horizon = -Infinity;
+      if (mine === generation && horizon === limit) horizon = -Infinity;
     }
   }
 
