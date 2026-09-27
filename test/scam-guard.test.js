@@ -69,6 +69,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { runInSandbox, createChromeStorage } = require('./support/helpers');
+// DOM 注入層的等待（掃描 debounce、chrome.storage 落盤、sendMessage 回應延
+// 遲）一律走假時間：setTimeout 由 test/support/settle.js 的假時間接管，
+// env.flush()／env.waitFor() 以 advance() 推進虛擬時鐘，不花牆鐘。
+const { advance, reset: resetFakeTimers } = require('./support/settle').installSettle();
+test.beforeEach(resetFakeTimers);
 
 const SCAM_GUARD_PATH = path.join(__dirname, '..', 'scam-guard.js');
 
@@ -1443,41 +1448,25 @@ function createScamGuardEnv(options) {
         .forEach((observer) => observer.callback([], observer));
     },
     // 實作可能用 debounce（post-icon 是 60ms）＋ storage 的非同步回呼，
-    // 單一 tick 不夠；統一給一段寬裕的時間讓整條鏈結算完。
+    // 單一 tick 不夠；統一讓虛擬時鐘前進 200ms，整條鏈在這段假時間內結算完。
     flush() {
-      return new Promise((resolve) => setTimeout(resolve, 200));
+      return advance(200);
     },
-    // 條件輪詢：等到 condition() 為真才往下走，逾時才紅燈。固定長度的等待
-    // 在全套併跑時會被排程延遲吃掉（實測 flush() 的 200ms 在負載下不足），
-    // 輪詢則是條件一成立就收工，慢的機器只是多等幾圈。逾時訊息帶 label，
-    // 紅燈時看得出是哪一個條件沒成立。
-    waitFor(condition, options) {
+    // 條件輪詢：等到 condition() 為真才往下走，虛擬時鐘前進滿 timeout 仍不成
+    // 立才紅燈。條件一成立就收工，不必陪固定長度的等待跑完。逾時訊息帶
+    // label，紅燈時看得出是哪一個條件沒成立。
+    async waitFor(condition, options) {
       const settings = options || {};
       const timeout = settings.timeout === undefined ? 2000 : settings.timeout;
       const step = settings.step === undefined ? 20 : settings.step;
-      const deadline = Date.now() + timeout;
-      return new Promise((resolve, reject) => {
-        (function poll() {
-          let value;
-          try {
-            value = condition();
-          } catch (e) {
-            reject(e);
-            return;
-          }
-          if (value) {
-            resolve(value);
-            return;
-          }
-          if (Date.now() >= deadline) {
-            reject(
-              new Error('waitFor 逾時（' + timeout + 'ms）：' + (settings.label || '條件未成立'))
-            );
-            return;
-          }
-          setTimeout(poll, step);
-        })();
-      });
+      for (let waited = 0; ; waited += step) {
+        const value = condition();
+        if (value) return value;
+        if (waited >= timeout) {
+          throw new Error('waitFor 逾時（' + timeout + 'ms）：' + (settings.label || '條件未成立'));
+        }
+        await advance(step);
+      }
     },
   };
   return env;
