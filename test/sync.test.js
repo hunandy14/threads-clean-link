@@ -5003,14 +5003,24 @@ test('S2 deleteCloud：R11 成功但登出寫入失敗 → lastError=storage_wri
 // 覆審收尾 1 — 單次請求逾時：fetch 永不 resolve 時 30 秒後以 network_error 收尾
 // ============================================================================
 
-test('覆審 1 call 逾時：fetch 永不 resolve，30 秒計時器到期後該輪以 network_error 結束並排退避', async () => {
+test('覆審 1 call 逾時：fetch 永不 resolve，30 秒逾時 signal 到期後該輪以 network_error 結束並排退避', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   let signal = null;
+  // 注入的 timeoutSignal 替身：記下 ms，由測試決定何時 abort。
+  const timeouts = [];
   const hangingDeps = Object.assign({}, env.deps, {
+    timeoutSignal(ms) {
+      const controller = new AbortController();
+      timeouts.push({ ms, fn: () => controller.abort() });
+      return controller.signal;
+    },
+    // 比照真實 fetch：掛著直到 signal abort 才 reject。
     fetch(url, init) {
       signal = init && init.signal;
-      return new Promise(() => {});
+      return new Promise((resolve, reject) => {
+        if (signal) signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
     },
   });
   const engine = TCLSync.create(hangingDeps);
@@ -5026,8 +5036,8 @@ test('覆審 1 call 逾時：fetch 永不 resolve，30 秒計時器到期後該�
   await settle(10);
 
   assert.equal(done, false, '前置：請求掛著');
-  const timeout = env.timers.live.find((h) => h.ms === 30_000);
-  assert.ok(timeout, '每次請求都要排一個 30 秒逾時計時器（注入的 setTimeout）');
+  const timeout = timeouts.find((h) => h.ms === 30_000);
+  assert.ok(timeout, '每次請求都要以 30 秒呼叫注入的 timeoutSignal');
   assert.ok(signal && typeof signal.aborted === 'boolean', 'fetch 要帶 AbortSignal，逾時時一併中止連線');
 
   env.advance(30_000);
