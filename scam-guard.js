@@ -525,8 +525,8 @@
       // 描、查表、送 scam.hit 全面停擺，不再呼叫任何 chrome.* API。
       var disposed = false;
 
-      // 每次載入的實例身分:交棒事件以它辨識「不是自己發的」，掛上的 tag
-      // 也帶著它(OWNER_ATTR)，退場時只收自己那批。值只含英數與連字號，可
+      // 每次載入的實例身分:掛上的 tag 帶著它(OWNER_ATTR)，退場時只收自己
+      // 那批;交棒事件的 detail 也帶著它供除錯辨識。值只含英數與連字號，可
       // 以安全地放進屬性選擇器。
       var OWNER_ATTR = 'data-tcl-owner';
       var INSTANCE_ID = 'tcl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
@@ -540,11 +540,12 @@
       // 路。
       var storageListeners = [];
 
-      // 交棒:新實例啟動時在 document 上派送 HANDOFF_EVENT，detail 為純值
-      // { script, instanceId };舊實例收到「同腳本、instanceId 不是自己」的
-      // 事件就退場。擴充功能更新後的重注入讓新舊實例分處不同的 ISOLATED
-      // world、只共用 DOM，交棒因此走 DOM 事件。跨 world 時 detail 可能讀成
-      // null，此時不依 detail 退場，改由判活決定:本實例已是孤兒就照樣退場。
+      // 交棒:新實例取代舊實例分兩條路。同一 ISOLATED world 內呼叫 world 全
+      // 域握把 root.__tclScamGuardDispose(頁面腳本碰不到，無法偽造);擴充
+      // 功能更新後的重注入讓新舊實例分處不同 world、只共用 DOM，新實例改在
+      // document 上派送 HANDOFF_EVENT，舊實例此時已是孤兒，收到即退場。交
+      // 棒事件頁面也派得出來，跨 world 讀 detail 會結構化複製、內容可偽造，
+      // 所以活實例一律不理它。
       var SCRIPT_NAME = 'scam-guard';
       var HANDOFF_EVENT = 'threads-clean-link:handoff';
 
@@ -563,20 +564,16 @@
         return lifecycle ? { signal: lifecycle.signal } : false;
       }
 
-      function onHandoff(event) {
+      // 交棒事件只在本實例已是孤兒(判活失敗)時觸發退場，不看 detail。為何
+      // 只在孤兒時退場:頁面腳本可偽造同名事件與任意 detail，活實例若依
+      // detail 退場，頁面就能收掉警示 tag、停掉掃描。
+      function onHandoff() {
         if (disposed) return;
-        if (contextLost()) {
-          retire();
-          return;
-        }
-        var detail = event ? event.detail : null;
-        if (!detail || typeof detail !== 'object') return;
-        if (detail.script !== SCRIPT_NAME) return;
-        if (typeof detail.instanceId !== 'string' || !detail.instanceId) return;
-        if (detail.instanceId === INSTANCE_ID) return;
-        retire();
+        if (contextLost()) retire();
       }
 
+      // 派送交棒事件，讓其他 world 裡已成孤兒的舊實例退場。detail 保留
+      // { script, instanceId } 供除錯辨識，接收端不依它做判斷。
       function announceHandoff() {
         try {
           if (typeof CustomEvent !== 'function' || typeof document.dispatchEvent !== 'function') return;
@@ -625,7 +622,8 @@
 
       // 實例退場:拆掉 DOM 事件監聽、取消排下的掃描計時器、斷開 observer、
       // 收掉自己掛的 tag，之後掃描與 storage 回呼一律短路。冪等，重複呼叫
-      // 安全。頁面上的警示交給接手的新實例重新判定、重新掛上。
+      // 安全。頁面上的警示交給接手的新實例重新判定、重新掛上。也是 world
+      // 全域握把 root.__tclScamGuardDispose 的本體。
       function retire() {
         if (disposed) return;
         disposed = true;
@@ -1625,10 +1623,19 @@
           return;
         }
 
-        // 交棒(必須排在最前):先派送交棒事件讓同頁的舊實例退場(斷
-        // observer、清計時器、收掉它掛的 tag)，再註冊本實例自己的交棒監
-        // 聽。消除「雙 observer → SPA 換頁雙送 scam.hit」。
+        // 交棒(必須排在最前):先呼叫同一 world 的握把讓舊實例退場(斷
+        // observer、清計時器、收掉它掛的 tag)，再派送交棒事件讓其他 world
+        // 的孤兒退場，最後掛上本實例的握把與交棒監聽。消除「雙 observer →
+        // SPA 換頁雙送 scam.hit」。
+        if (typeof root.__tclScamGuardDispose === 'function' && root.__tclScamGuardDispose !== retire) {
+          try {
+            root.__tclScamGuardDispose();
+          } catch (e) {
+            // 舊實例退場失敗不影響新實例接手。
+          }
+        }
         announceHandoff();
+        root.__tclScamGuardDispose = retire;
         listenHandoff();
 
         // 語言先用環境偵測值頂著，讀到 langPref 再補正；tag 要等 storage 的
