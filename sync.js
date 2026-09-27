@@ -4,7 +4,8 @@
 //   - Node 測試:CommonJS require
 //
 // 全部外部依賴一律由 create() 注入(storage／fetch／now／alarms／broadcast／
-// auth／permissions／randomUUID／writeChain／setTimeout／clearTimeout)，模組本
+// auth／permissions／randomUUID／writeChain／setTimeout／clearTimeout／
+// timeoutSignal／clientVersion)，模組本
 // 身不碰全域 chrome／fetch／Date——SW 隨時被回收，測試要能在 node 內以假時鐘
 // 跑完整往返，兩者都靠這條紀律。
 //
@@ -115,8 +116,9 @@
   // storage.session 的鍵。單飛旗標刻意存 session 而非 local:SW 被殺時
   // session 自然消失，旗標不會永久卡死同步;另加時效當第二道保險。
   var INFLIGHT_KEY = 'syncInflight';
-  // 單次請求的逾時(含讀回應本文)。到期中止連線並視為 network_error，走既有
-  // 退避;沒有這一道，一個不回應的連線會讓整輪永遠停在半路。
+  // 單次請求的逾時(含讀回應本文)，交給注入的 timeoutSignal 產生 signal。
+  // 到期中止連線並視為 network_error，走既有退避;沒有這一道，一個不回應的
+  // 連線會讓整輪永遠停在半路。
   var CALL_TIMEOUT_MS = 30000;
   var DEBOUNCE_KEY = 'syncDebounce';
   // 單飛旗標的時效，必須大於單輪最長時間，否則還在跑的一輪會被第二輪搶走。
@@ -296,6 +298,9 @@
     };
     var setTimer = deps.setTimeout;
     var clearTimer = deps.clearTimeout;
+    // 請求逾時的 signal 工廠((ms) => AbortSignal，background 接成
+    // AbortSignal.timeout)。沒注入就不帶 signal，請求不設逾時。
+    var timeoutSignal = typeof deps.timeoutSignal === 'function' ? deps.timeoutSignal : null;
     // 本機裝置身分(§12 增補二)。舊版接線沒有這支，整組裝置歸屬功能就靜默
     // 缺席——同步照跑，只是請求不帶 device 區塊。
     var getLocalDevice = typeof deps.getLocalDevice === 'function' ? deps.getLocalDevice : null;
@@ -482,50 +487,26 @@
         init.body = JSON.stringify(body);
       }
       var res;
-      // 逾時:注入的計時器到期就中止連線並讓這一次請求以 network_error 失敗。
-      // 計時器涵蓋到讀完回應本文為止。
-      var controller = typeof AbortController === 'function' ? new AbortController() : null;
-      if (controller) init.signal = controller.signal;
-      var timer = null;
-      var expired = new Promise(function (resolve, reject) {
-        if (typeof setTimer !== 'function') return;
-        timer = setTimer(function () {
-          timer = null;
-          if (controller) controller.abort();
-          reject(syncError('network_error'));
-        }, CALL_TIMEOUT_MS);
-      });
-      expired.catch(function () {});
-      function stopTimer() {
-        if (timer !== null && typeof clearTimer === 'function') clearTimer(timer);
-        timer = null;
-      }
-      return Promise.race([
-        Promise.resolve()
-          .then(function () {
-            return fetchImpl(ctx.apiBase + path, init);
-          })
-          .catch(function () {
-            throw syncError('network_error');
-          })
-          .then(function (response) {
-            res = response;
-            return Promise.resolve(res.json()).catch(function () {
-              return null;
-            });
-          }),
-        expired,
-      ])
-        .then(
-          function (payload) {
-            stopTimer();
-            return payload;
-          },
-          function (err) {
-            stopTimer();
-            throw err;
-          }
-        )
+      // 逾時涵蓋到讀完回應本文為止:signal 同時管 fetch 與 res.json()。連線或
+      // 讀本文途中被中止都以 network_error 失敗，不會走到下面採信
+      // set-auth-token 的那一段。
+      if (timeoutSignal) init.signal = timeoutSignal(CALL_TIMEOUT_MS);
+      return Promise.resolve()
+        .then(function () {
+          return fetchImpl(ctx.apiBase + path, init);
+        })
+        .catch(function () {
+          throw syncError('network_error');
+        })
+        .then(function (response) {
+          res = response;
+          // 本文不是 JSON 時以 null 續走(由狀態碼決定成敗);被逾時中止則不
+          // 能這樣退讓，否則 2xx 會被當成 payload 為 null 的成功。
+          return Promise.resolve(res.json()).catch(function () {
+            if (init.signal && init.signal.aborted) throw syncError('network_error');
+            return null;
+          });
+        })
         .then(function (payload) {
           // 【契約要求】api-spec 8.1 第 4 點:「**任何**回應只要帶這個標頭就
           // 覆寫本地存值」——包含 4xx／5xx。後端可能在拒絕這一次請求的同時

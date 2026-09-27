@@ -28,6 +28,8 @@
   // 4.1.2.1)，歸暫時性;其餘非 access_denied 的 error 一律是設定問題。
   var OAUTH_TRANSIENT_ERRORS = ['server_error', 'temporarily_unavailable'];
   var SCOPE = 'openid email profile';
+  // exchangeWithBackend 的預設逾時，與 sync.js 的 CALL_TIMEOUT_MS 同值。
+  var EXCHANGE_TIMEOUT_MS = 30000;
 
   // 失敗一律帶 err.code——分類的唯一來源(對照表見 sync.js 的
   // SIGN_IN_CANCELLED／SIGN_IN_TRANSIENT)。訊息文字給人看，code 給程式分流，
@@ -240,12 +242,16 @@
   // 那一站的回應照樣會被當成後端回應處理(包含採信它的 set-auth-token 標頭)，
   // 等於把整個工作階段的來源交給任何能讓後端轉址的人;與 sync.js 的 call()
   // 同一條紀律，登入這支更是 token 的第一個入口。
+  // signal — 逾時 options.timeoutMs(預設 EXCHANGE_TIMEOUT_MS)，涵蓋到讀完回應
+  // 本文為止;連線或讀本文途中被中止都以 network_error 失敗。
   function exchangeWithBackend(options) {
     var url = options.apiBase.replace(/\/+$/, '') + '/api/auth/sign-in/social';
+    var signal = AbortSignal.timeout(options.timeoutMs || EXCHANGE_TIMEOUT_MS);
     return fetch(url, {
       method: 'POST',
       credentials: 'omit',
       redirect: 'error',
+      signal: signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         provider: 'google',
@@ -253,14 +259,16 @@
       }),
     })
       .catch(function (err) {
-        // 斷網、DNS 失敗，以及 redirect:'error' 攔下的 3xx，在 fetch 這一層都
-        // 是同一種例外。三者都不是設定錯誤，重試有機會成功。
+        // 斷網、DNS 失敗、逾時中止，以及 redirect:'error' 攔下的 3xx，在
+        // fetch 這一層都是同一種例外。都不是設定錯誤，重試有機會成功。
         throw authError('network_error', '連線後端失敗:' + ((err && err.message) || err));
       })
       .then(function (res) {
         return res
           .json()
           .catch(function () {
+            // 本文不是 JSON 時以 null 續走;被逾時中止則不是可用的回應。
+            if (signal.aborted) throw authError('network_error', '讀取後端回應逾時');
             return null;
           })
           .then(function (body) {
