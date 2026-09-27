@@ -4707,6 +4707,11 @@ test('D50 其他裝置：兩台各自重新登入後全量重傳，雲端與兩�
   await settle(20);
   await engineB.syncNow();
   await settle(20);
+  // epoch：兩台都帶著刪雲端前的 epoch 登入，登入那一輪撞 409 只重設不送（§3.3），
+  // 全量重傳順延一輪；A 再同步一次才拉得到 B 重傳的那幾筆。
+  envA.advance(60_000);
+  await engineA.syncNow();
+  await settle(20);
 
   const union = [POST_A, POST_B, POST_C, POST_D, POST_E].map((u) => postKeyOf(u)).sort();
   assert.equal(envA.server.linkCount(), 5, '雲端由兩台本機聯集重建（含 B 登出期間新增的那筆）');
