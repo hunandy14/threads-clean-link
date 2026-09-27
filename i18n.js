@@ -194,11 +194,18 @@
       // 碼對使用者沒有意義;設定錯誤重試無用，要讓他報得出這串碼。
       opAccountSignInFailed: '登入失敗，請稍後再試',
       opAccountSignInConfigError: '登入設定有誤，請回報錯誤碼：{code}',
+      // 同步錯誤依類別(TCLCore.errorCategoryOf)顯示的文案，帳號選單錯誤列與
+      // toast 共用。server 類帶出原始碼方便回報;auth 類沿用 opAccountExpired，
+      // 未分類的碼沿用 opAccountErrorPrefix + 錯誤碼。
+      opSyncErrQuota: '儲存空間已滿，同步暫停',
+      opSyncErrRateLimit: '同步太頻繁，稍後會自動重試',
+      opSyncErrNetwork: '無法連線到同步伺服器，稍後會自動重試',
+      opSyncErrServer: '同步伺服器發生錯誤，稍後會自動重試（{code}）',
       // 已登入時取代 opDeviceNote(「紀錄僅保存於這台裝置」)的文案。
       opDeviceNoteSynced: '已連線至你的 Google 帳號',
       // 刪除雲端資料送出當下的進行中提示;最終依 sync.deleteCloud 回應
-      // { ok, signedOut, code } 定案，回應缺席才退回廣播判讀(錯誤沿用
-      // opAccountErrorPrefix + 錯誤碼，不另造重複鍵)。
+      // { ok, signedOut, code } 定案，回應缺席才退回廣播判讀(錯誤依類別取
+      // 上方 opSyncErr* 等同步錯誤文案，不另造重複鍵)。
       opToastCloudDeleted: '正在刪除雲端資料…',
       // 刪雲端成功並已登出的定案提示(D51)。
       opToastCloudDeletedSignedOut: '雲端資料已刪除，已登出',
@@ -465,11 +472,16 @@
       opSyncPermissionDenied: 'Permission not granted, cannot sign in',
       opAccountSignInFailed: 'Sign-in failed, please try again later',
       opAccountSignInConfigError: 'Sign-in is misconfigured. Please report this code: {code}',
+      opSyncErrQuota: 'Storage is full. Sync is paused.',
+      opSyncErrRateLimit: 'Syncing too often. Will retry automatically.',
+      opSyncErrNetwork: "Can't reach the sync server. Will retry automatically.",
+      opSyncErrServer: 'The sync server hit an error. Will retry automatically ({code}).',
       opDeviceNoteSynced: 'Connected to your Google account',
       // In-progress toast shown when delete-cloud is sent; the final toast is
       // decided by the sync.deleteCloud reply { ok, signedOut, code }, and
       // only falls back to reading the broadcast when the reply is missing
-      // (errors reuse opAccountErrorPrefix + code — no separate key).
+      // (errors pick the per-category sync error text such as opSyncErr* —
+      // no separate key).
       opToastCloudDeleted: 'Deleting cloud data…',
       opToastCloudDeletedSignedOut: 'Cloud data deleted. Signed out.',
 
