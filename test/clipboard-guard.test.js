@@ -129,7 +129,7 @@ test('短碼經橋接成功解析後寫入乾淨貼文網址(尾斜線／無 www
     installBridgeSim(win, 'success');
     const sandbox = loadGuard(recordingWriteText(recorder), win);
     win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await advance(30);
 
     await sandbox.navigator.clipboard.writeText(input);
 
@@ -143,7 +143,7 @@ test('短碼橋接回應失敗時，原樣寫入原始短碼(fail-open)', async 
   installBridgeSim(win, 'failure');
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(30);
   const shareUrl = 'https://www.threads.com/share/DHuf91XTf/';
 
   await sandbox.navigator.clipboard.writeText(shareUrl);
@@ -190,12 +190,12 @@ test('短碼橋接逾時(2500ms)後，原樣寫入原始短碼(fail-open)', asyn
   installBridgeSim(win, 'timeout');
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(30);
   const shareUrl = 'https://www.threads.com/share/ABCDEF';
 
-  const startedAt = Date.now();
-  await sandbox.navigator.clipboard.writeText(shareUrl);
-  const elapsed = Date.now() - startedAt;
+  const startedAt = now();
+  await advanceUntil(sandbox.navigator.clipboard.writeText(shareUrl));
+  const elapsed = now() - startedAt;
 
   assert.equal(recorder[0], shareUrl);
   assert.ok(elapsed >= 2500, `應等滿 2500ms 才 fail-open，實際 ${elapsed}ms`);
@@ -209,7 +209,7 @@ test('write() 寫入單一 text/plain 短碼，經橋接成功解析後寫入乾
   installBridgeSim(win, 'success');
   const sandbox = loadGuard(recordingWrite(recorder), win);
   win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(30);
   const item = new FakeClipboardItem({
     'text/plain': new Blob(['https://www.threads.com/share/DHuf91XTf/'], { type: 'text/plain' }),
   });
@@ -241,7 +241,7 @@ test('帶 ?xmt 追蹤參數的貼文網址，同步去除 query 後放行', asyn
   const win = createWindow();
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(30);
 
   await sandbox.navigator.clipboard.writeText(
     'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7?xmt=AQG0abc'
@@ -394,7 +394,7 @@ test('短碼橋接逾時後才送達的遲到回應(late):原生寫入僅呼叫�
 
   // 等過 2500ms 逾時 + 2600ms 遲到回應送達(留充裕餘裕)，確認沒有觸發第
   // 二次原生寫入。
-  await new Promise((resolve) => setTimeout(resolve, 2900));
+  await advance(2900);
   assert.equal(recorder.length, 1);
 });
 
@@ -417,12 +417,12 @@ test('guard 端:requestId 不符的回應會被忽略，落入逾時 fail-open',
   });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(30);
   const shareUrl = 'https://www.threads.com/share/MISMATCH1';
 
-  const startedAt = Date.now();
-  await sandbox.navigator.clipboard.writeText(shareUrl);
-  const elapsed = Date.now() - startedAt;
+  const startedAt = now();
+  await advanceUntil(sandbox.navigator.clipboard.writeText(shareUrl));
+  const elapsed = now() - startedAt;
 
   assert.equal(recorder.length, 1);
   assert.equal(recorder[0], shareUrl);
@@ -451,12 +451,12 @@ test('guard 端:event.source 非本視窗的回應不被採信，落入逾時 fa
   });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(30);
   const shareUrl = 'https://www.threads.com/share/SOURCEBAD1';
 
-  const startedAt = Date.now();
-  await sandbox.navigator.clipboard.writeText(shareUrl);
-  const elapsed = Date.now() - startedAt;
+  const startedAt = now();
+  await advanceUntil(sandbox.navigator.clipboard.writeText(shareUrl));
+  const elapsed = now() - startedAt;
 
   assert.equal(recorder.length, 1);
   assert.equal(recorder[0], shareUrl);
@@ -487,12 +487,12 @@ test('guard 端:event.origin 與本頁不符的回應不被採信，落入逾時
   });
   const sandbox = loadGuard(recordingWriteText(recorder), win);
   win.postMessage({ type: 'TCL_SETTINGS_PUSH', settings: { autoClean: true } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(30);
   const shareUrl = 'https://www.threads.com/share/ORIGINBAD1';
 
-  const startedAt = Date.now();
-  await sandbox.navigator.clipboard.writeText(shareUrl);
-  const elapsed = Date.now() - startedAt;
+  const startedAt = now();
+  await advanceUntil(sandbox.navigator.clipboard.writeText(shareUrl));
+  const elapsed = now() - startedAt;
 
   assert.equal(recorder.length, 1);
   assert.equal(recorder[0], shareUrl);
@@ -579,14 +579,14 @@ const XMT_URL = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7?xmt=AQG0
 const XMT_URL_CLEANED = 'https://www.threads.com/@datinglab.tw/post/DbX8s51k1W7';
 const SHARE_URL = 'https://www.threads.com/share/DHuf91XTf/';
 
-// settle() 原本是本檔逐字維護的一份牆鐘等待邏輯，機器忙時固定 ms 等不到
-// postMessage 橋接鏈路(postMessage 派送與 bridge 模擬回應都經 setTimeout
-// 排程)跑完就斷言、閒時又白等，兩頭不討好;連同其餘五份逐字或近乎逐字相
-// 同的版本收斂進 test/support/settle.js 一份共用實作(原理與各項取捨的完
-// 整說明見該檔頭註解)。本檔另有多處直接 `await new Promise(r =>
-// setTimeout(r, 2500+))` 等內部逾時競速的呼叫點，那些不經過 settle()，
-// 不受此變更影響，只是同樣會被計數、無副作用。
-const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 30 });
+// 等待工具來自 test/support/settle.js（假時間，原理與取捨見該檔頭註解）：
+// postMessage 橋接鏈路(派送與 bridge 模擬回應都經 setTimeout 排程)以
+// settle() 等到收斂；固定長度的等待用 advance(ms) 推進虛擬時鐘；呼叫本身就
+// 卡在 2500ms 橋接逾時上的寫法用 advanceUntil() 讓假時間推進到它落地為止，
+// 耗時改以 now()（虛擬現在）量測。
+const { settle, reset, advance, advanceUntil, now } = require('./support/settle').installSettle({
+  defaultMs: 30,
+});
 test.beforeEach(reset);
 
 // 記錄 guard 送出的 TCL_RESOLVE_REQ。respond:true 時模擬 bridge 於 5ms 後
@@ -932,9 +932,9 @@ test('code review #2:autoClean 關閉時，writeText 的原生寫入不被橋接
   await pushSettings(win, settings({ autoClean: false }));
   const shareUrl = 'https://www.threads.com/share/NODELAY01';
 
-  const startedAt = Date.now();
-  await sandbox.navigator.clipboard.writeText(shareUrl);
-  const elapsed = Date.now() - startedAt;
+  const startedAt = now();
+  await advanceUntil(sandbox.navigator.clipboard.writeText(shareUrl));
+  const elapsed = now() - startedAt;
 
   assert.equal(recorder[0], shareUrl);
   assert.ok(elapsed < 500, `原生寫入不得被 2.5 秒橋接逾時拖累，實際耗時 ${elapsed}ms`);
@@ -950,9 +950,9 @@ test('code review #2:write() 在 autoClean 關閉時同樣不被橋接逾時拖�
     new FakeClipboardItem({ 'text/plain': new Blob(['https://www.threads.com/share/NODELAY02'], { type: 'text/plain' }) }),
   ];
 
-  const startedAt = Date.now();
-  await sandbox.navigator.clipboard.write(originalItems);
-  const elapsed = Date.now() - startedAt;
+  const startedAt = now();
+  await advanceUntil(sandbox.navigator.clipboard.write(originalItems));
+  const elapsed = now() - startedAt;
 
   assert.equal(recorder[0], originalItems);
   assert.ok(elapsed < 500, `原生寫入不得被 2.5 秒橋接逾時拖累，實際耗時 ${elapsed}ms`);
@@ -1254,7 +1254,7 @@ test('R1-2:解析逾時後才送達的遲到結果，不得觸發通知(防 time
   await pushSettings(win, settings({ autoClean: true }));
   const shareUrl = 'https://www.threads.com/share/LATE0002';
 
-  await sandbox.navigator.clipboard.writeText(shareUrl);
+  await advanceUntil(sandbox.navigator.clipboard.writeText(shareUrl));
   assert.equal(recorder[0], shareUrl, '逾時後應 fail-open 寫入原文');
 
   // 等遲到回應確實送達之後再檢查:它不得補送一則成功通知。
