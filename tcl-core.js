@@ -2126,7 +2126,7 @@
   // 對齊後端 api-spec §4.5:401 為 auth、配額為 quota、429 為 rate_limit、
   // 5xx 為 server、連線失敗為 network;可重試的只有 rate_limit、network、
   // server。表外的碼(其餘 4xx、本機產生的碼、未來新增的碼)一律歸 unknown，
-  // 不可重試。
+  // 不可重試。gone(410，端點已廢止)屬 unknown:重試同一個端點不會成功。
   var ERROR_CATEGORY_BY_CODE = {
     session_expired: 'auth',
     unauthorized: 'auth',
@@ -2135,7 +2135,6 @@
     network_error: 'network',
     internal_error: 'server',
     misconfigured: 'server',
-    gone: 'server',
   };
   var RETRYABLE_ERROR_CATEGORIES = ['rate_limit', 'network', 'server'];
 
