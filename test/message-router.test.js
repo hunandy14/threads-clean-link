@@ -5,13 +5,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
-
-const SRC = ['i18n.js', 'tcl-core.js', 'background.js']
-  .map((file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8'))
-  .join('\n');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
 const EXT_ID = 'router-test-extension-id';
 const EXT_PAGE_SENDER = { id: EXT_ID, url: `chrome-extension://${EXT_ID}/options.html` };
@@ -101,7 +96,7 @@ async function loadBackground({ withEngine = true } = {}) {
     AbortSignal,
   };
   if (withEngine) sandbox.TCLSync = { create: () => engine };
-  runInSandbox(SRC, sandbox);
+  loadSwSources(sandbox);
   assert.equal(listeners.length, 1, 'background.js 只註冊一支 onMessage 監聽器');
   await settle();
   engineCalls.length = 0;
