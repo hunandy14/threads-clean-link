@@ -6338,8 +6338,8 @@ test('R3-13 scam.blocklist.restore 寫入之後掛去抖同步(notifyRecorded)',
 // ------------------------------------------------------------
 // 名單裡沒有這一筆時（條目已被上限淘汰、或使用者在別台裝置標記過），
 // handleScamBlocklistRemove 會補一筆空的 dismissed 條目把之後的掃描擋住。那
-// 一筆沒有 handle，上雲時 toScamMark 送 handle:null，後端整筆拒收、key 進
-// marksRejected 永不重送——這次解除從此同步不出去（staging 已重現）。選項頁
+// 一筆沒有 handle，上雲時 toScamMark 送 handle:null，後端整筆拒收、清掉 dirty
+// 永不重送——這次解除從此同步不出去（staging 已重現）。選項頁
 // 送訊息時會帶上該列的 handle／displayName，這裡把它寫進補建的條目。
 // handle 一律驗 ^[A-Za-z0-9._]{1,80}$（與 fromScamMark／伺服器同一把尺），
 // 不合就忽略該欄位，不讓訊息端的任意字串落進 entries 與 handleIndex。
@@ -6476,7 +6476,6 @@ function loadBackgroundWithMarksServer(opts = {}) {
             email: 'someone@example.com',
             cursor: '0',
             marksCursor: '0',
-            marksPushedAt: null,
           },
           opts.syncState || {}
         ),
@@ -6598,8 +6597,7 @@ test('CR-1 scam.hit:別台裝置較早的解除不得被本機的被動掃描蓋
 
 test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位不得上雲', async () => {
   const bg = loadBackgroundWithMarksServer({
-    // 水位線已經越過這一筆：靠 updatedAt 是選不到它的，要有別的管道。
-    syncState: { marksPushedAt: SCAM_AT },
+    // 種子條目是乾淨的：這一筆推不推得出去，只看 scam.hit 有沒有標 dirty。
     localSeed: { [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }) },
   });
 
@@ -6618,12 +6616,12 @@ test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位
   const sent = bg.upsertsByKey()[CR_MARK_KEY];
   assert.ok(
     sent,
-    '不推進 updatedAt 之後，選批不能只看 updatedAt：新證據得靠本機那個推送提示欄位被選進來，否則這一篇命中永遠留在本機，別台裝置看到的命中篇數從此對不上'
+    '不推進 updatedAt 之後，新證據得靠本機的 dirty 被選進來，否則這一篇命中永遠留在本機，別台裝置看到的命中篇數從此對不上'
   );
   assert.deepEqual(
     Object.keys(sent).sort(),
     CR_MARK_KEYS,
-    'mark 是固定九欄的跨端契約，本機自用的推送提示欄位一個都不得跟著上雲'
+    'mark 是固定九欄的跨端契約，本機自用的 dirty／dirtyAt 一個都不得跟著上雲'
   );
   assert.equal(sent.updatedAt, SCAM_AT, '送出去的 updatedAt 就是本機那個沒被動過的值');
 
@@ -6632,9 +6630,8 @@ test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位
   assert.equal(cloud.evidence.length, 2, '雲端那一份是兩邊證據的聯集');
 });
 
-test('CR-1 scam.hit:推成功之後水位線要蓋過那筆新證據，下一輪不得重送', async () => {
+test('CR-1 scam.hit:推成功之後清 dirty，下一輪不得重送', async () => {
   const bg = loadBackgroundWithMarksServer({
-    syncState: { marksPushedAt: SCAM_AT },
     localSeed: { [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }) },
   });
 
@@ -6662,7 +6659,7 @@ test('CR-1 scam.hit:推成功之後水位線要蓋過那筆新證據，下一輪
   assert.equal(
     resent[CR_MARK_KEY],
     undefined,
-    '水位線要以「updatedAt 與推送提示欄位的較大者」推進，只推到 updatedAt 的話這一筆每一輪都會被重新選中，整份名單變成每輪重傳'
+    'ack 對上送出那一版就清 dirty，清不掉的話這一筆每一輪都會被重新選中，整份名單變成每輪重傳'
   );
 });
 
@@ -6695,11 +6692,10 @@ test('CR-6 scam.hit:已解除作者的命中不得讀 storage 的 syncDevice', a
 });
 
 // CR-1 縱深：`at` 是**頁面端送來的**數字。只驗有限數字不夾上限的話，偽造一個
-// `at = 1e15`（西元 33658 年）的 scam.hit 就會一路流進 pushAfter；那一筆推成功
-// 之後 marksPushedAt 被推到同一個天文數字，此後整份名單的 updatedAt 全都落在水
-// 位線之下，marks 通道**靜默停推**——沒有錯誤碼、沒有提示，使用者只會發現換台裝
-// 置就看不到新標記了。水位線只能往前推，回不去。
-test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter 不得越過 now', async () => {
+// `at = 1e15`（西元 33658 年）的 scam.hit 會讓那篇證據永遠排在榜首、把真正的
+// 新證據擠出上限，新建條目的 updatedAt 也會在跨裝置 LWW 裡永遠勝出。補證據照樣
+// 要標 dirty，下一輪才推得出去。
+test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，且 dirty 已設', async () => {
   const FORGED_AT = 1e15;
 
   const bg = loadBackgroundForDevices({
@@ -6725,11 +6721,10 @@ test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter
     entry.evidence[0].at >= before && entry.evidence[0].at <= after,
     '證據的 at 要夾到現在（實得 ' + entry.evidence[0].at + '）'
   );
+  assert.equal(entry.dirty, true, '補了證據就要推，標 dirty');
   assert.ok(
-    entry.pushAfter >= before && entry.pushAfter <= after,
-    'pushAfter 會變成推送成功後的 marksPushedAt，越過 now 的那一刻起整份名單都推不出去了（實得 ' +
-      entry.pushAfter +
-      '）'
+    entry.dirtyAt >= before && entry.dirtyAt <= after,
+    'dirtyAt 取本機時鐘，與頁面端送來的 at 無關（實得 ' + entry.dirtyAt + '）'
   );
   assert.equal(entry.updatedAt, SCAM_AT, 'CR-1：被動再掃到照樣不推進 updatedAt');
 

@@ -185,12 +185,11 @@ DOM 取值只認**使用者看得到的貼文容器**：由河道以 SPA 進入�
       addedAt,
       updatedAt,     // 任何欄位變動（含解除／復原）都更新；雲端同步的 LWW 判準
       source,        // 'auto'（掃描命中）；'manual' 為保留值，本版不產出
-      pushAfter,     // 選填：本機專有的推送提示。被動再掃到已列名的作者時只併證據、
-                     //   不推進 updatedAt，新證據的時間記在這裡，讓雲端同步的選批水位線
-                     //   （取它與 updatedAt 的較大者）還選得到這一筆。**永不上雲**：
-                     //   Mark 是固定九欄的跨端契約，多一欄後端整筆拒收。推送成功後
-                     //   不回收，只靠水位線覆蓋；值本身在 scam.hit 驗證時就夾成
-                     //   min(at, now)，未來時戳會變成推不動的 marks 水位線
+      dirty,         // 選填：本機專有的待推旗標（只落 true）。新建、補證據、解除、復原
+                     //   都會標上，雲端同步 ack 後清掉。**永不上雲**：Mark 是固定九欄
+                     //   的跨端契約，多一欄後端整筆拒收
+      dirtyAt,       // 選填：與 dirty 同進同出的版本戳，ack 回來時比對它，往返期間又
+                     //   改過的不清（見 docs/cloud-sync.md §3.1、D56）
     },
   },
   handleIndex: {},   // handle 小寫 → userId 的反查表，一律由 entries 重建，
@@ -222,7 +221,7 @@ v4（D46）另外派生一張 `lineIdIndex`（`{ lineId → userId }`），與 `
 | 證據片段 | 120 字 | 儲存與顯示同一道天花板 |
 | 整包軟預算 | 2 MB | 以序列化後的 UTF-8 **位元組**計，超出即續裁最舊的條目。分母是 `chrome.storage.local` 的配額：Chrome 114 起為 10 MB，manifest 的下限 Chrome 123 一律適用，2 MB 約佔兩成。證據放滿時實際可容約 900–1,600 位作者（證據補上錨點貼文／串頭連結、錨點本體、訊號與貼文發布時間後，每筆條目約增 45%），筆數上限先到或預算先到都會觸發淘汰。`state: 'dismissed'` 的條目**一併計入**這 2 MB 預算——它們與 active 條目存在同一個物件裡，不算進來就會低估實際佔用 |
 
-正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛兩份唯讀派生視圖，讓既有讀者不必同時改寫：一份是由 `state === 'dismissed'` 的條目**派生的 `allowlist`**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`）；另一份是 v4（D46）新增的 **`lineIdIndex`**（`{ lineId → userId }`，只含 `state === 'active'` 的條目，由每筆條目證據上的 `lineId` 逐格派生，鍵一律小寫），與 `allowlist` 同款掛成普通可列舉鍵。這兩份視圖都是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它們拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，`lineIdIndex` 尤其不能落盤，下一輪讀回會把它當成未知欄位剝除、白算一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時**補 0**（不拿 `updatedAt` 充當——那是「最後一次動過」，不是「什麼時候解除的」，用它充當會讓一筆來歷不明的解除混進最近解除的那幾筆裡）：解除時間不明的條目寫 0，在「已解除」小節依時間降冪時自然排到最後；`addedAt`／`updatedAt` 只要有一個合法就以合法的那個補另一個缺失的欄位（例如 `updatedAt` 非有限數字時以 `addedAt` 補，反之亦然），兩者都不合法才丟棄整筆（R3-14）。`pushAfter` 是本機專有欄位，只放行有限數字、形狀不合就不落鍵；它參與整包的位元組預算，但 `toScamMark` 不送、`fromScamMark` 不讀回，跨裝置合併時保留本機那一邊的值（見 `docs/cloud-sync.md` §3.1 CR-1）。
+正規化規則：`normalizeScamBlocklist` 從 storage 讀回時一律重算成 `version`／`entries`／`handleIndex` 這三把鍵的形狀（讀到 v1 的 `allowlist` 先跑上方的遷移），未知欄位不保留；另在回傳值上掛兩份唯讀派生視圖，讓既有讀者不必同時改寫：一份是由 `state === 'dismissed'` 的條目**派生的 `allowlist`**（形狀維持 v1 的 `{ [userId]: { at, handle } }`，`at` 取 `dismissedAt`）；另一份是 v4（D46）新增的 **`lineIdIndex`**（`{ lineId → userId }`，只含 `state === 'active'` 的條目，由每筆條目證據上的 `lineId` 逐格派生，鍵一律小寫），與 `allowlist` 同款掛成普通可列舉鍵。這兩份視圖都是相容層、不是儲存狀態：`capScamBlocklist` 在落盤前一律把它們拿掉，**storage 裡只有三把鍵**——留著就會變成第二份真相，`lineIdIndex` 尤其不能落盤，下一輪讀回會把它當成未知欄位剝除、白算一次。`handleIndex` 永遠由 `entries` 重建，不信任存下來的反查表（否則會留下指向已刪條目的孤兒鍵），且**只收 `state === 'active'` 的條目**：反查表的用途是河道上拿帳號查「這個人在不在名單上」，已解除的作者本來就不該被標記，進了索引等於把解除過的人又標一次；原型污染用的鍵一律拒收；`entries` 的鍵必須是 userId 形狀（純數字字串、1–20 位），不符的整筆剝除——鍵不驗形狀時，任意字串都能混成一筆永遠對不上寫入側 userId 的幽靈條目。`state` 只接受 `'active'`／`'dismissed'`，不在枚舉內的整筆視為 `'active'`；`dismissedAt` 非有限數字即剝欄，`state` 為 `'dismissed'` 而 `dismissedAt` 缺席時**補 0**（不拿 `updatedAt` 充當——那是「最後一次動過」，不是「什麼時候解除的」，用它充當會讓一筆來歷不明的解除混進最近解除的那幾筆裡）：解除時間不明的條目寫 0，在「已解除」小節依時間降冪時自然排到最後；`addedAt`／`updatedAt` 只要有一個合法就以合法的那個補另一個缺失的欄位（例如 `updatedAt` 非有限數字時以 `addedAt` 補，反之亦然），兩者都不合法才丟棄整筆（R3-14）。`dirty`／`dirtyAt` 是本機專有欄位：`dirty` 只認 `true`，其餘形狀一律視為乾淨、兩鍵都不落；`dirtyAt` 非有限數字時補 0。它們參與整包的位元組預算，但 `toScamMark` 不送、`fromScamMark` 不讀回，跨裝置合併時只認本機那一邊（見 `docs/cloud-sync.md` §3.1、D56）。舊版的 `pushAfter` 只在升級遷移前還讀得到（`docs/cloud-sync.md` §3.2）。
 
 單筆證據的八個選填欄位另有一組規則，**形狀不合只剝該欄、不剝整筆**——它們是加值資訊，不是證據成立的必要條件，為了一個壞掉的 `threadUrl` 丟掉整筆等於把使用者真的命中過的紀錄一起抹掉。`postUrl` 與 `at` 仍是必要欄位，不合法整筆丟棄。**缺席時輸出不帶該鍵**（不補 `null` 也不補空字串）：選項頁靠「鍵在不在」決定要不要畫那一行，補空值會讓舊證據畫出一排空連結。
 
