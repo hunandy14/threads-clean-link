@@ -597,14 +597,33 @@
     // ---- 切批(api-spec 7.2) ----
 
     /**
-     * 一筆 entry 的版本指紋：at、seen 筆數、deletedAt 三者組成的字串(記值不
-     * 記參照)。history 紀錄沒有 updatedAt，recordHistory 再次複製會推進 at
-     * 並追加 seen，刪除會寫下 deletedAt，三者任一變動即視為另一個版本。
+     * 一筆 entry 的版本指紋:把所有可能在往返期間被改動、且會影響上雲內容的
+     * 欄位序列化成一個字串(記值不記參照)。history 紀錄沒有 updatedAt，只能
+     * 比對內容本身:
+     *
+     * - at、seen 筆數:recordHistory 再次複製會推進 at 並追加 seen。
+     * - deletedAt:刪除會寫下墓碑時間。
+     * - receivedAt、author、handle、excerpt、original、removedParams:options
+     *   匯入合併(mergeSamePostEntries，欄位清單見 TCLCore 的
+     *   MERGEABLE_FIELDS)會補上或改寫這幾欄，receivedAt 只會往前。
+     *
+     * 指紋涵蓋所有會被匯入合併改動的欄位;往後匯入合併或其他寫入路徑多改一
+     * 欄上雲欄位，這裡必須同步加上，否則那一欄的改動會被 ack 當成已送出。
+     * removedParams 以 JSON 序列化比對(值相同即同一版)。
      */
     function versionOf(entry) {
-      var seenCount = entry && Array.isArray(entry.seen) ? entry.seen.length : 0;
-      var deletedAt = entry && typeof entry.deletedAt === 'number' ? entry.deletedAt : null;
-      return [entry ? entry.at : null, seenCount, deletedAt].join('|');
+      if (!entry) return JSON.stringify(null);
+      return JSON.stringify([
+        entry.at === undefined ? null : entry.at,
+        Array.isArray(entry.seen) ? entry.seen.length : 0,
+        typeof entry.deletedAt === 'number' ? entry.deletedAt : null,
+        entry.receivedAt === undefined ? null : entry.receivedAt,
+        typeof entry.author === 'string' ? entry.author : null,
+        typeof entry.handle === 'string' ? entry.handle : null,
+        typeof entry.excerpt === 'string' ? entry.excerpt : null,
+        typeof entry.original === 'string' ? entry.original : null,
+        Array.isArray(entry.removedParams) ? entry.removedParams : null,
+      ]);
     }
 
     /**
@@ -692,11 +711,12 @@
      * 量就再也拉不回來。收緊重寫仍失敗就拋 storage_quota，由 runSync 統一記
      * lastError 並排退避，游標留在原地下一輪重拉同一頁。
      *
-     * 【只清送出的那一版】ack 以「伺服器回報的 id」找到本機 entry 後，重讀該筆
-     * 現值與切批快照(versions，鍵為送出的 id)比對版本指紋:相同才清 dirty;
-     * 不同代表往返期間又被改動(再次複製、刪成墓碑)，改名與 serverUpdatedAt
-     * 照常套用但 dirty 保持 true，下一輪送出最新內容。查無快照一律保持
-     * dirty。往返期間新寫入的 entry 不在回應裡，自然保持 dirty。
+     * 【只清送出的那一版】收下(applied.upserts)與拒收(applied.rejectedIds)
+     * 一視同仁:以「伺服器回報的 id」找到本機 entry 後，重讀該筆現值與切批快
+     * 照(versions，鍵為送出的 id)比對版本指紋，相同才清 dirty;不同代表往返
+     * 期間又被改動(再次複製、匯入合併、刪成墓碑)，改名與 serverUpdatedAt 照
+     * 常套用但 dirty 保持 true，下一輪送出最新內容。查無快照一律保持 dirty。
+     * 往返期間新寫入的 entry 不在回應裡，自然保持 dirty。
      *
      * @param {object} [versions] 該批切批當下的版本快照;純拉取的往返不帶。
      */
@@ -726,10 +746,10 @@
           // 墓碑被 ack 之後才真正從 storage 移除，在此之前必須保留——SW 中途
           // 被殺時墓碑還在，下次照樣送得出去。
           if (TCLCoreRef.isTombstone(entry) && deletedIds[entry.id]) return;
+          var unchanged =
+            Object.prototype.hasOwnProperty.call(sentVersions, entry.id) &&
+            sentVersions[entry.id] === versionOf(entry);
           if (canonical[entry.id] !== undefined) {
-            var unchanged =
-              Object.prototype.hasOwnProperty.call(sentVersions, entry.id) &&
-              sentVersions[entry.id] === versionOf(entry);
             next.push(
               Object.assign({}, entry, {
                 // canonicalId:雲端同一篇貼文早有一張卡時就地改名，否則下
@@ -746,9 +766,11 @@
             return;
           }
           if (rejectedIds[entry.id]) {
-            // 拒收的原因一律是「這筆事件早於雲端的墓碑」，原樣
-            // 重送永遠會被再拒一次。清掉 dirty 讓它停在本機，不無限重試。
-            next.push(Object.assign({}, entry, { dirty: false }));
+            // 拒收的原因一律是「這筆事件早於雲端的墓碑」，原樣重送永遠會被再
+            // 拒一次:版本與送出的那一版相同就清掉 dirty，讓它停在本機，不無
+            // 限重試。版本已變(往返期間再次複製推進了 at，可能已晚於墓碑)或
+            // 查無快照一律保持 dirty，下一輪送出最新內容由伺服器重新判定。
+            next.push(unchanged ? Object.assign({}, entry, { dirty: false }) : entry);
             return;
           }
           next.push(entry);
@@ -794,8 +816,16 @@
             if (!merged) return;
             // 本機同 key 仍 dirty(ack 版本比對未過、或尚未送出)時合併後維持
             // dirty:合併結果是雲端與本機 seen 的聯集，本機那份尚未上雲的事件
-            // 要靠下一輪再送。
-            if (index !== -1 && next[index].dirty === true) merged.dirty = true;
+            // 要靠下一輪再送。receivedAt 只會往前(見 TCLCore.resolveReceivedAt):
+            // 本機尚未上雲的較早值(例如匯入合併帶來的)取兩者較早者保留，否則
+            // 會被雲端回傳的舊值蓋掉，下一輪送不出去。
+            if (index !== -1 && next[index].dirty === true) {
+              merged.dirty = true;
+              var localReceivedAt = next[index].receivedAt;
+              if (finiteNumber(localReceivedAt) && localReceivedAt < merged.receivedAt) {
+                merged.receivedAt = localReceivedAt;
+              }
+            }
             if (index === -1) next.push(merged);
             else next[index] = merged;
           });
