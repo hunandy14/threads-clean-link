@@ -475,6 +475,8 @@ const syncEngine =
         capHistory: (list) => TCLCore.capHistory(list),
         setTimeout: (fn, ms) => setTimeout(fn, ms),
         clearTimeout: (handle) => clearTimeout(handle),
+        // 每個後端請求的逾時 signal(涵蓋到讀完回應本文)。
+        timeoutSignal: (ms) => AbortSignal.timeout(ms),
       })
     : null;
 
@@ -647,6 +649,8 @@ const SCAM_AUTHOR_ID_WINDOW = 2000;
 
 // 匿名備援的逾時：SW 不能掛在一個永遠不回的請求上。
 const SCAM_FETCH_TIMEOUT_MS = 8000;
+// 短碼解析(resolveFinalUrl)單次請求的逾時，與 SCAM_FETCH_TIMEOUT_MS 同量級。
+const RESOLVE_FETCH_TIMEOUT_MS = 10000;
 
 // 匿名備援的節流表：以 postUrl 為鍵存上次發請求的時間，同一篇 24 小時內只
 // 打一次。存 chrome.storage.session（SW 被回收也留著、瀏覽器關閉即清），沒
@@ -2381,11 +2385,17 @@ async function handleResolveShareMessage(message) {
 // 訊(見上方 og 擷取區塊)，兩條呼叫路徑各自決定怎麼用(menu 路徑直接把
 // ogFields 餵給 extractHistoryExtraFields;share 路徑經
 // handleResolveShareMessage 寫入 og 快取橋接)。
+//
+// 逾時 RESOLVE_FETCH_TIMEOUT_MS 涵蓋到讀完本文:headers 階段逾時丟給呼叫端
+// (走既有的網路錯誤回報)，讀本文逾時由下方的 try 吞掉(ogFields 為空、
+// finalUrl 照回)。逾時只會提早結束同一個請求，不重試。SW 原生有
+// AbortSignal;沒有它的環境(部分測試沙箱)以 typeof 取值，不帶 signal。
 async function resolveFinalUrl(shareUrl) {
   const response = await fetch(shareUrl, {
     method: 'GET',
     credentials: 'omit',
     redirect: 'follow',
+    signal: typeof AbortSignal !== 'undefined' ? AbortSignal.timeout(RESOLVE_FETCH_TIMEOUT_MS) : undefined,
     // og:title 的語系鎖定，見 OG_FETCH_HEADERS。只影響本次背景請求擷取到
     // 的 og 內容，轉址跟隨(finalUrl)的行為不受影響。
     headers: OG_FETCH_HEADERS,
