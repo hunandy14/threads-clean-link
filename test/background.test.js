@@ -2667,8 +2667,6 @@ function loadBackgroundForSync(opts = {}) {
       alarmCalls.push({ op: 'clear', name });
       return true;
     },
-    get: async () => undefined,
-    getAll: async () => [],
     onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
   };
   chrome.permissions = {
@@ -3319,8 +3317,6 @@ function loadBackgroundForDevices(opts = {}) {
     alarms: {
       create: () => {},
       clear: async () => true,
-      get: async () => undefined,
-      getAll: async () => [],
       onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
     },
     permissions: { contains: (d, cb) => cb(true), request: (d, cb) => cb(true) },

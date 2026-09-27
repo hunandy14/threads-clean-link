@@ -533,9 +533,9 @@
   // production／staging 的 host 宣告在商店版 manifest 的
   // optional_host_permissions;local 只宣告在 tools/dev-browser.mjs 產出的
   // 開發用 manifest 副本裡，商店版沒有這一項，request 自然拿不到。
-  var SYNC_API_BASE_FALLBACK = 'https://api.metalinkclearer.workers.dev';
-  var SYNC_API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
-  var SYNC_API_BASE_LOCAL = 'http://localhost:8787';
+  var SYNC_API_BASE_FALLBACK = TCLCore.API_BASE_PRODUCTION;
+  var SYNC_API_BASE_STAGING = TCLCore.API_BASE_STAGING;
+  var SYNC_API_BASE_LOCAL = TCLCore.API_BASE_LOCAL;
 
   // 頁面上兩處環境標籤共用同一份判斷邏輯(見 renderEnvBadge):頁首標題
   // 旁與「紀錄」卡頭旁,對應 options.html 的 #envBadge/#envBadgeHistory。
