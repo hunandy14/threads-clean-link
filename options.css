@@ -1132,12 +1132,10 @@ mark.scam-anchor {
 
 /* #toast 是 manual popover:每次顯示都重新 showPopover，排到 top layer
    最上層，對話框開著時才不會被遮罩蓋住。這裡蓋掉 UA 的 inset:0、
-   margin:auto 與邊框;淡入起點由 @starting-style 給，淡出靠移除 .show。 */
-#toast { inset: auto; margin: 0; border: 0; overflow: visible; }
+   margin:auto 與邊框，定位寫在同一條規則裡(id 權重高於 .toast，分開寫
+   會被 inset:auto 蓋掉);淡入起點由 @starting-style 給，淡出靠移除 .show。 */
+#toast { position: fixed; inset: auto; left: 50%; bottom: 28px; margin: 0; border: 0; overflow: visible; }
 .toast {
-  position: fixed;
-  left: 50%;
-  bottom: 28px;
   transform: translate(-50%, 20px);
   background: var(--ink-1);
   color: var(--plane);
