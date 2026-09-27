@@ -2078,7 +2078,7 @@ function recordHistory(url, kind, extra) {
       // 配額失敗優雅降級:收緊後仍寫不下，本次這筆紀錄就此放棄，不丟例外，
       // 不影響複製/淨化等主功能。
       if (out.quota) {
-        console.warn('[threads-clean-link] 紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)');
+        console.warn('[threads-clean-link] 紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)', out.cause);
         return;
       }
       // 真的寫進去才掛去抖:設定關閉、配額爆掉、寫入失敗都不該觸發一次同步。
@@ -2254,7 +2254,7 @@ function migrateHistoryMerge() {
   )
     .then((out) => {
       if (out.quota) {
-        console.warn('[threads-clean-link] 紀錄遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)');
+        console.warn('[threads-clean-link] 紀錄遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', out.cause);
       }
     })
     .catch((err) => {
@@ -2348,7 +2348,7 @@ function migrateHistorySchema() {
   )
     .then((out) => {
       if (out.quota) {
-        console.warn('[threads-clean-link] 紀錄欄位遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)');
+        console.warn('[threads-clean-link] 紀錄欄位遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', out.cause);
       }
     })
     .catch((err) => {
