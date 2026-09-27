@@ -905,16 +905,21 @@
      * null，再以單一 set 清掉 syncEpoch 與旗標;本輪第一個 POST 不帶 epoch、
      * 採用回應的值。不發任何請求。寫入順序是標髒 → syncState → 清旗標:中途
      * 被殺時旗標仍在，下一輪重來一次。
+     *
+     * 三個落地點各驗一次權杖：rebuild 待辦期間轉場，舊帳號的狀態不得寫回。
      */
     function applyRebuild(ctx) {
+      ensureCurrent(ctx);
       ctx.state.cursor = '0';
       ctx.state.marksCursor = null;
       ctx.state.marksBackfillCursor = null;
       return resetMirrorFields()
         .then(function () {
+          ensureCurrent(ctx);
           return saveState(ctx.state, ctx.legacyMarks);
         })
         .then(function () {
+          ensureCurrent(ctx);
           var items = {};
           items[EPOCH_KEY] = null;
           items[REBUILD_KEY] = null;
