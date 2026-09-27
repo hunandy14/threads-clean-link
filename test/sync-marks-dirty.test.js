@@ -16,11 +16,11 @@
 // - syncState 刪除 marksPushedAt、marksRejected；保留 marksCursor、
 //   marksEvicted、marksBackfillCursor。
 //
-// 【遷移】原始 syncState 帶 `marksPushedAt` 鍵視為舊版。runMarksRound 開頭一次
-// mutate 依舊規則標 dirty：sel = max(updatedAt, pushAfter)；
+// 【遷移】原始 syncState 帶 `marksPushedAt` 鍵視為舊版。runRound 開頭（本輪任何
+// 請求之前）一次 mutate 依舊規則標 dirty：sel = max(updatedAt, pushAfter)；
 // `(pushedAt === null || sel > pushedAt) && rejected[key] !== sel` 就標，並刪掉
 // pushAfter。下一次 saveState 把舊欄位清掉。登出態不遷移，登入後第一輪才遷
-// 移（登入本來就全部標 dirty）。遷移與推送之間被殺只多推一次。
+// 移。遷移與推送之間被殺只多推一次。
 //
 // harness：sync 部分（createSyncStorage／createAlarmsMock／createAuthMock／
 // localEntry／localEvidence／blocklist／makeEnv／settle）逐字取自
