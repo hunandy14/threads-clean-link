@@ -5551,7 +5551,7 @@ test('裝置軟刪除:升級前的舊快取列沒有 removedAt 鍵時一律當�
 //
 // 與設定卡既有三顆(autoClean/saveHistory/postCopyEnabled)不同:那三顆存
 // chrome.storage.sync、會跟著帳號跨裝置同步;警示名單與這顆總開關是純本機
-// 功能(不上雲)，值存 chrome.storage.local，故不掛進 SETTING_IDS，讀寫都
+// 功能(不上雲)，area 為 local(見 TCLCore.SETTINGS_SCHEMA)，讀寫都
 // 走 localStorage 那一區。
 //
 // 預設開(缺席視為 true):storage 裡沒有這顆鍵時開關必須是 checked，否則
