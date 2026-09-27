@@ -1068,9 +1068,17 @@
     // 消，cancel 不可靠;close 則是 ✕、點遮罩、Esc、程式呼叫 close() 每一種關
     // 法都會到。close 事件由瀏覽器另排 task 派送，比 close() 晚一拍，所以善後
     // 清狀態前要再確認 dialog 沒被重新打開。
+    //
+    // 開啟前的焦點另記一份(dialogOpeners):點遮罩關閉時，mousedown 落在
+    // dialog 本身會先把焦點移出對話框，瀏覽器的焦點還原只在焦點仍在對話框
+    // 內時才發生，焦點因此掉到 body，要由 close 善後補還。
+    var dialogOpeners = {};
     function showDialog(id) {
       var d = byId(id);
-      if (d && !d.open && typeof d.showModal === 'function') d.showModal();
+      if (d && !d.open && typeof d.showModal === 'function') {
+        dialogOpeners[id] = document.activeElement || null;
+        d.showModal();
+      }
       return d;
     }
     function closeDialog(id) {
@@ -1095,7 +1103,17 @@
       d.addEventListener('click', function (ev) {
         if (ev && ev.target === d) closeDialog(id);
       });
+      d.addEventListener('close', function () {
+        if (d.open) return;
+        var opener = dialogOpeners[id];
+        dialogOpeners[id] = null;
+        if (focusIsLost() && isRendered(opener)) focusNode(opener);
+      });
       if (onClose) d.addEventListener('close', onClose);
+    }
+    // 還在文件裡且有版面(沒被 hidden／display:none 收掉)才聚焦得到。
+    function isRendered(el) {
+      return !!el && el.isConnected === true && typeof el.getClientRects === 'function' && el.getClientRects().length > 0;
     }
     // 關閉後焦點是否掉到 body:開啟前的元素已不可聚焦(被重畫換掉、隱藏)時，
     // 瀏覽器還原不了，焦點就落在 body。
