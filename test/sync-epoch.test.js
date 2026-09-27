@@ -12,12 +12,15 @@
 // - `storage.local.syncEpoch = { userId, epoch }`，不進 resetAccount，跨登出保留，
 //   只有換帳號時覆寫。
 // - 本機已知時每個 sync POST 帶 body 頂層 epoch、回填 GET 帶 query epoch。
-// - finishSignIn：本機有此 userId 的 epoch 就不全量標髒；沒有就第一趟不帶，採用回
-//   應的值，0 不重傳、大於 0 一次性全量標髒並重設游標。
-// - 回應 epoch 與本機（已知）不同：全部標髒、cursor '0'、marksCursor null、寫回、
-//   `setNext('continue')`，本輪不再發 POST。
-// - 409 epoch_mismatch：整批視為未送出、dirty 不清、游標不前進、寫回 409 的 epoch、
-//   全部標髒、`setNext('continue')`，不計入退避。
+// - finishSignIn（PM 裁決 EP-A）：本機有此 userId 的 epoch 就不全量標髒；沒有（升
+//   級後首次、換帳號、全新安裝）就一律一次性全量標髒並重設游標，第一趟不帶，採用
+//   回應的值。
+// - 回應沒有 epoch 鍵（舊後端，EP-B）：不寫 syncEpoch、不標髒、不排 continue。
+// - 回應 epoch 與本機（已知）不同、或 409 epoch_mismatch（EP-C 同一路徑
+//   resetForEpoch）：全部標髒、cursor '0'、marksCursor null、marksBackfillCursor
+//   null、寫回新 epoch、`setNext('continue')`，本輪不再發 POST；409 那批視為未送
+//   出、dirty 不清、不計入退避。
+// - 回填 GET /api/v1/marks 暫不帶 epoch（EP-D，待後端確認）；POST 已校驗。
 //
 // storage／alarms／auth 替身沿用 test/sync-reset-account.test.js 的 harness（同
 // sync.test.js：get/set/remove 一律 setTimeout(0) 延遲結算；setTimeout 注入成空
@@ -394,7 +397,7 @@ function queryEpoch(record) {
 // EP1 — 首次登入（本機沒有這個 userId 的 epoch）
 // ============================================================================
 
-test('EP1 首次登入、雲端 epoch=0：第一趟不帶 epoch，不全量標髒，syncEpoch 寫成 {userId, 0}', async () => {
+test('EP1 首次登入、雲端 epoch=0：第一趟不帶 epoch，一次性全量標髒（EP-A），syncEpoch 寫成 {userId, 0}', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ history: mixedHistory(), blocklist: sampleBlocklist() });
   const engine = TCLSync.create(env.deps);
@@ -406,13 +409,11 @@ test('EP1 首次登入、雲端 epoch=0：第一趟不帶 epoch，不全量標�
   assert.ok(links.length >= 1, '前置：登入後跑了首輪');
   assert.equal(hasEpoch(links[0].body), false, '本機未知 epoch：第一趟不帶');
   assert.deepEqual(env.localEpoch(), { userId: 'user-abc', epoch: 0 }, '採用回應的 epoch');
-  assert.deepEqual(uniqSorted(upsertIds(links)), ['loc-c'], '雲端從未清空：只推原本 dirty 的那一筆');
-  assert.deepEqual(deleteIds(links), [], '已同步的墓碑不重送');
-  assert.deepEqual(uniqSorted(markKeys(env.posts(MARKS_SYNC))), ['threads:7002'], '名單只推原本 dirty 的');
-  const h = env.storage.history();
-  assert.equal(h.find((e) => e.id === 'srv-a').dirty, false, 'srv-a 維持乾淨');
-  assert.equal(h.find((e) => e.id === 'srv-b').dirty, false, 'srv-b 維持乾淨');
-  assert.notEqual(env.blocklist().entries[7001].dirty, true, '名單 7001 維持乾淨');
+  // PM 裁決 EP-A：本機沒有此 userId 的 epoch 一律全量標髒，不看回應是不是 0。
+  assert.equal(links[0].body.since, '0', '游標重設');
+  assert.deepEqual(uniqSorted(upsertIds(links)), ['loc-c', 'srv-a', 'srv-b'], 'history 全量重傳');
+  assert.deepEqual(deleteIds(links), ['tomb-d'], '墓碑一併重送');
+  assert.deepEqual(uniqSorted(markKeys(env.posts(MARKS_SYNC))), ['threads:7001', 'threads:7002'], '名單全量重傳');
 });
 
 test('EP1 首次登入、雲端 epoch=3：全量標髒＋游標重設，之後每個 POST 都帶 epoch:3', async () => {
@@ -434,14 +435,11 @@ test('EP1 首次登入、雲端 epoch=3：全量標髒＋游標重設，之後�
   const later = links.slice(1).concat(env.posts(MARKS_SYNC));
   assert.ok(later.length >= 2, '前置：之後至少還有 links 與 marks 的 POST');
   later.forEach((r) => assert.equal(r.body.epoch, 3, `${r.path} 帶 epoch:3`));
-  assert.equal(links[1].body.since, '0', '游標重設：第二個 links POST 從 0 起');
-  assert.deepEqual(uniqSorted(upsertIds(links.slice(1))), ['loc-c', 'srv-a', 'srv-b'], 'history 全量重傳');
-  assert.deepEqual(deleteIds(links.slice(1)), ['tomb-d'], '墓碑一併重送');
-  assert.deepEqual(
-    uniqSorted(markKeys(env.posts(MARKS_SYNC).filter((r) => r.body.epoch === 3))),
-    ['threads:7001', 'threads:7002'],
-    '名單全量重傳'
-  );
+  // PM 裁決 EP-A：全量標髒在登入當下就做，第一趟（不帶 epoch）即從 0 起全量重傳。
+  assert.equal(links[0].body.since, '0', '游標重設：第一個 links POST 從 0 起');
+  assert.deepEqual(uniqSorted(upsertIds(links)), ['loc-c', 'srv-a', 'srv-b'], 'history 全量重傳');
+  assert.deepEqual(deleteIds(links), ['tomb-d'], '墓碑一併重送');
+  assert.deepEqual(uniqSorted(markKeys(env.posts(MARKS_SYNC))), ['threads:7001', 'threads:7002'], '名單全量重傳');
   assert.equal(env.server.linkCount(), 3, '雲端由本機重建');
 });
 
@@ -549,7 +547,8 @@ test('EP4 links POST 撞 409：批視為未送出、游標不前進、寫回 409
   assertAllHistoryDirty(env, 'EP4');
   assertAllMarksDirty(env, 'EP4');
   const state = env.syncState();
-  assert.ok(state.cursor === '100' || state.cursor === '0', `links 游標不前進（實得 ${state.cursor}）`);
+  assert.equal(state.cursor, '0', 'links 游標重設為 0（PM 裁決 EP-C）');
+  assert.equal(state.marksCursor, null, 'marksCursor 歸 null（PM 裁決 EP-C）');
   assert.notEqual(state.lastError, 'epoch_mismatch', 'epoch_mismatch 不是錯誤態');
   assert.ok(env.storage.localData.syncBackoff.failures <= 1, '不計入退避失敗次數');
   assert.equal(
@@ -599,7 +598,8 @@ test('EP4 marks POST 撞 409（links 送完之後別台裝置刪了雲端）：�
   assertAllMarksDirty(env, 'EP4 marks');
   assertAllHistoryDirty(env, 'EP4 marks');
   const state = env.syncState();
-  assert.ok(state.marksCursor === '200' || state.marksCursor === null, `marksCursor 不前進（實得 ${state.marksCursor}）`);
+  assert.equal(state.cursor, '0', 'links 游標重設為 0（PM 裁決 EP-C）');
+  assert.equal(state.marksCursor, null, 'marksCursor 歸 null（PM 裁決 EP-C）');
   assert.notEqual(state.lastError, 'epoch_mismatch');
   assert.equal((env.storage.localData.syncBackoff || { failures: 0 }).failures, 0, '不計入退避失敗次數');
   assert.ok(env.debounceCreates().length >= 1, "setNext('continue') 建立續跑 alarm");
@@ -610,7 +610,7 @@ test('EP4 marks POST 撞 409（links 送完之後別台裝置刪了雲端）：�
 // ============================================================================
 
 for (const cloudEpoch of [0, 2]) {
-  test(`EP5 換帳號登入（新帳號雲端 epoch=${cloudEpoch}）：舊帳號的 epoch 不沿用，syncEpoch 覆寫為新 userId`, async () => {
+  test(`EP5 換帳號登入（新帳號雲端 epoch=${cloudEpoch}）：舊帳號的 epoch 不沿用、全量標髒（EP-A），syncEpoch 覆寫為新 userId`, async () => {
     const TCLSync = loadSync();
     const env = makeEnv({
       history: mixedHistory(),
@@ -633,6 +633,10 @@ for (const cloudEpoch of [0, 2]) {
     env.posts(LINKS_SYNC).concat(env.posts(MARKS_SYNC)).forEach((r) => {
       assert.notEqual(r.body.epoch, 7, '任何請求都不得帶舊帳號的 epoch');
     });
+    // PM 裁決 EP-A：換帳號＝本機沒有新 userId 的 epoch，一律全量標髒（D25）。
+    assert.deepEqual(uniqSorted(upsertIds(links)), ['loc-c', 'srv-a', 'srv-b'], 'history 全量上傳');
+    assert.deepEqual(deleteIds(links), ['tomb-d'], '墓碑一併送出');
+    assert.deepEqual(uniqSorted(markKeys(env.posts(MARKS_SYNC))), ['threads:7001', 'threads:7002'], '名單全量上傳');
   });
 }
 
@@ -708,11 +712,10 @@ test('EP6 刪雲端：本機 syncEpoch 不動；同帳號再登入撞到 +1 後�
 // ============================================================================
 //
 // 插件唯一的回填 GET 是 marks 的 `GET /api/v1/marks`（links 的首輪以 since:'0'
-// 的 POST 拉，插件不打 `GET /api/v1/links`）。後端契約列的是 `GET /api/v1/links`，
-// marks 的 GET 帶不帶、後端校不校驗待 PM 對齊；本檔先依 design-sw §9.3「回填 GET
-// 帶 query epoch」鎖插件端。
+// 的 POST 拉，插件不打 `GET /api/v1/links`）。後端契約只列 `GET /api/v1/links`；
+// PM 裁決 EP-D：後端確認前 GET /marks 一律不帶 epoch（POST 已校驗）。
 
-test('EP7 本機 epoch 已知：marks 回填 GET 帶 query epoch', async () => {
+test('EP7 本機 epoch 已知：marks 回填 GET 不帶 query epoch（EP-D）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
@@ -729,13 +732,13 @@ test('EP7 本機 epoch 已知：marks 回填 GET 帶 query epoch', async () => {
 
   const gets = env.gets(MARKS_LIST);
   assert.ok(gets.length >= 1, '前置：marksCursor 為 null，走了回填');
-  gets.forEach((r) => assert.equal(queryEpoch(r), '3', `回填 GET 帶 ?epoch=3（實得 ${r.search}）`));
+  gets.forEach((r) => assert.equal(queryEpoch(r), null, `回填 GET 不帶 epoch（實得 ${r.search}）`));
   env.server.requests
     .filter((r) => r.method === 'GET' && r.path === '/api/v1/links')
     .forEach((r) => assert.equal(queryEpoch(r), '3', 'GET /api/v1/links 若有打也要帶'));
 });
 
-test('EP7 本機 epoch 未知：第一個 links POST 不帶；同輪採用回應的 0 之後，回填 GET 帶 ?epoch=0', async () => {
+test('EP7 本機 epoch 未知：第一個 links POST 不帶；同輪採用回應的 0 之後，回填 GET 仍不帶（EP-D）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
@@ -751,7 +754,7 @@ test('EP7 本機 epoch 未知：第一個 links POST 不帶；同輪採用回應
   assert.equal(hasEpoch(env.posts(LINKS_SYNC)[0].body), false, '未知時第一個 POST 不帶');
   const gets = env.gets(MARKS_LIST);
   assert.ok(gets.length >= 1, '前置：marksCursor 為 null，走了回填');
-  gets.forEach((r) => assert.equal(queryEpoch(r), '0', `採用之後帶 ?epoch=0（實得 ${r.search}）`));
+  gets.forEach((r) => assert.equal(queryEpoch(r), null, `採用之後回填 GET 仍不帶（實得 ${r.search}）`));
   assert.deepEqual(env.localEpoch(), { userId: 'user-abc', epoch: 0 });
 });
 
