@@ -353,22 +353,120 @@
       var OWNER_ATTR = 'data-tcl-owner';
       var INSTANCE_ID = 'tcl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 
-      // 本實例是否已經退場(偵測到自己是孤兒)。退場後掃描注入全面停擺，
-      // MutationObserver 也會斷開，不再對頁面產生任何副作用。
+      // 本實例是否已經退場(判活發現自己是孤兒，或被新實例交棒)。退場後掃
+      // 描注入全面停擺，MutationObserver 斷開、計時器取消，不再對頁面產生
+      // 任何副作用，也不再呼叫任何 chrome.* API。
       var disposed = false;
       var observerRef = null;
+
+      // 本實例的 DOM 事件監聽(交棒事件、icon 的 click／keydown、
+      // DOMContentLoaded)都掛在這個 AbortController 的 signal 上，退場時
+      // abort() 一次拆掉。環境沒有 AbortController 時退回逐一
+      // removeEventListener 與 disposed 旗標短路。
+      var lifecycle = typeof AbortController === 'function' ? new AbortController() : null;
+
+      // chrome.storage.onChanged 上註冊過的監聽器。活著的實例交棒退場時逐一
+      // removeListener;孤兒退場不碰 chrome API，只靠 disposed 旗標讓它們短
+      // 路。
+      var storageListeners = [];
+
+      // ---- 交棒:本腳本的新實例啟動時在 document 上派送 HANDOFF_EVENT，
+      // detail 為純值 { script, instanceId };舊實例收到「同腳本、instanceId
+      // 不是自己」的事件就退場。擴充功能更新後的重注入讓新舊實例分處不同的
+      // ISOLATED world、只共用 DOM，所以交棒走 DOM 事件而不走 window 全域。
+      // 跨 world 時 detail 可能讀成 null，此時不依 detail 退場，改由判活決
+      // 定:本實例已是孤兒就照樣退場。----
+      var SCRIPT_NAME = 'post-icon';
+      var HANDOFF_EVENT = 'threads-clean-link:handoff';
 
       function contextLost() {
         return isExtensionContextLost(typeof chrome !== 'undefined' ? chrome : null);
       }
 
-      // 實例退場:斷開 observer、清掉自己注入的 icon，並讓後續掃描一律短
-      // 路。冪等，重複呼叫安全。兩種呼叫時機:(1)孤兒自檢通過(擴充功能更
-      // 新後 chrome.runtime 失效);(2)冪等交棒——同頁載入的下一個新實例透過
-      // root.__tclPostIconDispose 叫本實例先退場再接手(見 init)。
+      function listenerOptions() {
+        return lifecycle ? { signal: lifecycle.signal } : false;
+      }
+
+      function onHandoff(event) {
+        if (disposed) return;
+        if (contextLost()) {
+          retireOrphanInstance();
+          return;
+        }
+        var detail = event ? event.detail : null;
+        if (!detail || typeof detail !== 'object') return;
+        if (detail.script !== SCRIPT_NAME) return;
+        if (typeof detail.instanceId !== 'string' || !detail.instanceId) return;
+        if (detail.instanceId === INSTANCE_ID) return;
+        retireOrphanInstance();
+      }
+
+      function announceHandoff() {
+        try {
+          if (typeof CustomEvent !== 'function' || typeof document.dispatchEvent !== 'function') return;
+          document.dispatchEvent(
+            new CustomEvent(HANDOFF_EVENT, { detail: { script: SCRIPT_NAME, instanceId: INSTANCE_ID } })
+          );
+        } catch (e) {
+          // 派送失敗時，舊實例仍會在下一次判活時自行退場。
+        }
+      }
+
+      function listenHandoff() {
+        try {
+          if (typeof document.addEventListener === 'function') {
+            document.addEventListener(HANDOFF_EVENT, onHandoff, listenerOptions());
+          }
+        } catch (e) {
+          // 註冊失敗只是少了交棒這條路，判活退場仍然有效。
+        }
+      }
+
+      // 註冊 chrome.storage.onChanged 監聽並記下來，交棒退場時才拆得掉。
+      function addStorageListener(fn) {
+        chrome.storage.onChanged.addListener(fn);
+        storageListeners.push(fn);
+      }
+
+      function detachStorageListeners() {
+        var list = storageListeners;
+        storageListeners = [];
+        // 孤兒情境下 chrome API 已不可靠，不呼叫 removeListener，監聽器由
+        // disposed 旗標短路。
+        if (contextLost()) return;
+        try {
+          for (var i = 0; i < list.length; i++) chrome.storage.onChanged.removeListener(list[i]);
+        } catch (e) {
+          // 拆不掉就算了，disposed 旗標本身已足以讓監聽器短路。
+        }
+      }
+
+      // 實例退場:拆掉 DOM 事件監聽、取消排下的掃描計時器、斷開 observer、
+      // 清掉自己注入的 icon，並讓後續掃描一律短路。冪等，重複呼叫安全。呼
+      // 叫時機:(1)判活發現本實例已是孤兒(擴充功能更新後 chrome.runtime
+      // 失效);(2)交棒——同頁載入的新實例派送了交棒事件。
       function retireOrphanInstance() {
         if (disposed) return;
         disposed = true;
+        if (lifecycle) {
+          try {
+            lifecycle.abort();
+          } catch (e) {
+            // 下方的 removeEventListener 仍會把交棒監聽拆掉。
+          }
+        }
+        try {
+          if (typeof document.removeEventListener === 'function') {
+            document.removeEventListener(HANDOFF_EVENT, onHandoff, false);
+          }
+        } catch (e) {
+          // 拆不掉就算了，onHandoff 會被 disposed 旗標短路。
+        }
+        if (scanTimer !== null) {
+          clearTimeout(scanTimer);
+          scanTimer = null;
+        }
+        scanScheduled = false;
         try {
           if (observerRef && typeof observerRef.disconnect === 'function') observerRef.disconnect();
         } catch (e) {
@@ -376,6 +474,7 @@
         }
         observerRef = null;
         removeOwnIcons();
+        detachStorageListeners();
       }
 
       // 鏈結(link)圖示與勾勾(check)圖示：20px、stroke=currentColor、
@@ -803,6 +902,7 @@
             if (typeof event.stopPropagation === 'function') event.stopPropagation();
             if (typeof event.preventDefault === 'function') event.preventDefault();
           }
+          if (disposed) return;
 
           // 孤兒偵測退場:擴充功能更新／重載後，這顆 icon 屬於已經孤兒化
           // 的舊 content script——剪貼簿照樣寫得進去，但 sendMessage 一
@@ -912,6 +1012,18 @@
         // 檢查是不是真的 Promise(舊瀏覽器 sendMessage 可能不回傳任何東西)
         // 再接 .catch 交給 handleSendError 分類。
         function notifyBackgroundCleaned(url, container) {
+          if (disposed) return;
+          // 判活:剪貼簿寫入是非同步的，寫完的當下本實例可能已成孤兒。送訊
+          // 息前再問一次，孤兒就收掉勾勾回饋、提示重新整理並退場。
+          if (contextLost()) {
+            console.warn(
+              '[threads-clean-link] 擴充功能情境已失效(擴充功能剛更新或重載)，這次複製沒有寫進淨化紀錄，請重新整理頁面'
+            );
+            revertCopiedFeedback();
+            showToast(tContextLost());
+            retireOrphanInstance();
+            return;
+          }
           try {
             if (
               typeof chrome === 'undefined' ||
@@ -935,12 +1047,16 @@
           }
         }
 
-        el.addEventListener('click', handleActivate);
-        el.addEventListener('keydown', function (event) {
-          if (event && (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar')) {
-            handleActivate(event);
-          }
-        });
+        el.addEventListener('click', handleActivate, listenerOptions());
+        el.addEventListener(
+          'keydown',
+          function (event) {
+            if (event && (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar')) {
+              handleActivate(event);
+            }
+          },
+          listenerOptions()
+        );
 
         return el;
       }
@@ -1147,6 +1263,7 @@
       }
 
       function setLocale(locale) {
+        if (disposed) return;
         currentLocale = locale === 'zh' ? 'zh' : 'en';
         applyLocaleToExistingIcons();
       }
@@ -1207,11 +1324,14 @@
       // 後重掃全頁補注入；冪等靠 hasExistingIcon。SPA 路由切換也靠同一個
       // observer 覆蓋。----
       var scanScheduled = false;
+      // 排下但尚未觸發的 debounce 掃描，退場時 clearTimeout。
+      var scanTimer = null;
       function scheduleScan() {
         if (disposed) return;
         if (scanScheduled) return;
         scanScheduled = true;
-        setTimeout(function () {
+        scanTimer = setTimeout(function () {
+          scanTimer = null;
           scanScheduled = false;
           scanAndInject();
         }, SCAN_DEBOUNCE_MS);
@@ -1226,7 +1346,7 @@
             scheduleScan();
           });
           observer.observe(target, { childList: true, subtree: true });
-          // 留住參照，孤兒退場時要 disconnect(見 retireOrphanInstance)。
+          // 留住參照，退場時要 disconnect(見 retireOrphanInstance)。
           observerRef = observer;
         } catch (e) {
           console.warn('[threads-clean-link] 啟動 MutationObserver 失敗', e);
@@ -1244,7 +1364,8 @@
           ) {
             return;
           }
-          chrome.storage.onChanged.addListener(function (changes, areaName) {
+          addStorageListener(function (changes, areaName) {
+            if (disposed) return;
             if (areaName !== 'sync' || !changes || !changes.langPref) return;
             setLocale(resolveLocaleSafe(changes.langPref.newValue));
           });
@@ -1339,7 +1460,8 @@
           ) {
             return;
           }
-          chrome.storage.onChanged.addListener(function (changes, areaName) {
+          addStorageListener(function (changes, areaName) {
+            if (disposed) return;
             if (areaName !== 'sync' || !changes || !changes.postCopyEnabled) return;
             postCopyEnabled = resolvePostCopyEnabled(changes.postCopyEnabled.newValue);
             if (postCopyEnabled) {
@@ -1353,15 +1475,34 @@
         }
       }
 
+      // 載入當下就已是孤兒:不讀 storage、不註冊任何監聽、不建 observer，
+      // 直接標記退場，把頁面留給重注入的新實例。
+      function retireAtLoad() {
+        console.warn(
+          '[threads-clean-link] 擴充功能情境已失效(擴充功能剛更新或重載)，貼文 icon 注入器不啟動，交由重注入的新實例接手'
+        );
+        disposed = true;
+      }
+
       function init() {
-        // 冪等交棒(必須排在最前):同一 ISOLATED world 若已有本腳本的舊實例
-        // (手動 F5 × 自癒重注入的毫秒級競態，或更新後的重注入)，先透過
-        // root.__tclPostIconDispose 讓舊實例退場(斷 observer、清掉它那批帶
-        // 舊 OWNER_ATTR 的 icon、後續掃描短路)，再由本新實例接手。消除「雙
-        // MutationObserver → 雙落盤 → 時間軸假事件」。post-icon 因為有 DOM
-        // 狀態(icon 節點、observer)要乾淨交接，用 retireOrphanInstance 做這
-        // 件事。首次載入時 hook 尚未存在，等同 no-op。
-        if (typeof root.__tclPostIconDispose === 'function') {
+        if (disposed) return;
+        if (contextLost()) {
+          retireAtLoad();
+          return;
+        }
+
+        // 交棒(必須排在最前):同一頁面若已有本腳本的舊實例(手動 F5 × 自癒
+        // 重注入的毫秒級競態，或擴充功能更新後的重注入)，先派送交棒事件讓
+        // 舊實例退場(斷 observer、清計時器、清掉它那批帶舊 OWNER_ATTR 的
+        // icon)，再註冊本實例自己的交棒監聽接手。消除「雙 MutationObserver
+        // → 雙落盤 → 時間軸假事件」。
+        announceHandoff();
+        // 相容握把:同一 world 裡只認 root.__tclPostIconDispose 的舊版實例
+        // 靠它退場;交棒事件已生效時，這裡呼叫到的是已退場實例的冪等 no-op。
+        if (
+          typeof root.__tclPostIconDispose === 'function' &&
+          root.__tclPostIconDispose !== retireOrphanInstance
+        ) {
           try {
             root.__tclPostIconDispose();
           } catch (e) {
@@ -1369,6 +1510,7 @@
           }
         }
         root.__tclPostIconDispose = retireOrphanInstance;
+        listenHandoff();
 
         // 自癒重注入的清場(必須排在所有掃描之前):擴充功能更新後，
         // background 會把本腳本重新注入既開的 threads 分頁(見 background.js
@@ -1392,11 +1534,13 @@
         startObserver();
 
         readLangPref(function (langPref) {
+          if (disposed) return;
           setLocale(resolveLocaleSafe(langPref));
         });
         watchLangPrefChanges();
 
         readPostCopyEnabled(function (enabled) {
+          if (disposed) return;
           postCopyEnabled = enabled;
           if (postCopyEnabled) {
             // 讀取期間可能有新貼文渲染出來但還沒注入，補掃一次；已注入
@@ -1409,8 +1553,10 @@
         watchPostCopyEnabledChanges();
       }
 
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+      if (contextLost()) {
+        retireAtLoad();
+      } else if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, listenerOptions());
       } else {
         init();
       }

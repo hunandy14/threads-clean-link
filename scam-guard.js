@@ -497,6 +497,156 @@
       var sawBlocklistChange = false;
 
       var scanScheduled = false;
+      // 排下但尚未觸發的 debounce 掃描，退場時 clearTimeout。
+      var scanTimer = null;
+      var observerRef = null;
+
+      // ---- 實例生命週期 ----
+      //
+      // 本實例是否已經退場(判活發現自己是孤兒，或被新實例交棒)。退場後掃
+      // 描、查表、送 scam.hit 全面停擺，不再呼叫任何 chrome.* API。
+      var disposed = false;
+
+      // 每次載入的實例身分:交棒事件以它辨識「不是自己發的」，掛上的 tag
+      // 也帶著它(OWNER_ATTR)，退場時只收自己那批。值只含英數與連字號，可
+      // 以安全地放進屬性選擇器。
+      var OWNER_ATTR = 'data-tcl-owner';
+      var INSTANCE_ID = 'tcl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+
+      // 本實例的 DOM 事件監聽(交棒事件、DOMContentLoaded)掛在這個
+      // AbortController 的 signal 上，退場時 abort() 一次拆掉。
+      var lifecycle = typeof AbortController === 'function' ? new AbortController() : null;
+
+      // chrome.storage.onChanged 上註冊過的監聽器。活著的實例交棒退場時逐一
+      // removeListener;孤兒退場不碰 chrome API，只靠 disposed 旗標讓它們短
+      // 路。
+      var storageListeners = [];
+
+      // 交棒:新實例啟動時在 document 上派送 HANDOFF_EVENT，detail 為純值
+      // { script, instanceId };舊實例收到「同腳本、instanceId 不是自己」的
+      // 事件就退場。擴充功能更新後的重注入讓新舊實例分處不同的 ISOLATED
+      // world、只共用 DOM，交棒因此走 DOM 事件。跨 world 時 detail 可能讀成
+      // null，此時不依 detail 退場，改由判活決定:本實例已是孤兒就照樣退場。
+      var SCRIPT_NAME = 'scam-guard';
+      var HANDOFF_EVENT = 'threads-clean-link:handoff';
+
+      // 判活:擴充功能更新／重載後，既開分頁裡的舊實例仍在跑，但
+      // chrome.runtime.id 變成 undefined。chrome 整個缺席也視為失效。只讀
+      // 屬性、不呼叫任何函式，孤兒情境下也安全。
+      function contextLost() {
+        try {
+          return !(typeof chrome !== 'undefined' && chrome && chrome.runtime && chrome.runtime.id);
+        } catch (e) {
+          return true;
+        }
+      }
+
+      function listenerOptions() {
+        return lifecycle ? { signal: lifecycle.signal } : false;
+      }
+
+      function onHandoff(event) {
+        if (disposed) return;
+        if (contextLost()) {
+          retire();
+          return;
+        }
+        var detail = event ? event.detail : null;
+        if (!detail || typeof detail !== 'object') return;
+        if (detail.script !== SCRIPT_NAME) return;
+        if (typeof detail.instanceId !== 'string' || !detail.instanceId) return;
+        if (detail.instanceId === INSTANCE_ID) return;
+        retire();
+      }
+
+      function announceHandoff() {
+        try {
+          if (typeof CustomEvent !== 'function' || typeof document.dispatchEvent !== 'function') return;
+          document.dispatchEvent(
+            new CustomEvent(HANDOFF_EVENT, { detail: { script: SCRIPT_NAME, instanceId: INSTANCE_ID } })
+          );
+        } catch (e) {
+          // 派送失敗時，舊實例仍會在下一次判活時自行退場。
+        }
+      }
+
+      function listenHandoff() {
+        try {
+          if (typeof document.addEventListener === 'function') {
+            document.addEventListener(HANDOFF_EVENT, onHandoff, listenerOptions());
+          }
+        } catch (e) {
+          // 註冊失敗只是少了交棒這條路，判活退場仍然有效。
+        }
+      }
+
+      function detachStorageListeners() {
+        var list = storageListeners;
+        storageListeners = [];
+        // 孤兒情境下 chrome API 已不可靠，不呼叫 removeListener。
+        if (contextLost()) return;
+        try {
+          for (var i = 0; i < list.length; i++) chrome.storage.onChanged.removeListener(list[i]);
+        } catch (e) {
+          // 拆不掉就算了，disposed 旗標本身已足以讓監聽器短路。
+        }
+      }
+
+      // 移除本實例掛上的警示 tag(帶本實例 OWNER_ATTR 的那批)，其他實例
+      // 的 tag 不動。
+      function removeOwnTags() {
+        try {
+          var tags = document.querySelectorAll('.' + TAG_CLASS + '[' + OWNER_ATTR + '="' + INSTANCE_ID + '"]');
+          for (var i = 0; i < tags.length; i++) {
+            if (tags[i].parentNode) tags[i].parentNode.removeChild(tags[i]);
+          }
+        } catch (e) {
+          console.warn('[threads-clean-link] 移除詐騙警示 tag 失敗', e);
+        }
+      }
+
+      // 實例退場:拆掉 DOM 事件監聽、取消排下的掃描計時器、斷開 observer、
+      // 收掉自己掛的 tag，之後掃描與 storage 回呼一律短路。冪等，重複呼叫
+      // 安全。頁面上的警示交給接手的新實例重新判定、重新掛上。
+      function retire() {
+        if (disposed) return;
+        disposed = true;
+        if (lifecycle) {
+          try {
+            lifecycle.abort();
+          } catch (e) {
+            // 下方的 removeEventListener 仍會把交棒監聽拆掉。
+          }
+        }
+        try {
+          if (typeof document.removeEventListener === 'function') {
+            document.removeEventListener(HANDOFF_EVENT, onHandoff, false);
+          }
+        } catch (e) {
+          // 拆不掉就算了，onHandoff 會被 disposed 旗標短路。
+        }
+        if (scanTimer !== null) {
+          clearTimeout(scanTimer);
+          scanTimer = null;
+        }
+        scanScheduled = false;
+        try {
+          if (observerRef && typeof observerRef.disconnect === 'function') observerRef.disconnect();
+        } catch (e) {
+          // 斷不開就算了，disposed 旗標本身已足以讓掃描短路。
+        }
+        observerRef = null;
+        removeOwnTags();
+        detachStorageListeners();
+      }
+
+      // 判活失敗時的退場:留一則 console 訊號後退場。
+      function retireOrphan() {
+        console.warn(
+          '[threads-clean-link] 擴充功能情境已失效(擴充功能剛更新或重載)，詐騙警示掃描已停止，交由重注入的新實例接手'
+        );
+        retire();
+      }
 
       // i18n.js 依 manifest content_scripts 陣列順序必定先載入，這份字面值
       // 只是防禦性後備，避免 TCLI18N 缺席時使用者看到原始 key。
@@ -786,6 +936,8 @@
           var anchor = findAuthorRowAnchor(container);
           var tag = document.createElement(anchor ? 'span' : 'div');
           tag.className = TAG_CLASS;
+          // 掛上者身分:退場時只收自己這批(見 removeOwnTags)。
+          tag.setAttribute(OWNER_ATTR, INSTANCE_ID);
           tag.setAttribute('role', 'note');
           tag.setAttribute('title', t(titleKey || 'scamTagTooltip'));
           tag.textContent = t('scamTagLabel');
@@ -823,6 +975,12 @@
           if (done) return;
           done = true;
           callback(response);
+        }
+        // 已退場或已是孤兒就不送:孤兒的 sendMessage 只會丟 context
+        // invalidated，判定交給接手的新實例重做。
+        if (disposed || contextLost()) {
+          finish(null);
+          return;
         }
         try {
           if (typeof chrome === 'undefined' || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
@@ -1082,6 +1240,7 @@
         }
 
         sendHit(payload, function (response) {
+          if (disposed) return;
           // 這一輪已經作廢就整個收手：往返期間本文被改寫、SPA 換到別篇都會
           // 換一把冪等鍵、重跑判定，這則回應講的是上一輪的事。照掛的話會依
           // 一個已被推翻的判定補上警示，還會把認領釘回這張卡，讓查表該掛的
@@ -1321,6 +1480,13 @@
       }
 
       function safeScan() {
+        if (disposed) return;
+        // 判活:掃描會送 scam.hit、會讀 storage 快取的判定，孤兒實例一律在
+        // 這裡退場，不再碰 chrome API。
+        if (contextLost()) {
+          retireOrphan();
+          return;
+        }
         try {
           scan();
         } catch (e) {
@@ -1334,9 +1500,11 @@
       }
 
       function scheduleScan() {
+        if (disposed) return;
         if (scanScheduled) return;
         scanScheduled = true;
-        setTimeout(function () {
+        scanTimer = setTimeout(function () {
+          scanTimer = null;
           scanScheduled = false;
           safeScan();
         }, SCAN_DEBOUNCE_MS);
@@ -1354,6 +1522,8 @@
             scheduleScan();
           });
           observer.observe(target, { childList: true, subtree: true });
+          // 留住參照，退場時要 disconnect(見 retire)。
+          observerRef = observer;
         } catch (e) {
           console.warn('[threads-clean-link] 啟動詐騙警示 MutationObserver 失敗', e);
         }
@@ -1410,7 +1580,8 @@
           ) {
             return;
           }
-          chrome.storage.onChanged.addListener(function (changes, areaName) {
+          var onSettingsChanged = function (changes, areaName) {
+            if (disposed) return;
             if (areaName !== 'local' || !changes) return;
             var dirty = false;
             if (changes.scamGuardEnabled) {
@@ -1427,7 +1598,9 @@
               dirty = true;
             }
             if (dirty) scheduleScan();
-          });
+          };
+          chrome.storage.onChanged.addListener(onSettingsChanged);
+          storageListeners.push(onSettingsChanged);
         } catch (e) {
           // 監聽註冊失敗只是設定不會即時生效，不影響已完成的掃描。
         }
@@ -1467,11 +1640,32 @@
         }
       }
 
+      // 載入當下就已是孤兒:不讀 storage、不註冊任何監聽、不建 observer。
+      function retireAtLoad() {
+        console.warn(
+          '[threads-clean-link] 擴充功能情境已失效(擴充功能剛更新或重載)，詐騙警示不啟動，交由重注入的新實例接手'
+        );
+        disposed = true;
+      }
+
       function init() {
+        if (disposed) return;
+        if (contextLost()) {
+          retireAtLoad();
+          return;
+        }
+
+        // 交棒(必須排在最前):先派送交棒事件讓同頁的舊實例退場(斷
+        // observer、清計時器、收掉它掛的 tag)，再註冊本實例自己的交棒監
+        // 聽。消除「雙 observer → SPA 換頁雙送 scam.hit」。
+        announceHandoff();
+        listenHandoff();
+
         // 語言先用環境偵測值頂著，讀到 langPref 再補正；tag 要等 storage 的
         // 總開關回來才可能建立，屆時語言早已就位。
         currentLocale = resolveLocaleSafe(null);
         readLangPref(function (langPref) {
+          if (disposed) return;
           currentLocale = resolveLocaleSafe(langPref);
         });
 
@@ -1481,6 +1675,7 @@
         // 與 post-icon 的「先用預設值立刻動作」相反：掃描會送訊息、會改頁
         // 面，必須等總開關與黑名單讀回來才做第一輪。
         readSettings(function (enabled, rawBlocklist) {
+          if (disposed) return;
           scamGuardEnabled = enabled;
           // onChanged 已經送過更新的名單就不覆蓋：這裡拿到的是發出讀取當下的
           // 舊快照。
@@ -1490,8 +1685,10 @@
         });
       }
 
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+      if (contextLost()) {
+        retireAtLoad();
+      } else if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, listenerOptions());
       } else {
         init();
       }
