@@ -237,7 +237,8 @@ function sampleBlocklist() {
       source: 'auto',
       addedAt: T0 - 5 * DAY,
       updatedAt: T0 - 2 * DAY,
-      pushAfter: T0 - DAY,
+      dirty: true,
+      dirtyAt: T0 - DAY,
       evidence: [],
     },
   };
@@ -253,7 +254,7 @@ function signedInState(over = {}) {
       lastSyncedAt: T0 - 10 * 60_000,
       lastError: null,
       marksCursor: 'marks-before',
-      marksPushedAt: T0 - 5000,
+      marksEvicted: 3,
     },
     over
   );
@@ -402,7 +403,7 @@ test('RA1 登入（同帳號）：syncAuth／syncState／syncBackoff／syncVerif
   assert.equal(state.lastSyncedAt, null);
   assert.equal(state.lastError, null);
   assert.equal(state.marksCursor, null, 'marks 游標歸零');
-  assert.equal(state.marksPushedAt, null, 'marks 推送水位線歸零＝全推');
+  assert.ok(!('marksPushedAt' in state), 'marks 不再有推送水位線（名單改由登入時全部標 dirty 全推）');
   assert.deepEqual(value.syncBackoff, { failures: 0 }, '退避歸零');
   assert.equal(value.syncVerifiedAt, T0, 'syncVerifiedAt 設為 now');
 });
