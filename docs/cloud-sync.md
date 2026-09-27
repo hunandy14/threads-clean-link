@@ -57,13 +57,14 @@
 | D45 | 加入詞補「暗號」「通關密語」（審查修訂拿掉「密語」，見下）；另加兩條樣式抓「傳「177」給我」「留言【18】」這種把代碼包在引號裡的祈使句，代碼**一律限 2–8 位數字**、「留言」那一條另外強制要有括號，代碼是必要條件，單獨「給我」不算 | 招攬者不寫「加入群組」改叫人帶代碼私訊，好在對話一開始分辨來人是哪一篇來的；軟性招攬串常見這種寫法，只認詞表會整批漏抓。審查修訂：「密語」是「加密語音」的子字串會整批誤判故拿掉；代碼放行英數會把「傳 email 給我」「傳 LINE 給我」當成暗號句、「留言」不強制括號會把「留言 1 抽獎」當成暗號句，故雙雙收緊 | 2026-09-23（審查修訂） |
 | D46 | `rebuildScamViews` 派生 `lineIdIndex`（`{ lineId → userId }`，只含 `state === 'active'` 的條目，掛成普通可列舉鍵、與 `allowlist` 同款，不落盤不上雲）；`scam-guard.js` 判定後查索引，索引指到的作者不是本篇作者時算命中（`signals` 補 `id-match`）。審查修訂加了兩側門檻：來源側 `indexScamLineIds` 只收證據 `signals` 含 `join`／`group`／`pitch`／`link` 之一、且 `lineId` 非純數字才進索引；目標側 `hasIdMatchAnchor` 要求本篇 `signals` 含 `account` 或 `link` | 同一個 ID 換一個帳號再招攬一次是同一組人，不必再等行動呼籲或話術詞；索引只含 active 是因為使用者解除過的作者不該再把別人拖下水。兩側門檻是審查發現「同一家店兩位員工各貼一次同一支客服 LINE ID」在無門檻時會互標——「這個人貼過這個帳號」離「這個帳號是一組人的招攬工具」還有一段距離 | 2026-09-23（審查修訂） |
 | — | **D50–D53 為「刪除雲端資料改 Chrome 書籤同步模型」（R11）的決策**，取代 D19／D41 的舊語意，列於此表只是為了讓決策編號連續 | 同 D30 附註的理由：決策編號分散在多份文件會讓「下一號是幾號」無從判斷 | 2026-09-23 |
-| D50 | 刪除雲端資料改走 Chrome 書籤同步模型：`sync.deleteCloud` 打單一端點 `DELETE /api/v1/cloud-data`（契約 R11），伺服器硬刪該帳號 links／marks／墓碑／devices 並撤銷所有 session；成功（2xx）即本機登出——清 token、`syncState` 整包重設、退避歸零、清別台裝置快取、停掉兩支 alarm、廣播 `signed_out`，以上一次寫入；本機 history 與名單一格不動，下次登入由 `finishSignIn` 統一標髒重傳；本機身分 `syncDevice` 不動。登出寫入失敗時回 `storage_write_failed`、token 保留。失敗（非 2xx／斷網）**不登出**，本機一格不動，只記 `lastError`；`401` 走既有 session 過期出口。登入（含重新登入、換帳號）一律重建鏡像：`finishSignIn` 每次把 history 全標髒、marks 游標＋`marksBackfillCursor` 重設、名單全部標 `dirty`（D56），全量重傳；伺服器 upsert 與墓碑冪等，重傳不長出重複資料。全量重傳的分輪節流與單次請求逾時見 §6 | 守衛式清空（D19／D41 舊語意）在「刪雲端 → 登出 → 再登入」下曾把本機紀錄全滅（真機實證）；改成清雲端當下即本機登出、重新登入無條件全量重傳重建鏡像，不必分辨這次清空是誰發動的，也不必再維護清空水位線與四態裁決 | 2026-09-23 |
+| D50 | 刪除雲端資料改走 Chrome 書籤同步模型：`sync.deleteCloud` 打單一端點 `DELETE /api/v1/cloud-data`（契約 R11），伺服器硬刪該帳號 links／marks／墓碑／devices 並撤銷所有 session；成功（2xx）即本機登出——清 token、`syncState` 整包重設、退避歸零、清別台裝置快取、停掉兩支 alarm、廣播 `signed_out`，以上一次寫入；本機 history 與名單一格不動，下次登入由 `finishSignIn` 統一標髒重傳；本機身分 `syncDevice` 不動。登出寫入失敗時回 `storage_write_failed`、token 保留。失敗（非 2xx／斷網）**不登出**，本機一格不動，只記 `lastError`；`401` 走既有 session 過期出口。登入（含重新登入、換帳號）重建鏡像：`finishSignIn` 每次重設 links／marks 游標＋`marksBackfillCursor`；本機沒有這個帳號的 `syncEpoch` 時把 history 全標髒、名單全部標 `dirty`（D56），全量重傳，有的話交給同步紀元比對（D57，§3.3）；伺服器 upsert 與墓碑冪等，重傳不長出重複資料。全量重傳的分輪節流與單次請求逾時見 §6 | 守衛式清空（D19／D41 舊語意）在「刪雲端 → 登出 → 再登入」下曾把本機紀錄全滅（真機實證）；改成清雲端當下即本機登出、重新登入無條件全量重傳重建鏡像，不必分辨這次清空是誰發動的，也不必再維護清空水位線與四態裁決 | 2026-09-23 |
 | D51 | 文案：確認框標題「刪除雲端資料並登出」，說明「將刪除雲端上的紀錄與警示名單，並登出所有裝置。這台裝置與其他裝置上的資料都會保留，重新登入後會重新上傳。」；成功 toast「雲端資料已刪除，已登出」；帳號選單項同標題。英文對照同語意（`i18n.js` `opAccountDeleteCloud`／`opSyncDeleteConfirmDesc`／`opToastCloudDeletedSignedOut`） | 破壞性動作要讓使用者知道具體發生什麼：刪的是雲端而非本機，且會登出所有裝置，避免誤以為連本機資料一併刪除 | 2026-09-23 |
 | D52 | 帳號卡在「上次同步」之後、`pendingCount > 0` 時附加「N 筆待上傳」，沿用既有「立即同步」鈕；`pendingCount` 取 history 中 `dirty === true` 的筆數。裝置徽章文案改為「已連線至你的 Google 帳號」（`opDeviceNoteSynced`），不再宣稱逐筆已同步 | 全量重傳期間本機與雲端有落差是常態（尤其大名單首輪），文案不該暗示「隨時逐筆同步」；`N = 0` 即本機與雲端一致，不必顯示 | 2026-09-23 |
 | D53 | 選項頁「清除全部」改依登入態分流：已登入時每筆本機紀錄轉成墓碑（`id` 存在者寫 `deletedAt`／`dirty:true`，既有墓碑原樣保留、沒有 `id` 的舊資料直接移除），交由同步引擎以 `deletes[]` 分批送出（每批 ≤50），伺服器 ack 後才真正從本機移除，其他裝置經墓碑各自刪除，送出後立即觸發一次同步；未登入維持硬刪。不再呼叫任何清空端點，`syncState.clearedAt` 一併移除 | 清空水位線與四態裁決只服務「本機整批清空但不刪雲端」這一種特例語意；改走墓碑之後與一般的逐筆軟刪除是同一套機制，不必再維護第二套硬刪端點與拒收規則 | 2026-09-23 |
-| D54 | 標髒只在 `finishSignIn`；登出與刪雲端不標髒，也不碰名單。登入、session 過期、登出、刪雲端四條路徑收成 `resetAccount` 單表，帳號五鍵（`syncAuth`／`syncState`／`syncBackoff`／`syncVerifiedAt`／`syncDevices`）由同一次 `storage.local.set` 寫入；登入時退避歸零、`syncVerifiedAt` 記為登入當下 | 登入本來就無條件全量重傳（D50），登出與刪雲端再標一次是重複寫入，而且把「標髒寫入失敗」變成登出的失敗條件；帳號鍵分多次寫會在中途失敗時留下半套狀態，單次 set 在 chrome.storage 是原子的 | 2026-09-27 |
+| D54 | 標髒只在 `finishSignIn`（D57 起另有 `resetForEpoch`，§3.3）；登出與刪雲端不標髒，也不碰名單。登入、session 過期、登出、刪雲端四條路徑收成 `resetAccount` 單表，帳號五鍵（`syncAuth`／`syncState`／`syncBackoff`／`syncVerifiedAt`／`syncDevices`）由同一次 `storage.local.set` 寫入；登入時退避歸零、`syncVerifiedAt` 記為登入當下 | 登入本來就會重建鏡像（D50），登出與刪雲端再標一次是重複寫入，而且把「標髒寫入失敗」變成登出的失敗條件；帳號鍵分多次寫會在中途失敗時留下半套狀態，單次 set 在 chrome.storage 是原子的 | 2026-09-27 |
 | D55 | `idLabelled` 命中後的排除詞判斷改由 JS 端做:取命中起點前 16 字（`SCAM_ID_LABEL_LOOKBACK`）交 `idLabelExclude` 比對是否吻合，取代原本寫在正則本體的前置負向 lookbehind；規則版本維持 4（不視為新規則，只是既有排除邏輯換一種等價寫法） | 排除詞表越列越長時，正則裡的前置負向 lookbehind 會讓單一樣式本體暴增、難以維護與除錯；改成「逐位置找 `idLabelled` 命中→切前 16 字→另一個正則判斷是否吻合排除詞」拆成兩條各自簡單的正則，語意與原本的負向 lookbehind 等價（每個起點各判一次），只是排除判斷從正則引擎搬到 JS 迴圈 | 2026-09-27 |
 | D56 | marks 上行改為每筆 `dirty`（S6）：名單條目新增本機專有欄位 `dirty`／`dirtyAt`，只送 `dirty` 的條目、依 `key` 切批，ack 時 `dirtyAt` 未變才清；`rejectedIds` 同樣清 `dirty`。`syncState` 刪除 `marksPushedAt`、`marksRejected`，條目刪除 `pushAfter`；舊版資料於升級後第一輪換算（§3.2）。對後端的請求形狀不變 | 單一條時戳水位線要表達的全是單筆的事——被動補證據不推進 `updatedAt`（`pushAfter`）、墓碑守衛要讓位（讓位下限、當場落地）、被拒要停送（被拒映射）、批尾撞值（`max-1`）——每一條都是在水位線上打補丁；逐筆記 dirty 之後這些補丁全部不需要，模型與 links 的 `dirty`／ack 版本比對同一套 | 2026-09-27 |
+| D57 | 同步紀元（epoch，SW-4a，後端決策 36）：本機記 `syncEpoch = { userId, epoch }`（不進帳號五鍵，跨登出保留、換帳號覆寫）；已知時每個 links／marks POST 在 body 頂層帶 `epoch`，回應頂層 `epoch` 未知就採用、不同就 `resetForEpoch`；`409 epoch_mismatch` 走同一路徑。登入時本機沒有該帳號的 epoch 一律全量標髒（EP-A）；舊後端（回應無 `epoch` 鍵）不寫、不標髒（EP-B）；`GET /api/v1/marks` 暫不帶 epoch（EP-D）；刪雲端不動本機 epoch（EP-E）。細則見 §3.3 | 「登入一律全量重傳」只是因為插件分辨不出雲端有沒有被清過；伺服器每次清空把 epoch +1 之後，同帳號重新登入只在真的清過時才重傳（本機或別台裝置發動的皆同，第一個 POST 就撞 409）。首次（無 epoch）仍全量是為了守住 D25 換帳號全量上傳，升級後多傳一輪伺服器零寫入 | 2026-09-27 |
 
 ## 3. 插件端契約
 
@@ -184,8 +185,19 @@ D56 之前，marks 的上行靠 `syncState` 的推送水位線 `marksPushedAt`�
 - **換算**：`runMarksRound` 開頭、看警示總開關之前，用一次名單寫入依舊規則標髒：`sel = max(updatedAt, pushAfter)`，`(marksPushedAt === null || sel > marksPushedAt) && marksRejected[key] !== sel` 的條目標 `dirty`（與 0.10.0 的選批一致：被拒的那一版不論水位線是否為 `null` 都跳過）；同一次寫入刪掉所有 `pushAfter`。遷移只標髒不清髒。
 - **清除時機**：換算落地後，下一次寫回 `syncState` 就不再帶這兩格（新的正規化不輸出它們）。換算落地之前的寫回（例如 links 那一步失敗的一輪、`verifySession`）會把兩格原樣帶回去，不會在遷移之前被洗掉。
 - **冪等**：換算落地之後、`syncState` 寫回之前被殺，下一輪舊判準再算一次；`pushAfter` 已刪，重算的集合只會更小，已標的不會被洗回乾淨，至多多推一次，伺服器對逐欄相同的資料是零寫入。
-- **登出態**：未登入不跑同步，不遷移；登入時名單本來就全部標 `dirty`（D50），`syncState` 也整包重設成新形狀。殘留的 `pushAfter` 已無讀者，下一個 minor 由正規化剝除。
+- **登出態**：未登入不跑同步，不遷移；`syncState` 在登入時整包重設成新形狀，舊的兩格隨之消失。本機沒有該帳號 `syncEpoch` 的登入（升級後首次必然如此）名單全部標 `dirty`（D50／D57），升級前未推的條目一併送出。殘留的 `pushAfter` 已無讀者，下一個 minor 由正規化剝除。
 - **移除時程**：遷移程式碼（`migrateLegacyMarks`、`loadContext` 的 `legacyMarks`、`saveState` 帶回兩格、`normalizeBlocklistEntry` 保留 `pushAfter`）於下一個 minor 移除。
+
+### 3.3 同步紀元（epoch，D57）
+
+後端（決策 36）為每個帳號記一個 `epoch`：非負整數，只增不減，從未刪過雲端＝0，`DELETE /api/v1/cloud-data` 每次 +1，links 與 marks 共用。`POST /api/v1/links/sync`、`POST /api/v1/marks/sync`、`GET /api/v1/links` 的 200 回應頂層一律帶 `epoch`；請求可選帶（POST 放 body 頂層，GET 放 query），不帶＝不校驗，壞值 `400 bad_epoch`，不符 `409 { error:"epoch_mismatch", epoch }` 且零寫入。
+
+- **本機紀錄**：`storage.local.syncEpoch = { userId, epoch }`（§4.2）。只認 `syncState.userId` 這個帳號的值，其餘一律視為未知；不屬於 `resetAccount` 的帳號五鍵，登出、過期、刪雲端都不清。
+- **請求**：本機已知時，每個 links／marks POST 在 body 頂層帶 `epoch`（整數）；未知就不帶（`null` 或缺鍵對後端都是不校驗）。`GET /api/v1/marks` 的回填**暫不帶 epoch**，待後端確認該端點也校驗再改（EP-D）；插件不打 `GET /api/v1/links`。每輪 POST 上限不變。
+- **回應**：頂層沒有合法 `epoch`（舊後端）一律不動——不寫 `syncEpoch`、不標髒、不排續跑（EP-B）。本機未知就採用並寫成 `{ userId, epoch }`；已知且相同照常；已知且不同走 `resetForEpoch`。
+- **`resetForEpoch(newEpoch)`**（EP-C）：`409 epoch_mismatch` 與「回應 epoch ≠ 本機已知」同一路徑。history 全部標髒（`serverUpdatedAt` 歸 `null`）、名單全部標 `dirty`、`cursor` 設 `'0'`、`marksCursor` 與 `marksBackfillCursor` 歸 `null`、寫回新 epoch，本輪不再發任何請求，以 `continue` 30 秒後續跑。觸發的那一次回應不落地；409 那一批視為未送出（dirty 不清），不計入退避失敗，`lastError` 不記。寫入順序為標髒 → `syncState` → `syncEpoch`，中途被殺時本機仍是舊 epoch，下一輪撞 409 再來一次。
+- **登入**（EP-A）：本機沒有這個 `userId` 的 epoch（升級後首次、換帳號、全新安裝、舊後端）→ 一次性全量標髒並重設游標，第一趟不帶 epoch，採用回應的值。有的話不標髒，第一個 POST 就帶本機值；雲端若被清過會撞 409 走 `resetForEpoch`。
+- **刪雲端**（EP-E）：成功後本機 `syncEpoch` 不動；下次同帳號登入第一個 POST 帶舊值撞 409，走 `resetForEpoch` 全量重傳。
 
 ## 4. 資料模型
 
@@ -230,6 +242,11 @@ chrome.storage.local.syncState = {
 chrome.storage.local.syncAuth = {
   token: string | null,
 }
+
+chrome.storage.local.syncEpoch = {   // D57：本機最後確認的雲端同步紀元（§3.3）
+  userId: string,                    // 屬於哪個帳號；與 syncState.userId 不同即視為未知
+  epoch: number,                     // 非負整數
+}                                    // 不進 resetAccount：登出、過期、刪雲端不清，換帳號採用時整筆覆寫
 
 // 舊版兩把自清守衛鍵 syncClearGuard／syncMarksClearGuard（D19／D41 舊語意）已廢除：
 // 「刪除雲端資料」改走單一端點＋本機登出（D50），不再需要辨識「這次清空是誰發動
@@ -408,7 +425,7 @@ popup 不顯示同步狀態（健康或錯誤狀態都不顯示），狀態只�
 ### 5.4 刪除雲端資料與清除全部（D50／D53）
 
 - **`sync.deleteCloud`**：background 收到後先打 `DELETE /api/v1/cloud-data`；成功才本機登出（一次寫入）：清 `syncAuth.token`、`syncState` 整包重設、退避歸零、清 `syncDevices`、停用兩支 alarm，然後廣播 `signed_out`。登出寫入失敗時回 `storage_write_failed`、token 保留。失敗（非 2xx／斷網）**不登出**，本機一格不動，只記 `lastError`；`401`（`session_expired`）走既有登入過期出口。
-- **登入＝重建鏡像**：`finishSignIn` 每次成功登入（首次、重新登入、換帳號皆同）都把 history 全標髒、marks 的游標、淘汰計數與 `marksBackfillCursor` 重設、名單全部標 `dirty`（警示總開關關閉時也標，重新開啟時推得出去），觸發全量重傳——雲端可能已被本機或別台裝置的 `deleteCloud` 清空，插件無從分辨，一律重傳最保險；伺服器端 upsert 與墓碑冪等，重傳不會長出重複資料。登出與刪雲端不標髒，標髒只在這裡發生（D54）。
+- **登入＝重建鏡像**：`finishSignIn` 每次成功登入都重設 links／marks 游標、淘汰計數與 `marksBackfillCursor`；本機沒有這個帳號的 `syncEpoch`（首次、換帳號、升級後首次）時再把 history 全標髒、名單全部標 `dirty`（警示總開關關閉時也標，重新開啟時推得出去），觸發全量重傳。有的話不標髒：雲端若已被本機或別台裝置的 `deleteCloud` 清空，epoch 已 +1，第一個 POST 撞 409 由 `resetForEpoch` 標髒重傳（D57，§3.3）。伺服器端 upsert 與墓碑冪等，重傳不會長出重複資料。登出與刪雲端不標髒（D54）。
 - **清除全部**（options 頁「清除全部」按鈕）依登入態分流：已登入時每筆本機紀錄轉成墓碑（有 `id` 者寫 `deletedAt`／`dirty:true`，既有墓碑原樣保留，沒有 `id` 的舊資料直接移除），交由同步引擎以 `deletes[]` 分批送出（每批 ≤50），伺服器 ack 後才真正從本機移除，其他裝置經墓碑各自刪除；動作送出後立刻觸發一次 `sync.now`，不必等下一個 alarm 週期。未登入維持硬刪（沒有雲端可同步）。不再呼叫任何清空端點，也不用清空水位線。
 - **帳號卡待上傳與立即同步**（D52）：`buildState` 依 history 中 `dirty === true` 的筆數算出 `pendingCount`；帳號選單只在 `pendingCount > 0` 時，在「上次同步」之後附加「N 筆待上傳」，並保留既有「立即同步」鈕供手動觸發。
 - **toast 時序**：按下確認鈕當下先樂觀顯示「已刪除雲端資料」（`opToastCloudDeleted`），同時立起 `pendingDeleteCloudToast` 並記下 `sendSyncAction` 回傳的 `reply` promise。**定案以 `reply` 為準**：`reply` 解出 `sync.deleteCloud` 的回應 `{ ok, signedOut?, code? }`（形狀為物件且 `ok` 是布林）時立刻蓋成定案 toast 並清掉旗標——`ok:true`／`signedOut:true` 顯示「雲端資料已刪除，已登出」（`opToastCloudDeletedSignedOut`），`ok:true` 但 `signedOut` 不為 `true` 時退回樂觀那句原文；`ok:false` 時依 `code` 顯示錯誤：`session_expired` 走既有登入過期文案（`opAccountExpired`），其餘碼以「同步失敗：」前綴帶出。**回應形狀不明時才退回廣播判讀**：`reply` 因訊息失敗、SW 被回收等原因解不出上述形狀（`sendSyncAction` 一律吞例外回傳 `undefined`）時旗標留著，改由下一次 `sync.stateChanged` 廣播定案，且**略過 `status === 'syncing'` 的廣播**（那一輪的 `lastError` 可能是上一輪殘留，不能拿來判讀）：帶 `lastError` 即錯誤 toast，狀態轉為 `signed_out` 即成功 toast。
@@ -425,7 +442,7 @@ popup 不顯示同步狀態（健康或錯誤狀態都不顯示），狀態只�
 - **本機容量上限淘汰的條目，雲端仍在，會被併回本機**：本機警示名單撞到 5,000 筆或 2 MB 軟預算（`docs/scam-guard.md` 第 4 節）而淘汰的條目，只是從本機 `entries` 移除，**不會**進 marks 的 `deletes`——本機的容量限制是這台裝置自己的事，不代表使用者要刪掉這位作者。雲端那一份因此原封不動；下一次整份回填，或增量剛好拉到同一位作者的更新，都會把它重新併回本機，使用者可能會看到一位剛被本機淘汰的作者又出現。
 - **marks 通道失敗會讓整輪算失敗，即使 links 已落地**：一輪同步裡 links 收完才輪到 marks（§3.1），marks 失敗時 links 的推拉結果已經寫進 storage，但整條 promise 鏈仍會往上拋錯，讓 `runSync` 落在失敗分支——`syncState.lastSyncedAt` **這一輪不更新**（即使 links 其實成功了），`lastError` 與 links 共用同一格，插件端無法從 `lastError` 單獨分辨這次失敗是 links 還是 marks 那一段。
 - **時鐘落後的裝置，落後期間新增的標記會被拒收**：別台裝置刪掉某一筆之後，伺服器以自己的時鐘寫下墓碑（`deletedAt`，伺服器蓋章、刪除優先，見 D50 定稿）；一台時鐘落後的裝置在那之後新增的標記，`updatedAt` 仍落在 `deletedAt` 之前，`POST /api/v1/marks/sync` 會把它整筆放進 `rejectedIds`，那個標記就同步不出去（本機還在，只是推不上雲）。與清理紀錄那一側是同一個 LWW 取捨：判準只有時間戳一個，要嘛信它、要嘛讓「刪除」失效，兩者取前者。裝置時鐘校正後本機再動過那一筆（`updatedAt` 前進）就會重新被選中、推得上去。
-- **每次登入都全量重傳**：D50 起，`finishSignIn` 不判斷雲端是否真的被清空過，一律把本機全部標髒重傳；伺服器對逐欄相同的內容是零寫入（見上方「逐欄相同的重送即 no-op」），代價是名單較大的帳號在每次（重新）登入後的首輪同步請求數會明顯變多，直到全部批次送完。
+- **沒有 epoch 的登入仍全量重傳**：D57 起，同帳號重新登入只在雲端 epoch 變過（被清空過）時才全量重傳；本機沒有該帳號 `syncEpoch` 時（升級後首次、換帳號、全新安裝、後端尚未回報 epoch）仍一律全部標髒重傳。伺服器對逐欄相同的內容是零寫入（見上方「逐欄相同的重送即 no-op」），代價是這幾種登入後的首輪同步請求數會明顯變多，直到全部批次送完。`resetForEpoch` 觸發時同樣全量重傳，而且觸發的那一輪不再送出，重傳從下一輪（30 秒後）開始。
 - **全量重傳分輪，額度用完排 30 秒續跑**：單輪同步的 POST 上限是 **12**（`links/sync` 與 `marks/sync` 合計，回填用的 `GET /api/v1/marks` 不計入這個額度）；批次數超過額度時，這一輪送滿 12 個 POST 就結束，以 30 秒保底 alarm（沿用去抖用的 `DEBOUNCE_ALARM_NAME`）排下一輪續跑，直到沒有待推批次為止——名單越大，（重新）登入後重傳到齊所需的輪數越多。單次請求 30 秒逾時視為 `network_error`，走既有退避曲線，不會讓整輪卡死在一個不回應的連線上。單飛只在 SW 記憶體；一輪受 `ROUND_DEADLINE_MS = 12×30 秒` 約束，超過 7 分鐘視為被遺棄；跨重啟的續接交給游標與冪等 ack。
 - **刪雲端後，其他裝置要等下一次同步撞到 401 才會登出**：`DELETE /api/v1/cloud-data` 撤銷的是伺服器端的 session，不會主動通知其他已登入裝置；那些裝置在下一次呼叫 `/api/v1/*` 撞到 401 之前，本機照常運作（可以繼續新增紀錄、觸發同步嘗試），撞到 401 才會走既有的登入過期／登出處理。
 - **墓碑時戳由伺服器蓋章、刪除優先**：`deletedAt` 一律以伺服器收到刪除請求當下的時間為準，插件不得送自己的時戳頂替；同一筆記錄同時收到刪除與更新時，刪除視為較新（即使更新請求的本機時戳看起來更晚），這與 R2 的 upsert-vs-delete 拒收規則同一個取向。
