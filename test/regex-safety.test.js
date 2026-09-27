@@ -134,13 +134,6 @@ function checkAllInParallel(items) {
 const DYNAMIC_REGEXP_ALLOWLIST = {
   // 兩段字面值夾一個經 escapeRegExp 跳脫的 handle，無量詞。
   "sw-scam.js:'\"username\":\"' + escapeRegExp(handle)": '跳脫後的字面值比對，無量詞',
-  // og meta 擷取，屬性名經 escapeRegExp 跳脫。以 og:title 代入、用本檔的
-  // RECHECK_PARAMS 試跑 recheck：property 在前的一條 vulnerable（automaton
-  // 判定三次方），content 在前的一條 vulnerable（fuzz 判定二次方）。輸入是
-  // fetch 回來的 HTML，工作量由 sw-og.js 的 OG_SCAN_LIMIT 封頂，屬未納
-  // 入閘門的已知風險（不改寫的理由見 sw-og.js extractOgMeta 的註解）。
-  'sw-og.js:`<meta[^>]+property="${escaped}"': 'og meta 擷取（property 在前），未納入閘門',
-  'sw-og.js:`<meta[^>]+content="([^"]*)"': 'og meta 擷取（content 在前），未納入閘門',
   // 由常數字元清單組出的單一字元類，無量詞。
   "tcl-core.js:'[' + cls + ']'": '單一字元類，無量詞',
   // 以既有正則的 source／flags 複製出 g 旗標版本；來源正則本身已在掃描範圍內。

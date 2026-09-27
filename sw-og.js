@@ -8,7 +8,7 @@
 //
 // 對外提供的全域名稱:
 //   CLEAN_POST_URL_PATTERN、OG_SCAN_LIMIT、OG_FETCH_HEADERS、escapeRegExp、
-//   decodeHtmlEntities、extractOgFields、sanitizeOgFields、mergeOgIntoFields、
+//   decodeHtmlEntities、scanMetaTags、extractOgFields、sanitizeOgFields、mergeOgIntoFields、
 //   cacheOgFields、peekOgFields、fetchOgFieldsForLocalKind、diffRemovedParams、
 //   handleResolveShareMessage、resolveFinalUrl、extractCleanPostUrl
 //
@@ -89,24 +89,76 @@ function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// 從 HTML 文字擷取 <meta property="og:xxx" content="..."> 的 content 屬
-// 性值，property 可能在 content 之前或之後(不同頁面產生器順序不一定)，
-// 兩種順序都要能比對到。找不到回傳 null。正則沿用手機版 post-meta.ts 的
-// ogContent 寫法，只多了掃描長度上限這一層(見上方常數註解)。
+// <meta> 標籤與其屬性。屬性順序(property 在前或 content 在前)與引號種類
+// (雙引號、單引號、無引號)在真實 HTML 都不固定，逐標籤拆屬性而非把單一形
+// 狀寫死進正則。
 //
-// 這兩條由屬性名動態組成，不在 ReDoS 靜態閘門(test/regex-safety.test.js)
-// 的範圍內，列在該檔的動態建構白名單。`[^>]+` 夾著屬性字面值的形狀不是線
-// 性的，工作量由 OG_SCAN_LIMIT 封頂;改用 scamDocIdentityUrls 那套逐屬性拆
-// 解會改變吻合範圍(例如 `data-property="og:title"` 這類字面值落在別的屬
-// 性裡的寫法，這兩條會認、逐屬性拆解不認)，因此維持與手機版一致的寫法。
+// 標籤起點用正則找「<meta」加字界，標籤結尾交給 indexOf 找下一個 `>`:起點
+// 到 `>` 之間寫成 `[^>]*` 時，一串沒有 `>` 收尾的 `<meta` 會讓每個起點各掃
+// 一次到文件尾端。
+const META_OPEN_PATTERN = /<meta\b/gi;
+// 屬性名後面的「= 值」整段可選：每段屬性名一律整段吃掉(沒帶值的由
+// scanMetaTags 略過)，下一次比對從它後面接著找，屬性名字元不會從中間各個
+// 起點重掃一遍。取到的帶值屬性與「值為必要」的寫法相同:屬性名必須整段比對
+// 完才輪得到 `=`，從屬性名中間起頭的比對不可能成立。
+const META_ATTR_PATTERN = /([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+
+// 線性掃描 scanText 裡的每個 <meta> 標籤，依文件順序回傳各標籤的帶值屬性
+// 清單:每個標籤一個陣列，元素為 [小寫屬性名, 原樣屬性值]，依屬性出現順序
+// 排列(重複屬性全數保留，由呼叫端決定取捨)。標籤以其後第一個 `>` 收尾，
+// 屬性值裡未跳脫的 `>` 會截斷該標籤;標準產生器會把它寫成 `&gt;`。長度上
+// 限由呼叫端先切好。
+function scanMetaTags(scanText) {
+  const tags = [];
+  // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
+  META_OPEN_PATTERN.lastIndex = 0;
+  let open = META_OPEN_PATTERN.exec(scanText);
+  while (open !== null) {
+    const attrsStart = open.index + open[0].length;
+    const close = scanText.indexOf('>', attrsStart);
+    // 這個 <meta 之後再也沒有 `>`，後面的 <meta 也都收不了尾。
+    if (close === -1) break;
+    const attrs = scanText.slice(attrsStart, close);
+    const pairs = [];
+    META_ATTR_PATTERN.lastIndex = 0;
+    let attr = META_ATTR_PATTERN.exec(attrs);
+    while (attr !== null) {
+      const value = attr[2] !== undefined ? attr[2] : attr[3] !== undefined ? attr[3] : attr[4];
+      if (value !== undefined) pairs.push([attr[1].toLowerCase(), value]);
+      attr = META_ATTR_PATTERN.exec(attrs);
+    }
+    tags.push(pairs);
+    META_OPEN_PATTERN.lastIndex = close + 1;
+    open = META_OPEN_PATTERN.exec(scanText);
+  }
+  return tags;
+}
+
+// 從 HTML 文字擷取 <meta property="og:xxx" content="..."> 的 content 屬
+// 性值，找不到回傳 null。掃描範圍以 OG_SCAN_LIMIT 封頂(見上方常數註解)，
+// 走 scanMetaTags 逐標籤拆屬性，比對規則:
+//   - 只認 `property` 屬性(不認 `name`)。屬性名與屬性值都不分大小寫，
+//     content 原樣取出再還原 entity。
+//   - property 在 content 之前或之後都認;同一標籤裡重複出現時以後出現者
+//     為準。
+//   - 值認雙引號、單引號與無引號三種寫法，比手機版 post-meta.ts 只認雙引
+//     號寬:三種都是合法 HTML，且拆解以標籤為界，放寬不會取到別的標籤。
+//   - 回傳文件順序中第一個吻合且帶 content 的標籤。
+//   - 字面值落在別的屬性值裡(如 `data-property="og:title"`)不算吻合。
 function extractOgMeta(html, property) {
   if (typeof html !== 'string' || !html) return null;
-  const scanText = html.slice(0, OG_SCAN_LIMIT);
-  const escaped = escapeRegExp(property);
-  const re1 = new RegExp(`<meta[^>]+property="${escaped}"[^>]+content="([^"]*)"`, 'i');
-  const re2 = new RegExp(`<meta[^>]+content="([^"]*)"[^>]+property="${escaped}"`, 'i');
-  const match = re1.exec(scanText) || re2.exec(scanText);
-  return match ? decodeHtmlEntities(match[1]) : null;
+  const wanted = property.toLowerCase();
+  const tags = scanMetaTags(html.slice(0, OG_SCAN_LIMIT));
+  for (let i = 0; i < tags.length; i++) {
+    let tagProperty = null;
+    let content = null;
+    tags[i].forEach(([name, value]) => {
+      if (name === 'property') tagProperty = value.toLowerCase();
+      else if (name === 'content') content = value;
+    });
+    if (tagProperty === wanted && content !== null) return decodeHtmlEntities(content);
+  }
+  return null;
 }
 
 // 極簡 HTML entity 解碼，只處理 og:content 屬性值裡實際會出現的子集(SW
