@@ -296,8 +296,8 @@
     };
     var setTimer = deps.setTimeout;
     var clearTimer = deps.clearTimeout;
-    // 本機裝置身分(§12 增補二)。舊版接線沒有這支，整組裝置歸屬功能就靜默
-    // 缺席——同步照跑，只是請求不帶 device 區塊。
+    // 本機裝置身分(§12 增補二)。未注入時整組裝置歸屬功能靜默缺席——同步
+    // 照跑，只是請求不帶 device 區塊。
     var getLocalDevice = typeof deps.getLocalDevice === 'function' ? deps.getLocalDevice : null;
 
     // 同一個 SW 實例內的單飛:三次 syncNow 同時進來時共用同一個 promise。

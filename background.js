@@ -11,8 +11,8 @@ if (typeof TCLI18N === 'undefined' && typeof importScripts === 'function') {
 // 共用核心 lib(網址樣式、欄位消毒、常數):SW 環境用 importScripts 載入;
 // 測試 sandbox 由測試端先把 tcl-core.js 原始碼載進同一個 sandbox(TCLCore
 // 已存在)，此條件式便不執行。SHARE_URL_PATTERN、乾淨貼文網址的權威判定
-// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore，不再
-// 於本檔養一份鏡像(原本 background 與 options 各養一份，漂移一處即分裂)。
+// (isCleanPostUrl)、sanitize 各函式、長度上限與預設值一律走 TCLCore，不在
+// 本檔養鏡像:background 與 options 共用單一權威，漂移一處即分裂。
 if (typeof TCLCore === 'undefined' && typeof importScripts === 'function') {
   importScripts('tcl-core.js');
 }
@@ -1638,15 +1638,15 @@ function peekOgFields(cleanUrl) {
 }
 
 // 本地路徑(icon/strip)專用的 og 補強逾時:貼文按鈕複製與 ?xmt 剪參都是
-// 純本地判斷，原本不會觸發任何網路請求;這裡額外補一次 fetch 專門拿 og
+// 純本地判斷，本身不觸發網路請求;這裡額外補一次 fetch 專門拿 og
 // 資訊，逾時風格沿用 clipboard-guard.js 的 RESOLVE_TIMEOUT_MS(2.5 秒，
 // 本檔案獨立維護同一個數值，兩處環境不同沒有共用單一來源的機制)。
 const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
 
 // 本地路徑(icon/strip)專用:貼文按鈕複製與 ?xmt 剪參的 web 動態牆 DOM
-// 沒有個人顯示名稱(只有 username)，這兩條路徑原本 author 永遠等於
-// handle、被既有的重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還
-// 可能吸到讚數等雜訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
+// 沒有個人顯示名稱(只有 username)，單靠 DOM 的 author 永遠等於 handle、
+// 被重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還可能吸到讚數等雜
+// 訊。這裡額外對 cleanUrl 補一次 fetch 擷取 og 資訊，
 // 重用既有的 extractOgFields／sanitizeOgFields 全鏈(長度雙層防線不變)。
 //
 // 節流(三層):
@@ -2035,10 +2035,8 @@ function recordHistory(url, kind, extra) {
 
 // ---- 一次性遷移:既有紀錄整平成永久合併形狀 ----
 //
-// 【動機】舊版以「url + 5 分鐘視窗」去重，同一篇貼文在使用者手上很可能已
-// 經散成好幾張卡(隔天再複製一次多一張、handle 改名前後又各一張、當年解析
-// 失敗的短碼原文再一張)。改成永久合併之後，**新**寫入自然只會有一張卡，
-// 但既有資料不會自己收斂——這支遷移在 onInstalled 跑一次，把舊資料整平。
+// 【用途】以「url + 5 分鐘視窗」去重時期留下的資料，同一篇貼文可能散成好
+// 幾張卡;新寫入已永久合併，這支遷移在 onInstalled 跑一次把既有資料整平。
 //
 // 【演算法】讀全表 → 依 historyDedupKey 分組(同一個 postKey 為一組，抽不
 // 出貼文代碼的以正規化網址 url:<host><path><query> 自成一組)→ 組內以 at
