@@ -413,3 +413,33 @@ test('G1 recheck：所有產品檔正則必須為 safe（線性）', async () =>
     '共掃描 ' + ALL_REGEXES.length + ' 條正則，' + failures.length + ' 條非 safe：\n' + failures.join('\n')
   );
 });
+
+// ============================================================
+// 【H2（D5）】extractOgMeta 在短連結解析熱路徑（resolveShare／右鍵）上，
+// 不得再用動態組出的非線性正則擷取 og meta；改走 indexOf 版的線性 meta 掃
+// 描後，白名單同步縮減。og 語料的行為等價由 test/background.test.js 既有
+// 的 og 測試守住。
+// ============================================================
+
+test('H2（D5）：sw-og.js 不再以 new RegExp 組 og meta 樣式，動態白名單縮到只剩無量詞的三條', () => {
+  const keys = Object.keys(DYNAMIC_REGEXP_ALLOWLIST);
+  assert.deepEqual(
+    keys.filter((k) => k.startsWith('sw-og.js:')),
+    [],
+    'og meta 擷取的兩條動態正則應自白名單移除（改走線性掃描後不再需要豁免）'
+  );
+  assert.deepEqual(
+    keys.slice().sort(),
+    [
+      "sw-scam.js:'\"username\":\"' + escapeRegExp(handle)",
+      "tcl-core.js:'[' + cls + ']'",
+      'tcl-core.js:pattern.source, pattern.flags',
+    ].sort(),
+    '動態 RegExp 白名單應只剩三條無量詞的建構'
+  );
+  assert.deepEqual(
+    DYNAMIC_REGEXPS.filter((d) => d.file === 'sw-og.js').map((d) => d.line + '  ' + d.head),
+    [],
+    'sw-og.js 不得再有動態組字串的 new RegExp(…)'
+  );
+});
