@@ -901,11 +901,12 @@ footer.about a:hover { color: var(--ink-1); }
    dialog-shell.tsx 的單一共用 DialogShell。dialog.dlg 不得寫 display，
    否則會壓過 UA 的 dialog:not([open]){display:none}。UA 的 max-height 與
    overflow:auto 保留，內容太長時由 dialog 自己捲動。 */
-dialog.dlg { padding: 0; border: 0; background: none; color: inherit; width: fit-content; max-width: none; }
+/* 左右各留 20px:百分比以視窗(不含捲軸)為準，等同遮罩四周各留 20px 的舊版面。 */
+dialog.dlg { padding: 0; border: 0; background: none; color: inherit; width: fit-content; max-width: calc(100% - 40px); }
 dialog.dlg::backdrop { background: rgb(0 0 0 / 0.55); }
 
-/* ---- 裝置對話框(#devicesOverlay):面板沿用 .modal-detail 的外觀，只把
-   寬度放寬到 480px。每列約 52px:左 24px 平台圖示、中間名稱/時間兩行、
+/* ---- 裝置對話框(#devicesOverlay):面板沿用 .modal-detail 的外觀，寬度
+   沿用 .modal 的 520px。每列約 52px:左 24px 平台圖示、中間名稱/時間兩行、
    右側改名與移除兩顆 ghost 圖示鈕——右側按鈕的浮現規則完全比照紀錄卡的
    .entry-quick(平時 display:none，不吃 hit-test 也不會被 Tab 掃到，
    hover 或 focus-within 才 display:flex)。 ---- */
@@ -1089,7 +1090,8 @@ mark.scam-anchor {
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: var(--shadow);
-  width: min(520px, 100vw - 40px);
+  width: 520px;
+  max-width: 100%;
   padding: 18px;
 }
 .modal h3 {
@@ -1123,10 +1125,8 @@ mark.scam-anchor {
   margin-top: 12px;
   flex-wrap: wrap;
 }
-/* 各尺寸寬度集中在 .modal 之後，同權重時才蓋得過它。 */
-.modal-sm { width: min(380px, 100vw - 40px); }
-.modal-detail { width: min(420px, 100vw - 40px); }
-.modal-devices { width: min(480px, 100vw - 40px); }
+/* 確認框較窄;詳細、裝置等其餘對話框沿用 .modal 的 520px。 */
+.modal-sm { width: 380px; }
 .modal-sm .desc { margin-bottom: 4px; }
 .danger-ink { color: var(--danger); }
 
