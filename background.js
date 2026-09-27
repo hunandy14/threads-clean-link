@@ -253,7 +253,7 @@ if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChange
 // 訊息是否來自本擴充自己（content script 或擴充頁面皆可）。只看 sender.id
 // ——content script 的 sender.url 是它所在網頁的網址，比對擴充前綴會把
 // clipboard-guard 這條正常路徑整條擋掉。跨擴充訊息走的是 onMessageExternal，
-// 進不了這個 listener；沒宣告 externally_connectable 時網頁也送不進來，因此
+// 進不了 runtime.onMessage；沒宣告 externally_connectable 時網頁也送不進來，因此
 // sender.id 不等於自己就是不該回應的來源。
 // 需要更嚴的判準（只准擴充自己的頁面）時用 isExtensionPageSender，見下方。
 function isOwnExtensionSender(sender) {
@@ -261,45 +261,6 @@ function isOwnExtensionSender(sender) {
   const selfId = chrome.runtime && chrome.runtime.id;
   return typeof selfId === 'string' && selfId !== '' && sender.id === selfId;
 }
-
-// 回應 clipboard-guard.js 經 bridge.js 送來的短碼解析請求。本路徑不寫
-// 剪貼簿、不發通知，只負責解析並回傳結果；失敗一律回傳 ok:false，由
-// 呼叫端自行決定要不要用原始短碼放行。
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'resolveShare') {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  }
-  if (!isOwnExtensionSender(sender)) {
-    return false; // 不是自己人送來的，不回應、不解析。
-  }
-
-  handleResolveShareMessage(message)
-    .then(sendResponse)
-    .catch((err) => {
-      console.error('[threads-clean-link] resolveShare 處理失敗', err);
-      sendResponse({ ok: false, reason: 'internal-error' });
-    });
-
-  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
-});
-
-// clipboard-guard.js 實際把淨化後內容寫入剪貼簿後，經 bridge.js 送來這則
-// 通知——紀錄的其中一條入筆路徑，收到合法通知就無條件記錄，沒有「要不要
-// 顯示通知」的把關。
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'cleanedNotice') {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  }
-  if (!isOwnExtensionSender(sender)) {
-    return false; // 紀錄是使用者資料，不接受本擴充以外的來源寫入。
-  }
-
-  handleCleanedNotice(message).catch((err) => {
-    console.error('[threads-clean-link] cleanedNotice 處理失敗', err);
-  });
-
-  return false; // 不需要回應，同步處理完就結束，不佔用非同步通道。
-});
 
 // ------------------------------------------------------------
 // 雲端同步接線(docs/cloud-sync.md 第 5 節)
@@ -506,20 +467,6 @@ const syncEngine =
       })
     : null;
 
-// options/popup → background 的五個同步訊息。登入態與雲端資料是敏感面:
-// 只接受本擴充自己的頁面(sender.url 是 chrome-extension://<自己的 id>/ 開頭)，
-// content script 與其他擴充送來的一律不回應、不碰引擎。
-const SYNC_MESSAGE_HANDLERS = {
-  'sync.getState': (engine) => engine.getState(),
-  'sync.signIn': (engine) => engine.signIn(),
-  'sync.signOut': (engine) => engine.signOut(),
-  'sync.now': (engine) => engine.syncNow(),
-  'sync.deleteCloud': (engine) => engine.deleteCloud(),
-  'sync.devices.list': (engine, message) => handleDevicesList(engine, message),
-  'sync.devices.rename': (engine, message) => handleDevicesRename(engine, message),
-  'sync.devices.remove': (engine, message) => handleDevicesRemove(engine, message),
-};
-
 // 裝置名的合法範圍:trim 後 1–80 個 code point。上限算 code point 而非
 // String.prototype.length——40 個 emoji 的 length 是 80 卻只有 40 個字，用
 // length 把關會誤殺合法名字。不合格回 undefined。
@@ -575,7 +522,7 @@ async function handleDevicesRemove(engine, message) {
 // 不能用 `!sender.tab` 當條件:manifest 的 options_ui.open_in_tab 為 true，設定頁
 // 本身就是一個分頁，sender.tab 存在，五個 sync.* 會全被擋掉。改看 sender.url 前綴
 // ——content script 的 sender.url 是它所在網頁的網址(https://www.threads.com/...)，
-// 其他擴充走的是 onMessageExternal 進不了這個 listener，兩者都構不出
+// 其他擴充走的是 onMessageExternal 進不了 runtime.onMessage，兩者都構不出
 // chrome-extension://<自己的 id>/ 這個前綴。
 // 本判準假設 manifest 沒有 web_accessible_resources 與 externally_connectable；
 // 若日後新增 WAR，被網頁 iframe 的 WAR 頁面也會帶本擴充前綴，需回頭把判準收窄成
@@ -585,23 +532,6 @@ function isExtensionPageSender(sender) {
   const selfId = chrome.runtime.id;
   return typeof sender.url === 'string' && sender.url.indexOf('chrome-extension://' + selfId + '/') === 0;
 }
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || typeof message.type !== 'string') return false;
-  const handler = SYNC_MESSAGE_HANDLERS[message.type];
-  if (!handler) return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
-  if (!isExtensionPageSender(sender) || !syncEngine) return false;
-
-  Promise.resolve()
-    .then(() => handler(syncEngine, message))
-    .then(sendResponse)
-    .catch((err) => {
-      console.error(`[threads-clean-link] ${message.type} 處理失敗`, err);
-      sendResponse(undefined);
-    });
-
-  return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
-});
 
 // 週期同步與去抖保底的 alarm 都轉進引擎，由它自己分辨名稱(D12)。
 if (chrome.alarms && chrome.alarms.onAlarm) {
@@ -1179,31 +1109,109 @@ async function handleScamBlocklistRestore(message) {
   });
 }
 
-// 只准擴充自己的頁面（選項頁）送的兩則訊息。
-const SCAM_PAGE_MESSAGE_HANDLERS = {
-  'scam.blocklist.remove': handleScamBlocklistRemove,
-  'scam.blocklist.restore': handleScamBlocklistRestore,
+// ------------------------------------------------------------
+// runtime.onMessage 路由表
+// ------------------------------------------------------------
+//
+// 本擴充收的所有 runtime 訊息都在這張表。每條路由:
+//   allow(sender)  寄件者判準，不過就不回應、不執行。
+//   engine         true 表示需要同步引擎；引擎未建立時視同不認得這則訊息。
+//   noReply        true 表示背景執行、不回應，例外只記 log。
+//   run(message, engine)  回傳值(可為 Promise)原樣交給 sendResponse。
+//   onError()      run 拋錯或 reject 時改回的內容，各路由沿用自己的失敗形狀。
+//
+// 寄件者判準分三級:isOwnExtensionSender(本擴充任何來源，含 content script)、
+// isExtensionPageSender(只准 options／popup 等擴充頁)、isScamContentScriptSender
+// (只准 threads 分頁上的 content script)。登入態、雲端資料與警示名單的使用者
+// 操作屬敏感面，一律走擴充頁判準。
+const ROUTES = {
+  // clipboard-guard.js 經 bridge.js 送來的短碼解析請求。本路徑不寫剪貼簿、
+  // 不發通知，只負責解析並回傳結果；失敗一律回 ok:false，由呼叫端自行決定
+  // 要不要用原始短碼放行。
+  resolveShare: {
+    allow: isOwnExtensionSender,
+    run: (message) => handleResolveShareMessage(message),
+    onError: () => ({ ok: false, reason: 'internal-error' }),
+  },
+  // clipboard-guard.js 實際把淨化後內容寫入剪貼簿後送來的通知——紀錄的其中
+  // 一條入筆路徑，收到合法通知就無條件記錄。紀錄是使用者資料，不接受本擴充
+  // 以外的來源寫入。
+  cleanedNotice: {
+    allow: isOwnExtensionSender,
+    noReply: true,
+    run: (message) => handleCleanedNotice(message),
+  },
+  // options/popup → background 的同步訊息。引擎結果原樣透出，失敗碼是 UI
+  // 分流的依據；例外時回 undefined。
+  'sync.getState': syncRoute((engine) => engine.getState()),
+  'sync.signIn': syncRoute((engine) => engine.signIn()),
+  'sync.signOut': syncRoute((engine) => engine.signOut()),
+  'sync.now': syncRoute((engine) => engine.syncNow()),
+  'sync.deleteCloud': syncRoute((engine) => engine.deleteCloud()),
+  'sync.devices.list': syncRoute((engine, message) => handleDevicesList(engine, message)),
+  'sync.devices.rename': syncRoute((engine, message) => handleDevicesRename(engine, message)),
+  'sync.devices.remove': syncRoute((engine, message) => handleDevicesRemove(engine, message)),
+  // threads 分頁上的詐騙偵測命中回報。
+  'scam.hit': {
+    allow: isScamContentScriptSender,
+    run: (message) => handleScamHit(message),
+    onError: scamInternalError,
+  },
+  // 選項頁的解除／復原。網頁端不得借道動名單。
+  'scam.blocklist.remove': {
+    allow: isExtensionPageSender,
+    run: (message) => handleScamBlocklistRemove(message),
+    onError: scamInternalError,
+  },
+  'scam.blocklist.restore': {
+    allow: isExtensionPageSender,
+    run: (message) => handleScamBlocklistRestore(message),
+    onError: scamInternalError,
+  },
 };
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || typeof message.type !== 'string') return false;
+// 同步路由的共同外殼:只准擴充頁、需要引擎、例外回 undefined。handler 以
+// (engine, message) 取參，與 handleDevices* 的簽名一致。
+function syncRoute(handler) {
+  return {
+    allow: isExtensionPageSender,
+    engine: true,
+    run: (message, engine) => handler(engine, message),
+    onError: () => undefined,
+  };
+}
 
-  let pending = null;
-  if (message.type === 'scam.hit') {
-    if (!isScamContentScriptSender(sender)) return false; // 不是 threads 分頁送來的，不回應、不寫。
-    pending = handleScamHit(message);
-  } else if (Object.prototype.hasOwnProperty.call(SCAM_PAGE_MESSAGE_HANDLERS, message.type)) {
-    if (!isExtensionPageSender(sender)) return false; // 網頁端不得借道動名單。
-    pending = SCAM_PAGE_MESSAGE_HANDLERS[message.type](message);
-  } else {
-    return false; // 不是我們認得的訊息類型，不佔用 sendResponse 通道。
+function scamInternalError() {
+  return { ok: false, code: 'internal_error' };
+}
+
+// 路由查找只認 ROUTES 自有鍵:'constructor'、'__proto__' 這類原型上的名字
+// 不得命中。未知類型、寄件者被拒、需要引擎卻沒有引擎，一律回 false——不回應、
+// 不佔用 sendResponse 通道。
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const type = message && message.type;
+  if (typeof type !== 'string' || !Object.hasOwn(ROUTES, type)) return false;
+  const route = ROUTES[type];
+  if (!route.allow(sender) || (route.engine && !syncEngine)) return false;
+
+  let pending;
+  try {
+    pending = Promise.resolve(route.run(message, syncEngine));
+  } catch (err) {
+    pending = Promise.reject(err);
+  }
+
+  if (route.noReply) {
+    pending.catch((err) => {
+      console.error(`[threads-clean-link] ${type} 處理失敗`, err);
+    });
+    return false;
   }
 
   pending.then(sendResponse).catch((err) => {
-    console.error(`[threads-clean-link] ${message.type} 處理失敗`, err);
-    sendResponse({ ok: false, code: 'internal_error' });
+    console.error(`[threads-clean-link] ${type} 處理失敗`, err);
+    sendResponse(route.onError());
   });
-
   return true; // 非同步回應，保持訊息通道開啟直到 sendResponse 被呼叫。
 });
 
