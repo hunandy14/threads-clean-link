@@ -1,0 +1,104 @@
+/* theme.css — options.html 與 popup.html 共用的主題 token 與共同外觀。
+
+   深淺色以 light-dark() 寫在同一條宣告，由 color-scheme 決定取哪一邊：
+   :root 的 color-scheme: light dark 跟系統深淺色走；使用者在選項頁手動
+   指定主題時，theme-init.js 與 options.js 會設 <html data-theme>，下方兩條
+   規則把 color-scheme 釘成單一值。token 只在本檔宣告，各頁 css 只引用。
+
+   【唯一數值權威】所有跟手機版對齊的數值(色票/間距/字級/圓角)一律以
+   使用者手機 repo 當下源碼為準(src/constants/theme.ts、
+   src/components/history-card.tsx、history-detail-dialog.tsx、
+   dialog-shell.tsx)。--accent 用手機 theme.ts 的暖橘(light #c96f3e /
+   dark #e2925e)，--card-outline/--card-selected-border 照
+   theme.ts 的 cardOutline/cardSelectedBorder 字面值(後者深淺色刻意同
+   色，theme.ts 原文有註解說明「橘光在兩種底色上都成立」)。--accent-soft
+   手機端沒有對應 token(手機不用半透明底做選中態)，屬本頁衍生值，非
+   手機源碼字面值。 */
+:root {
+  color-scheme: light dark;
+  --plane: light-dark(#f9f9f7, #0d0d0d);
+  --surface: light-dark(#fcfcfb, #1a1a19);
+  --ink-1: light-dark(#0b0b0b, #ffffff);
+  --ink-2: light-dark(#52514e, #c3c2b7);
+  --ink-3: #898781;
+  --grid: light-dark(#e1e0d9, #2c2c2a);
+  --baseline: light-dark(#c3c2b7, #383835);
+  --border: light-dark(rgba(11, 11, 11, 0.1), rgba(255, 255, 255, 0.1));
+  --accent: light-dark(#c96f3e, #e2925e);
+  --accent-soft: light-dark(rgba(201, 111, 62, 0.14), rgba(226, 146, 94, 0.2));
+  --accent-contrast: #ffffff;
+  --card-outline: light-dark(rgba(43, 42, 39, 0.18), rgba(255, 255, 255, 0.15));
+  --card-selected-border: #e2925ecc;
+  --good: light-dark(#006300, #0ca30c);
+  --danger: light-dark(#d03b3b, #e66767);
+  --danger-soft: light-dark(rgba(208, 59, 59, 0.1), rgba(230, 103, 103, 0.14));
+  /* 帳號入口的「登入過期」語意色：綠(已同步)／紅(錯誤)之外的第三態黃，
+     供狀態點與選單提示列使用。淺色 #b8862b 對 --surface(#fcfcfb)約
+     3.16:1，過 WCAG 非文字元素 3:1 門檻(狀態點是純色塊，沒有文字襯托)。 */
+  --warn: light-dark(#b8862b, #e6b955);
+  /* 提示列的淡底色，比照 --accent-soft／--danger-soft「主色 + 淡底變體」
+     慣例。 */
+  --warn-soft: light-dark(rgba(184, 134, 43, 0.14), rgba(230, 185, 85, 0.2));
+  --switch-track-off: light-dark(#d0d3d9, #55575c);
+  --switch-thumb: light-dark(#ffffff, #e8e8e8);
+  --shadow: 0 1px 2px light-dark(rgba(11, 11, 11, 0.04), rgba(0, 0, 0, 0.3)),
+    0 4px 16px light-dark(rgba(11, 11, 11, 0.05), rgba(0, 0, 0, 0.3));
+}
+/* 手動指定主題：只切 color-scheme，light-dark() 自動取對應那一邊。 */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+*, *::before, *::after { box-sizing: border-box; }
+/* 全域 [hidden] 規則，!important 蓋過任何元素自己的 display 宣告。
+   作者層規則(例如 .detail-author-row{display:flex})一律贏過瀏覽器 UA
+   樣式表的 [hidden]{display:none}，少這一條，JS 設 .hidden=true 就沒有
+   視覺效果。 */
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink-1);
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei", "PingFang TC", sans-serif;
+}
+
+/* 設定列：標籤在左、switch 靠右(flex + space-between)。這是 iOS HIG 的
+   list row toggle 與 Material 3 list item「trailing slot」的共同慣例；
+   LTR 的掃視順序與螢幕閱讀器都是先讀標籤再讀控件。整列本身就是 <label>，
+   點文字或列上任一處都能切換。列距與分隔線由各頁 css 補。 */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+/* 滑動 switch：取消 checkbox 原生打勾外觀，自行畫軌道與滑塊。顏色一律走
+   token(--switch-track-off／--switch-thumb／--accent)，不得硬編色碼。 */
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  /* 靠右的 switch 不得被左側標籤壓縮變形。 */
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--switch-track-off);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--switch-thumb);
+  transition: transform 0.15s ease;
+}
+.switch:checked { background: var(--accent); }
+.switch:checked::before { transform: translateX(14px); }
