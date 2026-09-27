@@ -729,11 +729,12 @@ test('T2 session 過期後換帳號登入：鏡像欄位重置、全部標髒（
   const pushed = [];
   env.syncPosts().forEach((r) => (r.body.upserts || []).forEach((u) => pushed.push(u.id)));
   assert.deepEqual(pushed.sort(), ['a', 'b'], '換帳號後本機紀錄要對新帳號重新全量上傳');
-  // 【斷言翻轉｜D50】自清守衛整組廢除：舊版殘留的鍵可以被移除（undefined）或
-  // 清成 null，兩者都代表「不再生效」；不得留著舊值。
-  assert.ok(
-    env.storage.localData.syncClearGuard == null,
-    '舊版殘留的自清守衛不得留著舊值'
+  // 【斷言翻轉｜SW-6】自清守衛整組廢除（D50），舊版殘留改由 background 的
+  // onInstalled 清一次；sync.js 登入時不讀不寫，這裡只驗不寫入新值。
+  assert.deepEqual(
+    env.storage.localData.syncClearGuard,
+    { userId: 'user-abc', clearedAt: T0 - 1000 },
+    'sync.js 不寫入新的自清守衛值'
   );
 });
 
@@ -830,25 +831,22 @@ test('T2 signOut：帶 Bearer 打 sign-out，清 syncAuth／syncState 回預設'
   assert.equal(state.lastSyncedAt, null);
 });
 
-test('T2 signOut：本機 history 保留，但 dirty 重置 true、serverUpdatedAt 重置 null', async () => {
+// 【斷言翻轉｜D54】標髒只在 finishSignIn：登出不碰 history，下次登入統一標髒重傳。
+test('T2 signOut：本機 history 原封不動（dirty／serverUpdatedAt 維持原值，D54）', async () => {
   const TCLSync = loadSync();
+  const before = [
+    entry({ id: 'srv-a', url: POST_A, dirty: false, serverUpdatedAt: T0 - 1000 }),
+    entry({ id: 'srv-b', url: POST_B, dirty: false, serverUpdatedAt: T0 - 2000 }),
+  ];
   const env = makeEnv({
     signedIn: true,
-    history: [
-      entry({ id: 'srv-a', url: POST_A, dirty: false, serverUpdatedAt: T0 - 1000 }),
-      entry({ id: 'srv-b', url: POST_B, dirty: false, serverUpdatedAt: T0 - 2000 }),
-    ],
+    history: JSON.parse(JSON.stringify(before)),
   });
   const engine = TCLSync.create(env.deps);
   await engine.signOut();
   await settle();
 
-  const list = env.storage.history();
-  assert.equal(list.length, 2, '登出不刪本機紀錄');
-  list.forEach((e) => {
-    assert.equal(e.dirty, true, '登出後全部標髒，下次登入重新全量上傳');
-    assert.equal(e.serverUpdatedAt, null);
-  });
+  assert.deepEqual(env.storage.history(), before, '登出不刪也不標髒本機紀錄');
 });
 
 test('T2 signOut：sign-out 請求失敗（503）也要完成本機清理', async () => {
@@ -1796,7 +1794,7 @@ test('T5 manifest 必須宣告 alarms 權限，否則 chrome.alarms 不存在', 
 
 // 【斷言翻轉｜D50】原斷言「打 DELETE /api/v1/links、本機全部 dirty:false 不重推」
 // 作廢：刪雲端改打單一端點並登出，本機全部標髒，重新登入後全量重傳。
-test('T6 deleteCloud：只打 R11 單一端點，本機保留並全部標髒待重傳（D50）', async () => {
+test('T6 deleteCloud：只打 R11 單一端點，本機紀錄原封不動（D50／D54）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
@@ -1813,12 +1811,15 @@ test('T6 deleteCloud：只打 R11 單一端點，本機保留並全部標髒待�
   assert.equal(calls.length, 1, '刪雲端只打一次 R11 端點');
   assert.equal(calls[0].headers.authorization, 'Bearer tok-seeded');
 
-  const list = env.storage.history();
-  assert.equal(list.length, 2, '刪雲端不動本機紀錄');
-  list.forEach((e) => {
-    assert.equal(e.dirty, true, '重新登入後要把本機全量傳回雲端');
-    assert.equal(e.serverUpdatedAt, null);
-  });
+  // 【斷言翻轉｜D54】刪雲端不標髒，本機紀錄原封不動；重傳由再登入的 finishSignIn 負責。
+  assert.deepEqual(
+    env.storage.history(),
+    [
+      entry({ id: 'a', url: POST_A, dirty: true, serverUpdatedAt: T0 - 100 }),
+      entry({ id: 'b', url: POST_B, dirty: false, serverUpdatedAt: T0 - 200 }),
+    ],
+    '刪雲端不動本機紀錄'
+  );
   assert.equal(env.storage.syncState().cursor, null, 'cursor 要歸零，避免拿舊游標拉到不存在的增量');
 });
 
@@ -4019,7 +4020,7 @@ test('T11 signOut：清掉 syncDevices 快取，syncDevice 原封不動', async 
   await engine.signOut();
   await settle(20);
 
-  assert.equal(env.devicesCache(), undefined, '留著就會在下一位使用者眼前秀出上一個帳號的裝置');
+  assert.equal(env.devicesCache(), null, '留著就會在下一位使用者眼前秀出上一個帳號的裝置');
   assert.deepEqual(env.storage.localData.syncDevice, localDevice, '登出不是換一台新裝置');
 });
 
@@ -4041,7 +4042,7 @@ test('T11 deleteCloud：清掉 syncDevices 快取，syncDevice 原封不動', as
   await engine.deleteCloud();
   await settle(20);
 
-  assert.equal(env.devicesCache(), undefined, '雲端資料都刪了，別台裝置的快取沒有留著的道理');
+  assert.equal(env.devicesCache(), null, '雲端資料都刪了，別台裝置的快取沒有留著的道理');
   assert.deepEqual(env.storage.localData.syncDevice, localDevice, '刪雲端不重生本機身分');
 });
 
@@ -4081,7 +4082,7 @@ test('T11 session 過期（401）：清掉 syncDevices 快取，syncDevice 原�
   assert.equal(env.storage.syncState().lastError, 'session_expired', '前提：真的走了過期處理');
   assert.equal(
     env.devicesCache(),
-    undefined,
+    null,
     '過期後重新登入的可能是另一個帳號，舊快取留著就會秀給下一位使用者看'
   );
   assert.deepEqual(
@@ -4115,7 +4116,7 @@ test('T11 換帳號登入：清掉 syncDevices 快取；同一個帳號重新登
   assert.equal(env.storage.syncState().userId, 'user-zzz', '前提：真的換了帳號');
   assert.equal(
     env.devicesCache(),
-    undefined,
+    null,
     '鏡像欄位都重設了，別台裝置的快取沒有獨活下來的道理'
   );
   assert.deepEqual(
@@ -4490,35 +4491,30 @@ test('D50 deleteCloud 成功：本機登出——token 清、syncState 重設、
   assert.ok(last, '要廣播 sync.stateChanged');
   assert.equal(last.status, 'signed_out');
   assert.equal(last.lastError, null);
-  assert.equal(last.pendingCount, 6, '登出態的待上傳筆數＝全部本機紀錄（重新登入後要重傳的量）');
+  // 【斷言翻轉｜D54】刪雲端不標髒，登出態的 pendingCount 只算本來就 dirty 的筆數；
+  // 全量重傳量在再登入標髒後才浮現。
+  assert.equal(last.pendingCount, 1, '登出態的待上傳筆數＝本機既有 dirty 筆數');
   assert.ok(
     env.alarms.clears().some((c) => c.name === TCLSync.ALARM_NAME),
     '週期 alarm 一併清掉：登出之後沒有東西可同步'
   );
 });
 
-test('D50 deleteCloud 成功：history 全部 dirty:true、serverUpdatedAt:null（含舊語意殘留與已同步者）', async () => {
+// 【斷言翻轉｜D54】刪雲端不標髒：history 原封不動，再登入後的全量重傳見下方
+// 「刪雲端 → 重新登入」一條。
+test('D50 deleteCloud 成功：history 原封不動（含舊語意殘留與已同步者，D54）', async () => {
   const TCLSync = loadSync();
   const before = realisticHistory();
-  const env = makeEnv({ signedIn: true, history: before });
+  const env = makeEnv({ signedIn: true, history: JSON.parse(JSON.stringify(before)) });
   const engine = TCLSync.create(env.deps);
   await engine.deleteCloud();
   await settle(10);
 
-  const list = env.storage.history();
-  assert.deepEqual(list.map((e) => e.id).sort(), before.map((e) => e.id).sort(), '本機一筆不動');
-  list.forEach((e) => {
-    assert.equal(e.dirty, true, `${e.id}：全部標髒，重新登入後全量重傳`);
-    assert.equal(e.serverUpdatedAt, null, `${e.id}：雲端鏡像已不存在`);
-  });
-  const byId = Object.fromEntries(list.map((e) => [e.id, e]));
-  before.forEach((e) => {
-    assert.equal(byId[e.id].url, e.url, `${e.id}：內容欄位不動`);
-    assert.equal(byId[e.id].receivedAt, e.receivedAt);
-  });
+  assert.deepEqual(env.storage.history(), before, '本機一筆不動，dirty／serverUpdatedAt 維持原值');
 });
 
-test('D50 deleteCloud 成功：不寫 syncClearGuard／syncMarksClearGuard，舊版殘留的兩把鍵要移除', async () => {
+// 【斷言翻轉｜SW-6】舊版殘留的兩把鍵改由 background 的 onInstalled 清一次，sync.js 不動它們。
+test('D50 deleteCloud 成功：不寫 syncClearGuard／syncMarksClearGuard，舊版殘留的兩把鍵 sync.js 不動', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({
     signedIn: true,
@@ -4532,8 +4528,16 @@ test('D50 deleteCloud 成功：不寫 syncClearGuard／syncMarksClearGuard，舊
   await engine.deleteCloud();
   await settle(10);
 
-  assert.ok(env.storage.localData.syncClearGuard == null, 'syncClearGuard 要移除');
-  assert.ok(env.storage.localData.syncMarksClearGuard == null, 'syncMarksClearGuard 要移除');
+  assert.deepEqual(
+    env.storage.localData.syncClearGuard,
+    { userId: 'user-abc', clearedAt: T0 - 5000 },
+    'syncClearGuard 由 onInstalled 清，sync.js 不動'
+  );
+  assert.deepEqual(
+    env.storage.localData.syncMarksClearGuard,
+    { userId: 'user-abc', clearedAt: null, pending: true, sentAt: T0 - 5000 },
+    'syncMarksClearGuard 由 onInstalled 清，sync.js 不動'
+  );
   assert.deepEqual(guardWrites(env, 'syncClearGuard'), [], '不得寫入新守衛');
   assert.deepEqual(guardWrites(env, 'syncMarksClearGuard'), [], '不得寫入新守衛');
 });
@@ -4958,10 +4962,11 @@ test('S1 1,000 筆 history 登入：首輪 POST 數（links＋marks）≤ MAX_RO
 });
 
 // ============================================================================
-// 審查 S2 — deleteCloud 標髒寫入失敗：記 storage_write_failed、廣播 error、token 保留
+// 審查 S2 — deleteCloud 登出寫入失敗：記 storage_write_failed、廣播 error、token 保留
 // ============================================================================
 
-test('S2 deleteCloud：R11 成功但 history 標髒寫入失敗 → lastError=storage_write_failed、廣播 error、token 保留、不宣稱已登出', async () => {
+// 【斷言翻轉｜D54】刪雲端不再標髒，失敗注入改到帳號鍵的一次寫入（含 syncAuth）。
+test('S2 deleteCloud：R11 成功但登出寫入失敗 → lastError=storage_write_failed、廣播 error、token 保留、不宣稱已登出', async () => {
   const TCLSync = loadSync();
   const before = realisticHistory();
   const env = makeEnv({ signedIn: true, history: before });
@@ -4970,7 +4975,7 @@ test('S2 deleteCloud：R11 成功但 history 標髒寫入失敗 → lastError=st
       session: env.deps.storage.session,
       local: Object.assign({}, env.deps.storage.local, {
         set(items) {
-          if (Object.prototype.hasOwnProperty.call(items, 'history')) {
+          if (Object.prototype.hasOwnProperty.call(items, 'syncAuth')) {
             return Promise.reject(new Error('IO error'));
           }
           return env.deps.storage.local.set(items);
@@ -4989,7 +4994,8 @@ test('S2 deleteCloud：R11 成功但 history 標髒寫入失敗 → lastError=st
   assert.equal(env.storage.syncAuth().token, 'tok-seeded', 'token 保留');
   assert.equal(env.storage.syncState().lastError, 'storage_write_failed');
   assert.equal(env.lastState().status, 'error');
-  assert.notEqual(result && result.signedOut, true, '沒標髒完成不得宣稱已登出');
+  assert.equal(result && result.code, 'storage_write_failed');
+  assert.notEqual(result && result.signedOut, true, '登出寫入沒落地不得宣稱已登出');
   assert.deepEqual(env.storage.history(), before, 'history 原封不動');
 });
 

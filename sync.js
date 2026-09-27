@@ -77,9 +77,6 @@
   var API_BASE_KEY = 'syncApiBase';
   var BACKOFF_KEY = 'syncBackoff';
   var VERIFIED_AT_KEY = 'syncVerifiedAt';
-  // 舊版的兩把自清守衛鍵。清空水位線已廢除(D50)，這兩把鍵不再讀寫;登入與
-  // 刪雲端時一併移除舊版殘留。
-  var LEGACY_GUARD_KEYS = ['syncClearGuard', 'syncMarksClearGuard'];
   // 「刪除雲端資料」的單一端點(契約 R11):硬刪該帳號全部雲端資料並撤銷所有
   // session，回 `{ ok, revokedSessions }`。
   var CLOUD_DATA_PATH = '/api/v1/cloud-data';
@@ -314,9 +311,6 @@
     function localSet(items) {
       return Promise.resolve(storage.local.set(items));
     }
-    function localRemove(keys) {
-      return Promise.resolve(storage.local.remove(keys));
-    }
     function sessionGet(defaults) {
       return Promise.resolve(storage.session.get(defaults));
     }
@@ -378,11 +372,6 @@
       var items = {};
       items[BACKOFF_KEY] = { failures: failures };
       return localSet(items);
-    }
-
-    /** 移除舊版殘留的兩把自清守衛鍵(D50 起不再讀寫)。 */
-    function removeLegacyGuards() {
-      return localRemove(LEGACY_GUARD_KEYS);
     }
 
     // ---- 狀態與廣播(計劃 5.2／5.3) ----
@@ -1350,45 +1339,97 @@
     // ---- 登出／失效 ----
 
     /**
-     * token 失效的統一出口:清 token、記 session_expired、停掉週期 alarm。
+     * 帳號轉場單表:登入、session 過期、登出、刪雲端成功四條路徑對帳號狀態的
+     * 處置。欄位:
      *
-     * 【合併式 patch】session 過期是一次轉場，不是換帳號也不是刪資料:整包
-     * 重設會把 userId 一起清掉，下次登入的帳號切換偵測(finishSignIn)就永遠
-     * 判不出「換了人」，前一位使用者的本機鏡像會被當成新帳號的資料。游標與
-     * history 不動，重建鏡像的標髒統一在 finishSignIn 做。displayName／
-     * avatarUrl 留著是 D17 的「登入過期」卡片要顯示的資訊——使用者得看得出
-     * 過期的是哪一個帳號。
-     * 退避次數歸零:失效不是後端故障，重新登入後該從基礎週期重新開始。
+     * - markDirty:寫帳號鍵之前把 history 全部標髒、serverUpdatedAt 歸 null
+     *   (D50 登入＝重建鏡像)。只有登入標髒(D54):登出與刪雲端不碰 history
+     *   與名單，下次登入時在這裡統一標髒重傳。
+     * - token:'new' 寫入這次換到的 token;null 清掉。
+     * - state:'identity' 以這次登入的身分四欄整包重設(游標、lastSyncedAt、
+     *   lastError、marks 五欄隨之歸 null);'patchExpired' 為合併 patch，只記
+     *   lastError:'session_expired'，其餘欄位保留;'reset' 整包重設。
+     * - backoff:syncBackoff 的連續失敗次數。
+     * - verifiedAt:'now' 記下這一刻(剛換到的 token 等同剛驗過);null 清掉。
+     * - devices:別台裝置的顯示快取。'clear' 一律清;'ifSwitched' 只在換帳號
+     *   時清(D25)。本機身分 syncDevice 不在此列(D21)。
+     * - next:'periodic' 建週期 alarm;'none' 週期與去抖兩支都清(留著去抖
+     *   alarm 會在登出後照樣喚醒 SW，白跑一輪什麼也做不了)。
+     * - status:收尾廣播的狀態。
+     *
+     * 【過期為合併 patch】session 過期是一次轉場，不是換帳號也不是刪資料:整
+     * 包重設會把 userId 一起清掉，下次登入的帳號切換偵測(finishSignIn)就永遠
+     * 判不出「換了人」，前一位使用者的本機鏡像會被當成新帳號的資料。
+     * displayName／avatarUrl 留著是 D17 的「登入過期」卡片要顯示的資訊——使用
+     * 者得看得出過期的是哪一個帳號。
+     *
+     * 【退避一律歸零】過期與登出不是後端故障，登入後該從基礎週期重新開始。
      */
-    function handleSessionExpired() {
-      return loadContext()
-        .then(function (ctx) {
-          var patched = Object.assign({}, ctx.state, { lastError: 'session_expired' });
-          return saveState(patched);
+    var RESET = {
+      signIn: { markDirty: true, token: 'new', state: 'identity', backoff: 0, verifiedAt: 'now', devices: 'ifSwitched', next: 'periodic', status: 'signed_in' },
+      expired: { markDirty: false, token: null, state: 'patchExpired', backoff: 0, verifiedAt: null, devices: 'clear', next: 'none', status: 'signed_out' },
+      signOut: { markDirty: false, token: null, state: 'reset', backoff: 0, verifiedAt: null, devices: 'clear', next: 'none', status: 'signed_out' },
+      deleted: { markDirty: false, token: null, state: 'reset', backoff: 0, verifiedAt: null, devices: 'clear', next: 'none', status: 'signed_out' },
+    };
+
+    /**
+     * 依 RESET[kind] 執行一次帳號轉場。
+     *
+     * 1. markDirty 時先標髒 history(另一個鍵，走寫入佇列，排在 token 寫入之
+     *    前)。
+     * 2. 帳號五鍵 syncAuth、syncState、syncBackoff、syncVerifiedAt、
+     *    syncDevices 由單一 storage.local.set 寫入:chrome.storage 單次 set 是
+     *    原子的，不會落下「token 清了、syncState 還在」的半套狀態。syncDevices
+     *    以 null 表示清掉(readDevicesCache 把非物件一律當沒有);不需清時整個
+     *    鍵不寫。
+     * 3. 依 next 建立或清除 alarm。
+     * 4. 廣播 status。
+     *
+     * @param {string} kind RESET 的鍵。
+     * @param {{token?: string, identity?: object, prevState?: object, switched?: boolean}} [args]
+     *   token:signIn 的新 token;identity:signIn 的身分四欄;prevState:
+     *   expired 合併 patch 的底;switched:signIn 是否換了帳號。
+     * @returns {Promise<void>} 標髒或帳號鍵寫入失敗時 reject，alarm 與廣播不跑。
+     */
+    function resetAccount(kind, args) {
+      var spec = RESET[kind];
+      var opts = args || {};
+      var ready = spec.markDirty ? resetMirrorFields() : Promise.resolve();
+      return ready
+        .then(function () {
+          var state = null;
+          if (spec.state === 'identity') state = opts.identity;
+          else if (spec.state === 'patchExpired') state = Object.assign({}, opts.prevState, { lastError: 'session_expired' });
+          var items = {};
+          items[AUTH_KEY] = { token: spec.token === 'new' ? opts.token : null };
+          items[STATE_KEY] = TCLCoreRef.normalizeSyncState(state);
+          items[BACKOFF_KEY] = { failures: spec.backoff };
+          items[VERIFIED_AT_KEY] = spec.verifiedAt === 'now' ? now() : null;
+          if (spec.devices === 'clear' || (spec.devices === 'ifSwitched' && opts.switched)) {
+            items[DEVICES_CACHE_KEY] = null;
+          }
+          return localSet(items);
         })
         .then(function () {
-          return saveToken(null);
-        })
-        .then(function () {
-          return saveFailures(0);
-        })
-        .then(function () {
-          // 週期與去抖保底兩支都要清:留著去抖 alarm 會在登出後照樣喚醒 SW，
-          // 白跑一輪什麼也做不了。
+          if (spec.next === 'periodic') {
+            alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
+            return undefined;
+          }
           return Promise.all([
             Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
             Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
           ]);
         })
         .then(function () {
-          // 別台裝置的快取描述的是「這個帳號底下有哪些裝置」。過期後重新登
-          // 入的可能是另一個 Google 帳號，留著就會在新使用者眼前先閃出上一
-          // 位的裝置名。本機身分 syncDevice 不動(D21)。
-          return localRemove(DEVICES_CACHE_KEY);
-        })
-        .then(function () {
-          return broadcastState('signed_out');
+          return broadcastState(spec.status);
         });
+    }
+
+    /** token 失效的統一出口(RESET.expired)。 */
+    function handleSessionExpired() {
+      return loadContext().then(function (ctx) {
+        return resetAccount('expired', { prevState: ctx.state });
+      });
     }
 
     // ---- 對外介面 ----
@@ -1473,34 +1514,19 @@
       var avatarUrl = TCLCoreRef.sanitizeAvatarUrl(rawAvatar);
       // 登入＝重建鏡像(D50):雲端可能已被刪除(本機或別台裝置發動)，也可能
       // 換了帳號，本機無從分辨，因此每次登入都把 history 全部標髒重傳，墓碑
-      // 一併進 deletes[]。marks 的四格與回填位置隨下方 saveState 整包重設，
-      // 名單同樣全推。伺服器端的 upsert 與墓碑冪等，重傳不會長出重複資料。
+      // 一併進 deletes[]。marks 的四格與回填位置隨 syncState 整包重設，名單同
+      // 樣全推。伺服器端的 upsert 與墓碑冪等，重傳不會長出重複資料。
+      // 別台裝置的清單屬於前一個帳號(D25):換人時清掉，同帳號重新登入不清。
       var switched = ctx.state.userId !== null && userId !== null && ctx.state.userId !== userId;
-      return resetMirrorFields()
-        .then(removeLegacyGuards)
-        .then(function () {
-          // 別台裝置的清單屬於前一個帳號(D25):換人時這份顯示層快取留著，就是
-          // 把上一位使用者的裝置名秀給新使用者看。同帳號重新登入不清。
-          if (!switched) return undefined;
-          return localRemove(DEVICES_CACHE_KEY);
-        })
-        .then(function () {
-          return saveToken(exchange.authToken);
-        })
-        .then(function () {
-          return saveState({ userId: userId, email: email, displayName: displayName, avatarUrl: avatarUrl });
-        })
-        .then(function () {
-          alarms.create(ALARM_NAME, { periodInMinutes: SYNC_PERIOD_MINUTES });
-        })
-        .then(function () {
-          return broadcastState('signed_in');
-        })
-        .then(function () {
-          // 登入完成就跑一次:首次綁定的全量上傳(D3)與雲端既有資料的首輪拉
-          // 取都在這一次完成，不必等第一個 alarm。
-          return syncNow();
-        });
+      return resetAccount('signIn', {
+        token: exchange.authToken,
+        identity: { userId: userId, email: email, displayName: displayName, avatarUrl: avatarUrl },
+        switched: switched,
+      }).then(function () {
+        // 登入完成就跑一次:首次綁定的全量上傳(D3)與雲端既有資料的首輪拉
+        // 取都在這一次完成，不必等第一個 alarm。
+        return syncNow();
+      });
     }
 
     /** 把 history 的雲端鏡像欄位重置成「未同步過的本機資料」。 */
@@ -1524,29 +1550,9 @@
           : Promise.resolve();
         // 後端 sign-out 失敗(503／斷網)也要完成本機清理:留著一枚可能已失效
         // 的 token 只會讓使用者卡在「看起來還登入著」。
-        return revoke
-          .then(resetMirrorFields)
-          .then(function () {
-            return saveToken(null);
-          })
-          .then(function () {
-            return saveState(null);
-          })
-          .then(function () {
-            return saveFailures(0);
-          })
-          .then(function () {
-            return localRemove(DEVICES_CACHE_KEY);
-          })
-          .then(function () {
-            return Promise.all([
-              Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
-              Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
-            ]);
-          })
-          .then(function () {
-            return broadcastState('signed_out');
-          });
+        return revoke.then(function () {
+          return resetAccount('signOut');
+        });
       });
     }
 
@@ -1678,13 +1684,12 @@
 
     /**
      * 刪除雲端資料(D50，契約 R11):打單一端點，伺服器硬刪這個帳號的全部雲端
-     * 資料並撤銷所有 session。成功(2xx，不看 revokedSessions)即本機登出:
-     *
-     * 1. history 全部標髒、serverUpdatedAt 歸 null(墓碑的 deletedAt 不動)，
-     *    下次登入時全量重傳。先標髒再登出:標髒寫入失敗時整件事走失敗路徑，
-     *    token 還在，使用者看得到錯誤而不是一個已登出卻漏標的本機鏡像。
-     * 2. 清 token、syncState 整包重設、退避歸零、清別台裝置快取、移除舊版守衛
-     *    鍵、停掉兩支 alarm，廣播 signed_out。本機身分 syncDevice 不動。
+     * 資料並撤銷所有 session。成功(2xx，不看 revokedSessions)即本機登出
+     * (RESET.deleted):清 token、syncState 整包重設、退避歸零、清別台裝置快
+     * 取，以上一次寫入;停掉兩支 alarm，廣播 signed_out。本機 history 與名單
+     * 不動，下次登入由 finishSignIn 統一標髒重傳(D54)。本機身分 syncDevice 不
+     * 動。寫入失敗回 storage_write_failed、token 保留，使用者看得到錯誤，可以
+     * 再按一次(端點冪等);伺服器 session 已撤銷，下一次請求會 401，走過期出口。
      *
      * 失敗(非 2xx／斷網)不登出、本機一格不動，只記 lastError;401 走 session
      * 過期的統一出口。
@@ -1710,34 +1715,11 @@
         if (!ctx.token) return { ok: false, code: 'signed_out' };
         return call(ctx, 'DELETE', CLOUD_DATA_PATH).then(
           function () {
-            return resetMirrorFields().then(
+            return resetAccount('deleted').then(
               function () {
-                return saveToken(null)
-                  .then(function () {
-                    return saveState(null);
-                  })
-                  .then(function () {
-                    return saveFailures(0);
-                  })
-                  .then(function () {
-                    return localRemove(DEVICES_CACHE_KEY);
-                  })
-                  .then(removeLegacyGuards)
-                  .then(function () {
-                    return Promise.all([
-                      Promise.resolve(alarms.clear(ALARM_NAME)).catch(function () {}),
-                      Promise.resolve(alarms.clear(DEBOUNCE_ALARM_NAME)).catch(function () {}),
-                    ]);
-                  })
-                  .then(function () {
-                    return broadcastState('signed_out');
-                  })
-                  .then(function () {
-                    return { ok: true, signedOut: true };
-                  });
+                return { ok: true, signedOut: true };
               },
               function () {
-                // 標髒沒落地:token 保留，使用者看得到錯誤，可以再按一次(端點冪等)。
                 return failDelete('storage_write_failed');
               }
             );
