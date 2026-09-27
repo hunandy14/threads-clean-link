@@ -13,6 +13,14 @@ const { createChromeStorage, runInSandbox } = require('./support/helpers');
 const options = require(path.join(__dirname, '..', 'options.js'));
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
 
+// 選項頁的完整靜態原文：options.html 加上它載入的 theme.css 與 options.css。
+// 樣式規則的靜態檢查一律讀這份，CSS 放在哪個檔都不影響斷言。
+function readOptionsAll() {
+  return ['options.html', 'theme.css', 'options.css']
+    .map((file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8'))
+    .join('\n');
+}
+
 const URL_A = 'https://www.threads.com/@usera/post/AbC123_-xyz';
 const URL_B = 'https://www.threads.com/@user.b/post/DeF456';
 const URL_C = 'https://threads.net/@user_c/post/GhI789';
@@ -824,7 +832,7 @@ test('notifySuccess:OPTIONS_DEFAULT_SETTINGS/SETTING_IDS 不含這顆鍵，optio
 // 這條全域規則存在且用了 !important。
 test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important} 規則', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\[hidden\]\s*\{\s*display\s*:\s*none\s*!important\s*;?\s*\}/m,
@@ -846,7 +854,7 @@ test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important}
 // 東西的假釘。
 test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊在詳細視窗之上)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*#confirmOverlay\s*\{[^}]*z-index[^}]*\}/m,
@@ -865,7 +873,7 @@ test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊
 // + m 旗標，避免本檔/HTML 註解散文提到同樣的 class 名稱時誤命中。
 test('頁首帳號鈕高度對齊:.signin-btn 應有 height:34px，與 .ghost-btn 同高', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\.signin-btn\s*\{[^}]*height\s*:\s*34px[^}]*\}/m,
@@ -875,7 +883,7 @@ test('頁首帳號鈕高度對齊:.signin-btn 應有 height:34px，與 .ghost-bt
 
 test('頁首帳號鈕高度對齊:.account-trigger 上下 padding 3px + 26px 頭像 + 邊框湊出 34px', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\.account-trigger\s*\{[^}]*padding\s*:\s*3px\s+10px\s+3px\s+3px[^}]*\}/m,
@@ -893,7 +901,7 @@ test('頁首帳號鈕高度對齊:.account-trigger 上下 padding 3px + 26px 頭
 // 頁首 flex 置中的是「按鈕＋空隔」，帳號鈕實測比 .ghost-btn 高出約 1px。
 test('頁首帳號鈕高度對齊:.account-area 需為 flex，消掉行內基線的 descender 空隔', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /^\s*\.account-area\s*\{[^}]*display\s*:\s*flex[^}]*\}/m,
@@ -3572,7 +3580,7 @@ test('環境標籤:setSyncState(stateChanged 廣播)即時切換 staging → loc
 
 test('帳號入口:寬度切換——options.html 在 720px 斷點以 CSS 隱藏名字文字(不靠 JS 判斷寬度)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /@media \(max-width:\s*720px\)\s*\{[^}]*\.acc-name\s*\{[^}]*display:\s*none/,
@@ -3598,33 +3606,32 @@ function contrastRatio(hexA, hexB) {
 }
 
 test('色票對比:淺色 --warn 對 --surface 至少 3:1(WCAG 非文字元素門檻，狀態點/提示列都是純色塊，沒有文字襯托)', () => {
-  const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
-  const rootBlock = html.slice(html.indexOf(':root {'), html.indexOf('@media (prefers-color-scheme: dark)'));
-  const warnMatch = /--warn:\s*(#[0-9a-fA-F]{6})/.exec(rootBlock);
-  const surfaceMatch = /--surface:\s*(#[0-9a-fA-F]{6})/.exec(rootBlock);
-  assert.ok(warnMatch && surfaceMatch, '淺色 :root 區塊應同時定義 --warn 與 --surface');
+  const css = readOptionsAll();
+  // token 以 light-dark(淺色, 深色) 合寫，淺色取第一個參數。
+  const warnMatch = /--warn:\s*light-dark\(\s*(#[0-9a-fA-F]{6})\s*,/.exec(css);
+  const surfaceMatch = /--surface:\s*light-dark\(\s*(#[0-9a-fA-F]{6})\s*,/.exec(css);
+  assert.ok(warnMatch && surfaceMatch, 'theme.css 應以 light-dark() 同時定義 --warn 與 --surface');
   const ratio = contrastRatio(warnMatch[1], surfaceMatch[1]);
   assert.ok(ratio >= 3, `淺色 --warn(${warnMatch[1]}) 對 --surface(${surfaceMatch[1]}) 的對比度應 ≥ 3:1，實測 ${ratio.toFixed(2)}:1`);
 });
 
-test('色票定義:--warn 在三處色票區塊(淺色 :root/深色媒體查詢/data-theme=dark)都要定義，缺一處就會有某個主題下讀到未定義變數', () => {
-  const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
-  const matches = html.match(/--warn:\s*#[0-9a-fA-F]{6};/g) || [];
-  assert.equal(matches.length, 3, '--warn 應恰好在三處色票區塊各出現一次(淺色/深色媒體查詢/data-theme=dark)');
+test('色票定義:--warn 只在 theme.css 宣告一處，以 light-dark() 合寫深淺兩色，任何主題都讀得到', () => {
+  const css = readOptionsAll();
+  const matches = css.match(/--warn:\s*[^;]*;/g) || [];
+  assert.equal(matches.length, 1, '--warn 應恰好宣告一處(theme.css 的 :root)');
+  assert.ok(/^--warn:\s*light-dark\(/.test(matches[0]), `--warn 應以 light-dark() 合寫深淺兩色：${matches[0]}`);
 });
 
 test('.acct-warn-row 語意色改用 --warn(登入過期是黃色第三態，不該跟 --accent 共用變數)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(html, /\.acct-warn-row\s*\{[^}]*background:\s*var\(--warn-soft\)[^}]*color:\s*var\(--warn\)/);
   assert.match(html, /\.acct-warn-row \.link-btn\s*\{[^}]*color:\s*var\(--warn\)/);
 });
 
 test('同步轉圈尊重 prefers-reduced-motion:.avatar-wrap.is-syncing::after 的 animation 只在 no-preference 媒體查詢內生效，reduce 時顯示靜態外圈', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   const baseRuleMatch = /\.avatar-wrap\.is-syncing::after\s*\{([^}]*)\}/.exec(html);
   assert.ok(baseRuleMatch, '應有 .avatar-wrap.is-syncing::after 的基本規則(靜態外圈)');
   assert.doesNotMatch(baseRuleMatch[1], /animation/, '基本規則不該直接帶 animation，否則 reduce 時仍會轉動');
@@ -3637,13 +3644,13 @@ test('同步轉圈尊重 prefers-reduced-motion:.avatar-wrap.is-syncing::after �
 
 test('.avatar-circle.has-photo 底色透明(回歸:曾經是死類——JS 有 toggle 但 CSS 沒有對應規則)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(html, /\.avatar-circle\.has-photo\s*\{[^}]*background:\s*transparent/);
 });
 
 test('menu-item:disabled 有停用樣式(回歸:曾經完全沒有 :disabled 規則，同步中的 acctSyncNowBtn 看起來跟平常一樣可點)', () => {
   const fs = require('node:fs');
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.match(
     html,
     /\.menu-item:disabled\s*\{[^}]*opacity:\s*0(\.\d+)?[^}]*cursor:\s*not-allowed/,
@@ -5258,7 +5265,7 @@ test('裝置管理:卡面不出現任何裝置圖示或裝置名(D27，防人手
   assert.equal(findByClass(card, 'entry-device-icon').length, 0, '卡面不得有裝置圖示節點');
   assert.equal(joinedText(card).includes('Pixel 8'), false, '卡面不得出現裝置名');
 
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.equal(html.includes('entry-device-icon'), false, 'options.html 不得留卡面裝置圖示的樣式/標記');
 });
 
@@ -8405,7 +8412,7 @@ test('警示名單卡:說明視窗納入中央 Tab focus trap', async () => {
 // 這一輪整條 meta 列不畫，.scam-signal 與 .scam-evidence-thread 一併從清單
 // 移除。
 test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結、標記 pill、命中數、⋯ 鈕、錨點高亮、片段、對話框)', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   [
     '.scam-name-link',
     '.scam-evidence-head',
@@ -8439,7 +8446,7 @@ test('證據卡:options.html 為新節點備妥樣式(作者列、日期連結�
 });
 
 test('警示名單卡:options.html 備妥資訊鈕與說明視窗(靜態節點與 #i-info symbol)', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
 
   assert.ok(/<symbol id="i-info"/.test(html), '頁面 SVG symbol 集合應有 #i-info（Lucide info）');
 
@@ -8804,8 +8811,8 @@ test('警示名單 v2:options.html 備妥狀態列落點(div.scam-disabled-bar[r
     '狀態列排在名單之前'
   );
 
-  assert.ok(html.includes('.scam-disabled-bar'), 'options.html 應有 .scam-disabled-bar 的樣式規則');
-  assert.ok(html.includes('.scam-enable-btn'), 'options.html 應有 .scam-enable-btn 的樣式規則');
+  assert.ok(readOptionsAll().includes('.scam-disabled-bar'), 'options.html 應有 .scam-disabled-bar 的樣式規則');
+  assert.ok(readOptionsAll().includes('.scam-enable-btn'), 'options.html 應有 .scam-enable-btn 的樣式規則');
 });
 
 // ---- 2. 已解除小節走 entry.state ----
@@ -9013,7 +9020,7 @@ test('警示名單 v2:缺片段說明的 en 文案', async () => {
 });
 
 test('警示名單 v2:options.html 備妥 .scam-evidence-missing 樣式(灰字，與片段本體分得出來)', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'options.html'), 'utf8');
+  const html = readOptionsAll();
   assert.ok(
     html.includes('.scam-evidence-missing'),
     'options.html 應有 .scam-evidence-missing 的樣式規則——沒有樣式的話灰字說明會長得跟真片段一樣'
