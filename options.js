@@ -623,12 +623,9 @@
     // 改 textContent，不重建整面卡片，才不會偷走鍵盤焦點/文字選取(見
     // refresh)。renderList 每次重建卡片時重置。
     var timeNodes = [];
-    // 對話框開啟前的 activeElement，關閉時還原焦點(a11y，見 rememberFocus/
-    // restoreFocus)。以對話框 key 分槽，巢狀(詳細→時間軸/刪除確認)各記各的。
-    var overlayPrevFocus = {};
     // 確認框(confirmOverlay)當前掛的動作:清除全部 / 刪除這筆 / 雲端同步
     // 登入 / 刪除雲端資料共用同一個 modal，confirmOk 點擊時執行這顆(見
-    // openConfirm/closeConfirm)。
+    // openConfirm 與 confirmOverlay 的 close 善後)。
     var confirmAction = null;
     // 雲端同步卡片目前顯示的狀態，預設未登入(見 DEFAULT_SYNC_CARD_STATE)。
     // init() 會非同步向 background 要一次真值(fetchSyncState)，接線層則
@@ -758,10 +755,17 @@
 
     // ---- toast ----
     var toastTimer = null;
+    // #toast 是 manual popover。每次都先 hidePopover 再 showPopover，讓它重新
+    // 排到 top layer 最上層:對話框開著時才疊得到遮罩之上。淡出只移除 .show，
+    // 元素留在 top layer 直到下一次顯示。
     function toast(msg) {
       var el = byId('toast');
       if (!el) return;
       el.textContent = msg;
+      if (typeof el.showPopover === 'function') {
+        hidePop(el);
+        el.showPopover();
+      }
       el.classList.add('show');
       clearTimeout(toastTimer);
       toastTimer = setTimeout(function () {
@@ -1054,79 +1058,83 @@
       toast(tt(res && res.quota ? 'opToastStorageFull' : 'opToastSaveFailed'));
     }
 
-    // ---- 對話框焦點管理(a11y) ----
-    // 開啟前記住目前焦點，關閉時還原;把焦點移進對話框(關閉鈕或指定的
-    // 首個可聚焦元素)。DOM stub 沒有 activeElement/focus，全程 typeof 守
-    // 衛，測不到的部分由人工/CDP 驗證。
-    function rememberFocus(key) {
-      overlayPrevFocus[key] = (document && document.activeElement) || null;
+    // ---- 對話框(原生 <dialog> + showModal) ----
+    // 7 個對話框都是 <dialog class="dlg">。showModal 負責 top layer 疊放(依開啟
+    // 順序)、底層 inert、Esc 只關最上層、焦點移到 autofocus 節點，關閉時把焦點
+    // 還給開啟前的元素。判斷開著沒有一律讀 dialog.open。
+    //
+    // 善後(清狀態、補焦點落點)一律寫在 close 事件，不寫在 cancel:Chrome 120
+    // 起 Esc 走 CloseWatcher，頁面沒有使用者互動時 cancel 可能不派送或不可取
+    // 消，cancel 不可靠;close 則是 ✕、點遮罩、Esc、程式呼叫 close() 每一種關
+    // 法都會到。close 事件由瀏覽器另排 task 派送，比 close() 晚一拍，所以善後
+    // 清狀態前要再確認 dialog 沒被重新打開。
+    function showDialog(id) {
+      var d = byId(id);
+      if (d && !d.open && typeof d.showModal === 'function') d.showModal();
+      return d;
     }
-    function restoreFocus(key) {
-      var prev = overlayPrevFocus[key];
-      overlayPrevFocus[key] = null;
-      if (prev && typeof prev.focus === 'function') {
-        try { prev.focus(); } catch (e) {}
+    function closeDialog(id) {
+      var d = byId(id);
+      if (d && d.open) d.close();
+    }
+    function isDialogOpen(id) {
+      var d = byId(id);
+      return !!(d && d.open);
+    }
+    // 接上關閉鈕、點遮罩與 close 善後。內容畫在內層 .modal，dialog 本身沒有
+    // padding，所以點擊目標是 dialog 自己時就是點在 ::backdrop 上(closedby 要
+    // Chrome 134 才有，這裡自己判斷)。
+    function bindDialog(id, closeBtnId, onClose) {
+      var d = byId(id);
+      if (!d || typeof d.addEventListener !== 'function') return;
+      if (closeBtnId) {
+        on(closeBtnId, 'click', function () {
+          closeDialog(id);
+        });
       }
+      d.addEventListener('click', function (ev) {
+        if (ev && ev.target === d) closeDialog(id);
+      });
+      if (onClose) d.addEventListener('close', onClose);
     }
-    // 關閉匯入對話框並把焦點還給開框前的元素(通常是「匯入」鈕)。關閉鈕、
-    // 點遮罩、匯入成功與集中式 Esc 鏈共用這一條。
-    function closeImport() {
-      var overlay = byId('overlay');
-      if (overlay) overlay.hidden = true;
-      restoreFocus('import');
+    // 關閉後焦點是否掉到 body:開啟前的元素已不可聚焦(被重畫換掉、隱藏)時，
+    // 瀏覽器還原不了，焦點就落在 body。
+    function focusIsLost() {
+      var a = document.activeElement;
+      return !a || a === document.body;
     }
-    function focusInto(overlayId, focusId) {
-      var el = (focusId && byId(focusId)) || byId(overlayId);
+    function focusNode(el) {
       if (el && typeof el.focus === 'function') {
         try { el.focus(); } catch (e) {}
       }
     }
 
-    // Tab focus trap:把 Tab/Shift+Tab 的焦點循環鎖在對話框內。真實 DOM
-    // 靠 querySelectorAll 取可聚焦元素;DOM stub 回空陣列時整段 no-op。
-    var FOCUSABLE_SEL = 'a[href],button:not([disabled]),textarea,input:not([disabled]),select,[tabindex]';
-    function trapTabInOverlay(overlayId, ev) {
-      var overlay = byId(overlayId);
-      if (!overlay || overlay.hidden || typeof overlay.querySelectorAll !== 'function') return;
-      var nodes = overlay.querySelectorAll(FOCUSABLE_SEL);
-      var focusables = [];
-      for (var i = 0; i < nodes.length; i++) {
-        if (!nodes[i].hidden) focusables.push(nodes[i]);
-      }
-      if (!focusables.length) return;
-      var first = focusables[0];
-      var last = focusables[focusables.length - 1];
-      var active = document.activeElement;
-      var inside = typeof overlay.contains === 'function' ? overlay.contains(active) : true;
-      if (ev.shiftKey) {
-        if (!inside || active === first) {
-          ev.preventDefault();
-          if (typeof last.focus === 'function') last.focus();
-        }
-      } else if (!inside || active === last) {
-        ev.preventDefault();
-        if (typeof first.focus === 'function') first.focus();
-      }
+    // ---- 選單(Popover API) ----
+    // 4 個選單(⋯ 紀錄選單、篩選、帳號、警示名單列 ⋯)都是 auto popover:點觸發
+    // 鈕開關、點外 light dismiss、Esc 關閉、aria-expanded 都由瀏覽器依
+    // popoverTargetElement 處理，開別的 auto popover 或 showModal 時自動收起。
+    // Chrome 123 沒有 CSS anchor positioning(125 起)，也沒有隱式錨點(133
+    // 起)，popover 進 top layer 後脫離 .menu-wrap 的定位脈絡，所以在
+    // beforetoggle 依觸發鈕位置寫入 top/right(position:absolute 的包含區塊
+    // 是初始包含區塊，要加上捲動量)。
+    function wirePopover(trigger, pop, onToggle) {
+      if (!trigger || !pop || typeof pop.addEventListener !== 'function') return;
+      trigger.popoverTargetElement = pop;
+      pop.addEventListener('beforetoggle', function (ev) {
+        if (!ev || ev.newState !== 'open') return;
+        var r = trigger.getBoundingClientRect();
+        var sx = win ? win.scrollX || 0 : 0;
+        var sy = win ? win.scrollY || 0 : 0;
+        var cw = document.documentElement ? document.documentElement.clientWidth : 0;
+        pop.style.top = r.bottom + 6 + sy + 'px';
+        pop.style.right = cw - r.right - sx + 'px';
+      });
+      if (onToggle) pop.addEventListener('toggle', onToggle);
     }
-    // 目前疊在最上層、開著的對話框(決定 Tab trap 的作用範圍):時間軸與
-    // 刪除確認會疊在詳細視窗之上，匯入是獨立頂層框，優先序由上而下。
-    // 警示名單的證據對話框排在刪除確認之後——它自己不疊在誰之上，但從它裡面
-    // 按解除會開出確認框，那時確認框要接手 trap。
-    function topmostOverlayId() {
-      var order = [
-        'timelineOverlay',
-        'confirmOverlay',
-        'scamHitsOverlay',
-        'scamInfoOverlay',
-        'overlay',
-        'devicesOverlay',
-        'detailOverlay',
-      ];
-      for (var i = 0; i < order.length; i++) {
-        var el = byId(order[i]);
-        if (el && !el.hidden) return order[i];
-      }
-      return null;
+    // 選單內的動作要收起選單時一律走這支。腳本 hidePopover 會在焦點位於選單
+    // 裡時把焦點還給觸發鈕，接著開的對話框記下的開啟前焦點才會是觸發鈕。
+    function hidePop(pop) {
+      if (pop && typeof pop.matches === 'function' && pop.matches(':popover-open')) pop.hidePopover();
     }
 
     // ---- 共用確認框(清除全部 / 刪除這筆 / 登入)----
@@ -1161,17 +1169,8 @@
         okBtn.classList.toggle('btn-primary', isPrimary);
       }
       confirmAction = typeof opts.action === 'function' ? opts.action : null;
-      var confirmOverlay = byId('confirmOverlay');
-      if (confirmOverlay) confirmOverlay.hidden = false;
-      rememberFocus('confirm');
-      // 焦點落在「取消」而非破壞性的確認鈕，避免一個 Enter 就誤刪/誤清。
-      focusInto('confirmOverlay', 'confirmCancel');
-    }
-    function closeConfirm() {
-      var confirmOverlay = byId('confirmOverlay');
-      if (confirmOverlay) confirmOverlay.hidden = true;
-      confirmAction = null;
-      restoreFocus('confirm');
+      // autofocus 在「取消」而非破壞性的確認鈕，避免一個 Enter 就誤刪/誤清。
+      showDialog('confirmOverlay');
     }
 
     // ---- 頁首帳號入口 ----
@@ -1360,14 +1359,12 @@
 
       if (signedOut) {
         if (trigger) {
-          trigger.setAttribute('aria-expanded', 'false');
           // 觸發鈕的 aria-label 重設回不帶狀態的基本文字(見下方 signedIn
           // 分支併狀態文字進 aria-label 那段)——同一份防殘留邏輯:忘記先
           // renderAccount 就重新顯示時，不該唸出上一態的「同步錯誤」。
           trigger.setAttribute('aria-label', tt('opAccountMenuLabel'));
         }
-        var menuEl = byId('acctMenu');
-        if (menuEl) menuEl.hidden = true;
+        hidePop(byId('acctMenu'));
         // 沒有帳號就沒有裝置清單可管:整項連同台數收掉，快取一併丟掉(它是
         // 綁在這個帳號上的顯示層資料，留著只會在下次登入時先閃出舊台數)。
         var manageBtn0 = byId('acctManageDevicesBtn');
@@ -1381,8 +1378,8 @@
         renderDeviceCount();
         // 開著的裝置對話框要一起收掉:沒有帳號就拉不到清單，留在畫面上只會
         // 是一框死內容，而選單裡的入口這時已經收起，使用者也沒有正規途徑
-        // 再開一次。焦點跟著回帳號觸發鈕。
-        closeDevicesDialog();
+        // 再開一次。觸發鈕這時已隱藏，焦點落點見 bindDevices 的 close 善後。
+        closeDialog('devicesOverlay');
         var deviceNoteEl0 = byId('deviceNote');
         if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
 
@@ -1535,7 +1532,7 @@
         // 留著讓紀錄詳細的裝置名還 join 得到(同一個帳號，只是 token 過期)，
         // 但重新登入後要再打一次，免得台數停在過期前那一刻。
         devicesEverFetched = false;
-        closeDevicesDialog();
+        closeDialog('devicesOverlay');
       }
       renderDeviceCount();
 
@@ -1646,13 +1643,8 @@
       });
     }
 
-    // ---- 帳號選單開合(a11y):[hidden] 是唯一的無障礙開關來源(從可及性
-    // 樹移除、不能被 Tab 到);動畫只發生在 [hidden] 被移除之後、加上
-    // .is-open 之前那一小段時間窗(見 options.html 的 .acct-menu 註解，
-    // reduced-motion 由 CSS 媒體查詢負責讓過渡瞬間完成，這裡不用 JS 另外
-    // 偵測)。開啟時焦點進第一個可用項目，關閉一律回觸發鈕(不論何種
-    // 關閉方式:點外/Esc/選單內動作)。 ----
-    var ACCT_MENU_ANIM_MS = 120;
+    // ---- 帳號選單(auto popover，接線見 bindAccount):開啟時焦點進第一個可用
+    // 項目，淡入動畫由 CSS 的 @starting-style 處理。 ----
 
     // 目前可見且可操作的選單項目，依 DOM 順序——錯誤/過期提示列的按鈕
     // 靠自己所在列的 hidden 判斷(按鈕本身不帶 hidden)，其餘靠自身
@@ -1683,22 +1675,11 @@
       return list;
     }
 
-    function openAcctMenu() {
-      var menu = byId('acctMenu');
-      if (!menu) return;
-      menu.hidden = false;
-      menu.classList.remove('is-open'); // 保險:萬一上一輪關閉動畫還沒清掉。
-      if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(function () { menu.classList.add('is-open'); });
-      } else {
-        menu.classList.add('is-open');
-      }
-      var trigger = byId('acctTrigger');
-      if (trigger) trigger.setAttribute('aria-expanded', 'true');
-      var items = acctMenuFocusableItems();
-      if (items[0] && typeof items[0].focus === 'function') {
-        try { items[0].focus(); } catch (e) {}
-      }
+    // 選單開啟後(toggle 事件，newState 為 open):聚焦第一個可用項目，並在第一
+    // 次開啟時取一次裝置清單。
+    function onAcctMenuToggle(ev) {
+      if (!ev || ev.newState !== 'open') return;
+      focusNode(acctMenuFocusableItems()[0]);
       // 「管理裝置」右側的台數要有東西可顯示，第一次開選單先取一次清單
       // (不 force，引擎有快取就直接回快取)。之後每次開對話框才再刷新一次，
       // 開選單本身不再往返——選單開合遠比裝置變動頻繁。
@@ -1706,19 +1687,6 @@
       if (!devicesEverFetched && canLoadDevices()) {
         devicesFetchedThisMenu = true;
         loadDevices(false);
-      }
-    }
-    function closeAcctMenu() {
-      var menu = byId('acctMenu');
-      if (!menu || menu.hidden) return;
-      menu.classList.remove('is-open');
-      setTimeout(function () { menu.hidden = true; }, ACCT_MENU_ANIM_MS);
-      var trigger = byId('acctTrigger');
-      if (trigger) {
-        trigger.setAttribute('aria-expanded', 'false');
-        if (typeof trigger.focus === 'function') {
-          try { trigger.focus(); } catch (e) {}
-        }
       }
     }
 
@@ -1731,24 +1699,23 @@
         area.scrollIntoView({ block: 'start' });
       }
       var trigger = byId('acctTrigger');
-      if (trigger && !trigger.hidden) {
-        openAcctMenu();
+      var menu = byId('acctMenu');
+      if (trigger && !trigger.hidden && menu && typeof menu.showPopover === 'function') {
+        if (!menu.matches(':popover-open')) menu.showPopover();
         return;
       }
-      var signInBtn = byId('acctSignInBtn');
-      if (signInBtn && typeof signInBtn.focus === 'function') {
-        try { signInBtn.focus(); } catch (e) {}
-      }
+      focusNode(byId('acctSignInBtn'));
+    }
+
+    // 帳號區目前看得到的控制項:已登入是觸發鈕，登出態是登入鈕。
+    function focusAccountControl() {
+      var trigger = byId('acctTrigger');
+      focusNode(trigger && !trigger.hidden ? trigger : byId('acctSignInBtn'));
     }
 
     function bindAccount() {
-      on('acctTrigger', 'click', function (ev) {
-        if (ev && ev.stopPropagation) ev.stopPropagation();
-        var menu = byId('acctMenu');
-        if (!menu) return;
-        if (menu.hidden) openAcctMenu();
-        else closeAcctMenu();
-      });
+      var acctMenu = byId('acctMenu');
+      wirePopover(byId('acctTrigger'), acctMenu, onAcctMenuToggle);
 
       // 方向鍵在選單項目間移動(Tab 走瀏覽器原生順序，這裡只補方向鍵)。
       on('acctMenu', 'keydown', function (ev) {
@@ -1767,51 +1734,33 @@
         }
       });
 
-      if (typeof document.addEventListener === 'function') {
-        // 點選單以外的地方關閉(比照 moreMenu/chipsRow 的既有模式)。
-        document.addEventListener('click', function (ev) {
-          var menu = byId('acctMenu');
-          if (!menu || menu.hidden) return;
-          var area = byId('acctArea');
-          var target = ev && ev.target;
-          var inside = !!area && typeof area.contains === 'function' && !!target && area.contains(target);
-          if (!inside) closeAcctMenu();
-        });
-        // Esc 關閉選單(與既有對話框的 Esc 處理是獨立的兩條監聽，互不影響)。
-        document.addEventListener('keydown', function (ev) {
-          if (!ev || ev.key !== 'Escape') return;
-          var menu = byId('acctMenu');
-          if (menu && !menu.hidden) closeAcctMenu();
-        });
-      }
-
       on('acctSignInBtn', 'click', function () {
         startSignInFlow();
       });
       on('acctReSignInBtn', 'click', function () {
-        closeAcctMenu();
+        hidePop(acctMenu);
         startSignInFlow();
       });
       on('acctRetryBtn', 'click', function () {
-        closeAcctMenu();
+        hidePop(acctMenu);
         if (!hasCloudSession()) return;
         sendSyncAction({ type: 'sync.now' });
       });
       on('acctSyncNowBtn', 'click', function () {
         var btn = byId('acctSyncNowBtn');
         if (btn && btn.disabled) return;
-        closeAcctMenu();
+        hidePop(acctMenu);
         if (!hasCloudSession()) return;
         sendSyncAction({ type: 'sync.now' });
       });
       on('acctSignOutBtn', 'click', function () {
-        closeAcctMenu();
+        hidePop(acctMenu);
         sendSyncAction({ type: 'sync.signOut' });
       });
       // 刪除雲端資料一樣走確認框，措辭明講三件事(D51):刪除雲端並登出所有
       // 裝置、各裝置本機資料保留、重新登入後會重新上傳。
       on('acctDeleteBtn', 'click', function () {
-        closeAcctMenu();
+        hidePop(acctMenu);
         if (!hasCloudSession()) return;
         openConfirm({
           titleKey: 'opAccountDeleteCloud',
@@ -2090,24 +2039,12 @@
     }
 
     function openDevicesDialog() {
-      closeAcctMenu();
-      var overlay = byId('devicesOverlay');
-      if (!overlay) return;
+      if (!byId('devicesOverlay')) return;
       renderDevices();
-      overlay.hidden = false;
-      // closeAcctMenu 已把焦點還給 #acctTrigger，這裡記下的就是關閉後要回
-      // 去的落點。
-      rememberFocus('devices');
-      focusInto('devicesOverlay', 'devicesClose');
+      showDialog('devicesOverlay');
       // 這一輪開選單時已經取過清單就不重複往返(見 devicesFetchedThisMenu)。
       if (!devicesFetchedThisMenu) loadDevices(false);
       devicesFetchedThisMenu = false;
-    }
-
-    function closeDevicesDialog() {
-      var overlay = byId('devicesOverlay');
-      if (overlay) overlay.hidden = true;
-      restoreFocus('devices');
     }
 
     // 行內改名:名稱位置換成 <input>(預填目前名稱)，Enter/失焦送出，Esc 還原
@@ -2300,12 +2237,14 @@
       on('acctManageDevicesBtn', 'click', function () {
         var btn = byId('acctManageDevicesBtn');
         if (btn && btn.disabled) return;
+        // 先收選單，焦點回帳號觸發鈕，對話框關閉時才還得回去。
+        hidePop(byId('acctMenu'));
         openDevicesDialog();
       });
-      on('devicesClose', 'click', closeDevicesDialog);
-      on('devicesOverlay', 'click', function (ev) {
-        var overlay = byId('devicesOverlay');
-        if (overlay && ev.target === overlay) closeDevicesDialog();
+      // 登出或登入過期時由 renderAccount 關閉，觸發鈕已隱藏、還原不了焦點，
+      // 改落在帳號區當時看得到的控制項(登出態是登入鈕)。
+      bindDialog('devicesOverlay', 'devicesClose', function () {
+        if (focusIsLost()) focusAccountControl();
       });
       // 空狀態的「立即同步」:同步一次讓這台註冊上去，再強制重取清單。
       on('deviceEmptySyncBtn', 'click', function () {
@@ -2537,10 +2476,11 @@
     // ---- 「命中 N 篇」證據對話框 ----
     //
     // 主卡只放最新一筆(一張卡上同時擺三段完整片段太重)，全部證據在這裡逐筆
-    // 疊成一串貼文。開啟它的 pill 直接記下來，關閉時把焦點還回去——這裡不走
-    // rememberFocus/restoreFocus:那支記的是 document.activeElement，而 pill
-    // 是滑鼠點開的，焦點未必在它身上。
-    var scamHitsTrigger = null;
+    // 疊成一串貼文。對話框開著時記下是哪一位作者(scamHitsUserId)，名單變動
+    // 時就地重畫(見 renderScamList)。scamHitPills 是目前各作者列上的 pill，
+    // 名單整份重畫後舊 pill 離開文件，關閉時焦點改落在同一位作者的新 pill。
+    var scamHitsUserId = null;
+    var scamHitPills = {};
 
     function renderScamHits(entry) {
       var titleEl = byId('scamHitsTitle');
@@ -2556,24 +2496,19 @@
       });
     }
 
-    function openScamHits(entry, trigger) {
-      var overlay = byId('scamHitsOverlay');
-      if (!overlay) return;
+    function openScamHits(userId) {
+      var entry = scamBlocklist.entries[userId];
+      if (!entry || !byId('scamHitsOverlay')) return;
       renderScamHits(entry);
-      scamHitsTrigger = trigger || null;
-      overlay.hidden = false;
-      focusInto('scamHitsOverlay', 'scamHitsClose');
+      scamHitsUserId = userId;
+      showDialog('scamHitsOverlay');
     }
 
-    function closeScamHits() {
-      var overlay = byId('scamHitsOverlay');
-      if (!overlay || overlay.hidden) return;
-      overlay.hidden = true;
-      var trigger = scamHitsTrigger;
-      scamHitsTrigger = null;
-      if (trigger && typeof trigger.focus === 'function') {
-        try { trigger.focus(); } catch (e) {}
-      }
+    function onScamHitsClose() {
+      if (isDialogOpen('scamHitsOverlay')) return;
+      var userId = scamHitsUserId;
+      scamHitsUserId = null;
+      if (userId && focusIsLost()) focusNode(scamHitPills[userId]);
     }
 
     // ---- 卡頭資訊鈕:「這個功能怎麼運作」說明視窗 ----
@@ -2611,38 +2546,17 @@
     }
 
     function openScamInfo() {
-      var overlay = byId('scamInfoOverlay');
-      if (!overlay) return;
+      if (!byId('scamInfoOverlay')) return;
       // 每次開都重畫:切語言時不必另外掛一條刷新路徑。
       renderScamInfo();
-      overlay.hidden = false;
-      focusInto('scamInfoOverlay', 'scamInfoClose');
-    }
-
-    function closeScamInfo() {
-      var overlay = byId('scamInfoOverlay');
-      if (!overlay || overlay.hidden) return;
-      overlay.hidden = true;
-      var btn = byId('scamInfoBtn');
-      if (btn && typeof btn.focus === 'function') {
-        try { btn.focus(); } catch (e) {}
-      }
+      showDialog('scamInfoOverlay');
     }
 
     // ---- 每一列右上角的 ⋯ 選單 ----
     //
-    // 名單的列是動態產生的，選單跟著各列走，因此開合狀態記在這個模組變數上
-    // 而不是像 #moreMenu 那樣綁一組固定 id。整份重畫時一併關掉:留著的參照會
-    // 指向已被換掉的節點。
-    var openScamMenu = null;
-
-    function closeScamMenu() {
-      if (!openScamMenu) return;
-      openScamMenu.menu.hidden = true;
-      openScamMenu.btn.setAttribute('aria-expanded', 'false');
-      openScamMenu = null;
-    }
-
+    // 名單的列是動態產生的，選單跟著各列走:以 IDL 設成 auto popover，再用
+    // popoverTargetElement 接到該列的 ⋯ 鈕，不需要 id。整份重畫時列被移出
+    // 文件，開著的選單由瀏覽器自動隱藏。
     // 列右上角的命中篇數與 ⋯ 選項鈕:兩者一起排在列的右緣，與作者列同一條水
     // 平線(.scam-row 是 align-items:flex-start)。選單目前只有「解除」一項
     // (破壞性動作，走 danger 色與既有的二次確認);圖示與 .menu/.menu-item
@@ -2662,10 +2576,10 @@
         h('button', {
           type: 'button', class: 'scam-hit-count', 'aria-haspopup': 'dialog', text: tf('opScamHitCount', { n: n }),
           onclick: function () {
-            closeScamMenu();
-            openScamHits(entry, hitCount);
+            openScamHits(item.userId);
           },
         });
+      if (hitCount) scamHitPills[item.userId] = hitCount;
 
       var removeLabel = tt('opScamRemove');
       var removeBtn = h(
@@ -2674,28 +2588,20 @@
           type: 'button', class: 'menu-item danger', dataset: { act: 'remove' }, role: 'menuitem',
           title: removeLabel, 'aria-label': removeLabel + ' ' + author,
           onclick: function () {
-            closeScamMenu();
+            hidePop(menu);
             requestScamRemove(item.userId);
           },
         },
         svgUse('#i-circle-minus', 'icon'),
         h('span', { text: removeLabel })
       );
-      var menu = h('div', { class: 'menu scam-menu', role: 'menu', hidden: true }, removeBtn);
+      var menu = h('div', { class: 'menu scam-menu', role: 'menu', popover: 'auto' }, removeBtn);
 
       var moreLabel = tt('opMoreTitle');
-      var toggleMenu = function (ev) {
-        if (ev && ev.stopPropagation) ev.stopPropagation();
-        var opening = menu.hidden;
-        closeScamMenu();
-        if (!opening) return;
-        menu.hidden = false;
-        btn.setAttribute('aria-expanded', 'true');
-        openScamMenu = { menu: menu, btn: btn };
-      };
-      var btn = iconButton('scam-menu-btn', '#i-more', moreLabel, toggleMenu, {
-        'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': moreLabel + ' ' + author,
+      var btn = iconButton('scam-menu-btn', '#i-more', moreLabel, null, {
+        'aria-haspopup': 'menu', 'aria-label': moreLabel + ' ' + author,
       });
+      wirePopover(btn, menu);
 
       return h('div', { class: 'scam-actions menu-wrap' }, hitCount, btn, menu);
     }
@@ -2750,10 +2656,9 @@
     }
 
     function renderScamList() {
-      // 整份重畫會把列(連同它的 ⋯ 選單與 pill)整個換掉，開著的選單與對話框
-      // 都會指向已離開文件的舊節點，先一併收掉。
-      closeScamMenu();
-      closeScamHits();
+      // 整份重畫會把列(連同它的 ⋯ 選單與 pill)整個換掉;開著的 ⋯ 選單隨舊列
+      // 離開文件自動隱藏。命中對話框開著時，條目仍在就地重畫內容，被解除才關。
+      scamHitPills = {};
       var rows = sortedScamEntries();
       var countEl = byId('scamCount');
       // 0 位也照常顯示計數(§14)，不像裝置台數那樣整個收掉。
@@ -2772,6 +2677,12 @@
       if (emptyEl) {
         emptyEl.hidden = rows.length !== 0;
         if (!emptyEl.hidden) renderScamEmpty();
+      }
+
+      if (scamHitsUserId && isDialogOpen('scamHitsOverlay')) {
+        var hitsEntry = scamBlocklist.entries[scamHitsUserId];
+        if (hitsEntry && hitsEntry.state !== 'dismissed') renderScamHits(hitsEntry);
+        else closeDialog('scamHitsOverlay');
       }
     }
 
@@ -2846,35 +2757,10 @@
       renderScamAllowlist();
     }
 
-    // 證據對話框與列上 ⋯ 選單的關閉路徑。Esc 與「點外面關掉」都自己登記一條
-    // document 監聽，不併進紀錄卡那組集中式 Esc 鏈:那條鏈是按對話框疊放層級
-    // 由上而下試的，而警示名單卡與紀錄卡的對話框互不疊放，硬插進去只會讓兩
-    // 邊的層級假設互相牽動。
     function bindScamDialogs() {
-      on('scamHitsClose', 'click', closeScamHits);
-      on('scamHitsOverlay', 'click', function (ev) {
-        var overlay = byId('scamHitsOverlay');
-        if (overlay && ev.target === overlay) closeScamHits();
-      });
+      bindDialog('scamHitsOverlay', 'scamHitsClose', onScamHitsClose);
       on('scamInfoBtn', 'click', openScamInfo);
-      on('scamInfoClose', 'click', closeScamInfo);
-      on('scamInfoOverlay', 'click', function (ev) {
-        var overlay = byId('scamInfoOverlay');
-        if (overlay && ev.target === overlay) closeScamInfo();
-      });
-      if (typeof document.addEventListener !== 'function') return;
-      document.addEventListener('keydown', function (ev) {
-        if (!ev || ev.key !== 'Escape') return;
-        closeScamMenu();
-        closeScamHits();
-        closeScamInfo();
-      });
-      document.addEventListener('click', function (ev) {
-        // 點到選單自己或它的 ⋯ 鈕以外的任何地方就收起來。⋯ 鈕的 click 已
-        // stopPropagation，走到這裡的一定是別處。
-        var wrap = ev && ev.target && ev.target.closest ? ev.target.closest('.scam-actions') : null;
-        if (!wrap) closeScamMenu();
-      });
+      bindDialog('scamInfoOverlay', 'scamInfoClose');
     }
 
     // 解除是破壞性動作(日後再命中也不會自動加回)，先開確認框。
@@ -3214,46 +3100,37 @@
     }
 
     // 完整開啟(卡片點擊/鍵盤):設 detailEntry、重置互動態(收合時間軸
-    // 子層、清掉 excerpt 展開態)、填內容、顯示，並把焦點移入對話框、記住
-    // 開啟前的焦點來源(a11y，關閉時還原)。
+    // 子層、清掉 excerpt 展開態)、填內容、以 showModal 顯示。已開著時(切換
+    // 條目)只換內容，關閉後焦點仍回最初開啟它的元素。
     function openEntryDetail(e) {
       detailEntry = e;
-      var overlay = byId('detailOverlay');
-      if (!overlay) return;
-      var alreadyOpen = overlay.hidden === false;
+      if (!byId('detailOverlay')) return;
 
       // 每次完整開啟(含切換到別的條目)都把子層時間軸視窗收合、excerpt
       // 展開態清掉，避免上一筆的展開態殘留到這一筆。
-      closeTimelineOverlay();
+      closeDialog('timelineOverlay');
       var excerptEl = byId('detailExcerpt');
       if (excerptEl) excerptEl.classList.remove('expanded');
 
       renderDetailContent(e);
-      overlay.hidden = false;
-      // 只有從關閉態開啟才記住焦點來源(切換條目時保留最初那個)，focus
-      // 一律移到關閉鈕。
-      if (!alreadyOpen) rememberFocus('detail');
-      focusInto('detailOverlay', 'detailClose');
+      showDialog('detailOverlay');
     }
 
     // storage 變動(setHistory)時原地刷新:只把 detailEntry 換成清單裡的
     // 新物件並重畫內容，不重置使用者正在看的時間軸子層/excerpt 展開態
     // (別處寫入無關紀錄不該把使用者互動態打回原形)。detailEntry 換成新
-    // 物件也讓 url+at 精準刪除拿到不過期的 at。
+    // 物件也讓 url+at 精準刪除拿到不過期的 at。只在開著時重畫，不得重新開啟。
     function refreshDetail(e) {
+      if (!isDialogOpen('detailOverlay')) return;
       detailEntry = e;
-      var overlay = byId('detailOverlay');
-      if (!overlay) return;
       renderDetailContent(e);
-      overlay.hidden = false;
     }
 
+    // 程式主動關閉(紀錄被刪):先關時間軸子層再關詳細，焦點歸還鏈才正確。
+    // detailEntry 在 close 善後清掉(見 bindDetailDialog)。
     function closeEntryDetail() {
-      var overlay = byId('detailOverlay');
-      if (overlay) overlay.hidden = true;
-      closeTimelineOverlay();
-      detailEntry = null;
-      restoreFocus('detail');
+      closeDialog('timelineOverlay');
+      closeDialog('detailOverlay');
     }
 
     // original/removedParams 附加列:與淨化後連結列同一套 kv/linkrow/
@@ -3301,24 +3178,11 @@
       return h('div', { class: 'timeline-row' }, rail, textEl);
     }
 
-    // 時間軸子層視窗:收合(重置內容並隱藏)。openEntryDetail 切換條目時、
-    // closeEntryDetail 關閉詳細視窗時都要呼叫，避免殘留上一筆的展開態。
-    // 這是「純收合」路徑，不動焦點——用於重置情境(開別筆/關詳細視窗)。
-    function closeTimelineOverlay() {
-      var timelineOverlay = byId('timelineOverlay');
-      if (timelineOverlay) timelineOverlay.hidden = true;
-    }
-    // 使用者主動關時間軸(✕/遮罩/Esc):收合並把焦點還回開啟前的元素。
-    function dismissTimelineOverlay() {
-      closeTimelineOverlay();
-      restoreFocus('timeline');
-    }
-
     function bindDetailDialog() {
+      // ✕ 走 closeEntryDetail，時間軸子層若還開著一併先關。
       on('detailClose', 'click', closeEntryDetail);
-      on('detailOverlay', 'click', function (ev) {
-        var overlay = byId('detailOverlay');
-        if (overlay && ev.target === overlay) closeEntryDetail();
+      bindDialog('detailOverlay', null, function () {
+        if (!isDialogOpen('detailOverlay')) detailEntry = null;
       });
       on('detailExpandBtn', 'click', function () {
         var excerptEl = byId('detailExcerpt');
@@ -3343,16 +3207,9 @@
             timelineSection.appendChild(buildTimelineRow(record, i === 0, i === timeline.length - 1));
           });
         }
-        var timelineOverlay = byId('timelineOverlay');
-        rememberFocus('timeline');
-        if (timelineOverlay) timelineOverlay.hidden = false;
-        focusInto('timelineOverlay', 'timelineClose');
+        showDialog('timelineOverlay');
       });
-      on('timelineClose', 'click', dismissTimelineOverlay);
-      on('timelineOverlay', 'click', function (ev) {
-        var timelineOverlay = byId('timelineOverlay');
-        if (timelineOverlay && ev.target === timelineOverlay) dismissTimelineOverlay();
-      });
+      bindDialog('timelineOverlay', 'timelineClose');
       on('detailCopyBtn', 'click', function () {
         if (detailEntry) copyEntryUrl(detailEntry);
       });
@@ -3373,46 +3230,6 @@
           },
         });
       });
-      // 對話框鍵盤:
-      //   - Tab/Shift+Tab:把焦點循環鎖在最上層開著的對話框內(focus trap)。
-      //   - Esc:逐層關閉。確認框最上層(刪除確認會疊在詳細視窗上)先關，
-      //     再輪時間軸子層，接著是頂層的匯入框與裝置框，最後才關詳細視窗
-      //     本身(順序比照 topmostOverlayId 的疊放序;比照手機版巢狀 Modal
-      //     逐層關閉的直覺;手機版 DialogShell 走 Modal 的 onRequestClose，
-      //     web 沒有對應原生事件，這裡以 keydown 補同義行為)。
-      if (typeof document.addEventListener === 'function') {
-        document.addEventListener('keydown', function (ev) {
-          if (!ev) return;
-          if (ev.key === 'Tab') {
-            var topId = topmostOverlayId();
-            if (topId) trapTabInOverlay(topId, ev);
-            return;
-          }
-          if (ev.key !== 'Escape') return;
-          var confirmOverlay = byId('confirmOverlay');
-          if (confirmOverlay && !confirmOverlay.hidden) {
-            closeConfirm();
-            return;
-          }
-          var timelineOverlay = byId('timelineOverlay');
-          if (timelineOverlay && !timelineOverlay.hidden) {
-            dismissTimelineOverlay();
-            return;
-          }
-          var importOverlay = byId('overlay');
-          if (importOverlay && !importOverlay.hidden) {
-            closeImport();
-            return;
-          }
-          var devicesOverlay = byId('devicesOverlay');
-          if (devicesOverlay && !devicesOverlay.hidden) {
-            closeDevicesDialog();
-            return;
-          }
-          var overlay = byId('detailOverlay');
-          if (overlay && !overlay.hidden) closeEntryDetail();
-        });
-      }
     }
 
     function renderList() {
@@ -3464,8 +3281,7 @@
       // 鈕的 aria-label 會停在舊語言，而且沒有「關掉再開」以外的自我修復。
       // 只在開著時重畫:關著時重建整份清單毫無用處。開框本身就會
       // renderDevices，關著期間錯過的語言變更下次開框補得回來。
-      var devicesOverlay = byId('devicesOverlay');
-      if (devicesOverlay && !devicesOverlay.hidden) renderDevices();
+      if (isDialogOpen('devicesOverlay')) renderDevices();
     }
 
     // ---- 選單/對話框/工具列佈線 ----
@@ -3498,20 +3314,10 @@
         renderList();
       });
 
-      // 篩選下拉
+      // 篩選下拉(auto popover)
       var filterBtn = byId('filterBtn');
       var chipsRow = byId('chipsRow');
-      function closeFilter() {
-        if (chipsRow) chipsRow.hidden = true;
-        if (filterBtn) filterBtn.setAttribute('aria-expanded', 'false');
-      }
-      on('filterBtn', 'click', function (ev) {
-        if (ev && ev.stopPropagation) ev.stopPropagation();
-        if (!chipsRow) return;
-        var opening = chipsRow.hidden;
-        chipsRow.hidden = !opening;
-        if (filterBtn) filterBtn.setAttribute('aria-expanded', String(opening));
-      });
+      wirePopover(filterBtn, chipsRow);
       on('chips', 'click', function (ev) {
         var btn = ev.target && ev.target.closest ? ev.target.closest('.chip') : null;
         if (!btn) return;
@@ -3523,54 +3329,31 @@
           });
         }
         if (filterBtn) filterBtn.classList.toggle('active', activeKind !== 'all');
-        closeFilter();
+        hidePop(chipsRow);
         renderList();
       });
 
-      // ⋯ 選單
-      var moreBtn = byId('moreBtn');
+      // ⋯ 選單(auto popover)。項目要開對話框時先收選單，焦點回 ⋯ 鈕，對話框
+      // 關閉後才還得回去。
       var moreMenu = byId('moreMenu');
-      function closeMenu() {
-        if (moreMenu) moreMenu.hidden = true;
-        if (moreBtn) moreBtn.setAttribute('aria-expanded', 'false');
-      }
-      on('moreBtn', 'click', function (ev) {
-        if (ev && ev.stopPropagation) ev.stopPropagation();
-        if (!moreMenu) return;
-        var opening = moreMenu.hidden;
-        moreMenu.hidden = !opening;
-        if (moreBtn) moreBtn.setAttribute('aria-expanded', String(opening));
-      });
-      if (typeof document.addEventListener === 'function') {
-        document.addEventListener('click', function (ev) {
-          var wrap = ev.target && ev.target.closest ? ev.target.closest('.menu-wrap') : null;
-          if (moreMenu && !moreMenu.hidden && (!wrap || !wrap.contains(moreMenu))) closeMenu();
-          if (chipsRow && !chipsRow.hidden && (!wrap || !wrap.contains(chipsRow))) closeFilter();
-        });
-      }
+      wirePopover(byId('moreBtn'), moreMenu);
 
       // 匯出:直接下載檔案。
       on('exportBtn', 'click', function () {
-        closeMenu();
+        hidePop(moreMenu);
         var payload = buildExportPayload(visibleEntries(), new Date(now()).toISOString());
         download('threads-clean-link-history.json', JSON.stringify(payload, null, 2));
         toast(tt('opToastExported'));
       });
 
       // 匯入:對話框(選檔或貼上)。
-      var overlay = byId('overlay');
       on('importBtn', 'click', function () {
-        closeMenu();
+        hidePop(moreMenu);
         var textEl = byId('modalText');
         if (textEl) textEl.value = '';
-        rememberFocus('import');
-        if (overlay) overlay.hidden = false;
-        focusInto('overlay', 'modalText');
+        showDialog('overlay');
       });
-      on('modalClose', 'click', closeImport);
-      on('overlay', 'click', function (ev) {
-        if (overlay && ev.target === overlay) closeImport();
-      });
+      bindDialog('overlay', 'modalClose');
       on('modalFile', 'click', function () {
         var fileInput = byId('fileInput');
         if (fileInput && typeof fileInput.click === 'function') fileInput.click();
@@ -3603,7 +3386,7 @@
             return;
           }
           renderHistoryViews();
-          closeImport();
+          closeDialog('overlay');
           toast(
             result.skipped
               ? tf('opToastImportedSkip', { n: result.added, m: result.skipped })
@@ -3614,7 +3397,7 @@
 
       // 清除全部:走共用確認框(openConfirm)，確認後才寫入。
       on('clearBtn', 'click', function () {
-        closeMenu();
+        hidePop(moreMenu);
         openConfirm({
           titleKey: 'opClearAll',
           okKey: 'opClearDo',
@@ -3653,14 +3436,15 @@
           },
         });
       });
-      on('confirmCancel', 'click', closeConfirm);
-      on('confirmOverlay', 'click', function (ev) {
-        var confirmOverlay = byId('confirmOverlay');
-        if (confirmOverlay && ev.target === confirmOverlay) closeConfirm();
+      // close 事件比 close() 晚一拍，動作若又開了新的確認框，不能把新掛上的
+      // confirmAction 清掉。
+      bindDialog('confirmOverlay', 'confirmCancel', function () {
+        if (!isDialogOpen('confirmOverlay')) confirmAction = null;
       });
       on('confirmOk', 'click', function () {
         var act = confirmAction;
-        closeConfirm();
+        confirmAction = null;
+        closeDialog('confirmOverlay');
         if (typeof act === 'function') act();
       });
     }
@@ -3827,11 +3611,11 @@
     // 完整重置 openEntryDetail;此處以 url 定位，理論上恆為同 url，保留分支
     // 只為語意清楚與防禦。renderHistoryViews 會整面重建紀錄卡片(警示名單卡
     // 不動)，順帶保存/還原鍵盤焦點對應的條目(見 captureFocusedEntryKey/
-    // restoreFocusedEntry)。
+    // refocusEntryCard)。
     function setHistory(list) {
       var focusKey = captureFocusedEntryKey();
       entries = sanitizeEntries(list);
-      if (detailEntry) {
+      if (detailEntry && isDialogOpen('detailOverlay')) {
         var match = null;
         for (var i = 0; i < entries.length; i++) {
           if (entries[i].url === detailEntry.url) {
@@ -3847,7 +3631,7 @@
         }
       }
       renderHistoryViews();
-      restoreFocusedEntry(focusKey);
+      refocusEntryCard(focusKey);
     }
 
     // 焦點保存:整面重建卡片前記下目前鍵盤焦點落在哪一條目(卡片本身
@@ -3862,7 +3646,7 @@
       else if (active.dataset && active.dataset.entryKey) card = active;
       return card && card.dataset ? card.dataset.entryKey || null : null;
     }
-    function restoreFocusedEntry(key) {
+    function refocusEntryCard(key) {
       if (!key) return;
       var rowsEl = byId('rows');
       if (!rowsEl || !rowsEl.children) return;
