@@ -1,10 +1,9 @@
 // test/package.test.js — 打包白名單防漏檔(靜態)。
 //
-// 新增執行檔(如 options 頁、i18n.js)卻沒同步 tools/build-release.ps1 的
-// $includeFiles 白名單時，zip 會缺檔，導致 Chrome Web Store 的 Linux 自動安
-// 裝測試失敗。本測試從 manifest.json 與各 HTML/SW 的實際引用推導「上架 zip
-// 必要檔案集合」，再比對 ps1 白名單，漏一個就紅燈——在本地就擋下，不會燒到
-// 商店端。
+// 上架 zip 的必要檔案由 tools/manifest-files.mjs 從 manifest.json 與其引用鏈
+// 推導;tools/build-release.ps1 實際會打包的檔案集合($includeFiles 白名單，
+// 加上 icons/ 圖示檔與 _locales/*/messages.json)必須是它的超集。可以多打，
+// 不可漏打——漏檔會讓 Chrome Web Store 的自動安裝測試失敗。
 'use strict';
 
 const test = require('node:test');
@@ -27,57 +26,46 @@ function readIncludeFiles() {
   return [...match[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
 }
 
-// 從 manifest 與其引用鏈推導 zip 根目錄必要檔案(不含 icons/_locales,
-// 那兩個資料夾由 ps1 另行整包處理)。
-function collectRequiredFiles() {
-  const manifest = JSON.parse(read('manifest.json'));
-  const required = new Set(['manifest.json']);
-
-  if (manifest.background && manifest.background.service_worker) {
-    required.add(manifest.background.service_worker);
-  }
-  (manifest.content_scripts || []).forEach((cs) => {
-    (cs.js || []).forEach((f) => required.add(f));
-  });
-  if (manifest.action && manifest.action.default_popup) {
-    required.add(manifest.action.default_popup);
-  }
-  if (manifest.options_ui && manifest.options_ui.page) {
-    required.add(manifest.options_ui.page);
-  }
-
-  // HTML 內以 <script src> 載入的腳本。
-  [...required].filter((f) => f.endsWith('.html')).forEach((htmlFile) => {
-    const html = read(htmlFile);
-    [...html.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)].forEach((m) => {
-      required.add(m[1]);
-    });
-  });
-
-  // service worker 以 importScripts 載入的腳本。
-  if (manifest.background && manifest.background.service_worker) {
-    const sw = read(manifest.background.service_worker);
-    [...sw.matchAll(/importScripts\(\s*['"]([^'"]+)['"]\s*\)/g)].forEach((m) => {
-      required.add(m[1]);
-    });
-  }
-
-  return [...required];
+// build-release.ps1 實際打包的檔案集合:$includeFiles、icons/ 底下的
+// *.png／*.svg／*.ico、_locales/*/messages.json。規則與 ps1 一致。
+function packagedFiles() {
+  const files = new Set(readIncludeFiles());
+  fs.readdirSync(path.join(REPO_ROOT, 'icons'), { withFileTypes: true })
+    .filter((e) => e.isFile() && ['.png', '.svg', '.ico'].includes(path.extname(e.name).toLowerCase()))
+    .forEach((e) => files.add(`icons/${e.name}`));
+  fs.readdirSync(path.join(REPO_ROOT, '_locales'), { withFileTypes: true })
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(REPO_ROOT, '_locales', e.name, 'messages.json')))
+    .forEach((e) => files.add(`_locales/${e.name}/messages.json`));
+  return files;
 }
 
-test('打包白名單:manifest 與引用鏈推導出的必要檔案，一個都不能漏', () => {
-  const included = readIncludeFiles();
-  const required = collectRequiredFiles();
+async function manifestRequiredFiles() {
+  const mod = await import(pathToFileURL(path.join(REPO_ROOT, 'tools', 'manifest-files.mjs')).href);
+  return mod.manifestRequiredFiles(REPO_ROOT);
+}
 
-  const missing = required.filter((f) => !included.includes(f));
+test('打包白名單:打包集合是 manifest 推導出的必要檔案的超集', async () => {
+  const packaged = packagedFiles();
+  const required = await manifestRequiredFiles();
+
+  const missing = required.filter((f) => !packaged.has(f));
   assert.deepEqual(
     missing,
     [],
-    `以下檔案被 manifest/HTML/SW 引用，但不在 build-release.ps1 的 $includeFiles 白名單內:${missing.join(', ')}`
+    `以下檔案被 manifest 或其引用鏈需要，但 build-release.ps1 不會打包:${missing.join(', ')}`
   );
+});
 
-  // 反向檢查:白名單裡的每個檔案都真實存在，擋住改名後殘留的舊條目。
-  included.forEach((f) => {
+test('manifest-files:推導結果涵蓋 SW importScripts、HTML 腳本、圖示與語系檔', async () => {
+  const required = await manifestRequiredFiles();
+  ['manifest.json', 'background.js', 'auth.js', 'sync.js', 'options-init.js', 'popup-init.js',
+    'icons/icon16.png', '_locales/en/messages.json'].forEach((f) => {
+    assert.ok(required.includes(f), `推導清單應含 ${f}`);
+  });
+});
+
+test('打包白名單:每個條目都真實存在於 repo 根目錄', () => {
+  readIncludeFiles().forEach((f) => {
     assert.ok(
       fs.existsSync(path.join(REPO_ROOT, f)),
       `白名單條目 ${f} 在 repo 根目錄不存在(改名或刪除後忘了同步白名單?)`
@@ -222,11 +210,9 @@ test('打包白名單:ISOLATED 陣列的每一支都在 build-release.ps1 的 $i
   );
 });
 
-// SW 的匿名備援直接呼叫 AbortSignal.timeout()（Chrome 103 才有），沒有
-// typeof 守衛；舊版 Chrome 載入後會在第一次備援請求就丟 ReferenceError。
-// manifest 宣告 minimum_chrome_version，讓商店端在安裝前就擋掉，而不是讓
-// 使用者裝完才發現功能壞掉。
-test('manifest:宣告 minimum_chrome_version，且不低於 103（AbortSignal.timeout）', () => {
+// 語法基準為 ES2024，對應 Chrome 123;manifest 以 minimum_chrome_version
+// 讓商店端在安裝前擋掉不支援的舊版 Chrome。
+test('manifest:宣告 minimum_chrome_version，且不低於 123（ES2024 語法基準）', () => {
   const manifest = JSON.parse(read('manifest.json'));
 
   assert.equal(
@@ -237,8 +223,8 @@ test('manifest:宣告 minimum_chrome_version，且不低於 103（AbortSignal.ti
   const major = Number(String(manifest.minimum_chrome_version).split('.')[0]);
   assert.ok(Number.isFinite(major), 'minimum_chrome_version 的主版號應為數字');
   assert.ok(
-    major >= 103,
-    'AbortSignal.timeout() 自 Chrome 103 起才有，minimum_chrome_version 不得低於 103（目前為 ' +
+    major >= 123,
+    '語法基準為 ES2024（Chrome 123），minimum_chrome_version 不得低於 123（目前為 ' +
       manifest.minimum_chrome_version +
       '）'
   );

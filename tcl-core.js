@@ -18,8 +18,10 @@
 
   // Threads 分享短連結格式，例如:https://www.threads.com/share/AbCdEfGhI
   // 容忍尾隨斜線/查詢字串/hash。原 background.js SHARE_URL_PATTERN。
+  // query 段的字元類排除 `#`:query 與 hash 以第一個 `#` 為界，兩段不爭搶同
+  // 一批字元，比對是線性的;吻合的字串集合與「? 之後任意非空白」相同。
   var SHARE_URL_PATTERN =
-    /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s]*)?(#[^\s]*)?$/i;
+    /^https:\/\/(www\.)?threads\.(com|net)\/share\/[A-Za-z0-9_-]+\/?(\?[^\s#]*)?(#[^\s]*)?$/i;
 
   // 錨定嚴格版乾淨貼文網址:白名單字元類(handle:英數/底線/句點;post id:
   // 英數/連字號/底線)各 1-80 字元，收尾錨定 $，不容尾隨內容。原 background.js
@@ -72,6 +74,16 @@
   // 選單路徑，seen[] 裡是合法值)。原 background.js SEEN_KIND_WHITELIST /
   // options.js KINDS 的鍵集合。
   var KIND_LIST = ['share', 'strip', 'menu', 'icon'];
+
+  // 剝掉 str 尾端連續出現的 chars 字元(chars 列出的任一字元)，回傳剩下的前
+  // 段。由尾往前逐字檢查，整串最多走一遍。尾端剝除不寫成 `X+$` 正則:沒有
+  // 起點錨定時，引擎從尾端連續段裡的每個位置各掃一次到結尾，最差是二次方。
+  // chars 只放 BMP 字元(逐個 UTF-16 單位比對)。
+  function trimEndChars(str, chars) {
+    var end = str.length;
+    while (end > 0 && chars.indexOf(str.charAt(end - 1)) !== -1) end--;
+    return end === str.length ? str : str.slice(0, end);
+  }
 
   // 自動落盤通知(cleanedNotice)可接受的 kind:'menu' 刻意排除——它只由右鍵
   // 選單路徑直接呼叫 recordHistory，不經 postMessage 通道，避免頁面腳本偽造
@@ -138,7 +150,7 @@
 
   // ---- 跨裝置合併鍵(postKeyOf) ----
 
-  // 逐字移植自手機 C:\gitRepos\meta-link-clearer\src\lib\post-key.ts 的
+  // 逐字移植自手機端 repo 的 src/lib/post-key.ts 的
   // postKeyOf，輸入輸出與其完全等價(見 docs/cloud-sync.md D11)。純函
   // 式、無副作用，SW 與擴充頁共用，雲端同步以此為 history 的合併鍵，取代
   // extractPostId 只認嚴格樣式(無尾斜線/query，handle 白名單字元類)的局
@@ -187,7 +199,7 @@
   // query 照留(呼叫端傳入的網址已剝過追蹤參數)。
   function urlKey(parsed) {
     var host = parsed.hostname.toLowerCase().replace(/^(?:www|m|mobile)\./, '');
-    var path = parsed.pathname.replace(/\/+$/, '') || '/';
+    var path = trimEndChars(parsed.pathname, '/') || '/';
     return 'url:' + host + path + parsed.search;
   }
 
@@ -217,6 +229,13 @@
 
   // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync.md 4.2/4.3) ----
 
+  // 同步後端的三個 API base，全專案唯一的定義處：sync.js 的 apiBase 白名單、
+  // options 頁的權限描述子與環境標籤、tools/dev-browser.mjs 的環境切換都讀
+  // 這三個常數。local 指向開發機自己跑的 wrangler dev。
+  var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
+  var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
+  var API_BASE_LOCAL = 'http://localhost:8787';
+
   // chrome.storage.local.syncState 的預設形狀。欄位齊備是同步引擎的前提:
   // 少一個鍵，讀到的是 undefined 而不是 null，各處「未登入」判定會失準。
   var DEFAULT_SYNC_STATE = {
@@ -239,9 +258,6 @@
     // 底後清回 null。
     marksBackfillCursor: null,
   };
-
-  // chrome.storage.local.syncAuth 的預設形狀(D10:bearer token 明文存 local)。
-  var DEFAULT_SYNC_AUTH = { token: null };
 
   function optionalString(value) {
     return typeof value === 'string' ? value : null;
@@ -884,17 +900,14 @@
   // 人),handleIndex 是 handle 小寫 → userId 的反查表。SOFT_BUDGET 是整包
   // JSON 序列化後的 **UTF-8 位元組** 軟預算(chrome.storage 的配額單位)。
   //
-  // SOFT_BUDGET 2MB 是本機配額 10MB(Chrome 114 起;更早版本為 5MB)的約
-  // 20%;滿證據時實際可容約 900-1,600 位(含證據五欄)，由位元組預算先觸發淘
-  // 汰，MAX_ENTRIES 5000 是證據稀疏時的筆數硬保險。manifest 的
-  // minimum_chrome_version 是 103，落在 5MB 配額的那幾版佔比約 40%,仍在安
-  // 全水位。
+  // SOFT_BUDGET 2MB 是本機配額 10MB(Chrome 114 起，manifest 的
+  // minimum_chrome_version 123 一律適用)的約 20%;滿證據時實際可容約
+  // 900-1,600 位(含證據五欄)，由位元組預算先觸發淘汰，MAX_ENTRIES 5000 是
+  // 證據稀疏時的筆數硬保險。
   //
-  // MAX_ENTRIES 自 v2 起由 active 與 dismissed 兩態共用;MAX_ALLOWLIST 隨著
-  // allowlist 降為派生視圖而廢止，常數保留只為不讓舊呼叫端讀到 undefined。
+  // MAX_ENTRIES 自 v2 起由 active 與 dismissed 兩態共用。
   var SCAM_LIMITS = {
     MAX_ENTRIES: 5000,
-    MAX_ALLOWLIST: 5000,
     MAX_EVIDENCE: 3,
     SNIPPET_MAX: 120,
     SNIPPET_CONTEXT: 40,
@@ -947,14 +960,17 @@
   // 繫詞(是／ID／帳號／號／號ID／號碼)可選，大小寫不拘，冒號前後容許空白(含
   // 全形空白——`\s` 認得 U+3000)。負向邊界照舊:實際招攬句常寫「賴是：xxx」
   // 「加我賴號ID：xxx」「LINE 帳號 : xxx」，不只是「賴：xxx」這種裸冒號寫法。
+  // 繫詞連同它前面的空白包成同一個可選段，繫詞到冒號之間只有一段 `\s*`:兩段
+  // 相鄰的 `\s*` 夾著可省的繫詞時，同一串空白能任意拆給前後兩段，比對失敗前
+  // 每種拆法都要試過，空白一長就是二次方。
   //
   // 繫詞是封閉的選項清單，不是「任意字」:`LINE Pay ID：abc123` 的 `Pay` 不在
   // 清單裡，整條樣式就在那裡斷開——LINE Pay 的收款 ID 不是加好友帳號。
   //
   // 括號捕獲的是帳號段本體，供 extractLineId 取用(證據卡標亮的就是這一段)。
   var SCAM_ACCOUNT_ANCHOR_RES = [
-    /(?<![信依無仰倚])[賴籟]\s*(?:是|ID|帳號|號碼|號ID|號)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
-    /(?<![A-Za-z])LINE\s*(?:ID|是|帳號|號碼|號ID|號)?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
+    /(?<![信依無仰倚])[賴籟](?:\s*(?:是|ID|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
+    /(?<![A-Za-z])LINE(?:\s*(?:ID|是|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
   ];
 
   // 片語型錨點:「加入我的 LINE」這類明確的加好友祈使句。中文「賴」是姓氏
@@ -1015,14 +1031,24 @@
   // A12345」都不是 LINE 帳號。
   //
   // 【負例是本體】ID／帳號／號碼這三個標籤自己不挑歸屬，前面掛什麼詞就是誰
-  // 的 ID。前置的負向 lookbehind 列出有自己歸屬的那些:中文的訂單、會員、銀
+  // 的 ID。排除詞表 idLabelExclude 列出有自己歸屬的那些:中文的訂單、會員、銀
   // 行、手機、員工、編號、訂位、取件、付款，英文的 Order／Invoice／Ticket／
   // Member／Customer／Case／Serial，以及 Apple／Pay／Google／Meta 這幾個服務
   // 名。容 0-2 個空白，「訂單 ID：」「Order ID: 」都擋得下;`i` 旗標讓英文標
   // 籤大小寫不敏感——標籤是使用者手打的，不會照著我們的字面寫。
+  //
+  // 排除詞與 idLabelled 分成兩條:idLabelled 只留線性的「標籤＋冒號＋帳號
+  // 段」，由 findIdLabelled 逐一取命中，再拿命中起點前 SCAM_ID_LABEL_LOOKBACK
+  // 字交給 idLabelExclude(以 `$` 錨定在這段結尾)判斷，語意等同把排除詞寫成
+  // 前置負向 lookbehind。排除詞寫進 lookbehind 時，「詞＋0-2 個空白」在每個起
+  // 點都要往回展開一遍，靜態分析證不出線性。
   var SCAM_ID_MENTION_RE = /(?<![A-Za-z])LINE(?![A-Za-z])|(?<![信依無仰倚])[賴籟]/i;
-  var SCAM_ID_LABELLED_RE =
-    /(?<!(?:訂單|會員|銀行|手機|員工|編號|訂位|取件|付款|Order|Invoice|Ticket|Member|Customer|Case|Serial|Apple|Pay|Google|Meta)\s{0,2})(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
+  var SCAM_ID_LABELLED_RE = /(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
+  var SCAM_ID_LABEL_EXCLUDE_RE =
+    /(?:訂單|會員|銀行|手機|員工|編號|訂位|取件|付款|Order|Invoice|Ticket|Member|Customer|Case|Serial|Apple|Pay|Google|Meta)\s{0,2}$/i;
+  // 排除詞判斷往回看的字數，須不小於排除詞表最長的詞(Customer，8 字)加 2 個
+  // 空白。
+  var SCAM_ID_LABEL_LOOKBACK = 16;
 
   // lineId 抓取第三段:加好友深連結的路徑段。只認 ti/p 與 lin.ee——ti/g 的路
   // 徑段是群組邀請 token，不是 LINE 帳號，進索引只會用一串對不上任何帳號的
@@ -1048,6 +1074,7 @@
     lineWord: SCAM_LINE_WORD_RE,
     idMention: SCAM_ID_MENTION_RE,
     idLabelled: SCAM_ID_LABELLED_RE,
+    idLabelExclude: SCAM_ID_LABEL_EXCLUDE_RE,
     idDeepLink: SCAM_ID_DEEP_LINK_RE,
   };
 
@@ -1073,7 +1100,7 @@
   // 的 . _ -(句讀不是帳號的一部分)。剝完短於下限時回 null。
   function normalizeLineIdValue(raw) {
     if (typeof raw !== 'string') return null;
-    var id = raw.toLowerCase().slice(0, SCAM_LIMITS.LINE_ID_MAX).replace(/[._-]+$/, '');
+    var id = trimEndChars(raw.toLowerCase().slice(0, SCAM_LIMITS.LINE_ID_MAX), '._-');
     return id.length >= SCAM_LIMITS.LINE_ID_MIN ? id : null;
   }
 
@@ -1086,6 +1113,22 @@
     var id = normalizeLineIdValue(match[1]);
     if (id === null) return null;
     return { id: id, index: offset + match.index + match[0].length - match[1].length };
+  }
+
+  // 在 text 裡找第一個前面不是排除詞的 idLabelled 命中，回 exec 結果或 null。
+  // 命中起點前 SCAM_ID_LABEL_LOOKBACK 字吻合 idLabelExclude 時跳過，從下一個
+  // 位置續找——逐位置推進，與負向 lookbehind 的「每個起點各判一次」同義。
+  // 規則包沒有 idLabelExclude 時不排除。
+  function findIdLabelled(text, cfg) {
+    var scanner = globalCopy(cfg.idLabelled);
+    var exclude = cfg.idLabelExclude;
+    var match;
+    while ((match = scanner.exec(text)) !== null) {
+      var before = text.slice(Math.max(0, match.index - SCAM_ID_LABEL_LOOKBACK), match.index);
+      if (!exclude || !exclude.test(before)) return match;
+      scanner.lastIndex = match.index + 1;
+    }
+    return null;
   }
 
   // 抓出這段文字裡對方的 LINE 帳號本體，回 { id, index } 或 null。三段依序:
@@ -1108,7 +1151,7 @@
       // 斷，樣式在半截字串上照樣匹配得出一個短帳號——抓回半截帳號比抓不到更
       // 糟，它會用一個錯的鍵進跨帳號索引。
       var slice = probe.slice(from, from + SCAM_LIMITS.ID_WINDOW + SCAM_LIMITS.LINE_ID_MAX + 8);
-      var labelled = cfg.idLabelled.exec(slice);
+      var labelled = findIdLabelled(slice, cfg);
       if (labelled && labelled.index < SCAM_LIMITS.ID_WINDOW) {
         found = scamIdCapture(labelled, from);
         if (found) return found;
@@ -1148,12 +1191,17 @@
     });
   }
 
+  // 同一樣式的 g 旗標副本，供逐次推進 lastIndex 掃描，不動呼叫端共用的原樣式
+  // 物件。原樣式的旗標全數保留(i/u/m/s 都會改變比對語意),只換上 g。
+  function globalCopy(pattern) {
+    return new RegExp(pattern.source, pattern.flags.replace(/g/g, '') + 'g');
+  }
+
   // 收集一個樣式在整串文字裡的所有出現區間。改用帶 g 的副本逐次推進
   // lastIndex，而不是切片後重掃:錨點樣式帶 lookbehind(前面不得是 信依無仰倚
   // 或英文字母),切片會讓前文落在字串外，lookbehind 跟著失準。
   function collectMatchSpans(pattern, text, out) {
-    // 原樣式的旗標全數保留(i/u/m/s 都會改變比對語意),只換上 g。
-    var scanner = new RegExp(pattern.source, pattern.flags.replace(/g/g, '') + 'g');
+    var scanner = globalCopy(pattern);
     var match;
     while ((match = scanner.exec(text)) !== null) {
       out.push({ start: match.index, end: match.index + match[0].length });
@@ -1563,9 +1611,8 @@
   }
 
   // 由 entries 重建三張派生表。handleIndex 只含 active:解除過的作者不該再
-  // 佔住反查鍵，河道也就不再替他標記。allowlist 是 dismissed 條目的唯讀視
-  // 圖，沿用 v1 的 { at, handle } 形狀讓既有讀者(content script 的解除比
-  // 對、選項頁的「已解除」小節)零改動;它只活在記憶體，不跟著落盤。
+  // 佔住反查鍵，河道也就不再替他標記。allowlist 是 dismissed 條目的派生視
+  // 圖({ at, handle })，產品端目前無讀者，只活在記憶體、不落盤。
   // lineIdIndex 是 { lineId → userId } 的反查表，與 handleIndex 同樣只含
   // active:使用者解除過的作者不該再靠一個 ID 把別人也拖下水。它與 allowlist
   // 同款，只活在記憶體、不跟著落盤(capScamBlocklist 落盤只挑三把鍵)。
@@ -2121,8 +2168,36 @@
     return 0;
   }
 
+  // ---- 同步錯誤碼分類 ----
+  //
+  // 錯誤碼 → 類別的對照表，options 選文案與同步引擎判斷可否重試共用。分類原則
+  // 對齊後端 api-spec §4.5:401 為 auth、配額為 quota、429 為 rate_limit、
+  // 5xx 為 server、連線失敗為 network;可重試的只有 rate_limit、network、
+  // server。表外的碼(其餘 4xx、本機產生的碼、未來新增的碼)一律歸 unknown，
+  // 不可重試。gone(410，端點已廢止)屬 unknown:重試同一個端點不會成功。
+  var ERROR_CATEGORY_BY_CODE = {
+    session_expired: 'auth',
+    unauthorized: 'auth',
+    storage_quota: 'quota',
+    rate_limited: 'rate_limit',
+    network_error: 'network',
+    internal_error: 'server',
+    misconfigured: 'server',
+  };
+  var RETRYABLE_ERROR_CATEGORIES = ['rate_limit', 'network', 'server'];
+
+  /** 錯誤碼的類別與可重試旗標;非字串或表外的碼回 { category: 'unknown', retryable: false }。 */
+  function errorCategoryOf(code) {
+    var category =
+      typeof code === 'string' && Object.prototype.hasOwnProperty.call(ERROR_CATEGORY_BY_CODE, code)
+        ? ERROR_CATEGORY_BY_CODE[code]
+        : 'unknown';
+    return { category: category, retryable: RETRYABLE_ERROR_CATEGORIES.indexOf(category) !== -1 };
+  }
+
   var api = {
     SHARE_URL_PATTERN: SHARE_URL_PATTERN,
+    trimEndChars: trimEndChars,
     isCleanPostUrl: isCleanPostUrl,
     normalizePostUrl: normalizePostUrl,
     extractPostId: extractPostId,
@@ -2132,7 +2207,9 @@
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
-    DEFAULT_SYNC_AUTH: DEFAULT_SYNC_AUTH,
+    API_BASE_PRODUCTION: API_BASE_PRODUCTION,
+    API_BASE_STAGING: API_BASE_STAGING,
+    API_BASE_LOCAL: API_BASE_LOCAL,
     normalizeSyncState: normalizeSyncState,
     sanitizeDisplayName: sanitizeDisplayName,
     sanitizeAvatarUrl: sanitizeAvatarUrl,
@@ -2153,6 +2230,7 @@
     resolveReceivedAt: resolveReceivedAt,
     isTombstone: isTombstone,
     isQuotaExceededError: isQuotaExceededError,
+    errorCategoryOf: errorCategoryOf,
     HISTORY_LIMITS: HISTORY_LIMITS,
     capHistory: capHistory,
     SCAM_LIMITS: SCAM_LIMITS,

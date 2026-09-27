@@ -74,6 +74,14 @@ jobs:
             echo "尚無 tag $TAG，準備打包發版。"
           fi
 
+      # 與下面「執行測試」同一條件:tag 已存在且非 upload_only 情境時，
+      # 後續步驟全數短路跳過，這裡設定 Node.js 也就沒必要空跑。
+      - name: 設定 Node.js 22
+        if: steps.tagcheck.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.upload_only == true)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       # upload_only 補傳也要過測試:打包白名單防漏檔(test/package.test.js)
       # 正是要在「重打包上傳」的路徑上把關,不能只在新 tag 時跑。
       - name: 執行測試
