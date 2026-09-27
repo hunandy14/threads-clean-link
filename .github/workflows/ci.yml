@@ -5,10 +5,11 @@ on:
   push:
     branches: [main]
 
-# 同一個 PR（或同一個分支）的新推送會取消仍在跑的舊 run，只保留最新一次結果。
+# 同一個 PR 的新推送會取消仍在跑的舊 run，只保留最新一次結果;push 到 main
+# 則不取消，讓每次合併後的 run 都能跑完、避免漏掉某次 main 的驗證結果。
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -20,15 +21,16 @@ jobs:
       - name: 簽出原始碼
         uses: actions/checkout@v5
 
-      # repo 沒有 package-lock.json（無任何相依套件），因此不設 cache: npm，
-      # 安裝步驟也用 npm install 而非 npm ci。
+      # repo 已有 package-lock.json（recheck devDependency），因此設
+      # cache: npm 加速安裝，安裝步驟改用 npm ci 以確保鎖定版本一致。
       - name: 設定 Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: 安裝相依套件
-        run: npm install
+        run: npm ci
 
       - name: 執行測試
         run: npm test
