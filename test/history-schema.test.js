@@ -557,7 +557,7 @@ test('S6 配額:schema 遷移寫入超出配額時優雅降級——console.warn
     console.error = originalError;
   }
 
-  assert.equal(setCallCount, 1, '配額失敗不得重試');
+  assert.equal(setCallCount, 2, '配額失敗只收緊重寫一次，不再重試');
   assert.ok(
     warnCalls.some((args) => typeof args[0] === 'string' && args[0].includes('[threads-clean-link]') && args[0].includes('配額')),
     '應以 [threads-clean-link] 前綴 console.warn 配額訊息'

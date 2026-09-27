@@ -1890,14 +1890,15 @@ test('紀錄:不設上限，已有 1000 筆時再寫一筆變成 1001 筆，最�
 
 // 紀錄不設上限，長期使用可能把 chrome.storage.local
 // 的容量配額(未申請 unlimitedStorage 權限時仍有總量上限)寫爆。配額失敗
-// 要優雅降級:console.warn(帶 [threads-clean-link] 前綴)、不重試、不丟例
-// 外，且不影響複製/淨化等主功能持續運作。
-test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級——console.warn、不重試、不影響主功能', async () => {
+// 要優雅降級:收緊上限重寫一次，仍失敗就 console.warn(帶 [threads-clean-link]
+// 前綴)放棄，不再重試、不丟例外，且不影響複製/淨化等主功能持續運作。
+test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級——收緊重寫一次後 console.warn、不影響主功能', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
   const originalSet = bg.storage.local.set;
+  // 只數 history 的寫入:首次記錄時 ensureDevice 另寫一次 syncDevice，不屬本條。
   let setCallCount = 0;
-  bg.storage.local.set = () => {
-    setCallCount += 1;
+  bg.storage.local.set = (items) => {
+    if (Object.prototype.hasOwnProperty.call(items, 'history')) setCallCount += 1;
     return Promise.reject(new Error('QUOTA_BYTES quota exceeded'));
   };
 
@@ -1913,7 +1914,7 @@ test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級�
     console.warn = originalWarn;
   }
 
-  assert.equal(setCallCount, 1, '配額失敗不得重試');
+  assert.equal(setCallCount, 2, '配額失敗只收緊重寫一次，不再重試');
   assert.ok(
     warnCalls.some(
       (args) => typeof args[0] === 'string' && args[0].includes('[threads-clean-link]') && args[0].includes('配額')
