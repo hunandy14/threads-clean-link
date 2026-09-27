@@ -93,7 +93,7 @@ chrome.runtime.onInstalled.addListener(() => {
   //
   // 【順序】merge 必須先於 schema:mergeHistoryGroup 整平多張卡時會重建物
   // 件，schema 先補的欄位會在整平後缺一角;先整平再補齊，整平後的卡片才帶
-  // 得齊七個雲端欄位。兩支都掛在同一條 historyWriteChain 上，串行執行。
+  // 得齊七個雲端欄位。兩支都排在同一條 storageQueue 上，串行執行。
   migrateHistoryMerge();
   migrateHistorySchema();
   removeLegacyGuardKeys();
@@ -269,8 +269,9 @@ function isOwnExtensionSender(sender) {
 // 引擎本體在 sync.js，依賴全部由這裡注入:SW 隨時被殺，引擎不能自己抓全域
 // chrome/fetch/Date，否則沒有任何辦法在 node 測試裡跑完整往返。
 //
-// history 的寫入一律交給既有的 historyWriteChain(見 recordHistory):引擎與
-// recordHistory、兩支遷移共用同一條序列鏈，才不會互相覆蓋 read-modify-write。
+// storage.local 的讀改寫一律排進 storageQueue(見下方):引擎、recordHistory、
+// 兩支遷移、警示名單與裝置身分共用同一條序列佇列，才不會互相覆蓋
+// read-modify-write。
 
 // chrome.storage 的區域轉接:一律以 Promise 呼叫。區域本身在函式內才取值，
 // 沒有 chrome.storage.session 的環境(舊版瀏覽器/測試替身)不會在接線當下就炸。
@@ -287,6 +288,23 @@ function storageAreaAdapter(name) {
   };
 }
 
+// storage.local 唯一的讀改寫佇列與單鍵讀改寫模板(TCLCore.createMutator)。
+// 引擎以 writeChain 注入同一條佇列、自建一份 mutate。區域經 storageAreaAdapter
+// 在每次呼叫時才取值，載入當下不碰 chrome.storage。
+// 【死鎖守則】佇列上的工作(含 mutate 的 fn)內不得再排進 storageQueue——
+// ensureDevice／getLocalDevice 都會排隊，要用的值在排隊之前先取好。
+const storageQueue = TCLCore.createSerialQueue();
+const mutate = TCLCore.createMutator({ area: storageAreaAdapter('local'), enqueue: storageQueue });
+
+// history 讀出後的正規化:不是陣列一律當空表。
+function normalizeHistoryList(raw) {
+  return Array.isArray(raw) ? raw : [];
+}
+
+// history 的寫入參數:撞配額先收緊(多淘汰舊紀錄，墓碑優先)再寫一次，仍失敗
+// 才放棄——紀錄是附屬功能，放棄時只留 console.warn，不影響複製/淨化。
+const HISTORY_MUTATE_OPTS = { normalize: normalizeHistoryList, cap: TCLCore.capHistoryAt, onQuota: 'skip' };
+
 // ------------------------------------------------------------
 // 裝置身分(裝置歸屬，契約 §9)
 // ------------------------------------------------------------
@@ -299,26 +317,22 @@ function storageAreaAdapter(name) {
 const DEVICE_KEY = 'syncDevice';
 
 // 惰性初始化的 memo。不掛 onInstalled:那支只在安裝/更新的當下觸發一次，錯過
-// 就永遠不會有身分。實際的讀改寫掛在 enqueueHistoryWrite 的序列鏈上，與
-// recordHistory、兩支遷移串行，併發呼叫不會各生一組 deviceId 互相覆蓋。
+// 就永遠不會有身分。實際的讀改寫排在 storageQueue 上，與 recordHistory、兩
+// 支遷移串行，併發呼叫不會各生一組 deviceId 互相覆蓋。
 let localDevicePromise = null;
-
-// 已產生但尚未落地的新身分。刻意不在 ensureDevice 內就 storage.set:紀錄路徑
-// 會把它併進自己那一次寫入(見 recordHistory)，同一批寫完，不多佔一次寫入配額
-// ——storage.local.set 的配額與失敗都是以「一次呼叫」為單位算的。沒有紀錄要寫
-// 時(例如引擎先來要 getLocalDevice)由 persistDevice 補上。
-let unsavedDevice = null;
 
 // 讀到既有值一律採用(重生 deviceId 等於在雲端變成另一台裝置);沒有才生成。
 // 既有值先過 TCLCore.normalizeDeviceId:大寫寫法歸一成小寫(伺服器存小寫，不
 // 對齊就 join 不到自己這台);形狀根本不合(storage 損毀、手改過)才重生——當不
 // 成識別碼的值留著，這台裝置就永遠註冊不上雲端。
-// 呼叫端注意:ensureDevice 自己佔一段 historyWriteChain，不得在鏈上的工作內
-// 第一次呼叫它，否則等於在鏈上等自己(死鎖)。recordHistory 因此在掛上本次寫
-// 入之前就先呼叫。
+// 新身分在同一段佇列內當場落地，一個安裝週期只寫這一次;寫入失敗視同初始化
+// 失敗，下一次呼叫重來。
+// 呼叫端注意:ensureDevice 自己佔一段 storageQueue，不得在佇列上的工作內第一
+// 次呼叫它，否則等於在佇列上等自己(死鎖)。recordHistory 因此在排入本次寫入
+// 之前就先呼叫。
 function ensureDevice() {
   if (localDevicePromise !== null) return localDevicePromise;
-  const pending = enqueueHistoryWrite(async () => {
+  const pending = storageQueue(async () => {
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const existing = stored && stored[DEVICE_KEY];
     const existingId =
@@ -336,7 +350,7 @@ function ensureDevice() {
       platform: 'chrome_extension',
       createdAt: Date.now(),
     };
-    unsavedDevice = device;
+    await chrome.storage.local.set({ [DEVICE_KEY]: device });
     return device;
   }).catch((err) => {
     console.warn('[threads-clean-link] 裝置身分初始化失敗', err);
@@ -347,20 +361,6 @@ function ensureDevice() {
   });
   localDevicePromise = pending;
   return pending;
-}
-
-// 把尚未落地的身分寫進 storage。紀錄路徑會順手帶走(那時這支就是 no-op)，
-// 兩邊都掛在同一條序列鏈上，先跑到的那個寫、後跑到的看到已落地就跳過，因此
-// 一組新身分永遠只寫一次。
-function persistDevice() {
-  return enqueueHistoryWrite(async () => {
-    const pending = unsavedDevice;
-    if (pending === null) return;
-    await chrome.storage.local.set({ [DEVICE_KEY]: pending });
-    if (unsavedDevice === pending) unsavedDevice = null;
-  }).catch((err) => {
-    console.warn('[threads-clean-link] 裝置身分寫入失敗', err);
-  });
 }
 
 // 預設名的 OS 來源。getPlatformInfo 在舊環境可能整支不存在、也可能 reject，
@@ -385,8 +385,6 @@ function detectPlatformOs() {
 async function getLocalDevice() {
   const device = await ensureDevice();
   if (!device) return null;
-  // 引擎拿到的 deviceId 之後會出現在雲端資料裡，本機這邊不能只留在記憶體。
-  await persistDevice();
   // 交出去的 deviceId 一律正規化:引擎拿它組請求的 device 區塊與
   // currentDeviceId，handleDevicesRemove 拿它擋「移除自己這台」，兩邊大小寫
   // 不一致就比不中。ensureDevice 已經歸一過，這裡是縱深。
@@ -404,12 +402,11 @@ async function getLocalDevice() {
 }
 
 // 本機這台改名成功後把新名字寫回 syncDevice(§5);改別台不得寫進來——本機
-// 名稱以本機為準(D26)。同樣走序列鏈，與紀錄寫入不互相覆蓋。
+// 名稱以本機為準(D26)。同樣排在 storageQueue 上，與紀錄寫入不互相覆蓋。
 async function rememberLocalDeviceName(deviceId, name) {
   const device = await ensureDevice();
   if (!device || TCLCore.normalizeDeviceId(device.deviceId) !== deviceId) return;
-  await persistDevice();
-  await enqueueHistoryWrite(async () => {
+  await storageQueue(async () => {
     const stored = await chrome.storage.local.get(DEVICE_KEY);
     const current = stored && stored[DEVICE_KEY];
     if (!current || typeof current !== 'object') return;
@@ -454,7 +451,7 @@ const syncEngine =
         // 本機裝置身分(§12):引擎組請求的 device 區塊與 currentDeviceId 都取
         // 自這裡，身分的產生與存放一律留在 background。
         getLocalDevice: () => getLocalDevice(),
-        writeChain: (fn) => enqueueHistoryWrite(fn),
+        writeChain: storageQueue,
         // 拉取是唯一會把 history 變長的寫入路徑，套的是與 recordHistory 同一
         // 份容量上限(位元組軟預算＋筆數硬保險，優先淘汰墓碑)。
         capHistory: (list) => TCLCore.capHistory(list),
@@ -553,11 +550,17 @@ if (syncEngine) {
 //
 // storage.local 的 scamBlocklist 只有 background 寫得到：content script 與
 // 選項頁一律直接讀 storage 並監聽 chrome.storage.onChanged。三個 handler 的
-// 讀改寫全掛在 enqueueHistoryWrite 的序列鏈上，與 history 寫入串行，互不
-// 覆蓋；每次寫前過 TCLCore.normalizeScamBlocklist、寫後過 capScamBlocklist，
-// 落地的形狀與上限只有這一處說了算。
+// 讀改寫全走 mutate(storageQueue)，與 history 寫入串行，互不覆蓋；每次寫
+// 前過 TCLCore.normalizeScamBlocklist、寫後過 capScamBlocklistAt，落地的形狀
+// 與上限只有這一處說了算。撞配額拋 storage_quota，由路由表轉成 internal_error。
 
 const SCAM_BLOCKLIST_KEY = 'scamBlocklist';
+
+const SCAM_MUTATE_OPTS = {
+  normalize: TCLCore.normalizeScamBlocklist,
+  cap: TCLCore.capScamBlocklistAt,
+  onQuota: 'throw',
+};
 
 // 總開關存 storage.local（選項頁設定卡寫入）。缺席＝開，首次安裝即生效。
 const SCAM_ENABLED_KEY = 'scamGuardEnabled';
@@ -900,15 +903,9 @@ function capScamThrottleTable(table, postUrl, now) {
 
 // 閘門的讀改寫序列鏈。河道一次捲動會同時派出幾十則 scam.hit，它們是同一
 // tick 進來的：讀改寫沒有序列化，七則各自讀到「目前 0 次」再各自寫回，閘門
-// 等於不存在，節流表也會互相覆蓋成少於實際請求數。不共用 historyWriteChain
-// ——兩者沒有共用資料，紀錄寫入不該被備援的閘門排隊拖慢。
-let scamFetchChain = Promise.resolve();
-
-function enqueueScamFetchGate(fn) {
-  const run = scamFetchChain.then(fn);
-  scamFetchChain = run.catch(() => {});
-  return run;
-}
+// 等於不存在，節流表也會互相覆蓋成少於實際請求數。不共用 storageQueue——兩
+// 者沒有共用資料，紀錄寫入不該被備援的閘門排隊拖慢。
+const enqueueScamFetchGate = TCLCore.createSerialQueue();
 
 // 在兩張表上各佔一個名額：逐篇 24 小時節流、全域每分鐘 SCAM_FETCH_RATE_MAX
 // 次。兩者都在發請求前就記下，成功與失敗一視同仁——撈不到 id 的原因（SPA
@@ -960,7 +957,7 @@ async function resolveScamAuthorId(postUrl, handle) {
 }
 
 // 證據要記下的本機裝置 id。直接讀 storage 而不走 ensureDevice：ensureDevice
-// 自己佔一段 historyWriteChain（在鏈上的工作裡呼叫等於等自己），而且沒有身分
+// 自己佔一段 storageQueue（在佇列上的工作裡呼叫等於等自己），而且沒有身分
 // 時會生一組新的——證據記的是「哪一台寫的」，還沒有身分就該缺席，不值得為它
 // 生一組 deviceId 出來。讀不到（缺席、形狀不合、storage 抽風）一律回
 // undefined 讓證據不帶這一欄，絕不因此擋下整次寫入。
@@ -989,19 +986,20 @@ async function handleScamHit(message) {
     if (userId === null) return { ok: false, code: 'no_user_id' };
   }
 
-  return enqueueHistoryWrite(async () => {
-    const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
-    const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
-
+  // 不寫的兩條分支各自的回應;有寫入時回應在 mutate 之後組。
+  let unchanged = null;
+  const out = await mutate(SCAM_BLOCKLIST_KEY, async (list) => {
     // 使用者解除過的作者不得被下一次掃描復活，且整條路徑不留任何寫入——連
     // updatedAt 都不推新，否則這筆會在跨裝置合併時無端勝出。
     const existing = list.entries[userId];
     if (existing && existing.state === 'dismissed') {
-      return { ok: true, added: false, allowlisted: true };
+      unchanged = { ok: true, added: false, allowlisted: true };
+      return undefined;
     }
 
     // deviceId 只有真的要寫一筆證據時才用得到，因此排在早退分支之後才讀：河道
     // 一次捲動就派出幾十則 scam.hit，早退的那些先讀一次 storage 是白花的往返。
+    // readLocalDeviceId 不排隊，在 fn 內呼叫不違反死鎖守則。
     const deviceId = await readLocalDeviceId();
 
     // 證據帶判定規則版本與寫入裝置：兩者是日後跨裝置對帳與規則調參的依據，
@@ -1033,7 +1031,8 @@ async function handleScamHit(message) {
       // 同步。河道一次捲動就派出幾十則 scam.hit，每一則都回寫一次整份名單、
       // 再推一輪跟雲端一模一樣的資料，是白花的配額。
       if (merged.evidence.length === existing.evidence.length) {
-        return { ok: true, added: false, entry: existing };
+        unchanged = { ok: true, added: false, entry: existing };
+        return undefined;
       }
       // 【被動掃描不動 updatedAt／state】updatedAt 是跨裝置 LWW 的唯一判準，
       // 「這台機器又掃到一次」不是使用者的意思表示。推進它等於讓一次背景掃描
@@ -1049,13 +1048,14 @@ async function handleScamHit(message) {
 
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
     // entries 重建，孤兒鍵沒有任何機會留下。
-    const next = TCLCore.capScamBlocklist(list);
-    await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: next });
-    // 名單是與紀錄並存的第二條同步通道(D38)：不掛去抖同步的話，新標記的作者
-    // 最久要等一輪週期 alarm 才推得上去，期間別台裝置看到的是舊名單。
-    notifySyncRecorded();
-    return { ok: true, added, entry: next.entries[userId] };
-  });
+    return { next: list, result: added };
+  }, SCAM_MUTATE_OPTS);
+  if (!out.written) return unchanged;
+  // 名單是與紀錄並存的第二條同步通道(D38)：不掛去抖同步的話，新標記的作者
+  // 最久要等一輪週期 alarm 才推得上去，期間別台裝置看到的是舊名單。
+  notifySyncRecorded();
+  // 回傳的條目取實際落盤的那一份(過 cap 後)。
+  return { ok: true, added: out.result, entry: out.value.entries[userId] };
 }
 
 // 選項頁的「解除」：條目留在 entries，state 翻成 dismissed 並記下解除時間，
@@ -1067,9 +1067,7 @@ async function handleScamBlocklistRemove(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
 
-  return enqueueHistoryWrite(async () => {
-    const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
-    const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
+  await mutate(SCAM_BLOCKLIST_KEY, (list) => {
     const now = Date.now();
     const existing = list.entries[userId];
     const entry = existing || { evidence: [], addedAt: now, source: 'auto' };
@@ -1085,32 +1083,29 @@ async function handleScamBlocklistRemove(message) {
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
     // entries 重建，dismissed 不進反查表，孤兒鍵沒有任何機會留下。
     list.entries[userId] = Object.assign({}, entry, patch);
-    await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
-    notifySyncRecorded();
-    return { ok: true };
-  });
+    return { next: list };
+  }, SCAM_MUTATE_OPTS);
+  notifySyncRecorded();
+  return { ok: true };
 }
 
 // 選項頁的「復原」（使用者反悔解除）：把同一筆條目翻回 active 並刪掉
 // dismissedAt，證據一路留著——復原後不必等下一次掃描，卡片就畫得出來。名單裡
-// 沒有這一筆時無事可做（沒有條目可復原）。
+// 沒有這一筆時無事可做（沒有條目可復原）：不寫 storage、不掛同步，仍回 ok。
 async function handleScamBlocklistRestore(message) {
   const userId = message && message.userId;
   if (typeof userId !== 'string' || !SCAM_USER_ID_PATTERN.test(userId)) return { ok: false, code: 'bad_request' };
 
-  return enqueueHistoryWrite(async () => {
-    const stored = await chrome.storage.local.get({ [SCAM_BLOCKLIST_KEY]: null });
-    const list = TCLCore.normalizeScamBlocklist(stored && stored[SCAM_BLOCKLIST_KEY]);
+  const out = await mutate(SCAM_BLOCKLIST_KEY, (list) => {
     const entry = list.entries[userId];
-    if (entry) {
-      const restored = Object.assign({}, entry, { state: 'active', updatedAt: Date.now() });
-      delete restored.dismissedAt;
-      list.entries[userId] = restored;
-    }
-    await chrome.storage.local.set({ [SCAM_BLOCKLIST_KEY]: TCLCore.capScamBlocklist(list) });
-    notifySyncRecorded();
-    return { ok: true };
-  });
+    if (!entry) return undefined;
+    const restored = Object.assign({}, entry, { state: 'active', updatedAt: Date.now() });
+    delete restored.dismissedAt;
+    list.entries[userId] = restored;
+    return { next: list };
+  }, SCAM_MUTATE_OPTS);
+  if (out.written) notifySyncRecorded();
+  return { ok: true };
 }
 
 // ------------------------------------------------------------
@@ -2013,20 +2008,10 @@ function applyHistorySchema(entry, previous, now) {
 // TCLCore.capHistory(見 tcl-core.js 的儲存上限區塊)，寫入/遷移/同步拉取與
 // options 匯入共用同一份。本檔四條寫入路徑一律經它，沒有任何一條繞得過去。
 
-// 同一個 SW 內的 append 以 promise chain 序列化，避免兩筆同時 read-modify-write
-// 互相覆蓋。options 頁的清除/刪除/匯入直接寫 storage.local，與這裡的競態只
-// 發生在「清除的同時恰好完成一次淨化」，極罕見且後果僅是多留一筆，接受。
-let historyWriteChain = Promise.resolve();
-
-// history 序列鏈的對外入口:同步引擎(sync.js)的每一次讀改寫都掛在這條鏈上，
-// 與 recordHistory、兩支遷移串行執行，不互相覆蓋。回傳的 promise 如實反映
-// 這一次寫入的成敗(引擎要據此判定這一輪同步算不算成功);鏈本身另外接住錯誤，
-// 一次失敗不得讓後續寫入排不進來。
-function enqueueHistoryWrite(fn) {
-  const run = historyWriteChain.then(fn);
-  historyWriteChain = run.catch(() => {});
-  return run;
-}
+// 同一個 SW 內的讀改寫一律走 storageQueue／mutate(見雲端同步接線段)，避免兩
+// 筆同時 read-modify-write 互相覆蓋。options 頁的清除/刪除/匯入直接寫
+// storage.local，與這裡的競態只發生在「清除的同時恰好完成一次淨化」，極罕見
+// 且後果僅是多留一筆，接受。
 
 // 新紀錄寫入後掛去抖同步(D12):2 秒內連續分享只同步一次，細節在 sync.js。
 function notifySyncRecorded() {
@@ -2040,19 +2025,16 @@ function notifySyncRecorded() {
 // 擷取到的鍵才會出現(自動路徑見 extractHistoryExtraFields，右鍵路徑組同形
 // 訊息後同樣走它)，Object.assign 進條目時不會覆蓋 url/kind/at/seen。
 function recordHistory(url, kind, extra) {
-  let recorded = false;
-  // 【順序】ensureDevice 自己也佔一段 historyWriteChain，必須在掛上本次寫入
-  // 之前呼叫:掛上之後才第一次呼叫，就變成在鏈上等一段排在自己後面的工作。
-  // 呼叫在此、await 在鏈內，身分初始化因此永遠排在本次寫入前面。
+  // 【死鎖守則】ensureDevice 自己也佔一段 storageQueue，必須在 mutate 排隊之前
+  // 呼叫:呼叫在此、await 在 fn 內，身分初始化因此永遠排在本次寫入前面。
   const devicePending = ensureDevice();
-  historyWriteChain = historyWriteChain
-    .then(async () => {
+  return mutate(
+    HISTORY_KEY,
+    async (list) => {
       const settings = await getSettings();
-      if (!settings.saveHistory) return;
+      if (!settings.saveHistory) return undefined;
       const device = await devicePending;
       const deviceId = device && typeof device.deviceId === 'string' ? device.deviceId : undefined;
-      const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
-      const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
       const now = Date.now();
 
       // 永久合併(見上方紀錄合併區塊的註解):以 post ID 為鍵全表比對，命中
@@ -2067,8 +2049,7 @@ function recordHistory(url, kind, extra) {
         // 陣列。extra 放在前面、核心欄位放在後面覆蓋:即使日後呼叫端不慎
         // 把 url/kind/at/seen 也塞進 extra 物件，核心欄位仍會覆蓋回正確值
         // (防未來的加固)。新條目的 seen[] 由本次呼叫自行構造(信任來源，
-        // 不需要再過 sanitizeSeenList)。上限裁切統一在下方 TCLCore.capHistory
-        // 處理。
+        // 不需要再過 sanitizeSeenList)。上限裁切由 mutate 的 cap 處理。
         entry = applyHistorySchema(
           Object.assign({}, extra, { url, kind, at: now, seen: [seenEvent(now, kind, deviceId)] }),
           null,
@@ -2079,51 +2060,33 @@ function recordHistory(url, kind, extra) {
       // 級聯第二步:失敗卡收編。本次的 original 若是短碼原文，且清單裡有一
       // 張以該短碼原文入庫的失敗卡(當年解析失敗的殘留)，把它併進本次的同
       // 文卡並就地刪除——短碼在這一刻才第一次與貼文對上號。與上一步的同文
-      // 合併在同一次 historyWriteChain 內完成，只寫一次 storage。
+      // 合併在同一次讀改寫內完成，只寫一次 storage。
       const adoptIndex = findOriginalAdoptIndex(list, entry.original, dedupIndex);
       if (adoptIndex !== -1) {
         entry = adoptFailureEntry(entry, list[adoptIndex]);
       }
 
       // 合併/收編掉的舊條目一律從原位移除(dedupIndex 為 -1 時不會命中任何
-      // index，adoptIndex 同理)，本次的條目統一浮到最前。
+      // index，adoptIndex 同理)，本次的條目統一浮到最前。儲存上限由 cap 從
+      // 尾端(最舊)裁，本次剛寫入的最新一筆永遠保留。
       const rest = list.filter((item, i) => i !== dedupIndex && i !== adoptIndex);
-      let next = [entry].concat(rest);
-      // 儲存上限:寫入前把陣列裁到位元組軟預算 + 筆數硬保險內(從尾端/
-      // 最舊裁，本次剛寫入的最新一筆永遠保留)。
-      next = TCLCore.capHistory(next);
-      // 首次記錄時把新身分一起寫掉(見 unsavedDevice):一次 storage.set 兩個
-      // 鍵，不額外多佔一次寫入。
-      const pendingDevice = unsavedDevice;
-      const items = { [HISTORY_KEY]: next };
-      if (pendingDevice !== null) items[DEVICE_KEY] = pendingDevice;
-      try {
-        await chrome.storage.local.set(items);
-      } catch (err) {
-        // 配額失敗優雅降級:紀錄不設上限之後，長期使用可能真的把
-        // chrome.storage.local 的容量配額(未申請 unlimitedStorage 權限
-        // 時仍有總量上限)寫爆。這種情況不重試、不丟例外，只
-        // console.warn 留痕跡，本次這筆紀錄就此放棄——不影響複製/淨化
-        // 等主功能持續運作。非配額類錯誤(例如 storage API 本身壞掉)
-        // 則重新拋出，交給外層 catch 統一以 console.error 記錄，維持
-        // 既有「非預期錯誤」的可見度。
-        if (TCLCore.isQuotaExceededError(err)) {
-          console.warn('[threads-clean-link] 紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)', err);
-          return;
-        }
-        throw err;
+      return { next: [entry].concat(rest) };
+    },
+    HISTORY_MUTATE_OPTS
+  )
+    .then((out) => {
+      // 配額失敗優雅降級:收緊後仍寫不下，本次這筆紀錄就此放棄，不丟例外，
+      // 不影響複製/淨化等主功能。
+      if (out.quota) {
+        console.warn('[threads-clean-link] 紀錄寫入超出儲存配額，本次略過(不影響複製/淨化功能)');
+        return;
       }
-      if (pendingDevice !== null && unsavedDevice === pendingDevice) unsavedDevice = null;
-      recorded = true;
+      // 真的寫進去才掛去抖:設定關閉、配額爆掉、寫入失敗都不該觸發一次同步。
+      if (out.written) notifySyncRecorded();
     })
     .catch((err) => {
       console.error('[threads-clean-link] 寫入紀錄失敗', err);
-    })
-    .then(() => {
-      // 真的寫進去才掛去抖:設定關閉、配額爆掉、寫入失敗都不該觸發一次同步。
-      if (recorded) notifySyncRecorded();
     });
-  return historyWriteChain;
 }
 
 // ---- 一次性遷移:既有紀錄整平成永久合併形狀 ----
@@ -2145,10 +2108,11 @@ function recordHistory(url, kind, extra) {
 // 一筆都是原參照」時直接短路、連寫回都不做，避免每次更新都對 storage 做一
 // 次無意義的整表寫入。
 //
-// 【競態】走既有的 historyWriteChain 串行，與 recordHistory 的
-// read-modify-write 互斥——遷移讀到的必定是完整的表，也不會被同時落盤的新
-// 紀錄覆蓋。寫回同樣先過 TCLCore.capHistory(合併只會讓資料變少，這裡純
-// 粹是不讓任何一條寫入路徑繞過儲存上限防線)。
+// 【競態】走 mutate(storageQueue)串行，與 recordHistory 的 read-modify-write
+// 互斥——遷移讀到的必定是完整的表，也不會被同時落盤的新紀錄覆蓋。寫回同樣
+// 過 capHistory(合併只會讓資料變少，這裡純粹是不讓任何一條寫入路徑繞過儲存
+// 上限防線)。配額失敗比照 recordHistory:收緊再寫一次，仍失敗最多維持舊形
+// 狀的紀錄(仍可正常瀏覽)，不丟例外、不影響任何主功能。
 
 // 純函式:比較兩筆條目的 at(新到舊)。at 不是有限數字者一律排到最後(那筆
 // 時間本身就不可信，不該被選為主卡);刻意不用相減，避免兩個 -Infinity 相
@@ -2275,34 +2239,27 @@ function adoptFailureEntriesInList(list) {
 }
 
 function migrateHistoryMerge() {
-  historyWriteChain = historyWriteChain
-    .then(async () => {
-      const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
-      const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
+  return mutate(
+    HISTORY_KEY,
+    (list) => {
       // 空表(首裝)與單卡表必然無可合併，連讀後計算都省。
-      if (list.length < 2) return;
-
+      if (list.length < 2) return undefined;
       const next = adoptFailureEntriesInList(mergeHistoryByDedupKey(list));
       // 冪等短路:每一筆都是原物件參照(沒有任何一組被合併、沒有任何一張失
       // 敗卡被收編)就不寫回。
-      if (next.length === list.length && next.every((item, i) => item === list[i])) return;
-
-      try {
-        await chrome.storage.local.set({ [HISTORY_KEY]: TCLCore.capHistory(next) });
-      } catch (err) {
-        // 配額失敗優雅降級，理由同 recordHistory:遷移失敗最多維持舊形狀的
-        // 紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響任何主功能。
-        if (TCLCore.isQuotaExceededError(err)) {
-          console.warn('[threads-clean-link] 紀錄遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
-          return;
-        }
-        throw err;
+      if (next.length === list.length && next.every((item, i) => item === list[i])) return undefined;
+      return { next };
+    },
+    HISTORY_MUTATE_OPTS
+  )
+    .then((out) => {
+      if (out.quota) {
+        console.warn('[threads-clean-link] 紀錄遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)');
       }
     })
     .catch((err) => {
       console.error('[threads-clean-link] 紀錄遷移失敗', err);
     });
-  return historyWriteChain;
 }
 
 // ---- 一次性遷移:既有紀錄補齊雲端 schema 欄位 ----
@@ -2324,8 +2281,8 @@ function migrateHistoryMerge() {
 // 據此短路、連寫回都不做。畸形條目(非物件、url 非字串)無從算 postKey，整筆
 // 原樣保留。
 //
-// 【競態】與 migrateHistoryMerge／recordHistory 共用 historyWriteChain 串行;
-// 掛在 merge 之後執行，整平產生的新卡才補得到欄位。
+// 【競態】與 migrateHistoryMerge／recordHistory 共用 storageQueue 串行;排在
+// merge 之後執行，整平產生的新卡才補得到欄位。配額失敗的處理同 merge。
 
 // 消毒結果與原事件是否完全一致(鍵集合與值都相同)。fillHistorySchema 的冪等
 // 短路判準。
@@ -2378,32 +2335,25 @@ function fillHistorySchema(entry) {
 }
 
 function migrateHistorySchema() {
-  historyWriteChain = historyWriteChain
-    .then(async () => {
-      const stored = await chrome.storage.local.get({ [HISTORY_KEY]: [] });
-      const list = Array.isArray(stored && stored[HISTORY_KEY]) ? stored[HISTORY_KEY] : [];
-      if (list.length === 0) return;
-
+  return mutate(
+    HISTORY_KEY,
+    (list) => {
+      if (list.length === 0) return undefined;
       const next = list.map(fillHistorySchema);
       // 冪等短路:每一筆都是原物件參照(沒有任何一筆缺欄位)就不寫回。
-      if (next.every((item, i) => item === list[i])) return;
-
-      try {
-        await chrome.storage.local.set({ [HISTORY_KEY]: TCLCore.capHistory(next) });
-      } catch (err) {
-        // 配額失敗優雅降級，理由同 migrateHistoryMerge:補欄位失敗最多維持
-        // 舊形狀的紀錄(仍可正常瀏覽)，不重試、不丟例外、不影響主功能。
-        if (TCLCore.isQuotaExceededError(err)) {
-          console.warn('[threads-clean-link] 紀錄欄位遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)', err);
-          return;
-        }
-        throw err;
+      if (next.every((item, i) => item === list[i])) return undefined;
+      return { next };
+    },
+    HISTORY_MUTATE_OPTS
+  )
+    .then((out) => {
+      if (out.quota) {
+        console.warn('[threads-clean-link] 紀錄欄位遷移寫入超出儲存配額，本次略過(不影響既有紀錄與主功能)');
       }
     })
     .catch((err) => {
       console.error('[threads-clean-link] 紀錄欄位遷移失敗', err);
     });
-  return historyWriteChain;
 }
 
 // 不信任呼叫端傳入的 url，一律用 TCLCore.SHARE_URL_PATTERN 重新驗證，
