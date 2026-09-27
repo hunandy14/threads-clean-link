@@ -20,7 +20,7 @@
 //     auth,         // TCLAuth（signInWithGoogle／exchangeWithBackend）
 //     permissions,  // { contains(descriptor) => Promise<boolean> }
 //     randomUUID,   // () => string，新 entry 的 id 來源
-//     writeChain,   // (fn) => Promise，background.js 的 historyWriteChain
+//     writeChain,   // (fn) => Promise，sw-history.js 的 historyWriteChain
 //     setTimeout,   // (fn, ms) => handle，去抖的 SW 存活期路徑（T5 雙保險）
 //     clearTimeout, // (handle) => void
 //   }) => engine
@@ -1410,7 +1410,7 @@ test('T3 單飛：同時三次 syncNow 只跑一輪往返', async () => {
   assert.equal(env.syncPosts().length, 1);
 });
 
-test('T3 單飛：進行中旗標存 chrome.storage.session（SW 回收即自然過期）', async () => {
+test('T3 單飛：只在 SW 記憶體，進行中 session 與 local 都不落 inflight 類鍵', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const release = env.server.holdNext(1);
@@ -1418,27 +1418,24 @@ test('T3 單飛：進行中旗標存 chrome.storage.session（SW 回收即自然
   const running = engine.syncNow();
   await settle(4);
 
-  const sessionKeys = Object.keys(env.storage.sessionData);
-  assert.ok(sessionKeys.length >= 1, '進行中旗標必須落 session，不能只放模組變數');
-  const localKeys = Object.keys(env.storage.localData);
+  const flagKey = /inflight|running|syncing/i;
   assert.equal(
-    localKeys.some((k) => /inflight|running|syncing/i.test(k)),
+    Object.keys(env.storage.sessionData).some((k) => flagKey.test(k)),
     false,
-    '旗標不得寫 local，否則 SW 被殺會永久卡死'
+    '單飛旗標不得落 session：session 在 SW 重啟後仍在，殘留會擋住新實例'
+  );
+  assert.equal(
+    Object.keys(env.storage.localData).some((k) => flagKey.test(k)),
+    false,
+    '單飛旗標不得寫 local'
   );
 
   release();
   await running;
   await settle();
-  assert.equal(
-    Object.keys(env.storage.sessionData).some((k) => /inflight|running|syncing/i.test(k)) &&
-      JSON.stringify(env.storage.sessionData).includes('true'),
-    false,
-    '結束後要把旗標放回去'
-  );
 });
 
-test('T3 SW 中斷：旗標殘留但 session 已清空時，新引擎照樣跑得動', async () => {
+test('T3 SW 中斷：瀏覽器重啟清空 session 後，新引擎照樣跑得動', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const release = env.server.holdNext(1);
@@ -1447,11 +1444,11 @@ test('T3 SW 中斷：旗標殘留但 session 已清空時，新引擎照樣跑�
   await settle(4);
   assert.equal(env.syncPosts().length, 1);
 
-  // SW 被回收：session 區整個消失，local 保留。
+  // 瀏覽器重啟（或擴充停用、重載）：session 區清空，記憶體歸零，local 保留。
   const revived = env.recreate(TCLSync, false);
   await revived.syncNow();
   await settle(10);
-  assert.equal(env.syncPosts().length, 2, 'session 過期即解除單飛，不得永久卡死');
+  assert.equal(env.syncPosts().length, 2, '新實例從 idle 起跑，不得被前一輪卡死');
 
   release(1);
   await abandoned.catch(() => {});
@@ -1663,7 +1660,7 @@ test('T5 登出時清除 alarm', async () => {
 test('T5 recordHistory 後去抖：2 秒 setTimeout ＋ 30 秒 alarm 雙保險', async () => {
   // PM 裁決：Chrome 的 alarm 最小間隔是 30 秒，2 秒排不出來。去抖走注入的
   // setTimeout（SW 存活期），另排一個 30 秒的 alarm 當 SW 被回收時的保底；
-  // 兩條路任一先到就跑 syncNow，單飛旗標保證只跑一次。
+  // 兩條路任一先到就跑，待辦（soonPending）已消化時另一條到期跳過。
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const engine = TCLSync.create(env.deps);
@@ -1867,16 +1864,14 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
     'email',
     'lastError',
     'lastSyncedAt',
-    // D38（車道 B）：警示名單 marks 通道的四格。C 車道的「雲端額度滿了」提示
+    // D38（車道 B）：警示名單 marks 通道的三格。C 車道的「雲端額度滿了」提示
     // 讀的是 marksEvicted，不隨廣播帶出來那張提示就沒有筆數可顯示。
-    // CR-2：回填續填位置也隨 state 帶出（封閉鍵集 12 → 13）。它與其餘三格一樣
-    // 是診斷用的水位線，UI 不直接顯示，但 state 是唯一的對外形狀，少一格就沒有
-    // 任何管道看得出「這個帳號卡在回填第幾頁」。
+    // CR-2：回填續填位置也隨 state 帶出。它與 marksCursor 一樣是診斷用的游標，
+    // UI 不直接顯示，但 state 是唯一的對外形狀，少一格就沒有任何管道看得出「這
+    // 個帳號卡在回填第幾頁」。SW-4b：推送水位線與被拒映射退場（封閉鍵集 13 → 11）。
     'marksBackfillCursor',
     'marksCursor',
     'marksEvicted',
-    'marksPushedAt',
-    'marksRejected',
     'pendingCount',
     'status',
   ]);
@@ -1884,10 +1879,8 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
   assert.equal(state.status, 'signed_out');
   assert.equal(state.email, null);
   assert.equal(state.apiBase, PRODUCTION_BASE);
-  assert.equal(state.marksCursor, null, '未登入時四格一律是預設值');
-  assert.equal(state.marksPushedAt, null);
+  assert.equal(state.marksCursor, null, '未登入時 marks 各格一律是預設值');
   assert.equal(state.marksEvicted, null);
-  assert.equal(state.marksRejected, null);
 });
 
 // ============================================================================
@@ -2425,20 +2418,20 @@ test('T9/L6 rejectedIds：該 entry 清 dirty，下一輪不再進 upserts', asy
   second.forEach((r) => assert.deepEqual(r.body.upserts, [], '下一輪不得再送被拒收的那一筆'));
 });
 
-test('T9/L6 跨引擎單飛：第一台持有未過期旗標時，第二台 syncNow 零請求', async () => {
+test('T9/L6 SW 重啟後的新實例不被舊實例擋', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const release = env.server.holdNext(1);
   const first = TCLSync.create(env.deps);
   const running = first.syncNow();
   await settle(4);
-  assert.equal(env.syncPosts().length, 1, '前置：第一台已把旗標搶下並發出請求');
+  assert.equal(env.syncPosts().length, 1, '前置：舊實例的請求已發出、回應暫緩');
 
-  // 同一份 storage（session 沒消失）＝另一個 SW 實例／另一個引擎。
+  // 同一份 storage（session 保留）＝SW 被驅逐後重啟，舊實例的那一輪已隨之作廢。
   const second = env.recreate(TCLSync);
   await second.syncNow();
   await settle(6);
-  assert.equal(env.syncPosts().length, 1, '單飛旗標未過期時第二台一個請求都不該發');
+  assert.equal(env.syncPosts().length, 2, '單飛只在記憶體：新實例照樣發出請求');
 
   release();
   await running;
@@ -2573,7 +2566,7 @@ test('T10/F2 殘留守衛讀不懂：本輪照常成功，不記 clear_guard_inv
   assert.deepEqual(guardWrites(env, 'syncClearGuard'), [], '不得重置成待定');
 });
 
-test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally 語意）', async () => {
+test('T10/L3 失敗收尾自己也炸掉時，phase 照樣歸位（finally 語意）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   env.server.failNext({ kind: 'network' });
@@ -2584,7 +2577,7 @@ test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally
       local: Object.assign({}, env.deps.storage.local, {
         set(items) {
           // 失敗收尾寫 syncState 時炸一次：catch 內的寫入失敗會沿著同一條鏈往外
-          // 冒，只掛成功回呼的 releaseInflight 就永遠不會跑。
+          // 冒，只掛成功回呼的話 phase 會卡在 running。
           if (boom && Object.prototype.hasOwnProperty.call(items, 'syncState')) {
             boom = false;
             return Promise.reject(new Error('storage 壞了'));
@@ -2597,11 +2590,13 @@ test('T10/L3 失敗收尾自己也炸掉時，單飛旗標照樣釋放（finally
   const engine = TCLSync.create(deps);
   await engine.syncNow().catch(() => {});
   await settle(10);
+  const before = env.syncPosts().length;
 
-  assert.equal(
-    env.storage.sessionData.syncInflight,
-    undefined,
-    '旗標沒放回去的話，TTL 到期前這台裝置的同步全被擋掉'
+  await engine.syncNow().catch(() => {});
+  await settle(10);
+  assert.ok(
+    env.syncPosts().length > before,
+    'phase 沒歸位的話，看門狗到期前這台裝置的同步全被擋掉'
   );
 });
 
@@ -3104,7 +3099,7 @@ async function seedServerDevices(env, rows) {
 }
 
 /**
- * 把 writeChain 換成**真的序列化**的版本（background.js 的 enqueueHistoryWrite
+ * 把 writeChain 換成**真的序列化**的版本（sw-history.js 的 enqueueHistoryWrite
  * 就是這個語意）。§12 增補四：引擎若在 writeChain(fn) 的回呼內才呼叫
  * getLocalDevice（它自己也要進同一條鏈），就是在鏈上等自己＝死鎖。
  */
@@ -4468,7 +4463,7 @@ test('D50 deleteCloud 成功：本機登出——token 清、syncState 重設、
       cursor: 'cur-before',
       lastError: 'network_error',
       marksCursor: 'marks-before',
-      marksPushedAt: T0 - 1000,
+      marksEvicted: 3,
     },
     local: {
       syncDevices: { fetchedAt: T0 - 1000, devices: [{ deviceId: '11111111-2222-4333-8444-555555555555', name: '合成手機' }] },
@@ -4711,6 +4706,11 @@ test('D50 其他裝置：兩台各自重新登入後全量重傳，雲端與兩�
   await engineA.syncNow();
   await settle(20);
   await engineB.syncNow();
+  await settle(20);
+  // epoch：兩台都帶著刪雲端前的 epoch 登入，登入那一輪撞 409 只重設不送（§3.3），
+  // 全量重傳順延一輪；A 再同步一次才拉得到 B 重傳的那幾筆。
+  envA.advance(60_000);
+  await engineA.syncNow();
   await settle(20);
 
   const union = [POST_A, POST_B, POST_C, POST_D, POST_E].map((u) => postKeyOf(u)).sort();

@@ -74,7 +74,7 @@ test('normalizePostUrl:容尾正規化——回傳去 query/hash/尾斜線後的
   assert.equal(C.normalizePostUrl(12345), null);
 });
 
-// extractPostId 是紀錄永久合併的主鍵來源(見 background.js 的紀錄合併區
+// extractPostId 是紀錄永久合併的主鍵來源(見 sw-history.js 的紀錄合併區
 // 塊):handle 可改名、post ID 終身不變，改名前後的網址靠它認出是同一篇。三
 // 案分別釘住:合法貼文網址抽得出 ID(且與 handle 無關)、分享短碼抽不出
 // (短碼只有 Meta 伺服器能對應)、畸形/帶尾隨內容一律 null(呼叫端據此退回整
@@ -3201,14 +3201,10 @@ test.describe('警示名單 v2:mergeScamEntry', () => {
 // 10. `scamMergeEvidenceKey`（雲端合併路徑）去掉 `threadUrl` 那一段，與
 //     `scamEvidenceKey`（`anchorPostUrl ‖ postUrl`）對齊。兩把尺不一致時，帶
 //     threadUrl 但沒有 anchorPostUrl 的本機證據跑一趟雲端往返就會裂成兩筆。
-// 12. `normalizeMarksRejected` 夾筆數上限：那是寫進 syncState 的映射，沒有上
-//     限就會隨著被拒的 key 無限成長，最後撐爆 storage 配額。
 // 14. `normalizeBlocklistEntry`：`addedAt` 與 `updatedAt` 兩者都不合法時整筆
 //     丟棄；只有一個不合法時以另一個補。兩格都補 0 的舊行為會讓一筆壞資料的
 //     updatedAt 變成 0，在 LWW 合併裡永遠輸，從此無法更新也無法解除。
 // ============================================================================
-
-const MARKS_REJECTED_MAX = 5000;
 
 test.describe('警示名單 R3:形狀閘門與合併鍵', () => {
   function r3Mark(patch) {
@@ -3301,25 +3297,6 @@ test.describe('警示名單 R3:形狀閘門與合併鍵', () => {
       '合併鍵若還吃 threadUrl，本機那一筆與落回來的同一筆會被當成兩篇，每同步一次就多一筆'
     );
     assert.equal(merged.evidence[0].snippet, MK_SNIPPET, '合併後本機獨有的片段要留著');
-  });
-
-  test('R3-12 normalizeMarksRejected:被拒映射夾筆數上限，不得無限成長', () => {
-    const raw = {};
-    for (let i = 0; i < MARKS_REJECTED_MAX + 100; i += 1) raw['threads:' + (90000000000 + i)] = 1700000000000 + i;
-    const out = C.normalizeSyncState({ marksRejected: raw }).marksRejected;
-    assert.ok(out && typeof out === 'object', '前置條件:合法映射照收');
-    assert.equal(
-      Object.keys(out).length,
-      MARKS_REJECTED_MAX,
-      `被拒映射是整包寫回 storage 的，沒有上限就會一路長到配額爆掉（上限 ${MARKS_REJECTED_MAX}）`
-    );
-  });
-
-  test('R3-12 normalizeMarksRejected:未達上限時一項不刪', () => {
-    const raw = {};
-    for (let i = 0; i < 10; i += 1) raw['threads:' + (90000000000 + i)] = 1700000000000 + i;
-    const out = C.normalizeSyncState({ marksRejected: raw }).marksRejected;
-    assert.equal(Object.keys(out).length, 10, '沒到上限就不該動它');
   });
 
   test('R3-14 normalizeBlocklistEntry:addedAt 與 updatedAt 都不合法時整筆丟棄', () => {
@@ -3480,13 +3457,13 @@ test.describe('CR-7 scamMarkUserId：mark key 解析的單一來源', () => {
   });
 });
 
-test.describe('CR-1 toScamMark：本機專有的推送提示欄位不上雲', () => {
-  test('CR-1 toScamMark:條目帶本機推送提示欄位時，輸出仍是固定九欄', () => {
-    // 欄位名由實作者定（pushAfter／evidenceAt 之類），這裡不指定名字，只釘住
-    // 「本機多出來的任何鍵都不得漏進 mark」——契約是固定九欄，多一欄後端整筆
-    // 拒收，那一筆從此同步不出去。
+test.describe('CR-1 toScamMark：本機專有的待推欄位不上雲', () => {
+  test('CR-1 toScamMark:條目帶本機待推欄位時，輸出仍是固定九欄', () => {
+    // 待推旗標 dirty／dirtyAt 之外再塞幾個任意鍵，釘住「本機多出來的任何鍵都不
+    // 得漏進 mark」——契約是固定九欄，多一欄後端整筆拒收，那一筆從此同步不出去。
     const entry = mkEntry({ addedAt: 100, updatedAt: 900 });
-    entry.pushAfter = 1700000200000;
+    entry.dirty = true;
+    entry.dirtyAt = 1700000200000;
     entry.evidenceAt = 1700000200000;
     entry.whateverLocalOnly = 'x';
     const mark = C.toScamMark(MK_ID, entry);

@@ -10,18 +10,12 @@ const path = require('node:path');
 // background.js 模組層的 const 只存在於 vm context 的全域詞法環境，不會變成
 // sandbox 物件的屬性;要斷言常數值（例如掃描上限）只能在同一個 context 內求值。
 const vm = require('node:vm');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
-// background.js 依賴共用 i18n 與 tcl-core 模組(真實環境靠 importScripts
-// 載入);測試把 i18n.js 與 tcl-core.js 原始碼接在前面，三支腳本共用同一個
-// sandbox 全域(TCLI18N / TCLCore 已存在，background 的 importScripts 條件式便
-// 不執行)。
-const SRC =
-  fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+// background.js 依賴共用 i18n 與 tcl-core 等模組(真實環境靠 importScripts
+// 載入);測試一律經 test/support/sw-sources.js 的 loadSwSources 依 SW 的真實
+// 順序逐檔載進同一個 sandbox，重現腳本邊界。
 
 // 本擴充自己的 id。訊息入口只認 sender.id（見 background.js 的
 // isOwnExtensionSender），mock 與送出的 sender 都以這一枚為準。
@@ -112,7 +106,7 @@ function loadBackgroundWithOgHtml(html, opts = {}) {
   };
   // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，vm sandbox
   // 預設不含這個全域，這裡明確注入。
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
   return {
     storage,
@@ -172,7 +166,7 @@ function loadBackground() {
   // 的行為與真實瀏覽器/Service Worker 環境一致(兩者原生都有
   // URL/URLSearchParams)。fetchOgFieldsForLocalKind 內部用 setTimeout 做
   // 逾時競速，一併注入。
-  runInSandbox(SRC, { chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: makeFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -291,7 +285,7 @@ function makeAlwaysSucceedFetch(calls) {
 function loadBackgroundAlwaysSucceed() {
   const chrome = makeChrome();
   const calls = [];
-  runInSandbox(SRC, { chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: makeAlwaysSucceedFetch(calls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return { listener: chrome.onMessageListeners[0], calls };
 }
 
@@ -529,7 +523,7 @@ function loadBackgroundWithSettings(initialSettings, opts = {}) {
   // 入，同樣需要注入 URL/URLSearchParams。fetchOgFieldsForLocalKind
   // 內部用 setTimeout 做逾時競速，一併注入。
   const sandbox = { chrome, fetch: makeFetch(fetchCalls), console, URL, URLSearchParams, setTimeout, clearTimeout, crypto };
-  runInSandbox(SRC, sandbox);
+  loadSwSources(sandbox);
 
   return {
     storage,
@@ -1357,7 +1351,7 @@ function loadBackgroundWithLocalOgFetch(postUrl, opts = {}) {
     }
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     executeScriptCalls,
@@ -1553,7 +1547,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
     };
     // fetchOgFieldsForLocalKind 內部用 setTimeout 做逾時競速，一併注入
     // (此測試雖走右鍵路徑不會觸發，維持一致性)。
-    runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+    loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
 
     onClickedListeners[0]({ linkUrl: shareUrl }, { id: 7 });
     await settle(400);
@@ -1579,7 +1573,7 @@ test('紀錄:POST_URL_PATTERN 的 handle/post id 長度上限 80——恰為 80 
 //   - 舊資料沒有 seen 欄位:合併時照手機版語意補種一筆起始紀錄
 //     [{ at: existing.at }](對齊 existing.seen ?? [{ at:
 //     existing.receivedAt }] 的等效寫法)，種子紀錄不帶 kind，再疊上本
-//     次事件(見 background.js 內 mergeHistoryEntry 註解)。
+//     次事件(見 sw-history.js 內 mergeHistoryEntry 註解)。
 //
 // 【永久合併規格取代】原本的 5 分鐘去重視窗(DEDUP_WINDOW_MS)整組拆除:與手
 // 機版的「url + 5 分鐘窗」刻意分岔，同一篇貼文永遠只有一張卡。相關的視窗外
@@ -1748,7 +1742,7 @@ test('紀錄永久合併(postKeyOf):既有卡的 url 帶尾斜線,與本次乾�
 // 級聯第二層:失敗卡收編。當年解析失敗、以短碼原文入庫的卡片(url 就是
 // /share/XXXX)，在同一個短碼日後解析成功時被收編進同文卡——短碼在那一刻才
 // 第一次與貼文對上號。收編只認 original 吻合分享短碼樣式的情況(見
-// background.js findOriginalAdoptIndex:original 是頁面可控輸入，放行任意值
+// sw-history.js findOriginalAdoptIndex:original 是頁面可控輸入，放行任意值
 // 等於讓惡意頁面點名吞掉別篇貼文的卡)。
 // ------------------------------------------------------------
 
@@ -1890,14 +1884,15 @@ test('紀錄:不設上限，已有 1000 筆時再寫一筆變成 1001 筆，最�
 
 // 紀錄不設上限，長期使用可能把 chrome.storage.local
 // 的容量配額(未申請 unlimitedStorage 權限時仍有總量上限)寫爆。配額失敗
-// 要優雅降級:console.warn(帶 [threads-clean-link] 前綴)、不重試、不丟例
-// 外，且不影響複製/淨化等主功能持續運作。
-test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級——console.warn、不重試、不影響主功能', async () => {
+// 要優雅降級:收緊上限重寫一次，仍失敗就 console.warn(帶 [threads-clean-link]
+// 前綴)放棄，不再重試、不丟例外，且不影響複製/淨化等主功能持續運作。
+test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級——收緊重寫一次後 console.warn、不影響主功能', async () => {
   const bg = loadBackgroundWithSettings({ saveHistory: true });
   const originalSet = bg.storage.local.set;
+  // 只數 history 的寫入:首次記錄時 ensureDevice 另寫一次 syncDevice，不屬本條。
   let setCallCount = 0;
-  bg.storage.local.set = () => {
-    setCallCount += 1;
+  bg.storage.local.set = (items) => {
+    if (Object.prototype.hasOwnProperty.call(items, 'history')) setCallCount += 1;
     return Promise.reject(new Error('QUOTA_BYTES quota exceeded'));
   };
 
@@ -1913,7 +1908,7 @@ test('紀錄:chrome.storage.local.set 超出配額(QUOTA_BYTES)時優雅降級�
     console.warn = originalWarn;
   }
 
-  assert.equal(setCallCount, 1, '配額失敗不得重試');
+  assert.equal(setCallCount, 2, '配額失敗只收緊重寫一次，不再重試');
   assert.ok(
     warnCalls.some(
       (args) => typeof args[0] === 'string' && args[0].includes('[threads-clean-link]') && args[0].includes('配額')
@@ -1963,7 +1958,7 @@ function loadBackgroundForReinject(tabs, opts = {}) {
     },
   };
   chrome.storage = createChromeStorage({}).api;
-  runInSandbox(SRC, {
+  loadSwSources({
     chrome,
     fetch: async () => {
       throw new Error('unexpected fetch');
@@ -2371,7 +2366,7 @@ function loadBackgroundOgMulti() {
     if (/\/post\//.test(url)) return fetchResult(url, NO_OG_HTML);
     throw new Error('unexpected fetch: ' + url);
   };
-  runInSandbox(SRC, { chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
+  loadSwSources({ chrome, fetch: fetchImpl, console, URL, URLSearchParams, setTimeout, clearTimeout, crypto });
   return {
     storage,
     fetchCalls,
@@ -2434,7 +2429,7 @@ function loadBackgroundForMigration(localHistory) {
   chrome.scripting = { executeScript: async () => [{}] };
   const storage = createChromeStorage({ saveHistory: true }, localHistory ? { history: localHistory } : {});
   chrome.storage = storage.api;
-  runInSandbox(SRC, {
+  loadSwSources({
     chrome,
     fetch: async () => {
       throw new Error('unexpected fetch');
@@ -2744,7 +2739,7 @@ function loadBackgroundForSync(opts = {}) {
   );
   chrome.storage = storage.api;
 
-  runInSandbox(SRC, {
+  loadSwSources({
     chrome,
     // 沙箱內先放好 TCLSync，background.js 的 importScripts 條件式便不執行。
     TCLSync: sync.api,
@@ -3401,7 +3396,7 @@ function loadBackgroundForDevices(opts = {}) {
   // opts.globals：逐案覆寫沙箱全域（例如以假的 Date 控制時鐘，驗每分鐘的
   // 全域限流視窗滾動）。預設不帶，既有測試的沙箱內容一字不變。
   Object.assign(sandbox, opts.globals || {});
-  runInSandbox(SRC, sandbox);
+  loadSwSources(sandbox);
   const runtime = makeRuntimeSender(onMessageListeners, EXT_PAGE_SENDER);
 
   return {
@@ -4154,7 +4149,7 @@ test('B5 getLocalDevice:本機改名後同一實例立即回新名（不必等 S
 // ---- 審查預警 N3：遷移時的 seen 重新消毒 ----
 //
 // fillHistorySchema 目前用「消毒前後的陣列長度是否相同」決定要不要換上新的
-// seen（background.js 的 fillHistorySchema）。髒 deviceId 只會讓該筆事件少一個
+// seen（sw-history.js 的 fillHistorySchema）。髒 deviceId 只會讓該筆事件少一個
 // 鍵、不會讓整筆被丟掉，陣列長度不變，於是舊陣列原樣留下，髒值躲過遷移繼續留
 // 在 storage、之後照樣上雲。判準必須改成逐筆比較，或一律以消毒結果為準。
 test('B6 遷移:seen 事件帶髒 deviceId（陣列長度不變）經 migrateHistorySchema 後仍須被剝除', async () => {
@@ -6337,8 +6332,8 @@ test('R3-13 scam.blocklist.restore 寫入之後掛去抖同步(notifyRecorded)',
 // ------------------------------------------------------------
 // 名單裡沒有這一筆時（條目已被上限淘汰、或使用者在別台裝置標記過），
 // handleScamBlocklistRemove 會補一筆空的 dismissed 條目把之後的掃描擋住。那
-// 一筆沒有 handle，上雲時 toScamMark 送 handle:null，後端整筆拒收、key 進
-// marksRejected 永不重送——這次解除從此同步不出去（staging 已重現）。選項頁
+// 一筆沒有 handle，上雲時 toScamMark 送 handle:null，後端整筆拒收、清掉 dirty
+// 永不重送——這次解除從此同步不出去（staging 已重現）。選項頁
 // 送訊息時會帶上該列的 handle／displayName，這裡把它寫進補建的條目。
 // handle 一律驗 ^[A-Za-z0-9._]{1,80}$（與 fromScamMark／伺服器同一把尺），
 // 不合就忽略該欄位，不讓訊息端的任意字串落進 entries 與 handleIndex。
@@ -6475,7 +6470,6 @@ function loadBackgroundWithMarksServer(opts = {}) {
             email: 'someone@example.com',
             cursor: '0',
             marksCursor: '0',
-            marksPushedAt: null,
           },
           opts.syncState || {}
         ),
@@ -6597,8 +6591,7 @@ test('CR-1 scam.hit:別台裝置較早的解除不得被本機的被動掃描蓋
 
 test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位不得上雲', async () => {
   const bg = loadBackgroundWithMarksServer({
-    // 水位線已經越過這一筆：靠 updatedAt 是選不到它的，要有別的管道。
-    syncState: { marksPushedAt: SCAM_AT },
+    // 種子條目是乾淨的：這一筆推不推得出去，只看 scam.hit 有沒有標 dirty。
     localSeed: { [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }) },
   });
 
@@ -6617,12 +6610,12 @@ test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位
   const sent = bg.upsertsByKey()[CR_MARK_KEY];
   assert.ok(
     sent,
-    '不推進 updatedAt 之後，選批不能只看 updatedAt：新證據得靠本機那個推送提示欄位被選進來，否則這一篇命中永遠留在本機，別台裝置看到的命中篇數從此對不上'
+    '不推進 updatedAt 之後，新證據得靠本機的 dirty 被選進來，否則這一篇命中永遠留在本機，別台裝置看到的命中篇數從此對不上'
   );
   assert.deepEqual(
     Object.keys(sent).sort(),
     CR_MARK_KEYS,
-    'mark 是固定九欄的跨端契約，本機自用的推送提示欄位一個都不得跟著上雲'
+    'mark 是固定九欄的跨端契約，本機自用的 dirty／dirtyAt 一個都不得跟著上雲'
   );
   assert.equal(sent.updatedAt, SCAM_AT, '送出去的 updatedAt 就是本機那個沒被動過的值');
 
@@ -6631,9 +6624,8 @@ test('CR-1 scam.hit:新證據要在下一輪推得出去，且本機專有欄位
   assert.equal(cloud.evidence.length, 2, '雲端那一份是兩邊證據的聯集');
 });
 
-test('CR-1 scam.hit:推成功之後水位線要蓋過那筆新證據，下一輪不得重送', async () => {
+test('CR-1 scam.hit:推成功之後清 dirty，下一輪不得重送', async () => {
   const bg = loadBackgroundWithMarksServer({
-    syncState: { marksPushedAt: SCAM_AT },
     localSeed: { [SCAM_KEY]: crBlocklist({ [SCAM_USER_ID]: crSeededEntry() }) },
   });
 
@@ -6661,7 +6653,7 @@ test('CR-1 scam.hit:推成功之後水位線要蓋過那筆新證據，下一輪
   assert.equal(
     resent[CR_MARK_KEY],
     undefined,
-    '水位線要以「updatedAt 與推送提示欄位的較大者」推進，只推到 updatedAt 的話這一筆每一輪都會被重新選中，整份名單變成每輪重傳'
+    'ack 對上送出那一版就清 dirty，清不掉的話這一筆每一輪都會被重新選中，整份名單變成每輪重傳'
   );
 });
 
@@ -6694,11 +6686,10 @@ test('CR-6 scam.hit:已解除作者的命中不得讀 storage 的 syncDevice', a
 });
 
 // CR-1 縱深：`at` 是**頁面端送來的**數字。只驗有限數字不夾上限的話，偽造一個
-// `at = 1e15`（西元 33658 年）的 scam.hit 就會一路流進 pushAfter；那一筆推成功
-// 之後 marksPushedAt 被推到同一個天文數字，此後整份名單的 updatedAt 全都落在水
-// 位線之下，marks 通道**靜默停推**——沒有錯誤碼、沒有提示，使用者只會發現換台裝
-// 置就看不到新標記了。水位線只能往前推，回不去。
-test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter 不得越過 now', async () => {
+// `at = 1e15`（西元 33658 年）的 scam.hit 會讓那篇證據永遠排在榜首、把真正的
+// 新證據擠出上限，新建條目的 updatedAt 也會在跨裝置 LWW 裡永遠勝出。補證據照樣
+// 要標 dirty，下一輪才推得出去。
+test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，且 dirty 已設', async () => {
   const FORGED_AT = 1e15;
 
   const bg = loadBackgroundForDevices({
@@ -6724,11 +6715,10 @@ test('CR-1 scam.hit:頁面端偽造的未來時戳一律夾到現在，pushAfter
     entry.evidence[0].at >= before && entry.evidence[0].at <= after,
     '證據的 at 要夾到現在（實得 ' + entry.evidence[0].at + '）'
   );
+  assert.equal(entry.dirty, true, '補了證據就要推，標 dirty');
   assert.ok(
-    entry.pushAfter >= before && entry.pushAfter <= after,
-    'pushAfter 會變成推送成功後的 marksPushedAt，越過 now 的那一刻起整份名單都推不出去了（實得 ' +
-      entry.pushAfter +
-      '）'
+    entry.dirtyAt >= before && entry.dirtyAt <= after,
+    'dirtyAt 取本機時鐘，與頁面端送來的 at 無關（實得 ' + entry.dirtyAt + '）'
   );
   assert.equal(entry.updatedAt, SCAM_AT, 'CR-1：被動再掃到照樣不推進 updatedAt');
 

@@ -115,6 +115,34 @@
     postCopyEnabled: true,
   };
 
+  // options 與 popup 兩頁開關列的共用表。HTML 維持靜態列(防閃、popup 尺寸
+  // 量測)，本表只驅動讀值、change 綁定與 storage.onChanged 回填:
+  //   key    checkbox 的 id，同時是 storage 鍵
+  //   area   值存哪一區('sync' 跟帳號跨裝置同步，'local' 只留這台裝置)
+  //   def    缺值或非布林時的退回值;sync 區三顆與 DEFAULT_SETTINGS 一致
+  //   pages  哪幾頁有這顆控件('options'／'popup')
+  //   label  HTML 靜態列所用 i18n 鍵的對照(文件用途，不參與渲染)
+  //   view   值變動時 options 頁要額外重畫的視圖(見 options.js 的 VIEWS)
+  // scamGuardEnabled 講的是「這台裝置要不要掃描」，因此放 local 區。
+  var SETTINGS_SCHEMA = [
+    {
+      key: 'autoClean', area: 'sync', def: false, pages: ['options', 'popup'],
+      label: { options: ['opAutoCleanName', 'opAutoCleanDesc'], popup: 'ppAutoClean' },
+    },
+    {
+      key: 'postCopyEnabled', area: 'sync', def: true, pages: ['options', 'popup'],
+      label: { options: ['opPostCopyName', 'opPostCopyDesc'], popup: 'popPostCopyLabel' },
+    },
+    {
+      key: 'saveHistory', area: 'sync', def: true, pages: ['options'],
+      label: { options: ['opSaveName', 'opSaveDesc'] },
+    },
+    {
+      key: 'scamGuardEnabled', area: 'local', def: true, pages: ['options'],
+      label: { options: ['opScamGuardName', 'opScamGuardDesc'] }, view: 'scamBar',
+    },
+  ];
+
   // ---- 網址判定 ----
 
   // 嚴格錨定判定:寫入前的權威把關。非字串一律 false。
@@ -132,7 +160,7 @@
 
   // 抽出貼文識別碼(`/post/` 之後那一段)，抽不出回傳 null。
   //
-  // 【用途】紀錄的永久合併以 post ID 為主鍵(見 background.js 的紀錄合併區
+  // 【用途】紀錄的永久合併以 post ID 為主鍵(見 sw-history.js 的紀錄合併區
   // 塊):handle 可以改名，同一篇貼文的乾淨網址會跟著換樣子
   // (/@old/post/ID → /@new/post/ID)，post ID 則終身不變，只有它能讓改名前
   // 後的紀錄仍認得是同一篇。
@@ -248,12 +276,11 @@
     cursor: null,
     lastSyncedAt: null,
     lastError: null,
-    // D38:警示名單(marks)通道的水位線。與 links 的 cursor 並存於同一包
-    // syncState，兩條通道各自獨立推進。
+    // D38:警示名單(marks)通道的下行游標與淘汰提示。與 links 的 cursor 並存
+    // 於同一包 syncState，兩條通道各自獨立推進。上行待推改記在名單條目的
+    // dirty 上(見 normalizeBlocklistEntry)。
     marksCursor: null,
-    marksPushedAt: null,
     marksEvicted: null,
-    marksRejected: null,
     // 回填的續填位置。單輪翻不完時記下停在哪一頁，下一輪從這裡接著填;回填到
     // 底後清回 null。
     marksBackfillCursor: null,
@@ -345,48 +372,12 @@
       cursor: optionalCursor(raw.cursor),
       lastSyncedAt: optionalFiniteNumber(raw.lastSyncedAt),
       lastError: optionalString(raw.lastError),
-      // D38:marks 通道的水位線。cursor 是伺服器發的不透明字串、pushedAt 是
-      // 本機推送水位線、evicted 是雲端淘汰筆數(純 UI 提示)、rejected 是被拒
-      // key → 被拒當下的 updatedAt 映射、backfillCursor 是回填的續填位置。
+      // D38:marks 通道。cursor 是伺服器發的不透明字串、evicted 是雲端淘汰筆
+      // 數(純 UI 提示)、backfillCursor 是回填的續填位置。
       marksCursor: optionalCursor(raw.marksCursor),
-      marksPushedAt: optionalFiniteNumber(raw.marksPushedAt),
       marksEvicted: optionalFiniteNumber(raw.marksEvicted),
-      marksRejected: normalizeMarksRejected(raw.marksRejected),
       marksBackfillCursor: optionalCursor(raw.marksBackfillCursor),
     };
-  }
-
-  // marksRejected 的筆數上限，與本機名單的 MAX_ENTRIES 同級:被拒的 key 最多
-  // 就是整份名單那麼多筆，再多代表映射本身壞了。
-  var MARKS_REJECTED_MAX = 5000;
-
-  // D38:被拒警示的映射(key → 被拒當下的 updatedAt)。逐項夾擠成「字串鍵 →
-  // 有限數字」，形狀不對的整項剝除;非物件一律回 null。**每次回傳新物件**
-  // ——與整包 syncState 同一條紀律，回傳輸入的參照會讓呼叫端就地改到 storage
-  // 讀回來的那份。
-  function normalizeMarksRejected(value) {
-    if (!isPlainObject(value)) return null;
-    var kept = [];
-    var keys = Object.keys(value);
-    for (var i = 0; i < keys.length; i++) {
-      if (isUnsafeMapKey(keys[i])) continue;
-      if (typeof value[keys[i]] === 'number' && isFinite(value[keys[i]])) {
-        kept.push({ key: keys[i], at: value[keys[i]] });
-      }
-    }
-    // 超過上限時留下被拒時間最新的那些:映射整包寫回 storage，沒有上限就會隨著
-    // 被拒的 key 一路長到配額爆掉。舊的那些對應的本機條目多半早就又動過(那時
-    // updatedAt 已前進，映射也就失效)，先丟。
-    if (kept.length > MARKS_REJECTED_MAX) {
-      kept.sort(function (a, b) {
-        if (a.at !== b.at) return b.at - a.at;
-        return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
-      });
-      kept = kept.slice(0, MARKS_REJECTED_MAX);
-    }
-    var out = {};
-    for (var j = 0; j < kept.length; j++) out[kept[j].key] = kept[j].at;
-    return out;
   }
 
   // UUID v4 生成器。三種載入環境(service worker、擴充頁面、Node 測試)的全域
@@ -881,6 +872,112 @@
     // 沒觸發任何裁切時回傳原陣列參照(常態路徑零額外配置;遷移的冪等短路也
     // 依賴這個參照相等)。
     return budgeted.length === list.length ? list : budgeted;
+  }
+
+  // 撞配額之後的收緊比例(mutate 的 cap level 1):位元組軟預算打八折、筆數上
+  // 限打九折。level 0 就是平時的上限;模板只重試一次，level 2 以上不會出現。
+  var QUOTA_TIGHTEN = { softBudget: 0.8, maxEntries: 0.9 };
+
+  function tightenedLimits(maxEntries, softBudget) {
+    return {
+      maxEntries: Math.floor(maxEntries * QUOTA_TIGHTEN.maxEntries),
+      softBudget: Math.floor(softBudget * QUOTA_TIGHTEN.softBudget),
+    };
+  }
+
+  // mutate 的 cap 介面版本:cap(list, level)，level 0 用 HISTORY_LIMITS，level
+  // 1 起用收緊後的上限。
+  function capHistoryAt(list, level) {
+    if (!level) return capHistory(list);
+    return capHistory(list, tightenedLimits(HISTORY_LIMITS.MAX_ENTRIES, HISTORY_LIMITS.SOFT_BUDGET));
+  }
+
+  // ---- 儲存讀改寫模板 ----
+  //
+  // createSerialQueue():單一 promise 佇列。enqueue(fn) 等前一個工作整段結算
+  // 才執行 fn，回傳「這一次」的 promise(如實反映成敗);佇列尾端另外吞掉錯
+  // 誤，某一次失敗不阻塞後續。
+  function createSerialQueue() {
+    var tail = Promise.resolve();
+    return function enqueue(fn) {
+      var run = tail.then(fn);
+      tail = run.catch(function () {});
+      return run;
+    };
+  }
+
+  function storageError(code, cause) {
+    var err = new Error(code);
+    err.code = code;
+    err.cause = cause;
+    return err;
+  }
+
+  // createMutator({ area, enqueue }):回傳 mutate(key, fn, opts)，一次單鍵讀
+  // 改寫，整段在 enqueue 佇列內執行。area 只需 get／set(chrome.storage 區域
+  // 或其轉接)。
+  //   opts.normalize(raw)  讀出的原始值(鍵缺席時為 null)先過它再交給 fn;缺
+  //                        席時原樣交出。opts 整個缺席也可以。
+  //   fn(current)          回 undefined＝不寫，結果 { written:false };回
+  //                        { next, result }＝寫 next，結果 { written:true,
+  //                        result, value }，value 是實際落盤的內容(過 cap 後)。
+  //   opts.cap(next, level) 選填。寫入值一律先過 cap(next, 0);撞配額時以
+  //                        cap(next, 1) 收緊再寫一次。沒有 cap 不重試——同一
+  //                        份內容再寫一次照樣撞。
+  //   opts.onQuota         收緊後仍撞配額(或沒有 cap)時:'skip' 回 { written:
+  //                        false, result, quota:true, cause }(cause 是原
+  //                        配額錯誤);'throw' 拋 code storage_quota。
+  // 非配額的寫入錯誤一律拋 code storage_write_failed，cause 帶原錯誤，不重試。
+  // 讀取錯誤與 fn 拋出的錯誤原樣往外拋。
+  //
+  // 【死鎖守則】fn 在佇列內執行，fn 內不得呼叫任何會 enqueue 到同一條佇列的
+  // 函式(background 的 ensureDevice／getLocalDevice 即是):佇列要等本次結算
+  // 才放行下一個，fn 等它就是等自己。需要的值在呼叫 mutate 之前先取好。
+  function identity(value) {
+    return value;
+  }
+
+  function createMutator(deps) {
+    return function mutate(key, fn, opts) {
+      opts = opts || {};
+      var normalize = typeof opts.normalize === 'function' ? opts.normalize : identity;
+      return deps.enqueue(function () {
+        var query = {};
+        query[key] = null;
+        return Promise.resolve()
+          .then(function () {
+            return deps.area.get(query);
+          })
+          .then(function (got) {
+            return fn(normalize(got ? got[key] : null));
+          })
+          .then(function (plan) {
+            if (!plan) return { written: false, result: undefined };
+            return write(plan, 0);
+          });
+      });
+
+      function write(plan, level) {
+        var value = opts.cap ? opts.cap(plan.next, level) : plan.next;
+        var items = {};
+        items[key] = value;
+        return Promise.resolve()
+          .then(function () {
+            return deps.area.set(items);
+          })
+          .then(
+            function () {
+              return { written: true, result: plan.result, value: value };
+            },
+            function (err) {
+              if (!isQuotaExceededError(err)) throw storageError('storage_write_failed', err);
+              if (level === 0 && opts.cap) return write(plan, 1);
+              if (opts.onQuota === 'skip') return { written: false, result: plan.result, quota: true, cause: err };
+              throw storageError('storage_quota', err);
+            }
+          );
+      }
+    };
   }
 
   // ---- 詐騙串文偵測 ----
@@ -1528,16 +1625,22 @@
     entry.addedAt = addedAt === null ? updatedAt : addedAt;
     entry.updatedAt = updatedAt === null ? entry.addedAt : updatedAt;
     entry.source = raw.source === 'manual' ? 'manual' : 'auto';
-    // 本機專有的推送提示。被動再掃到已列名的作者時只併證據、不推進
-    // updatedAt，新證據靠這一格讓下一輪的推送批選得到(選批水位線取 updatedAt
-    // 與它的較大者)。不上雲:toScamMark 不送、fromScamMark 不讀回。形狀不是有
-    // 限數字時整個鍵不落。
+    // 本機專有的待推旗標:dirty 為 true 代表這一筆有改動還沒上雲，dirtyAt 是
+    // 標髒當下的版本戳，ack 回來時比對它，往返期間又改過的就不清。逐筆記而非
+    // 整份名單一條時戳水位線:被動補證據不推進 updatedAt、墓碑守衛要讓位、被
+    // 拒要停送，這些都是單筆的事，水位線只能靠層層夾擠去近似。不上雲:
+    // toScamMark 不送、fromScamMark 不讀回。乾淨的條目不落這兩個鍵。
+    if (raw.dirty === true) {
+      entry.dirty = true;
+      entry.dirtyAt = finiteOr(raw.dirtyAt, 0);
+    }
+    // 舊版的推送提示，只留給 sync.js 的一次性遷移讀(見 migrateLegacyMarks)。
     if (typeof raw.pushAfter === 'number' && isFinite(raw.pushAfter)) entry.pushAfter = raw.pushAfter;
     return entry;
   }
 
   // entries(與 v1 allowlist)的鍵形狀:Threads 的作者主鍵是純數字字串、1-20 位
-  // (與 background 的 SCAM_USER_ID_PATTERN 同一把尺)。storage 是使用者可編
+  // (與伺服器同一把尺;SW 端經 isScamUserId 共用本判準)。storage 是使用者可編
   // 輯、也可能被他處寫髒的地方，不驗鍵形狀時任意字串(handle、路徑、標記字
   // 串)都能混進 entries 當成一筆作者，查表永遠對不上寫入側的 userId。
   var SCAM_USER_ID_PATTERN = /^\d{1,20}$/;
@@ -1770,7 +1873,13 @@
   // 位元組裁切先用單筆估算做單次 O(n) 前向累加(同一筆不 stringify 兩次)，收
   // 尾再用整包的實際序列化位元組驗證:估算只近似分隔逗號，仍可能低估。兩處
   // 都以 UTF-8 位元組計。
-  function capScamBlocklist(raw) {
+  //
+  // limits(選填):{ maxEntries, softBudget }，缺席的鍵用 SCAM_LIMITS(比照
+  // capHistory)。淘汰的條目連同 handleIndex 裡指向它的反查鍵一起清掉。
+  function capScamBlocklist(raw, limits) {
+    var maxEntries =
+      limits && typeof limits.maxEntries === 'number' ? limits.maxEntries : SCAM_LIMITS.MAX_ENTRIES;
+    var budget = limits && typeof limits.softBudget === 'number' ? limits.softBudget : SCAM_LIMITS.SOFT_BUDGET;
     var list = normalizeScamBlocklist(raw);
     var ids = Object.keys(list.entries);
     var i;
@@ -1781,22 +1890,28 @@
     ids.sort(function (a, b) {
       return list.entries[b].updatedAt - list.entries[a].updatedAt;
     });
-    ids = ids.slice(0, SCAM_LIMITS.MAX_ENTRIES);
+    ids = ids.slice(0, maxEntries);
 
     var out = { version: SCAM_BLOCKLIST_VERSION, entries: {}, handleIndex: {} };
     var kept = [];
     var bytes = utf8Length(JSON.stringify(out));
     for (i = 0; i < ids.length; i++) {
       var size = scamEntryBytes(ids[i], list.entries[ids[i]]);
-      if (kept.length > 0 && bytes + size > SCAM_LIMITS.SOFT_BUDGET) break;
+      if (kept.length > 0 && bytes + size > budget) break;
       bytes += size;
       addScamEntry(out, ids[i], list.entries[ids[i]]);
       kept.push(ids[i]);
     }
-    while (kept.length > 1 && utf8Length(JSON.stringify(out)) > SCAM_LIMITS.SOFT_BUDGET) {
+    while (kept.length > 1 && utf8Length(JSON.stringify(out)) > budget) {
       removeScamEntry(out, kept.pop());
     }
     return out;
+  }
+
+  // mutate 的 cap 介面版本:level 0 用 SCAM_LIMITS，level 1 起用收緊後的上限。
+  function capScamBlocklistAt(raw, level) {
+    if (!level) return capScamBlocklist(raw);
+    return capScamBlocklist(raw, tightenedLimits(SCAM_LIMITS.MAX_ENTRIES, SCAM_LIMITS.SOFT_BUDGET));
   }
 
   // 單筆條目的證據裁切:依 at 降冪留最新 MAX_EVIDENCE 筆，snippet 硬裁
@@ -2149,12 +2264,23 @@
     out.evidence = mergeScamEvidenceLists(a.evidence, b.evidence);
     out.addedAt = scamEarlier(a.addedAt, b.addedAt);
     out.updatedAt = Math.max(finiteOr(a.updatedAt, 0), finiteOr(b.updatedAt, 0));
-    // pushAfter 與 snippet 同屬本機專有:它記的是「這台裝置還有一筆新證據沒推
-    // 上去」，與雲端那一份的新舊無關。純量落敗就把它洗掉的話，遠端對同一條目
-    // 的變更只要比本機的推送早一步到，那筆新證據就再也選不進推送批。
-    var pushAfter = Math.max(finiteOr(a.pushAfter, 0), finiteOr(b.pushAfter, 0));
-    if (pushAfter > 0) out.pushAfter = pushAfter;
+    // dirty／dirtyAt 只認本機那一份:它記的是「這台裝置還有改動沒推上去」，
+    // 與雲端那一份的新舊無關，純量落敗也照留;遠端帶來的一律不採信。
+    if (a.dirty === true) {
+      out.dirty = true;
+      out.dirtyAt = finiteOr(a.dirtyAt, 0);
+    }
     return out;
+  }
+
+  // 把條目標成待推(就地改寫並回傳同一個物件)。dirtyAt 取 now，但已經 dirty
+  // 的條目至少前進 1:往返期間同一毫秒內再改一次，版本戳也得換，ack 才認得出
+  // 送出去的不是最新版。
+  function markScamEntryDirty(entry, now) {
+    var prev = entry.dirty === true ? finiteOr(entry.dirtyAt, -Infinity) : -Infinity;
+    entry.dirty = true;
+    entry.dirtyAt = Math.max(now, prev + 1);
+    return entry;
   }
 
   // 兩個時戳取較早的一個。只有一邊是有限數字時取那一邊(缺席不是 0——拿 0 當
@@ -2206,6 +2332,7 @@
     NOTICE_KIND_LIST: NOTICE_KIND_LIST,
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
+    SETTINGS_SCHEMA: SETTINGS_SCHEMA,
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
     API_BASE_PRODUCTION: API_BASE_PRODUCTION,
     API_BASE_STAGING: API_BASE_STAGING,
@@ -2233,6 +2360,9 @@
     errorCategoryOf: errorCategoryOf,
     HISTORY_LIMITS: HISTORY_LIMITS,
     capHistory: capHistory,
+    capHistoryAt: capHistoryAt,
+    createSerialQueue: createSerialQueue,
+    createMutator: createMutator,
     SCAM_LIMITS: SCAM_LIMITS,
     SCAM_RULES: SCAM_RULES,
     SCAM_SIGNALS: SCAM_SIGNALS,
@@ -2244,6 +2374,7 @@
     normalizeScamBlocklist: normalizeScamBlocklist,
     capScamEvidence: capScamEvidence,
     capScamBlocklist: capScamBlocklist,
+    capScamBlocklistAt: capScamBlocklistAt,
     scamEntryBytes: scamEntryBytes,
     makeBlocklistEntry: makeBlocklistEntry,
     mergeBlocklistEvidence: mergeBlocklistEvidence,
@@ -2251,7 +2382,9 @@
     toScamMark: toScamMark,
     fromScamMark: fromScamMark,
     isScamMarkHandle: isScamMarkHandle,
+    isScamUserId: isScamUserIdKey,
     mergeScamEntry: mergeScamEntry,
+    markScamEntryDirty: markScamEntryDirty,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

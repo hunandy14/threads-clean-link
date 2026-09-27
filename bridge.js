@@ -32,8 +32,8 @@
   var REQ_TYPE = 'TCL_RESOLVE_REQ';
   var RES_TYPE = 'TCL_RESOLVE_RES';
 
-  // F4 removedParams 單筆長度上限(對齊 background.js 的
-  // REMOVED_PARAM_KEY_MAX／REMOVED_PARAM_VALUE_MAX，兩份常數各自獨立維
+  // F4 removedParams 單筆長度上限(對齊 tcl-core.js 的
+  // PARAM_KEY_MAX／PARAM_VALUE_MAX，兩份常數各自獨立維
   // 護，本檔無建置系統可共用單一來源)。見下方 removedParamsWithinBounds。
   var MAX_REMOVED_PARAM_KEY_LENGTH = 64;
   var MAX_REMOVED_PARAM_VALUE_LENGTH = 512;
@@ -57,10 +57,10 @@
   // 一樣交給 background。形狀不對整則丟棄，不轉發殘缺訊息。
   var MAX_KIND_LENGTH = 16;
 
-  // removedParams 陣列筆數上限，與 background.js 的 REMOVED_PARAMS_MAX
+  // removedParams 陣列筆數上限，與 tcl-core.js 的 REMOVED_PARAMS_MAX
   // 對齊(兩份常數各自獨立維護，本檔無建置系統可共用單一來源)。超過上限
   // 直接整欄丟棄，不逐筆截斷——bridge 這層只負責擋住超大 payload 越過
-  // 程序邊界，細部 sanitize 交給 background.js。
+  // 程序邊界，細部 sanitize 交給 tcl-core.js。
   var MAX_REMOVED_PARAMS = 20;
 
   // 孤兒 content script 偵測(錯誤訊息版):擴充功能更新／重載後，既開分頁
@@ -194,7 +194,7 @@
   // 超過長度上限——擋住「筆數不多但單筆超長」的巨量 payload 越過 content
   // script → service worker 的程序邊界。任一筆超長就回傳 false(整欄不轉
   // 發，對齊筆數超限時「整欄丟棄」的粗粒度風格);細部型別/白名單/逐筆截斷
-  // 仍交給 background.js 的 sanitizeRemovedParams。
+  // 仍交給 tcl-core.js 的 sanitizeRemovedParams。
   function removedParamsWithinBounds(arr) {
     for (var i = 0; i < arr.length; i++) {
       var item = arr[i];
@@ -253,7 +253,7 @@
         // 比照既有的 MAX_CLEAN_URL_LENGTH 做型別+長度檢查(與 cleanUrl 同
         // 一種「頁面可控字串」，用同一把尺);removedParams 檢查
         // Array.isArray + 筆數上限，超限就整欄丟棄(不做逐筆截斷——這裡
-        // 只負責擋住超大 payload，逐筆欄位 sanitize 交給 background.js
+        // 只負責擋住超大 payload，逐筆欄位 sanitize 交給 tcl-core.js
         // 的 sanitizeRemovedParams)。
         if (
           typeof data.original === 'string' &&
@@ -447,7 +447,7 @@
   // 的 clipboard-guard.js。autoClean 預設值 false，clipboard-guard.js 的
   // 內建預設值需同步。saveHistory 讓 clipboard-guard.js 的 recordOnly
   // (autoClean 關閉)流程可以在 saveHistory 也關閉時直接省掉整個解析請
-  // 求(解析結果反正不會被 background.js 的 recordHistory 收下)，不浪費
+  // 求(解析結果反正不會被 sw-history.js 的 recordHistory 收下)，不浪費
   // 一次網路往返。
   var SETTINGS_PUSH_TYPE = 'TCL_SETTINGS_PUSH';
   var SETTINGS_KEYS = ['autoClean', 'saveHistory'];

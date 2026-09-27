@@ -15,13 +15,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
 const TCLCore = require('../tcl-core.js');
 const { postKeyOf } = TCLCore;
 const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
 function loadSync() {
   return require('../sync.js');
@@ -237,7 +236,8 @@ function sampleBlocklist() {
       source: 'auto',
       addedAt: T0 - 5 * DAY,
       updatedAt: T0 - 2 * DAY,
-      pushAfter: T0 - DAY,
+      dirty: true,
+      dirtyAt: T0 - DAY,
       evidence: [],
     },
   };
@@ -253,7 +253,7 @@ function signedInState(over = {}) {
       lastSyncedAt: T0 - 10 * 60_000,
       lastError: null,
       marksCursor: 'marks-before',
-      marksPushedAt: T0 - 5000,
+      marksEvicted: 3,
     },
     over
   );
@@ -402,7 +402,7 @@ test('RA1 登入（同帳號）：syncAuth／syncState／syncBackoff／syncVerif
   assert.equal(state.lastSyncedAt, null);
   assert.equal(state.lastError, null);
   assert.equal(state.marksCursor, null, 'marks 游標歸零');
-  assert.equal(state.marksPushedAt, null, 'marks 推送水位線歸零＝全推');
+  assert.ok(!('marksPushedAt' in state), 'marks 不再有推送水位線（名單改由登入時全部標 dirty 全推）');
   assert.deepEqual(value.syncBackoff, { failures: 0 }, '退避歸零');
   assert.equal(value.syncVerifiedAt, T0, 'syncVerifiedAt 設為 now');
 });
@@ -665,13 +665,6 @@ test('RA5 刪雲端：sync.js 不再移除舊版守衛鍵', async () => {
 // background.js 的 onInstalled 載入器（同 background.test.js 的
 // loadBackgroundForMigration）。共用 createChromeStorage 的 local 區沒有
 // remove()，這裡在本檔替身上補一支側錄版，不改共用 helper。
-const BG_SRC =
-  fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
-
 function loadBackgroundForInstall(localSeed) {
   const onInstalledListeners = [];
   const chrome = {
@@ -696,7 +689,7 @@ function loadBackgroundForInstall(localSeed) {
     return new Promise((resolve) => setTimeout(resolve, 0));
   };
   chrome.storage = storage.api;
-  runInSandbox(BG_SRC, {
+  loadSwSources({
     chrome,
     fetch: async () => {
       throw new Error('unexpected fetch');

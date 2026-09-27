@@ -23,20 +23,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
 const C = require(path.join(__dirname, '..', 'tcl-core.js'));
-
-// background.js 依賴 i18n 與 tcl-core（真實環境靠 importScripts），測試把三
-// 支腳本接在同一個 sandbox 全域內執行（同 test/background.test.js）。
-const SRC =
-  fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 
 const CLEAN_URL = 'https://www.threads.com/@dafucoding/post/DbezfB0gYvP';
 const OTHER_URL = 'https://www.threads.com/@other/post/OtherPostId';
@@ -55,7 +46,7 @@ const NEW_FIELDS = ['id', 'postKey', 'original', 'receivedAt', 'dirty', 'serverU
 // og fetch 補強經 fetchOgFieldsForLocalKind 的 setTimeout 逾時競速)跑完就
 // 斷言、閒時又白等，兩頭不討好;連同其餘五份逐字或近乎逐字相同的版本收斂
 // 進 test/support/settle.js 一份共用實作(原理與各項取捨的完整說明見該檔
-// 頭註解)。本檔經 runInSandbox 載入同一份 background.js(含
+// 頭註解)。本檔經 loadSwSources 載入 SW 全部腳本(含
 // fetchOgFieldsForLocalKind 的長效逾時計時器與 TCLSync 引擎的 setTimeout
 // 注入)，defaultMs 150 與 background.test.js 一致。
 const { settle, reset } = require('./support/settle').installSettle({ defaultMs: 150 });
@@ -102,8 +93,7 @@ function loadBackgroundForMigration(localHistory, localExtra) {
   if (localHistory) localSeed.history = localHistory;
   const storage = createChromeStorage({ saveHistory: true }, localSeed);
   chrome.storage = storage.api;
-  runInSandbox(
-    SRC,
+  loadSwSources(
     makeSandboxGlobals(chrome, async () => {
       throw new Error('unexpected fetch');
     })
@@ -138,7 +128,7 @@ function loadBackgroundForRecord(localHistory) {
   // cleanedNotice 一律經 fetchOgFieldsForLocalKind 對貼文頁補一次 og
   // fetch，這裡一律回無 og 的最小 HTML（欄位維持呼叫端傳入的值）。
   const fetchImpl = async (url) => ({ url, text: async () => NO_OG_HTML });
-  runInSandbox(SRC, makeSandboxGlobals(chrome, fetchImpl));
+  loadSwSources(makeSandboxGlobals(chrome, fetchImpl));
 
   return {
     storage,
@@ -557,7 +547,7 @@ test('S6 配額:schema 遷移寫入超出配額時優雅降級——console.warn
     console.error = originalError;
   }
 
-  assert.equal(setCallCount, 1, '配額失敗不得重試');
+  assert.equal(setCallCount, 2, '配額失敗只收緊重寫一次，不再重試');
   assert.ok(
     warnCalls.some((args) => typeof args[0] === 'string' && args[0].includes('[threads-clean-link]') && args[0].includes('配額')),
     '應以 [threads-clean-link] 前綴 console.warn 配額訊息'
@@ -583,11 +573,10 @@ test('S5 常數:DEFAULT_SYNC_STATE 形狀', () => {
     lastSyncedAt: null,
     // 【斷言翻轉｜D53】clearedAt（清除全部的全域水位線）移除：清除全部改走墓碑。
     lastError: null,
-    // D38（車道 B）:警示名單 marks 通道的四格水位線，見 sync-marks 契約。
+    // D38（車道 B）:警示名單 marks 通道的下行狀態，見 sync-marks 契約。上行待推
+    // 記在名單條目的 dirty 上（SW-4b），syncState 沒有推送水位線與被拒映射。
     marksCursor: null,
-    marksPushedAt: null,
     marksEvicted: null,
-    marksRejected: null,
     // CR-2：回填的續填位置。回填一輪最多翻 20 頁，翻不完時不記位置就只能下一輪
     // 從第一頁重來——雲端筆數多到單輪翻不完的帳號因此永遠回填不到底，marks 通道
     // 卡在回填、一筆都推不出去。

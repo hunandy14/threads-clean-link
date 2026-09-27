@@ -24,7 +24,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 const { postKeyOf } = require('../tcl-core.js');
 const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
 const options = require(path.join(__dirname, '..', 'options.js'));
@@ -831,13 +832,6 @@ test('H1 auth exchange：讀本文途中逾時 → network_error，不得回 bod
 // H1 — background resolveFinalUrl：AbortSignal.timeout(10000)，對 Threads 請求數不變
 // ============================================================================
 
-const BG_SRC =
-  fs.readFileSync(path.join(REPO_ROOT, 'i18n.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(REPO_ROOT, 'tcl-core.js'), 'utf8') +
-  '\n' +
-  fs.readFileSync(path.join(REPO_ROOT, 'background.js'), 'utf8');
-
 const BG_EXT_ID = 'test-extension-id';
 const BG_OWN_SENDER = { id: BG_EXT_ID };
 const SHARE_URL = 'https://www.threads.com/share/DHuf91XTf/';
@@ -877,7 +871,7 @@ function loadBgForResolve(fetchFor) {
     fetchCalls.push({ url, init });
     return fetchFor(url, init);
   };
-  runInSandbox(BG_SRC, {
+  loadSwSources({
     chrome,
     fetch: fetchImpl,
     AbortSignal: { timeout: recorder.timeout },
@@ -1016,7 +1010,7 @@ function loadBgForSyncWiring() {
     permissions: { contains: (d, cb) => cb(true), request: (d, cb) => cb(true) },
     storage: storage.api,
   };
-  runInSandbox(BG_SRC, {
+  loadSwSources({
     chrome,
     TCLSync,
     fetch: async (url) => ({ url, text: async () => NO_OG_HTML }),
