@@ -622,10 +622,10 @@ test('裝置改名 input 按 Esc 只取消編輯，不關裝置對話框(cancel 
 
 test('toast:對話框開著時跳 toast，toast 重新排到 top layer 最上層(不被遮罩蓋住)', async () => {
   const { ctx } = await openImport();
-  const toastEl = ctx.doc.ids.toast;
   ctx.doc.ids.modalText.value = 'not json';
   ctx.doc.getElementById('modalPrimary').fire('click');
   await settle();
+  const toastEl = ctx.doc.getElementById('toast');
 
   assert.equal(ctx.doc.ids.overlay.open, true, '匯入失敗不關框');
   assert.equal(toastEl.textContent, i18n.t('zh', 'opToastBadJson'), '前置:跳出失敗提示');

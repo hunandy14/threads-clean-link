@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const { createChromeStorage, runInSandbox } = require('./support/helpers');
-const { makeNode, makeDocumentStub } = require('./support/options-dom');
+const { makeNode, makeDocumentStub, isPopoverOpen } = require('./support/options-dom');
 
 const options = require(path.join(__dirname, '..', 'options.js'));
 const i18n = require(path.join(__dirname, '..', 'i18n.js'));
@@ -841,28 +841,6 @@ test('[hidden] 修正:options.html 應有全域 [hidden]{display:none!important}
   );
 });
 
-// ---- #confirmOverlay 的 z-index ----
-//
-// 確認框(#confirmOverlay)在 options.html 的 DOM 順序寫在詳細視窗
-// (#detailOverlay)前面，兩者同吃 .overlay 的 z-index:10 時，後出現的
-// detail 依繪製順序蓋上來——「從詳細視窗按刪除這筆」開的確認框整個被
-// 遮住:畫面看似沒反應、焦點靜默落在看不見的 #confirmCancel、點遮罩
-// 關到的是 detail(留下孤兒 confirm)。confirm 需自帶更高 z-index。
-//
-// 最小 DOM stub 不解析真實 CSS，測不出繪製層級，只能靜態原文檢查。正則
-// 以 ^ 行首錨定 + m 旗標，只認真正的 CSS 規則行——不加錨定的話，本檔/HTML
-// 註解散文裡只要提到 #confirmOverlay 與 z-index 就會誤命中，變成鎖不住
-// 東西的假釘。
-test('確認框疊層:options.html 應有 #confirmOverlay 的 z-index 規則(疊在詳細視窗之上)', () => {
-  const fs = require('node:fs');
-  const html = readOptionsAll();
-  assert.match(
-    html,
-    /^\s*#confirmOverlay\s*\{[^}]*z-index[^}]*\}/m,
-    '#confirmOverlay 需自帶 z-index，否則與 #detailOverlay 同層時會被 DOM 順序在後的 detail 蓋住'
-  );
-});
-
 // ---- 頁首帳號鈕高度對齊(.ghost-btn 的固定 34px) ----
 //
 // 真機量測發現:未登入態的 #acctSignInBtn(.signin-btn，套用 .btn 的
@@ -1121,7 +1099,7 @@ test('controller smoke:點卡片本身開啟詳細視窗，顯示卡頭/作者�
   const card = doc.ids.rows.children[0];
   card.fire('click');
 
-  assert.equal(doc.ids.detailOverlay.hidden, false);
+  assert.equal(doc.ids.detailOverlay.open, true);
   assert.equal(doc.ids.detailBadge.textContent, '短碼解析');
   assert.equal(doc.ids.detailAuthorRow.hidden, false);
   assert.equal(doc.ids.detailAuthorName.textContent, 'Dafu');
@@ -1136,7 +1114,7 @@ test('controller smoke:點卡片本身開啟詳細視窗，顯示卡頭/作者�
   assert.equal(doc.ids.detailOpenLink.href, CARD_URL_A);
 
   doc.ids.detailClose.fire('click');
-  assert.equal(doc.ids.detailOverlay.hidden, true, '關閉按鈕應收合詳細視窗');
+  assert.equal(doc.ids.detailOverlay.open, false, '關閉按鈕應收合詳細視窗');
 });
 
 // 降級網址條目(無 author/excerpt)開詳細視窗:比照卡片一樣降級顯示網址，
@@ -1250,11 +1228,11 @@ test('controller smoke:詳細視窗刪除鈕先跳確認框，確認後刪除目
   await settle();
 
   doc.ids.rows.children[0].fire('click');
-  assert.equal(doc.ids.detailOverlay.hidden, false);
+  assert.equal(doc.ids.detailOverlay.open, true);
 
   // 點刪除鈕:不直接刪，先開確認框，且套的是刪除文案(不是清除全部)。
   doc.ids.detailDeleteBtn.fire('click');
-  assert.equal(doc.ids.confirmOverlay.hidden, false, '刪除鈕應先開確認框，不直接刪');
+  assert.equal(doc.ids.confirmOverlay.open, true, '刪除鈕應先開確認框，不直接刪');
   assert.equal(doc.ids.rows.children.length, 1, '尚未確認，紀錄仍在');
   assert.equal(doc.ids.confirmDesc.textContent, i18n.t('zh', 'opDeleteConfirmDesc'));
   assert.equal(doc.ids.confirmOk.textContent, i18n.t('zh', 'opDeleteConfirmDo'), '確認鈕文案應為「刪除」，不是「確定清除」');
@@ -1264,8 +1242,8 @@ test('controller smoke:詳細視窗刪除鈕先跳確認框，確認後刪除目
   await settle();
 
   assert.equal(doc.ids.rows.children.length, 0, '確認後卡片牆應重新渲染為空');
-  assert.equal(doc.ids.detailOverlay.hidden, true, '刪除目前顯示中的條目應順手關閉詳細視窗');
-  assert.equal(doc.ids.confirmOverlay.hidden, true, '確認框關閉');
+  assert.equal(doc.ids.detailOverlay.open, false, '刪除目前顯示中的條目應順手關閉詳細視窗');
+  assert.equal(doc.ids.confirmOverlay.open, false, '確認框關閉');
   assert.equal(doc.ids.toast.textContent, i18n.t('zh', 'opToastDeleted'), '寫入成功才發已刪除 toast');
 });
 
@@ -1287,14 +1265,14 @@ test('controller smoke:刪除確認框按取消不刪除紀錄', async () => {
 
   doc.ids.rows.children[0].fire('click');
   doc.ids.detailDeleteBtn.fire('click');
-  assert.equal(doc.ids.confirmOverlay.hidden, false);
+  assert.equal(doc.ids.confirmOverlay.open, true);
 
   doc.ids.confirmCancel.fire('click');
   await settle();
 
-  assert.equal(doc.ids.confirmOverlay.hidden, true, '取消後確認框收合');
+  assert.equal(doc.ids.confirmOverlay.open, false, '取消後確認框收合');
   assert.equal(doc.ids.rows.children.length, 1, '取消不刪，紀錄仍在');
-  assert.equal(doc.ids.detailOverlay.hidden, false, '取消後詳細視窗仍開著');
+  assert.equal(doc.ids.detailOverlay.open, true, '取消後詳細視窗仍開著');
 });
 
 // deleteEntry 以 url+at 精準命中。刻意讓 entries 裡出現兩筆相同 url、不同
@@ -1357,7 +1335,7 @@ test('controller smoke:詳細視窗開著時若條目已被別處(如清除全�
   await settle();
 
   doc.ids.rows.children[0].fire('click');
-  assert.equal(doc.ids.detailOverlay.hidden, false);
+  assert.equal(doc.ids.detailOverlay.open, true);
 
   // 「清除全部」走 clearBtn → 確認框 → confirmOk → persistHistory([]) +
   // renderAll，不經 setHistory 的 detailEntry 重新定位邏輯，detailEntry
@@ -1405,7 +1383,7 @@ test('controller smoke:詳細視窗開著時 setHistory 帶來同 url 的新資�
 
   controller.setHistory([{ url: CARD_URL_A, kind: 'share', author: 'Dafu', excerpt: 'new excerpt after live update', at: 1000 }]);
 
-  assert.equal(doc.ids.detailOverlay.hidden, false, '同 url 找得到，視窗應該保持開啟');
+  assert.equal(doc.ids.detailOverlay.open, true, '同 url 找得到，視窗應該保持開啟');
   assert.equal(doc.ids.detailExcerpt.textContent, 'new excerpt after live update', '視窗內容應刷新成新資料，不是停在舊快照');
 });
 
@@ -1427,11 +1405,11 @@ test('controller smoke:詳細視窗開著時 setHistory 帶來的新清單已無
   await settle();
 
   doc.ids.rows.children[0].fire('click');
-  assert.equal(doc.ids.detailOverlay.hidden, false);
+  assert.equal(doc.ids.detailOverlay.open, true);
 
   controller.setHistory([]);
 
-  assert.equal(doc.ids.detailOverlay.hidden, true, '找不到對應 url 時應關閉詳細視窗');
+  assert.equal(doc.ids.detailOverlay.open, false, '找不到對應 url 時應關閉詳細視窗');
 });
 
 // setHistory 走「只刷新內容、不重置互動態」的路徑:使用者正開著時間軸
@@ -1458,7 +1436,7 @@ test('controller smoke:別處寫入無關紀錄(setHistory)時，使用者正開
 
   doc.ids.rows.children[0].fire('click'); // 開詳細視窗
   doc.ids.detailTimelineBtn.fire('click'); // 開時間軸子層
-  assert.equal(doc.ids.timelineOverlay.hidden, false, '前置:時間軸子層已開');
+  assert.equal(doc.ids.timelineOverlay.open, true, '前置:時間軸子層已開');
 
   // 別處寫入:同 detailEntry 那筆仍在，外加一筆無關的 CARD_URL_B。
   controller.setHistory([
@@ -1466,10 +1444,10 @@ test('controller smoke:別處寫入無關紀錄(setHistory)時，使用者正開
     { url: CARD_URL_A, kind: 'share', at: 3000, seen },
   ]);
 
-  assert.equal(doc.ids.detailOverlay.hidden, false, '詳細視窗仍開著');
+  assert.equal(doc.ids.detailOverlay.open, true, '詳細視窗仍開著');
   assert.equal(
-    doc.ids.timelineOverlay.hidden,
-    false,
+    doc.ids.timelineOverlay.open,
+    true,
     '正在看的時間軸子層不應被無關寫入重置關掉(setHistory 走 refreshDetail，不重置互動態)'
   );
   // 卡片牆已更新為兩筆(證明 setHistory 確實刷新了清單，不是什麼都沒做)。
@@ -1572,9 +1550,8 @@ test('R5:刪除寫入失敗時發失敗 toast、不發已刪除，且回滾', as
 });
 
 // 開啟對話框時焦點移入(關閉鈕)。makeNode 預設沒有 focus 方法(全程 typeof
-// 守衛跳過)，這裡臨時掛上 focus spy 驗證焦點確實被移進對話框。Tab focus
-// trap 需要真實 querySelectorAll，最小 DOM stub 表達不了，由人工/CDP 驗證
-// (見 options.js trapTabInOverlay 註解)。
+// 守衛跳過)，這裡臨時掛上 focus spy 驗證焦點確實被移進對話框。Tab 不跳出
+// 對話框由 showModal 的原生 inert 負責，由人工/CDP 驗證。
 test('R7 a11y:開啟詳細視窗時焦點移入關閉鈕', async () => {
   const history = [{ url: CARD_URL_A, kind: 'share', at: 1000 }];
   const storage = createChromeStorage({ langPref: 'zh' }, { history });
@@ -1762,7 +1739,7 @@ test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊開啟子層�
 
   doc.ids.detailTimelineBtn.fire('click');
 
-  assert.equal(doc.ids.timelineOverlay.hidden, false, '點擊時間軸鈕應開啟子層視窗');
+  assert.equal(doc.ids.timelineOverlay.open, true, '點擊時間軸鈕應開啟子層視窗');
   assert.equal(doc.ids.timelineTitle.textContent, i18n.fmt('zh', 'opTimelineCount', { n: 3 }), '子層視窗標題帶次數');
 
   const rows = doc.ids.detailTimeline.children;
@@ -1791,7 +1768,7 @@ test('controller smoke:seen 有多筆時顯示時間軸鈕，點擊開啟子層�
   );
 
   doc.ids.timelineClose.fire('click');
-  assert.equal(doc.ids.timelineOverlay.hidden, true, '✕ 鈕應收合時間軸子層視窗');
+  assert.equal(doc.ids.timelineOverlay.open, false, '✕ 鈕應收合時間軸子層視窗');
 });
 
 // 切換條目(或關閉詳細視窗)時，時間軸子層視窗要一併收合，避免上一筆的
@@ -1823,10 +1800,10 @@ test('controller smoke:關閉詳細視窗時一併收合已開啟的時間軸子
 
   doc.ids.rows.children[0].fire('click');
   doc.ids.detailTimelineBtn.fire('click');
-  assert.equal(doc.ids.timelineOverlay.hidden, false);
+  assert.equal(doc.ids.timelineOverlay.open, true);
 
   doc.ids.detailClose.fire('click');
-  assert.equal(doc.ids.timelineOverlay.hidden, true, '關閉詳細視窗應順手收合還開著的時間軸子層視窗');
+  assert.equal(doc.ids.timelineOverlay.open, false, '關閉詳細視窗應順手收合還開著的時間軸子層視窗');
 });
 
 // ============================================================
@@ -2601,7 +2578,7 @@ test('帳號入口:登入鈕先跳確認框，文案帶本機現有筆數(D3)，
   await settle();
 
   doc.ids.acctSignInBtn.fire('click');
-  assert.equal(doc.ids.confirmOverlay.hidden, false, '登入前應先跳確認框');
+  assert.equal(doc.ids.confirmOverlay.open, true, '登入前應先跳確認框');
   assert.equal(
     doc.ids.confirmDesc.textContent,
     i18n.fmt('zh', 'opSyncSignInConfirmDesc', { n: 3 }),
@@ -2610,7 +2587,7 @@ test('帳號入口:登入鈕先跳確認框，文案帶本機現有筆數(D3)，
 
   const callsBefore = runtime.calls.length;
   doc.ids.confirmOk.fire('click');
-  assert.equal(doc.ids.confirmOverlay.hidden, true, '確認後應關閉確認框');
+  assert.equal(doc.ids.confirmOverlay.open, false, '確認後應關閉確認框');
   assert.equal(runtime.calls.length, callsBefore + 1);
   assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.signIn' });
 });
@@ -2665,7 +2642,7 @@ test('帳號入口:取消登入確認框不送出 sync.signIn', async () => {
   doc.ids.acctSignInBtn.fire('click');
   doc.ids.confirmCancel.fire('click');
 
-  assert.equal(doc.ids.confirmOverlay.hidden, true);
+  assert.equal(doc.ids.confirmOverlay.open, false);
   assert.ok(
     runtime.calls.every((c) => c.type !== 'sync.signIn'),
     '取消後不應送出 sync.signIn'
@@ -2704,7 +2681,7 @@ test('帳號入口:刪除雲端資料先跳二次確認框(講清楚登出所有
   assert.match(doc.ids.acctMenuSub.textContent, /尚未同步/, '從未同步時 {t} 顯示對應文案');
 
   doc.ids.acctDeleteBtn.fire('click');
-  assert.equal(doc.ids.confirmOverlay.hidden, false);
+  assert.equal(doc.ids.confirmOverlay.open, true);
   const desc = doc.ids.confirmDesc.textContent;
   assert.equal(desc, i18n.t('zh', 'opSyncDeleteConfirmDesc'));
   assert.match(desc, /這台裝置/);
@@ -2859,7 +2836,7 @@ test('帳號入口:立即同步/登出從選單點下去直接送出對應訊息
   await settle();
 
   doc.ids.acctTrigger.fire('click');
-  assert.equal(doc.ids.acctMenu.hidden, false, '前置:選單應已開啟');
+  assert.equal(isPopoverOpen(doc.ids.acctMenu), true, '前置:選單應已開啟');
 
   // 立即同步/登出點下去直接送出訊息(不像登入/刪除雲端資料要先經
   // openConfirm)，這裡驗證的是「點擊後訊息立即出現在 calls 裡，不需要
@@ -2869,7 +2846,7 @@ test('帳號入口:立即同步/登出從選單點下去直接送出對應訊息
   assert.equal(runtime.calls.length, callsBefore + 1, '點擊應立即送出一則訊息，不待額外確認動作');
   assert.deepEqual(runtime.calls[runtime.calls.length - 1], { type: 'sync.now' });
   await settle();
-  assert.equal(doc.ids.acctMenu.hidden, true, '動作後應收合選單');
+  assert.equal(isPopoverOpen(doc.ids.acctMenu), false, '動作後應收合選單');
 
   doc.ids.acctTrigger.fire('click');
   doc.ids.acctSignOutBtn.fire('click');
@@ -3001,7 +2978,7 @@ test('帳號入口:登入過期(signed_out + lastError=session_expired 且有 em
   const callsBefore = runtime.calls.length;
   doc.ids.acctTrigger.fire('click');
   doc.ids.acctReSignInBtn.fire('click');
-  assert.equal(doc.ids.confirmOverlay.hidden, false, '重新登入應走完整登入確認框流程');
+  assert.equal(doc.ids.confirmOverlay.open, true, '重新登入應走完整登入確認框流程');
   doc.ids.confirmOk.fire('click');
   assert.ok(runtime.calls.slice(callsBefore).some((c) => c.type === 'sync.signIn'));
 });
@@ -3480,7 +3457,7 @@ test('menu-item:disabled 有停用樣式(回歸:曾經完全沒有 :disabled 規
 });
 
 // ============================================================
-// 帳號選單開合/鍵盤(車道 B):觸發鈕點擊切換 [hidden]、aria-expanded；
+// 帳號選單開合/鍵盤(車道 B):auto popover，觸發鈕點擊切換開合；
 // 點選單以外的地方與 Esc 會關閉；方向鍵在可用項目間移動焦點。
 // ============================================================
 
@@ -3510,19 +3487,17 @@ function makeMenuCtx() {
   return { storage, doc, runtime, controller };
 }
 
-test('帳號選單:點觸發鈕開啟(hidden 移除、aria-expanded=true)，再點一次關閉(aria-expanded=false，延遲後 hidden)', async () => {
+test('帳號選單:觸發鈕以 popoverTargetElement 指向選單，點一次開啟、再點一次關閉', async () => {
   const ctx = makeMenuCtx();
   await ctx.controller.init();
   await settle();
 
+  assert.equal(ctx.doc.ids.acctTrigger.popoverTargetElement, ctx.doc.ids.acctMenu);
   ctx.doc.ids.acctTrigger.fire('click');
-  assert.equal(ctx.doc.ids.acctMenu.hidden, false);
-  assert.equal(ctx.doc.ids.acctTrigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), true);
 
   ctx.doc.ids.acctTrigger.fire('click');
-  assert.equal(ctx.doc.ids.acctTrigger.getAttribute('aria-expanded'), 'false', '關閉是同步發生的，不等動畫');
-  await settle();
-  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '動畫延遲後才真的補上 hidden');
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false, '再點一次關閉');
 });
 
 test('帳號選單:點選單以外的地方會關閉選單', async () => {
@@ -3531,12 +3506,12 @@ test('帳號選單:點選單以外的地方會關閉選單', async () => {
   await settle();
 
   ctx.doc.ids.acctTrigger.fire('click');
-  assert.equal(ctx.doc.ids.acctMenu.hidden, false);
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), true);
 
   // rows(紀錄卡片牆容器)與帳號區完全無關，代表「點在選單以外」。
-  ctx.doc.fire('click', { target: ctx.doc.getElementById('rows') });
+  ctx.doc.lightDismiss(ctx.doc.getElementById('rows'));
   await settle();
-  assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false);
 });
 
 test('帳號選單:Esc 關閉選單', async () => {
@@ -3545,11 +3520,11 @@ test('帳號選單:Esc 關閉選單', async () => {
   await settle();
 
   ctx.doc.ids.acctTrigger.fire('click');
-  assert.equal(ctx.doc.ids.acctMenu.hidden, false);
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), true);
 
-  ctx.doc.fire('keydown', { key: 'Escape' });
+  ctx.doc.pressEscape();
   await settle();
-  assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false);
 });
 
 test('帳號選單:開啟時焦點進第一個可用項目，方向鍵在項目間移動', async () => {
@@ -4089,7 +4064,7 @@ test('L5 帳號入口:status=error 但沒有 email／displayName 時退回未登
 
   assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, '沒有帳號資訊時只能顯示登入鈕');
   assert.equal(ctx.doc.ids.acctTrigger.hidden, true, '不得畫出頭像觸發鈕');
-  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '不得畫出帳號選單');
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false, '不得畫出帳號選單');
   assert.equal(ctx.doc.ids.statusDot.hidden, true, '不得亮紅點');
   assert.equal(ctx.doc.ids.acctErrorRow.hidden, true, '不得顯示「同步失敗:」錯誤列');
   assert.equal(ctx.doc.ids.acctHeaderName.textContent, '', '不得留下空白名字');
@@ -4108,7 +4083,7 @@ test('L5 帳號入口:transientError 為 cancelled 時靜音(使用者自己取�
 
   assert.equal(toastTextOf(ctx), '', '關掉 Google 視窗不該跳任何提示');
   assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, '取消後仍是未登入卡片');
-  assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false);
   assert.equal(ctx.doc.ids.statusDot.hidden, true);
 });
 
@@ -4143,7 +4118,7 @@ test('L5 帳號入口:transientError 為 transient 時提示「請稍後再試�
       `${code}:暫時性失敗只需要「稍後再試」，錯誤碼對使用者沒有意義`
     );
     assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, `${code}:仍是未登入卡片`);
-    assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+    assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false);
     assert.equal(ctx.doc.ids.statusDot.hidden, true);
   }
 });
@@ -4162,7 +4137,7 @@ test('L5 帳號入口:transientError 為 config 時帶出錯誤碼請使用者�
       `${code}:設定錯誤重試無用，要讓使用者報得出這串碼`
     );
     assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, `${code}:仍是未登入卡片`);
-    assert.equal(ctx.doc.ids.acctMenu.hidden, true);
+    assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false);
     assert.equal(ctx.doc.ids.statusDot.hidden, true);
   }
 });
@@ -4234,7 +4209,7 @@ test('L7 帳號入口:沒有 token 時按刪雲端資料，不送 sync.deleteClo
     await settle();
 
     ctx.doc.ids.acctDeleteBtn.fire('click');
-    if (!ctx.doc.ids.confirmOverlay.hidden) ctx.doc.ids.confirmOk.fire('click');
+    if (ctx.doc.ids.confirmOverlay.open) ctx.doc.ids.confirmOk.fire('click');
     await settle();
 
     assert.ok(
@@ -4281,7 +4256,7 @@ test('L5 帳號入口:status=syncing 但沒有 email／displayName 時同樣退�
 
   assert.equal(ctx.doc.ids.acctSignInBtn.hidden, false, '沒有帳號資訊時只能顯示登入鈕');
   assert.equal(ctx.doc.ids.acctTrigger.hidden, true, '不得畫出頭像觸發鈕');
-  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '不得畫出帳號選單');
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false, '不得畫出帳號選單');
   assert.equal(ctx.doc.ids.statusDot.hidden, true);
   assert.equal(ctx.doc.ids.acctHeaderName.textContent, '', '不得留下空白名字');
   assert.equal(ctx.doc.ids.deviceNote.textContent, i18n.t('zh', 'opDeviceNote'), '沒登入就不能說已同步');
@@ -4455,11 +4430,7 @@ function makeDeviceCtx(opts) {
 // 預設 false——既有的 Esc/Tab 處理會把它們當成「開著的浮層」。開裝置對話框
 // 前先把其餘浮層釘成關閉態，讓斷言只反映裝置對話框自己的狀態。
 async function openDevicesDialog(ctx) {
-  ['detailOverlay', 'timelineOverlay', 'overlay', 'confirmOverlay', 'devicesOverlay'].forEach(
-    (id) => {
-      ctx.doc.getElementById(id).hidden = true;
-    }
-  );
+  ctx.doc.ids.acctTrigger.focus();
   ctx.doc.ids.acctTrigger.fire('click');
   await settle();
   ctx.doc.ids.acctManageDevicesBtn.fire('click');
@@ -4587,8 +4558,8 @@ test('裝置管理:點管理裝置關閉選單並開啟對話框，開啟時送 
   const before = ctx.runtime.calls.length;
   await openDevicesDialog(ctx);
 
-  assert.equal(ctx.doc.ids.acctMenu.hidden, true, '點下去應收合帳號選單');
-  assert.equal(ctx.doc.ids.devicesOverlay.hidden, false, '應開啟裝置對話框');
+  assert.equal(isPopoverOpen(ctx.doc.ids.acctMenu), false, '點下去應收合帳號選單');
+  assert.equal(ctx.doc.ids.devicesOverlay.open, true, '應開啟裝置對話框');
   assert.ok(
     ctx.runtime.calls.slice(before).some((c) => c && c.type === 'sync.devices.list'),
     '開啟對話框時應送 sync.devices.list(§4 ①)'
@@ -4675,7 +4646,7 @@ test('裝置管理:本機這台的移除鈕 disabled，別台移除先跳確認�
   assert.ok(pixelRemove, 'Pixel 8 那一列應有移除鈕');
   pixelRemove.fire('click');
 
-  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '移除應先開確認框，不直接刪');
+  assert.equal(ctx.doc.ids.confirmOverlay.open, true, '移除應先開確認框，不直接刪');
   assert.equal(
     ctx.doc.ids.confirmTitleText.textContent,
     '移除「Pixel 8」？',
@@ -4842,8 +4813,8 @@ test('裝置管理:行內編輯按 Esc 還原原名且不送改名訊息', async
   assert.ok(joinedText(after).includes('Pixel 8'), 'Esc 應還原原名');
   assert.equal(joinedText(after).includes('亂改的名字'), false, '不得殘留未存的輸入');
   assert.equal(
-    ctx.doc.ids.devicesOverlay.hidden,
-    false,
+    ctx.doc.ids.devicesOverlay.open,
+    true,
     'Esc 由 input 自己吃掉，不得順手關掉裝置對話框'
   );
 });
@@ -4980,14 +4951,14 @@ test('裝置管理:Esc 逐層關閉——先關移除確認框，再關裝置對
   const removeBtn = actBtn(pixelRow, 'remove');
   assert.ok(removeBtn, 'Pixel 8 那一列應有移除鈕');
   removeBtn.fire('click');
-  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '前置:確認框應開啟');
+  assert.equal(ctx.doc.ids.confirmOverlay.open, true, '前置:確認框應開啟');
 
-  ctx.doc.fire('keydown', keyEvent('Escape'));
-  assert.equal(ctx.doc.ids.confirmOverlay.hidden, true, '第一次 Esc 只關確認框');
-  assert.equal(ctx.doc.ids.devicesOverlay.hidden, false, '裝置對話框仍開著');
+  ctx.doc.pressEscape();
+  assert.equal(ctx.doc.ids.confirmOverlay.open, false, '第一次 Esc 只關確認框');
+  assert.equal(ctx.doc.ids.devicesOverlay.open, true, '裝置對話框仍開著');
 
-  ctx.doc.fire('keydown', keyEvent('Escape'));
-  assert.equal(ctx.doc.ids.devicesOverlay.hidden, true, '第二次 Esc 關裝置對話框');
+  ctx.doc.pressEscape();
+  assert.equal(ctx.doc.ids.devicesOverlay.open, false, '第二次 Esc 關裝置對話框');
   assert.equal(ctx.doc.activeElement, ctx.doc.ids.acctTrigger, '關閉後焦點回 #acctTrigger');
 });
 
@@ -5131,35 +5102,36 @@ test('裝置管理:先看無歸屬紀錄、再看有歸屬紀錄時「裝置」�
 
 // R2:登出/登入過期時清單一定拉不到，對話框留在畫面上只會是一框永遠轉不出
 // 東西的死內容(帳號選單的管理裝置項這時已經收掉，使用者也沒有正規途徑再開
-// 一次)。焦點跟著回帳號觸發鈕，不留在被撤掉的對話框裡。
-test('裝置管理:對話框開著時廣播登出或登入過期，對話框收起且焦點回帳號觸發鈕', async () => {
+// 一次)。焦點回帳號區當時看得到的控制項，不留在被撤掉的對話框裡:登入過期
+// 觸發鈕仍在，回觸發鈕;登出後觸發鈕隱藏，落在登入鈕(U2-F)。
+test('裝置管理:對話框開著時廣播登出或登入過期，對話框收起且焦點回帳號區可見的控制項', async () => {
   const EXPIRED_STATE = Object.assign({}, DEV_SIGNED_IN_STATE, {
     status: 'signed_out',
     lastError: 'session_expired',
   });
 
-  for (const [label, state] of [
-    ['登出', DEV_SIGNED_OUT_STATE],
-    ['登入過期', EXPIRED_STATE],
+  for (const [label, state, focusId] of [
+    ['登出', DEV_SIGNED_OUT_STATE, 'acctSignInBtn'],
+    ['登入過期', EXPIRED_STATE, 'acctTrigger'],
   ]) {
     const ctx = makeDeviceCtx();
     await ctx.controller.init();
     await settle();
     await openDevicesDialog(ctx);
-    assert.equal(ctx.doc.ids.devicesOverlay.hidden, false, '前置(' + label + '):對話框應開著');
+    assert.equal(ctx.doc.ids.devicesOverlay.open, true, '前置(' + label + '):對話框應開著');
 
     ctx.controller.setSyncState(state);
     await settle();
 
     assert.equal(
-      ctx.doc.ids.devicesOverlay.hidden,
-      true,
+      ctx.doc.ids.devicesOverlay.open,
+      false,
       label + '廣播後應收起裝置對話框'
     );
     assert.equal(
       ctx.doc.activeElement,
-      ctx.doc.ids.acctTrigger,
-      label + '廣播後焦點應回 #acctTrigger，不留在已撤掉的對話框內'
+      ctx.doc.getElementById(focusId),
+      label + '廣播後焦點應落在 #' + focusId + '，不留在已撤掉的對話框內'
     );
   }
 });
@@ -6078,7 +6050,7 @@ test('警示名單卡:解除鈕為 #i-circle-minus 圖示鈕，點下先開確�
 
   removeBtn.fire('click');
 
-  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '解除應先開確認框，不直接送出');
+  assert.equal(ctx.doc.ids.confirmOverlay.open, true, '解除應先開確認框，不直接送出');
   assert.equal(
     ctx.doc.ids.confirmTitleText.textContent,
     '解除「Example Author」的警示？',
@@ -7246,7 +7218,7 @@ function openScamHits(ctx, row) {
   assert.ok(pill, '前置:應有「命中 N 篇」pill');
   assert.equal(pill.tag, 'button', '前置:N ≥ 2 時 pill 才可點');
   pill.fire('click');
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, '前置:證據對話框應開啟');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, true, '前置:證據對話框應開啟');
   return ctx.doc.ids.scamHitsList;
 }
 // 證據貼文連結＝日期本身（比照 Threads：卡上的時間就是那篇的永久連結）。
@@ -7570,7 +7542,7 @@ test('證據卡:N ≥ 2 時「命中 N 篇」是可點的 button，點開對話�
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '前置:對話框預設關著');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, false, '前置:對話框預設關著');
 
   const list = openScamHits(ctx, rowA);
 
@@ -7644,62 +7616,20 @@ test('證據卡:證據對話框可由 ✕、遮罩與 Esc 關閉，焦點回到 
   // ✕ 關閉
   openScamHits(ctx, rowA);
   ctx.doc.ids.scamHitsClose.fire('click');
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '✕ 應關閉對話框');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, false, '✕ 應關閉對話框');
   assert.equal(ctx.doc.activeElement, pill, '關閉後焦點回到開啟它的 pill');
 
   // 點遮罩關閉(點 modal 內部不關)
   openScamHits(ctx, rowA);
   ctx.doc.ids.scamHitsOverlay.fire('click', { target: ctx.doc.ids.scamHitsList });
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, '點內容區不得關閉');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, true, '點內容區不得關閉');
   ctx.doc.ids.scamHitsOverlay.fire('click', { target: ctx.doc.ids.scamHitsOverlay });
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, '點遮罩本身才關閉');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, false, '點遮罩本身才關閉');
 
   // Esc 關閉
   openScamHits(ctx, rowA);
-  ctx.doc.fire('keydown', { key: 'Escape' });
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, true, 'Esc 應關閉對話框');
-});
-
-test('證據卡:證據對話框納入中央 Tab focus trap——開著時 Tab 不會跳出對話框', async () => {
-  const ctx = makeScamCardCtx();
-  await initScamPage(ctx);
-
-  // 真實 options.html 裡每個 overlay 都帶 hidden；DOM stub 的節點是按需建出
-  // 來的，hidden 預設 false，這裡補齊前置，topmostOverlayId 的優先序才測得
-  // 準（證據對話框排在 confirmOverlay 之後）。
-  ['timelineOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'].forEach((id) => {
-    ctx.doc.getElementById(id).hidden = true;
-  });
-
-  const rowA = scamRowById(ctx.doc, SCAM_ID_A);
-  openScamHits(ctx, rowA);
-
-  // focus trap 靠 overlay.querySelectorAll 取可聚焦元素，stub 預設回空陣列
-  // （整段 no-op），餵兩顆進去才驗得到循環。
-  const overlay = ctx.doc.ids.scamHitsOverlay;
-  const first = ctx.doc.createElement('button');
-  const last = ctx.doc.createElement('a');
-  overlay.querySelectorAll = () => [first, last];
-  overlay.contains = (node) => node === overlay || node === first || node === last;
-
-  last.focus();
-  assert.equal(ctx.doc.activeElement, last, '前置：焦點停在對話框最後一個可聚焦元素');
-
-  let prevented = false;
-  ctx.doc.fire('keydown', {
-    key: 'Tab',
-    shiftKey: false,
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-
-  assert.equal(prevented, true, '走到最後一顆時 Tab 的預設行為要攔下來');
-  assert.equal(
-    ctx.doc.activeElement,
-    first,
-    '焦點循環回對話框第一個可聚焦元素——沒把 scamHitsOverlay 納入 topmostOverlayId 的話，焦點會跑到對話框背後的頁面上'
-  );
+  ctx.doc.pressEscape();
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, false, 'Esc 應關閉對話框');
 });
 
 // ---- ⋯ 選單 ----
@@ -7713,18 +7643,17 @@ test('證據卡:右上角是 ⋯ 選項鈕(#i-more)，選單只放「解除」;�
   assert.ok(menuBtn, '每一列右上角應有 button.scam-menu-btn');
   assert.equal(menuBtn.tag, 'button');
   assert.equal(scamAttrOf(menuBtn, 'aria-haspopup'), 'menu', 'aria-haspopup 應為 menu');
-  assert.equal(scamAttrOf(menuBtn, 'aria-expanded'), 'false', '預設收合');
   assert.deepEqual(useHrefs(menuBtn), ['#i-more'], '圖示沿用紀錄卡的三點 #i-more');
 
   const menu = firstByClass(rowA, 'scam-menu');
   assert.ok(menu, '應有 .menu.scam-menu');
   assert.equal(scamAttrOf(menu, 'role'), 'menu');
-  assert.equal(menu.hidden, true, '選單預設關著');
+  assert.equal(menuBtn.popoverTargetElement, menu, '⋯ 鈕以 popoverTargetElement 指向選單(展開狀態由瀏覽器算)');
+  assert.equal(isPopoverOpen(menu), false, '選單預設關著');
   assert.ok(classListOf(menu).indexOf('menu') !== -1, '沿用既有 .menu 樣式');
 
   menuBtn.fire('click');
-  assert.equal(menu.hidden, false, '點 ⋯ 應開選單');
-  assert.equal(scamAttrOf(menuBtn, 'aria-expanded'), 'true', '開啟時 aria-expanded 為 true');
+  assert.equal(isPopoverOpen(menu), true, '點 ⋯ 應開選單');
 
   const items = findByClass(menu, 'menu-item');
   assert.equal(items.length, 1, '選單只放一項:解除');
@@ -8077,10 +8006,9 @@ test('警示名單卡:卡頭標題右邊有資訊鈕(#i-info)，點下去開說�
   // 裡只驗接線。stub 的節點是按需建出、hidden 預設 false，先補齊前置。
   const btn = ctx.doc.ids.scamInfoBtn;
   assert.ok(btn, '卡頭應有 #scamInfoBtn');
-  ctx.doc.ids.scamInfoOverlay.hidden = true;
 
   btn.fire('click');
-  assert.equal(ctx.doc.ids.scamInfoOverlay.hidden, false, '點資訊鈕應開啟說明視窗');
+  assert.equal(ctx.doc.ids.scamInfoOverlay.open, true, '點資訊鈕應開啟說明視窗');
   assert.equal(
     ctx.doc.ids.scamInfoTitle.textContent,
     i18n.t('zh', 'opScamInfoTitle'),
@@ -8153,55 +8081,21 @@ test('警示名單卡:說明視窗可由 ✕、遮罩與 Esc 關閉，焦點回�
   const btn = ctx.doc.ids.scamInfoBtn;
   const overlay = ctx.doc.ids.scamInfoOverlay;
 
-  ctx.doc.ids.scamInfoOverlay.hidden = true;
+  btn.focus();
   btn.fire('click');
   ctx.doc.ids.scamInfoClose.fire('click');
-  assert.equal(overlay.hidden, true, '✕ 應關閉');
+  assert.equal(overlay.open, false, '✕ 應關閉');
   assert.equal(ctx.doc.activeElement, btn, '關閉後焦點回到資訊鈕');
 
   btn.fire('click');
   overlay.fire('click', { target: ctx.doc.ids.scamInfoList });
-  assert.equal(overlay.hidden, false, '點內容區不得關閉');
+  assert.equal(overlay.open, true, '點內容區不得關閉');
   overlay.fire('click', { target: overlay });
-  assert.equal(overlay.hidden, true, '點遮罩本身才關閉');
+  assert.equal(overlay.open, false, '點遮罩本身才關閉');
 
   btn.fire('click');
-  ctx.doc.fire('keydown', { key: 'Escape' });
-  assert.equal(overlay.hidden, true, 'Esc 應關閉');
-});
-
-test('警示名單卡:說明視窗納入中央 Tab focus trap', async () => {
-  const ctx = makeScamCardCtx();
-  await initScamPage(ctx);
-
-  // 真實 options.html 裡每個 overlay 都帶 hidden；DOM stub 的節點按需建出、
-  // hidden 預設 false，補齊前置才測得準 topmostOverlayId 的優先序。
-  ['timelineOverlay', 'overlay', 'devicesOverlay', 'detailOverlay'].forEach((id) => {
-    ctx.doc.getElementById(id).hidden = true;
-  });
-  ctx.doc.ids.scamInfoBtn.fire('click');
-
-  const overlay = ctx.doc.ids.scamInfoOverlay;
-  const first = ctx.doc.createElement('button');
-  const last = ctx.doc.createElement('a');
-  overlay.querySelectorAll = () => [first, last];
-  overlay.contains = (node) => node === overlay || node === first || node === last;
-
-  last.focus();
-  let prevented = false;
-  ctx.doc.fire('keydown', {
-    key: 'Tab',
-    shiftKey: false,
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-  assert.equal(prevented, true, 'Tab 走到最後一顆時要攔下預設行為');
-  assert.equal(
-    ctx.doc.activeElement,
-    first,
-    '焦點循環回說明視窗內——沒納入 topmostOverlayId 的話會跑到視窗背後的頁面上'
-  );
+  ctx.doc.pressEscape();
+  assert.equal(overlay.open, false, 'Esc 應關閉');
 });
 
 // ---- 版面樣式 ----
@@ -8272,14 +8166,12 @@ test('警示名單卡:options.html 備妥資訊鈕與說明視窗(靜態節點�
     '資訊鈕排在標題之後、計數之前'
   );
 
-  const overlay = /<div class="overlay" id="scamInfoOverlay"[^>]*>/.exec(html);
-  assert.ok(overlay, 'options.html 應有 #scamInfoOverlay');
-  assert.ok(/\bhidden\b/.test(overlay[0]), '說明視窗預設收起——沒有 hidden 會在載入時就蓋住整頁');
+  const overlay = /<dialog class="dlg" id="scamInfoOverlay"[^>]*>/.exec(html);
+  assert.ok(overlay, 'options.html 應有 dialog#scamInfoOverlay');
+  assert.ok(!/\bhidden\b/.test(overlay[0]), '說明視窗預設收起靠 dialog 未開啟，不得帶 hidden(會壓過原生行為)');
   assert.ok(
-    /id="scamInfoOverlay"[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"[\s\S]*?aria-labelledby="scamInfoTitle"/.test(
-      html
-    ),
-    '沿用既有 modal 的 dialog 語意'
+    /aria-labelledby="scamInfoTitle"/.test(overlay[0]),
+    'dialog 語意與 modal 由 showModal 提供，標題關聯寫在 dialog 上'
   );
   assert.ok(/id="scamInfoClose"/.test(html), '應有 ✕ 關閉鈕');
   assert.ok(/<ol class="scam-info-list" id="scamInfoList">/.test(html), '五段條列的落點是 <ol>');
@@ -9266,20 +9158,6 @@ function assertSingleTombstone(storage, id, label) {
   assert.equal(history[0].dirty, true, `${label}:墓碑是待上傳的變更`);
 }
 
-function hideAllOverlays(doc) {
-  [
-    'detailOverlay',
-    'timelineOverlay',
-    'overlay',
-    'confirmOverlay',
-    'devicesOverlay',
-    'scamHitsOverlay',
-    'scamInfoOverlay',
-  ].forEach((id) => {
-    doc.getElementById(id).hidden = true;
-  });
-}
-
 // ---- B1:登入態只在 init 讀一次 ----
 
 test('B1 刪除:頁面開著時經 storage.onChanged(local.syncState)轉為已登入，單筆刪除走軟刪留墓碑', async () => {
@@ -9392,7 +9270,7 @@ test('B2 警示名單:命中對話框開著時，storage.onChanged 帶來 histor
   await settle();
 
   assert.equal(ctx.doc.ids.rows.children.length, 1, '前置:history 變動確實送達(紀錄牆多一筆)');
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, 'history 變動不得關掉命中對話框');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, true, 'history 變動不得關掉命中對話框');
   assert.equal(ctx.doc.activeElement, focused, '焦點留在對話框內原本的位置');
   assert.equal(evidenceTexts(ctx.doc.ids.scamHitsList).length, 3, '對話框內容照舊');
 });
@@ -9408,29 +9286,29 @@ test('B2 警示名單:命中對話框開著時直接 setHistory，對話框維�
   ctx.controller.setHistory([s4Entry(URL_A, 1000), s4Entry(URL_B, 2000)]);
   await settle();
 
-  assert.equal(ctx.doc.ids.scamHitsOverlay.hidden, false, 'history 變動不得關掉命中對話框');
+  assert.equal(ctx.doc.ids.scamHitsOverlay.open, true, 'history 變動不得關掉命中對話框');
   assert.equal(ctx.doc.activeElement, focused, '焦點不得被拉回 pill');
 });
 
-test('B2 警示名單:⋯ 選單開著時 history 變動，選單維持開啟(aria-expanded 仍為 true)', async () => {
+test('B2 警示名單:⋯ 選單開著時 history 變動，選單維持開啟(⋯ 鈕仍指向同一個開著的選單)', async () => {
   const ctx = makeScamCardCtx();
   wireStorageOnChanged(ctx.storage, ctx.controller);
   await initScamPage(ctx);
 
   const rowA = scamRowById(ctx.doc, SCAM_ID_A);
   firstByClass(rowA, 'scam-menu-btn').fire('click', { stopPropagation() {} });
-  assert.equal(firstByClass(rowA, 'scam-menu').hidden, false, '前置:⋯ 選單已開');
+  assert.equal(isPopoverOpen(firstByClass(rowA, 'scam-menu')), true, '前置:⋯ 選單已開');
 
   ctx.storage.emitChange({ history: { newValue: [s4Entry(URL_A, 1000)], oldValue: [] } }, 'local');
   await settle();
 
   const rowNow = scamRowById(ctx.doc, SCAM_ID_A);
   assert.ok(rowNow, '名單列仍在');
-  assert.equal(firstByClass(rowNow, 'scam-menu').hidden, false, 'history 變動不得收起 ⋯ 選單');
+  assert.equal(isPopoverOpen(firstByClass(rowNow, 'scam-menu')), true, 'history 變動不得收起 ⋯ 選單');
   assert.equal(
-    firstByClass(rowNow, 'scam-menu-btn').getAttribute('aria-expanded'),
-    'true',
-    '⋯ 鈕的 aria-expanded 維持 true'
+    firstByClass(rowNow, 'scam-menu-btn').popoverTargetElement,
+    firstByClass(rowNow, 'scam-menu'),
+    '⋯ 鈕仍指向這個開著的選單(展開狀態由瀏覽器依此算出)'
   );
 });
 
@@ -9461,28 +9339,31 @@ test('B2 警示名單:scamBlocklist 變動照常重畫名單;之後 history 變�
 
 // ---- B3:匯入對話框 Esc ----
 
-test('B3 匯入對話框:開著時按 Esc 關閉，焦點回到觸發按鈕;確認框的 Esc 行為不變', async () => {
+test('B3 匯入對話框:開著時按 Esc 關閉，焦點回到 ⋯ 選單觸發鈕;確認框的 Esc 行為不變', async () => {
   const ctx = makeController({ history: [s4Entry(URL_A, 1000)] });
   await ctx.controller.init();
   await settle();
-  hideAllOverlays(ctx.doc);
 
   // 不退步:既有確認框(清除全部)照樣由 Esc 關閉，匯入框不受波及。
   ctx.doc.ids.clearBtn.fire('click');
-  assert.equal(ctx.doc.ids.confirmOverlay.hidden, false, '前置:確認框已開');
-  ctx.doc.fire('keydown', { key: 'Escape' });
-  assert.equal(ctx.doc.ids.confirmOverlay.hidden, true, 'Esc 照常關閉確認框');
-  assert.equal(ctx.doc.ids.overlay.hidden, true, '匯入框維持關閉');
+  assert.equal(ctx.doc.ids.confirmOverlay.open, true, '前置:確認框已開');
+  ctx.doc.pressEscape();
+  assert.equal(ctx.doc.ids.confirmOverlay.open, false, 'Esc 照常關閉確認框');
+  assert.equal(ctx.doc.ids.overlay.open, false, '匯入框維持關閉');
 
+  // 匯入在 ⋯ 選單裡:點項目時選單先收起、焦點回 ⋯ 鈕，關框後焦點回 ⋯ 鈕。
+  const moreBtn = ctx.doc.getElementById('moreBtn');
+  moreBtn.focus();
+  moreBtn.fire('click');
   const importBtn = ctx.doc.getElementById('importBtn');
   importBtn.focus();
   importBtn.fire('click');
-  assert.equal(ctx.doc.ids.overlay.hidden, false, '前置:匯入框已開');
+  assert.equal(ctx.doc.ids.overlay.open, true, '前置:匯入框已開');
   assert.notEqual(ctx.doc.activeElement, importBtn, '前置:焦點已移進匯入框');
 
-  ctx.doc.fire('keydown', { key: 'Escape' });
+  ctx.doc.pressEscape();
 
-  assert.equal(ctx.doc.ids.overlay.hidden, true, 'Esc 應關閉匯入框');
-  assert.equal(ctx.doc.activeElement, importBtn, '關閉後焦點回到觸發按鈕');
+  assert.equal(ctx.doc.ids.overlay.open, false, 'Esc 應關閉匯入框');
+  assert.equal(ctx.doc.activeElement, moreBtn, '關閉後焦點回到 ⋯ 選單觸發鈕');
 });
 
