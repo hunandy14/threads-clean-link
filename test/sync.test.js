@@ -1660,7 +1660,7 @@ test('T5 登出時清除 alarm', async () => {
 test('T5 recordHistory 後去抖：2 秒 setTimeout ＋ 30 秒 alarm 雙保險', async () => {
   // PM 裁決：Chrome 的 alarm 最小間隔是 30 秒，2 秒排不出來。去抖走注入的
   // setTimeout（SW 存活期），另排一個 30 秒的 alarm 當 SW 被回收時的保底；
-  // 兩條路任一先到就跑 syncNow，單飛旗標保證只跑一次。
+  // 兩條路任一先到就跑，待辦（soonPending）已消化時另一條到期跳過。
   const TCLSync = loadSync();
   const env = makeEnv({ signedIn: true, history: [entry()] });
   const engine = TCLSync.create(env.deps);
