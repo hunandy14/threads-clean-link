@@ -595,8 +595,16 @@ const SCAM_DOC_IDENTITY_PROPERTIES = ['og:url', 'al:android:url'];
 // <meta> 標籤與其屬性。屬性順序（property 在前或 content 在前）與引號種類
 // （雙引號、單引號、無引號）在真實 HTML 都不固定，逐標籤拆屬性而非把單一形
 // 狀寫死進正則。
-const SCAM_META_TAG_PATTERN = /<meta\b([^>]*)>/gi;
-const SCAM_META_ATTR_PATTERN = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+//
+// 標籤起點用正則找「<meta」加字界，標籤結尾交給 indexOf 找下一個 `>`:起點
+// 到 `>` 之間寫成 `[^>]*` 時，一串沒有 `>` 收尾的 `<meta` 會讓每個起點各掃
+// 一次到文件尾端。
+const SCAM_META_OPEN_PATTERN = /<meta\b/gi;
+// 屬性名後面的「= 值」整段可選：每段屬性名一律整段吃掉(沒帶值的由呼叫端略
+// 過)，下一次比對從它後面接著找，屬性名字元不會從中間各個起點重掃一遍。取
+// 到的帶值屬性與「值為必要」的寫法相同:屬性名必須整段比對完才輪得到 `=`，
+// 從屬性名中間起頭的比對不可能成立。
+const SCAM_META_ATTR_PATTERN = /([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
 
 // 交叉驗證的比對視窗（以命中的 post_author_id 位置為中心，前後各這麼多字）。
 // 整份文字比對太寬：頁面任何角落出現過本人的 username，就會替一個不相干的
@@ -774,24 +782,32 @@ function scamPostIdentityKey(url) {
 function scamDocIdentityUrls(scanText) {
   const urls = [];
   // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
-  SCAM_META_TAG_PATTERN.lastIndex = 0;
-  let tag = SCAM_META_TAG_PATTERN.exec(scanText);
-  while (tag !== null) {
+  SCAM_META_OPEN_PATTERN.lastIndex = 0;
+  let open = SCAM_META_OPEN_PATTERN.exec(scanText);
+  while (open !== null) {
+    const attrsStart = open.index + open[0].length;
+    const close = scanText.indexOf('>', attrsStart);
+    // 這個 <meta 之後再也沒有 `>`，後面的 <meta 也都收不了尾。
+    if (close === -1) break;
+    const attrs = scanText.slice(attrsStart, close);
     let property = '';
     let content = null;
     SCAM_META_ATTR_PATTERN.lastIndex = 0;
-    let attr = SCAM_META_ATTR_PATTERN.exec(tag[1]);
+    let attr = SCAM_META_ATTR_PATTERN.exec(attrs);
     while (attr !== null) {
-      const name = attr[1].toLowerCase();
       const value = attr[2] !== undefined ? attr[2] : attr[3] !== undefined ? attr[3] : attr[4];
-      if (name === 'property' || name === 'name') property = value.toLowerCase();
-      else if (name === 'content') content = value;
-      attr = SCAM_META_ATTR_PATTERN.exec(tag[1]);
+      if (value !== undefined) {
+        const name = attr[1].toLowerCase();
+        if (name === 'property' || name === 'name') property = value.toLowerCase();
+        else if (name === 'content') content = value;
+      }
+      attr = SCAM_META_ATTR_PATTERN.exec(attrs);
     }
     if (content !== null && SCAM_DOC_IDENTITY_PROPERTIES.indexOf(property) !== -1) {
       urls.push(decodeHtmlEntities(content));
     }
-    tag = SCAM_META_TAG_PATTERN.exec(scanText);
+    SCAM_META_OPEN_PATTERN.lastIndex = close + 1;
+    open = SCAM_META_OPEN_PATTERN.exec(scanText);
   }
   return urls;
 }
@@ -1451,6 +1467,12 @@ function escapeRegExp(str) {
 // 性值，property 可能在 content 之前或之後(不同頁面產生器順序不一定)，
 // 兩種順序都要能比對到。找不到回傳 null。正則沿用手機版 post-meta.ts 的
 // ogContent 寫法，只多了掃描長度上限這一層(見上方常數註解)。
+//
+// 這兩條由屬性名動態組成，不在 ReDoS 靜態閘門(test/regex-safety.test.js)
+// 的範圍內，列在該檔的動態建構白名單。`[^>]+` 夾著屬性字面值的形狀不是線
+// 性的，工作量由 OG_SCAN_LIMIT 封頂;改用 scamDocIdentityUrls 那套逐屬性拆
+// 解會改變吻合範圍(例如 `data-property="og:title"` 這類字面值落在別的屬
+// 性裡的寫法，這兩條會認、逐屬性拆解不認)，因此維持與手機版一致的寫法。
 function extractOgMeta(html, property) {
   if (typeof html !== 'string' || !html) return null;
   const scanText = html.slice(0, OG_SCAN_LIMIT);
@@ -1515,28 +1537,63 @@ function decodeHtmlEntities(value) {
 // 沒認得的帳號形狀樣式(例如又一種語系的新措辭)，整串塞進 author 只會產
 // 生「Threads 上的某某（@someone）」這類髒資料——寧缺勿錯，整欄放棄，讓
 // author 缺席即可(卡片自然只顯示 @handle)。
-const OG_TITLE_FULLWIDTH_HANDLE = /^(.*?)\s*（@([^）]+)）/;
 const OG_TITLE_LOCALE_PREFIX = /^Threads\s*上的\s*/;
-const OG_TITLE_EN_SUFFIX = /\s+on Threads$/i;
+const OG_TITLE_EN_SUFFIX_WORDS = /on Threads$/i;
 const OG_TITLE_HANDLE_RESIDUE = /[(（]@/;
+const LINE_TERMINATOR_PATTERN = /[\n\r\u2028\u2029]/;
+
+// 切出 og:title 第一組「(@handle)」:open／close 是一對括號字元(半形 '(' 與
+// ')'，或全形 '（' 與 '）')。回傳 [括號前的文字, handle] 或 null，語意與
+// /^(.*?)\s*\(@([^)]+)\)/ 相同:括號前的文字去掉緊貼括號的空白後不得含換行
+// (`.` 不吃換行，這段空白本身可以含);handle 至少一字、不含右括號，可以跨
+// 行;這一組括號裡是空的就往後找下一組。以 indexOf 逐組定位、往回數空白，
+// 整串最多各走一遍:寫成正則時 `.*?` 與 `\s*` 相鄰，同一段空白能拆給兩邊，
+// 比對失敗前每種拆法都要試過。
+function splitAtFirstHandle(text, open, close) {
+  const opener = open + '@';
+  const lineBreak = LINE_TERMINATOR_PATTERN.exec(text);
+  const firstBreak = lineBreak ? lineBreak.index : text.length;
+  let at = text.indexOf(opener);
+  while (at !== -1) {
+    let nameEnd = at;
+    while (nameEnd > 0 && text.charAt(nameEnd - 1).trim() === '') nameEnd--;
+    if (firstBreak < nameEnd) return null;
+    const end = text.indexOf(close, at + opener.length);
+    if (end === -1) return null;
+    if (end > at + opener.length) return [text.slice(0, nameEnd), text.slice(at + opener.length, end)];
+    at = text.indexOf(opener, at + 1);
+  }
+  return null;
+}
+
+// 剝掉結尾的「 on Threads」(前面至少一個空白，大小寫不拘)連同它前面整段空
+// 白，語意與 replace(/\s+on Threads$/i, '') 相同。尾綴字面值由錨定在結尾的
+// 正則判斷，空白交給 trimEnd:`\s+` 沒有起點錨定時，引擎從空白串的每個位置
+// 各掃一次。
+function stripOgTitleEnSuffix(text) {
+  if (!OG_TITLE_EN_SUFFIX_WORDS.test(text)) return text;
+  const head = text.slice(0, text.length - 'on Threads'.length);
+  const name = head.trimEnd();
+  return name.length < head.length ? name : text;
+}
 
 function parseOgTitle(ogTitle) {
   if (typeof ogTitle !== 'string' || !ogTitle) return null;
   const trimmed = ogTitle.trim();
-  const match = /^(.*?)\s*\(@([^)]+)\)/.exec(trimmed);
+  const match = splitAtFirstHandle(trimmed, '(', ')');
   if (match) {
-    return buildOgTitleResult(match[1], match[2]);
+    return buildOgTitleResult(match[0], match[1]);
   }
 
-  const fullwidth = OG_TITLE_FULLWIDTH_HANDLE.exec(trimmed);
+  const fullwidth = splitAtFirstHandle(trimmed, '（', '）');
   if (fullwidth) {
     // 括號前段才是顯示名稱的所在;再剝掉中文語系前綴，以及(理論上不會
     // 與全形樣式同時出現、但剝了無害的)英文尾綴。
-    const name = fullwidth[1].replace(OG_TITLE_LOCALE_PREFIX, '').replace(OG_TITLE_EN_SUFFIX, '');
-    return buildOgTitleResult(name, fullwidth[2]);
+    const name = stripOgTitleEnSuffix(fullwidth[0].replace(OG_TITLE_LOCALE_PREFIX, ''));
+    return buildOgTitleResult(name, fullwidth[1]);
   }
 
-  const fallbackAuthor = trimmed.replace(OG_TITLE_EN_SUFFIX, '').trim();
+  const fallbackAuthor = stripOgTitleEnSuffix(trimmed).trim();
   if (!fallbackAuthor || OG_TITLE_HANDLE_RESIDUE.test(fallbackAuthor)) return null;
   return { author: fallbackAuthor };
 }

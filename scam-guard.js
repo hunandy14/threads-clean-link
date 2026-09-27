@@ -28,7 +28,13 @@
   // 串文徽章「N / M」由三個相鄰節點組成：取 textContent 時它們直接黏成
   // `1/6`，取 innerText 時版面換行會被算進去而成為 `\n1\n/\n6`。正則兩種形
   // 狀都吃，尾端也容忍版面留下的空白。
-  var POSITION_BADGE_PATTERN = /\s*\n?(\d+)\n?\/\n?(\d+)\s*$/;
+  //
+  // 正則只認尾段「/M」:`/` 前後各容一個換行，M 是字串結尾的數字段。起點只
+  // 能是 `/` 或緊貼它前面的換行，每個起點往後最多吃一段數字，比對是線性的。
+  // N 的數字段與尾端空白由 stripPositionBadge 在 JS 端處理(往回數數字、
+  // trimEnd):兩段 `\d+`／`\s*` 沒有起點錨定時，引擎會從連續數字或空白裡的
+  // 每個位置各掃一次。
+  var POSITION_BADGE_TAIL_PATTERN = /\n?\/\n?(\d+)$/;
 
   // 徽章位置的合理範圍。純靠正則會把「活動到 2026/9/19」這種句尾日期當成
   // 徽章，加上範圍檢查才擋得住；上限取 50 是因為自回覆串長度不會到這個量
@@ -137,19 +143,32 @@
     return null;
   }
 
+  function isAsciiDigit(code) {
+    return code >= 48 && code <= 57;
+  }
+
   // 剝掉 DOM 文字尾端的「N/M」串文徽章，回傳 { text, position, total }。沒
   // 有徽章時 text 原樣回傳、position 與 total 皆為 null；非字串輸入回傳空
   // 字串與兩個 null，不丟例外。
   function stripPositionBadge(text) {
     if (typeof text !== 'string') return { text: '', position: null, total: null };
 
-    var match = POSITION_BADGE_PATTERN.exec(text);
-    if (!match) return { text: text, position: null, total: null };
+    // 徽章後面版面留下的空白先剝掉，尾段樣式直接錨在數字上。
+    var body = text.trimEnd();
+    var tail = POSITION_BADGE_TAIL_PATTERN.exec(body);
+    if (!tail) return { text: text, position: null, total: null };
+
+    // N 是緊貼尾段起點前面的整段數字;一位都沒有就不是徽章。
+    var digitsEnd = tail.index;
+    var digitsStart = digitsEnd;
+    while (digitsStart > 0 && isAsciiDigit(body.charCodeAt(digitsStart - 1))) digitsStart--;
+    if (digitsStart === digitsEnd) return { text: text, position: null, total: null };
 
     return {
-      text: text.slice(0, match.index),
-      position: parseInt(match[1], 10),
-      total: parseInt(match[2], 10),
+      // 徽章前面的空白(含版面換行)一併剝掉，只留正文。
+      text: body.slice(0, digitsStart).trimEnd(),
+      position: parseInt(body.slice(digitsStart, digitsEnd), 10),
+      total: parseInt(tail[1], 10),
     };
   }
 
