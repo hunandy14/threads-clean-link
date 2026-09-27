@@ -189,6 +189,13 @@ function makeNode(tag, ownerDoc) {
     getBoundingClientRect() {
       return { left: 0, top: 0, width: 10, height: 10, right: 10, bottom: 10 };
     },
+    // 有版面才有 box:在文件裡、自己與祖先沒有 hidden、不在關著的 popover 或
+    // dialog 裡(與 isFocusable 同一套判斷)。沒有 owner document 的獨立節點
+    // 一律視為沒有版面。
+    getClientRects() {
+      if (!ownerDoc || !ownerDoc.isFocusable(node)) return [];
+      return [node.getBoundingClientRect()];
+    },
     // 帳號選單的鍵盤導覽/開合測試需要 focus 落點:owner document 存在時
     // 才記錄(比照真 DOM 的 document.activeElement)，沒有 owner 時(獨立
     // 建立的節點，如既有測試直接呼叫 makeNode() 者)安靜 no-op。
@@ -213,6 +220,13 @@ function makeNode(tag, ownerDoc) {
         if (c && c.parentNode === node) c.parentNode = null;
       });
       node.children.length = 0;
+    },
+  });
+  // 比照真 DOM 的 isConnected:沿 parentNode 走到頂，落在 body、documentElement
+  // 或仍在容器裡的靜態節點才算在文件裡(見 doc.isConnected)。
+  Object.defineProperty(node, 'isConnected', {
+    get() {
+      return !!ownerDoc && ownerDoc.isConnected(node);
     },
   });
   installDialogApi(node, ownerDoc);
