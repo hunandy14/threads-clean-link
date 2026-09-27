@@ -9,18 +9,16 @@
   var TCLCore =
     typeof module !== 'undefined' && module.exports ? require('./tcl-core.js') : root.TCLCore;
 
-  // 短碼解析與 ?xmt 剪參都收在 autoClean 這一顆之下。預設值取自
-  // TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威),popup 只挑自己有控件的兩顆:
-  // autoClean(false)、postCopyEnabled(貼文複製按鈕，post-icon.js 的注入開關，
-  // 預設 true)。saveHistory 不放 popup 快捷開關(完整設定收在 options 頁)。
-  // 失敗通知(Threads 頁內 toast + 右鍵選單系統通知)不受任何開關影響，一律顯示。
-  var DEFAULT_SETTINGS = {
-    autoClean: TCLCore.DEFAULT_SETTINGS.autoClean,
-    postCopyEnabled: TCLCore.DEFAULT_SETTINGS.postCopyEnabled,
-  };
-
-  // checkbox 的 id 與 chrome.storage.sync 的鍵同名。
-  var SETTING_IDS = ['autoClean', 'postCopyEnabled'];
+  // popup 的開關取自 TCLCore.SETTINGS_SCHEMA 裡 pages 含 'popup' 的項目
+  // (autoClean、postCopyEnabled，皆在 sync 區);checkbox 的 id 即 storage 鍵。
+  // saveHistory 與 scamGuardEnabled 只在 options 頁。失敗通知(Threads 頁內
+  // toast + 右鍵選單系統通知)不受任何開關影響，一律顯示。
+  var SETTINGS = TCLCore.SETTINGS_SCHEMA.filter(function (s) {
+    return s.pages.indexOf('popup') !== -1;
+  });
+  var DEFAULT_SETTINGS = Object.fromEntries(
+    SETTINGS.filter(function (s) { return s.area === 'sync'; }).map(function (s) { return [s.key, s.def]; })
+  );
 
   // popup 不呈現雲端同步狀態:帳號與同步狀態(含同步失敗)一律只在 options
   // 頁的帳號區顯示，popup 因此不讀 syncState／syncAuth、不監聽
@@ -43,25 +41,14 @@
       return document.getElementById(id);
     }
 
-    function bindChange(id) {
-      var el = getCheckbox(id);
+    // popup 的開關都在 sync 區，change 直接寫回 storage(注入的 sync 區)。
+    function bindChange(s) {
+      var el = getCheckbox(s.key);
       if (!el) return;
       el.addEventListener('change', function (event) {
         var checked = event && event.target ? event.target.checked : el.checked;
-        var patch = {};
-        patch[id] = checked;
-        storage.set(patch);
+        storage.set({ [s.key]: checked });
       });
-    }
-
-    function applyI18n(locale) {
-      if (!i18n || typeof document.querySelectorAll !== 'function') return;
-      document.querySelectorAll('[data-i18n]').forEach(function (node) {
-        node.textContent = i18n.t(locale, node.getAttribute('data-i18n'));
-      });
-      if (document.documentElement) {
-        document.documentElement.lang = locale === 'zh' ? 'zh-Hant' : 'en';
-      }
     }
 
     function init() {
@@ -69,16 +56,15 @@
       // resolveLocale 依瀏覽器語言偵測)+ 主題偏好(未設定時為 'auto')。
       var keys = Object.assign({ langPref: null, themePref: 'auto' }, DEFAULT_SETTINGS);
       return Promise.resolve(storage.get(keys)).then(function (settings) {
-        SETTING_IDS.forEach(function (id) {
-          var el = getCheckbox(id);
+        SETTINGS.forEach(function (s) {
+          var el = getCheckbox(s.key);
           if (!el) return;
-          // 設定型別鏡像:對齊 options.js 的守衛——storage 值必須真的是
-          // boolean 才採用，否則退回預設值(防損毀/偽造的非布林值直接綁上
-          // checkbox.checked 造成非預期狀態)。
-          var hasValue = settings && Object.prototype.hasOwnProperty.call(settings, id);
-          el.checked = hasValue && typeof settings[id] === 'boolean' ? settings[id] : DEFAULT_SETTINGS[id];
+          // 型別守衛同 options.js:storage 值必須真的是 boolean 才採用，否則
+          // 退回 schema 的 def(防損毀/偽造的非布林值直接綁上 checkbox)。
+          var value = settings ? settings[s.key] : undefined;
+          el.checked = typeof value === 'boolean' ? value : s.def;
         });
-        SETTING_IDS.forEach(bindChange);
+        SETTINGS.forEach(bindChange);
 
         var nav = getCheckbox('openOptions');
         if (nav && openOptionsPage) {
@@ -87,7 +73,7 @@
           });
         }
 
-        if (i18n) applyI18n(i18n.resolveLocale(settings ? settings.langPref : null));
+        if (i18n) i18n.applyDom(document, i18n.resolveLocale(settings ? settings.langPref : null));
 
         // 非 light／dark 一律當 auto:鏡像被清掉，當頁跟系統深淺色走。
         // 沒有 documentElement 的文件(測試的最小 stub)不需要主題，略過。

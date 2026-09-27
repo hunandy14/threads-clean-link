@@ -14,21 +14,26 @@
   var TCLCore =
     typeof module !== 'undefined' && module.exports ? require('./tcl-core.js') : root.TCLCore;
 
-  // 三顆開關的預設值取自 TCLCore.DEFAULT_SETTINGS(全量三鍵的單一權威),options
-  // 頁三顆全收(autoClean/saveHistory/postCopyEnabled)。
-  var OPTIONS_DEFAULT_SETTINGS = {
-    autoClean: TCLCore.DEFAULT_SETTINGS.autoClean,
-    saveHistory: TCLCore.DEFAULT_SETTINGS.saveHistory,
-    postCopyEnabled: TCLCore.DEFAULT_SETTINGS.postCopyEnabled,
-  };
-  var SETTING_IDS = ['autoClean', 'saveHistory', 'postCopyEnabled'];
+  // 本頁的開關取自 TCLCore.SETTINGS_SCHEMA 裡 pages 含 'options' 的四顆:
+  // sync 區的 autoClean／saveHistory／postCopyEnabled，與 local 區的
+  // scamGuardEnabled。checkbox 的 id 即 storage 鍵，讀值、綁定與 onChanged
+  // 回填都照這張表走(見 createOptionsController 的 bindSettings 與
+  // onStorageChanged)。OPTIONS_DEFAULT_SETTINGS 是 sync 區三顆的預設值。
+  var SETTINGS = TCLCore.SETTINGS_SCHEMA.filter(function (s) {
+    return s.pages.indexOf('options') !== -1;
+  });
+  function settingDefaults(area) {
+    return Object.fromEntries(
+      SETTINGS.filter(function (s) { return s.area === area; }).map(function (s) { return [s.key, s.def]; })
+    );
+  }
+  var OPTIONS_DEFAULT_SETTINGS = settingDefaults('sync');
 
-  // 純本機開關:值存 chrome.storage.local，不進 SETTING_IDS(那三顆走 sync、
-  // 跟著帳號跨裝置同步)。名單本身雖然隨 marks 通道上雲(D35-D40)，這顆開關講
-  // 的是「這台裝置要不要掃描、要不要走這條通道」，因此跟著留在本機。
-  // 缺席視為 true——「未設定」不等於「關閉」，首次安裝即生效。
-  var LOCAL_SETTING_DEFAULTS = { scamGuardEnabled: true };
-  var LOCAL_SETTING_IDS = ['scamGuardEnabled'];
+  // storage 值必須真的是 boolean 才採用，否則退回 schema 的 def(防損毀或
+  // 偽造的非布林值直接綁上 checkbox;被整顆移除時也走這條)。
+  function settingValue(value, def) {
+    return typeof value === 'boolean' ? value : def;
+  }
 
   var HISTORY_KEY = 'history';
   // 投資詐騙黑名單(v1 計畫 §5):純本機、只有 background 寫，本頁讀＋監聽
@@ -659,7 +664,7 @@
     // 現況完全一致)。
     var syncAccount = TCLCore.normalizeSyncState(null);
     // chrome.storage.local.scamBlocklist 的正規化複本(見 readScamBlocklist)。
-    // init 讀一次，之後由 setLocalSettings 接 onChanged 整包換新。
+    // init 讀一次，之後由 onStorageChanged 整包換新。
     var scamBlocklist = readScamBlocklist(null);
 
     function isSignedIn() {
@@ -774,25 +779,10 @@
     }
 
     // ---- i18n 套用 ----
+    // 靜態文案交給 i18n.applyDom(四組 data-i18n 屬性與 html lang)，本頁只
+    // 補語言鈕自己的標示。
     function applyI18nDom() {
-      if (typeof document.querySelectorAll !== 'function') return;
-      document.querySelectorAll('[data-i18n]').forEach(function (node) {
-        node.textContent = tt(node.getAttribute('data-i18n'));
-      });
-      document.querySelectorAll('[data-i18n-ph]').forEach(function (node) {
-        node.setAttribute('placeholder', tt(node.getAttribute('data-i18n-ph')));
-      });
-      document.querySelectorAll('[data-i18n-title]').forEach(function (node) {
-        node.setAttribute('title', tt(node.getAttribute('data-i18n-title')));
-      });
-      // aria-label i18n 通道:兩顆關閉鈕與統計磚區塊的 aria-label 掛
-      // data-i18n-aria，語言切換時一併更新，不卡在單一語言。
-      document.querySelectorAll('[data-i18n-aria]').forEach(function (node) {
-        node.setAttribute('aria-label', tt(node.getAttribute('data-i18n-aria')));
-      });
-      if (document.documentElement) {
-        document.documentElement.lang = locale === 'zh' ? 'zh-Hant' : 'en';
-      }
+      i18n.applyDom(document, locale);
       var langBtn = byId('langBtn');
       if (langBtn) langBtn.textContent = locale === 'zh' ? '中文' : 'EN';
     }
@@ -1054,7 +1044,7 @@
     // persistHistory 失敗的統一善後:回滾已在 persistHistory 內完成，這裡
     // 重繪回滾後的紀錄視圖並發專屬失敗 toast(配額/一般兩種文案)。
     function onPersistFailed(res) {
-      renderHistoryViews();
+      render(['history']);
       toast(tt(res && res.quota ? 'opToastStorageFull' : 'opToastSaveFailed'));
     }
 
@@ -1158,8 +1148,8 @@
     // ---- 共用確認框(清除全部 / 刪除這筆 / 登入)----
     // 複用同一個 confirmOverlay:opts.titleKey/okKey 是 i18n key，desc 是已
     // 組好的字串，action 是確認後要跑的函式。標題/確認鈕文案在 JS 端顯式
-    // 覆寫(這兩顆有 data-i18n，renderAll 會重設，但確認框開著時不會觸發
-    // renderAll，故安全)。
+    // 覆寫(這兩顆有 data-i18n，只有 i18n 視圖會重設它們，那只在 init 與切換
+    // 語言時才跑，紀錄等其他 storage 變動不會觸發)。
     //
     // opts.tone('danger'|'primary')/opts.icon('#i-xxx')決定標題圖示與確認
     // 鈕外觀:刪除類操作維持既有的垃圾桶圖示 + 紅底實心鈕，登入類操作(見
@@ -1572,7 +1562,7 @@
     }
 
     // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫
-    // (比照 setHistory/setSyncSettings 的既有模式:controller 只暴露方法，
+    // (比照 onStorageChanged 的模式:controller 只暴露方法，
     // 訊息監聽掛在 -init.js)。
     /**
      * 這一次廣播帶的一次性登入失敗(L5)。分類由引擎給(sync.js 的
@@ -2296,7 +2286,7 @@
     //
     // 資料是 chrome.storage.local.scamBlocklist，登入後隨 marks 通道雲端同步
     // (D35-D40)。寫入端只有 background，本頁只讀 storage ＋ 監聽 onChanged(見
-    // setLocalSettings)，解除/復原一律經 runtime 訊息請 background 代寫。
+    // onStorageChanged)，解除/復原一律經 runtime 訊息請 background 代寫。
     // displayName 與證據片段都是他人貼文帶進來的字串:整張卡逐一
     // createElement ＋ textContent，不走 innerHTML。
 
@@ -2735,7 +2725,7 @@
     // ＋就地開啟鈕，內容由 JS 逐一 createElement 產生(比照整張卡零
     // innerHTML 的慣例)，開關為 true 時整條 hidden。點開啟鈕直接寫
     // scamGuardEnabled=true 到 local 區(與設定卡同一顆鍵，見
-    // LOCAL_SETTING_IDS)，不吃二次確認——這不是破壞性動作，名單本身完全
+    // TCLCore.SETTINGS_SCHEMA)，不吃二次確認——這不是破壞性動作，名單本身完全
     // 不受影響。
     function renderScamDisabledBar() {
       var bar = byId('scamDisabledBar');
@@ -2779,12 +2769,6 @@
       }
       el.hidden = false;
       el.textContent = tf('opScamEvictedHint', { n: n });
-    }
-
-    function renderScamBlocklist() {
-      renderScamDisabledBar();
-      renderScamList();
-      renderScamAllowlist();
     }
 
     function bindScamDialogs() {
@@ -2837,7 +2821,7 @@
         }
         entry.state = 'dismissed';
         entry.dismissedAt = now();
-        renderScamBlocklist();
+        render(['scam']);
       });
     }
 
@@ -2860,7 +2844,7 @@
         // entries 整份重建 handleIndex／allowlist 兩張衍生表，同一把尺，
         // 也不留舊 allowlist 視圖的殘影。
         scamBlocklist = readScamBlocklist(scamBlocklist);
-        renderScamBlocklist();
+        render(['scam']);
       });
     }
 
@@ -2908,7 +2892,7 @@
     //
     // 以 url+at 精準命中(不只比 url):background 永久合併(同一篇貼文恆為一
     // 張卡，見 background.js 的紀錄合併區塊)，但匯入的資料可能夾帶同
-    // url 的多筆舊紀錄，比 url+at 才保證「刪一筆只刪中一筆」。setHistory 已
+    // url 的多筆舊紀錄，比 url+at 才保證「刪一筆只刪中一筆」。onStorageChanged 已
     // 把 detailEntry 換成清單裡的新物件(見 refreshDetail)，at 不會過期，精
     // 準比對成立。
     //
@@ -2936,13 +2920,13 @@
       });
       if (!hit) return;
       if (detailEntry && detailEntry.url === e.url && detailEntry.at === e.at) closeEntryDetail();
-      // persistHistory 先同步把 entries 換成 next，再 renderHistoryViews 才畫到
+      // persistHistory 先同步把 entries 換成 next，再重畫紀錄視圖才畫到
       // 新清單;寫入結果非同步回來，成功發「已刪除」，失敗回滾 + 失敗 toast。
       persistHistory(next).then(function (res) {
         if (res.ok) toast(tt('opToastDeleted'));
         else onPersistFailed(res);
       });
-      renderHistoryViews();
+      render(['history']);
     }
 
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
@@ -3117,7 +3101,7 @@
       // 時間軸鈕:buildSeenTimeline 對缺席/單筆資料回傳 null 時不顯示，
       // 主畫面的記錄時間(=at)已經夠用。鈕文字固定不隨資料變動(次數改
       // 顯示在子層視窗標題)，仍在 JS 端顯式賦值——最小 DOM stub 的
-      // querySelectorAll('[data-i18n]') 恆回傳空陣列，只有顯式賦值的
+      // querySelectorAll 恆回傳空陣列(i18n.applyDom 掃不到)，只有顯式賦值的
       // 文字才測得到。
       var timelineBtn = byId('detailTimelineBtn');
       if (timelineBtn) {
@@ -3146,7 +3130,7 @@
       showDialog('detailOverlay');
     }
 
-    // storage 變動(setHistory)時原地刷新:只把 detailEntry 換成清單裡的
+    // storage 變動(onStorageChanged 的 relocateDetailEntry)時原地刷新:只把 detailEntry 換成清單裡的
     // 新物件並重畫內容，不重置使用者正在看的時間軸子層/excerpt 展開態
     // (別處寫入無關紀錄不該把使用者互動態打回原形)。detailEntry 換成新
     // 物件也讓 url+at 精準刪除拿到不過期的 at。只在開著時重畫，不得重新開啟。
@@ -3283,35 +3267,117 @@
       if (countHint) countHint.textContent = tf('opShowing', { a: visible.length, b: matched.length });
     }
 
-    // 紀錄(history)衍生的視圖:統計、圖表與紀錄牆。history 的任何寫入
-    // (setHistory、刪除、清除全部、匯入、寫入失敗回滾)只走這條，不碰警示
-    // 名單卡——名單只由 scamBlocklist 決定，整份重畫會換掉列節點並收起使用者
-    // 正開著的 ⋯ 選單與命中對話框(見 renderScamList)。
-    function renderHistoryViews() {
-      var stats = renderStats();
-      renderChart(stats);
-      renderList();
+    // ---- 視圖分派 ----
+    //
+    // 頁面切成六個視圖，各自只依賴一份狀態:
+    //   i18n     HTML 靜態文案(data-i18n 系列)與語言鈕   ← locale
+    //   history  統計磚、圖表、紀錄牆                    ← entries
+    //   scam     警示名單與已解除小節                    ← scamBlocklist
+    //   scamBar  名單卡的「掃描已關閉」狀態列             ← scamGuardEnabled 開關
+    //   account  帳號入口、deviceNote、名單淘汰提示       ← syncState(廣播)
+    //   devices  裝置對話框(只在開著時重畫)              ← 裝置快取、locale
+    // 狀態變了只重畫吃那份狀態的視圖:history 寫入不碰名單列節點(使用者開著的
+    // ⋯ 選單與命中對話框因此不受影響)，也不跑 i18n(確認框開著時，標題與確認
+    // 鈕不會被 data-i18n 初值蓋回去)。
+    var VIEWS = {
+      i18n: function () { applyI18nDom(); },
+      history: function () { renderChart(renderStats()); renderList(); },
+      scam: function () { renderScamList(); renderScamAllowlist(); },
+      scamBar: function () { renderScamDisabledBar(); },
+      account: function () { renderAccount(syncState); renderScamEvictedHint(syncState); },
+      // 裝置列是 JS 產生的，i18n 掃不到;對話框開著時切語言靠這裡重畫。關著
+      // 時不必重建，下次開框本身就會 renderDevices。
+      devices: function () { if (isDialogOpen('devicesOverlay')) renderDevices(); },
+    };
+    // 同一輪畫多個視圖時的固定順序。i18n 必須最先:它用 data-i18n 初值重設
+    // 靜態文字(deviceNote 等)，account 排在它之後才能把登入態文案蓋回去;
+    // 其餘 JS 產生的區塊也排在 i18n 之後，切語言時一律拿到新語言。
+    var VIEW_ORDER = ['i18n', 'history', 'scam', 'scamBar', 'account', 'devices'];
+
+    // 重畫指定視圖的聯集，每個視圖至多一次，依 VIEW_ORDER 排序。
+    function render(names) {
+      var wanted = new Set(names);
+      VIEW_ORDER.forEach(function (name) {
+        if (wanted.has(name)) VIEWS[name]();
+      });
     }
 
-    // 整頁重畫:只給首次繪製(init)與切換語言用。文案全面換新時，所有 JS
-    // 產生、沒有 data-i18n 可掃的區塊都得跟著重建。其餘狀態變動各走對應的
-    // 局部重畫(renderHistoryViews、renderScamBlocklist、renderAccount)。
+    // 整頁重畫:只給首次繪製(init)與切換語言用。
     function renderAll() {
-      applyI18nDom();
-      renderHistoryViews();
-      // 黑名單卡整張是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃:
-      // 排在 applyI18nDom 之後，切語言時跟著整張重畫。
-      renderScamBlocklist();
-      // applyI18nDom 會用 data-i18n 重設 deviceNote 等文字，renderAccount
-      // 必須排在它後面才能把已登入態的文案蓋回去。
-      renderAccount(syncState);
-      renderScamEvictedHint(syncState);
-      // 裝置列整批是 JS 逐一 createElement 出來的，沒有 data-i18n 可掃，
-      // applyI18nDom 掃不到它們。對話框開著時切語言，「這台裝置」pill 與動作
-      // 鈕的 aria-label 會停在舊語言，而且沒有「關掉再開」以外的自我修復。
-      // 只在開著時重畫:關著時重建整份清單毫無用處。開框本身就會
-      // renderDevices，關著期間錯過的語言變更下次開框補得回來。
-      if (isDialogOpen('devicesOverlay')) renderDevices();
+      render(VIEW_ORDER);
+    }
+
+    // storage 鍵 → 要重畫的視圖。SETTINGS_SCHEMA 的開關不列在這裡:它們在
+    // onStorageChanged 直接回填 checkbox，帶 view 的(scamGuardEnabled →
+    // scamBar)由 schema 併入。
+    //   local.history        紀錄視圖
+    //   local.scamBlocklist  名單視圖
+    //   local.syncState      不重畫:只換刪除分流(軟刪／硬刪)用的 syncAccount;
+    //                        帳號區畫的是 background 廣播的卡片狀態(setSyncState)
+    //   sync.langPref        全部(文案全面換新)
+    //   sync.themePref       不重畫:applyTheme 只改 data-theme 與主題鈕圖示
+    var KEY_VIEWS = {
+      local: { history: ['history'], scamBlocklist: ['scam'], syncState: [] },
+      sync: { langPref: VIEW_ORDER, themePref: [] },
+    };
+
+    // 詳細視窗開著時，紀錄換新後以 url 重新定位 detailEntry:找得到就只刷新
+    // 內容(refreshDetail，不重置使用者正在看的時間軸子層／展開全文——別處
+    // 寫入無關紀錄不該打斷正在閱讀的人)，找不到(已被刪除／清除)就關閉。
+    function relocateDetailEntry() {
+      if (!detailEntry || !isDialogOpen('detailOverlay')) return;
+      var url = detailEntry.url;
+      var match = entries.find(function (e) { return e.url === url; });
+      if (match) refreshDetail(match);
+      else closeEntryDetail();
+    }
+
+    // chrome.storage.onChanged 的單一入口(options-init.js 原封轉交 changes
+    // 與 areaName)。先把這批變動全部寫進狀態，再把受影響視圖的聯集畫一次:
+    // 同一批帶多個鍵時，每個視圖至多重畫一次。開關直接設 checkbox.checked
+    // (不觸發 change 事件)，不會迴圈寫回 storage;本頁自己寫的變更回彈到
+    // 這裡，重設同一個值是無害的 no-op。
+    function onStorageChanged(changes, area) {
+      var keyViews = KEY_VIEWS[area];
+      if (!changes || !keyViews) return;
+      var has = function (key) { return Object.hasOwn(changes, key); };
+      var next = function (key) { return changes[key] && changes[key].newValue; };
+      var names = [];
+      var focusKey = null;
+
+      if (area === 'local') {
+        if (has(HISTORY_KEY)) {
+          // 紀錄牆整面重建會換掉卡片節點:先記下鍵盤焦點所在的條目，畫完還回去。
+          focusKey = captureFocusedEntryKey();
+          entries = sanitizeEntries(next(HISTORY_KEY) || []);
+          relocateDetailEntry();
+        }
+        if (has(SCAM_BLOCKLIST_KEY)) scamBlocklist = readScamBlocklist(next(SCAM_BLOCKLIST_KEY));
+        if (has(SYNC_ACCOUNT_KEY)) syncAccount = TCLCore.normalizeSyncState(next(SYNC_ACCOUNT_KEY));
+      } else {
+        if (has('langPref')) {
+          var lp = next('langPref');
+          langPref = lp === 'zh' || lp === 'en' ? lp : null;
+          locale = i18n.resolveLocale(langPref);
+        }
+        if (has('themePref')) {
+          var tp = next('themePref');
+          themePref = THEME_ORDER.indexOf(tp) !== -1 ? tp : 'auto';
+          applyTheme();
+        }
+      }
+      SETTINGS.forEach(function (s) {
+        if (s.area !== area || !has(s.key)) return;
+        var el = byId(s.key);
+        if (el) el.checked = settingValue(next(s.key), s.def);
+        if (s.view) names.push(s.view);
+      });
+
+      Object.keys(changes).forEach(function (key) {
+        if (Object.hasOwn(keyViews, key)) names.push.apply(names, keyViews[key]);
+      });
+      render(names);
+      refocusEntryCard(focusKey);
     }
 
     // ---- 選單/對話框/工具列佈線 ----
@@ -3415,7 +3481,7 @@
             onPersistFailed(res);
             return;
           }
-          renderHistoryViews();
+          render(['history']);
           closeDialog('overlay');
           toast(
             result.skipped
@@ -3460,7 +3526,7 @@
               }
               // 線上時立刻推一次，墓碑不必等下一個週期 alarm 才傳到其他裝置。
               if (signedIn) sendSyncAction({ type: 'sync.now' });
-              renderHistoryViews();
+              render(['history']);
               toast(tt('opToastCleared'));
             });
           },
@@ -3479,28 +3545,14 @@
       });
     }
 
+    // 每顆開關的 change 寫回 schema 指定的 storage 區;帶 view 的(總開關的
+    // 狀態列)順手立即重畫，不必等 storage.onChanged 往返。
     function bindSettings() {
-      SETTING_IDS.forEach(function (id) {
-        var el = byId(id);
-        if (!el || typeof el.addEventListener !== 'function') return;
-        el.addEventListener('change', function (event) {
-          var checked = event && event.target ? event.target.checked : el.checked;
-          var patch = {};
-          patch[id] = checked;
-          syncStorage.set(patch);
-        });
-      });
-      LOCAL_SETTING_IDS.forEach(function (id) {
-        var el = byId(id);
-        if (!el || typeof el.addEventListener !== 'function') return;
-        el.addEventListener('change', function (event) {
-          var checked = event && event.target ? event.target.checked : el.checked;
-          var patch = {};
-          patch[id] = checked;
-          localStore.set(patch);
-          // 設定卡的總開關直接被切換時，警示名單卡的狀態列跟著即時反映，
-          // 不必等 storage.onChanged 往返(見 setLocalSettings 那條路徑)。
-          if (id === 'scamGuardEnabled') renderScamDisabledBar();
+      SETTINGS.forEach(function (s) {
+        on(s.key, 'change', function (event) {
+          var el = event && event.target ? event.target : byId(s.key);
+          (s.area === 'local' ? localStore : syncStorage).set({ [s.key]: el.checked });
+          if (s.view) render([s.view]);
         });
       });
     }
@@ -3581,7 +3633,7 @@
       var readSync = Promise.resolve(syncStorage.get(keys));
       var localKeys = Object.assign(
         { [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null, [SCAM_BLOCKLIST_KEY]: null },
-        LOCAL_SETTING_DEFAULTS
+        settingDefaults('local')
       );
       var readLocal = Promise.resolve(localStore.get(localKeys));
       return Promise.all([readSync, readLocal]).then(function (results) {
@@ -3595,17 +3647,10 @@
         locale = i18n.resolveLocale(langPref);
         themePref = THEME_ORDER.indexOf(settings.themePref) !== -1 ? settings.themePref : 'auto';
 
-        SETTING_IDS.forEach(function (id) {
-          var el = byId(id);
-          if (!el) return;
-          var hasValue = Object.prototype.hasOwnProperty.call(settings, id);
-          el.checked = hasValue && typeof settings[id] === 'boolean' ? settings[id] : OPTIONS_DEFAULT_SETTINGS[id];
-        });
-        LOCAL_SETTING_IDS.forEach(function (id) {
-          var el = byId(id);
-          if (!el) return;
-          var value = localData[id];
-          el.checked = typeof value === 'boolean' ? value : LOCAL_SETTING_DEFAULTS[id];
+        var byArea = { sync: settings, local: localData };
+        SETTINGS.forEach(function (s) {
+          var el = byId(s.key);
+          if (el) el.checked = settingValue(byArea[s.area][s.key], s.def);
         });
 
         applyTheme();
@@ -3627,41 +3672,26 @@
         // fetchSyncState 立即 resolve(見該函式)，不會拖慢 init()。
         return fetchSyncState().then(function (state) {
           syncState = state;
-          renderAccount(syncState);
-          renderScamEvictedHint(syncState);
+          render(['account']);
         });
       });
     }
 
-    // storage.onChanged(local 區)時由接線層呼叫，讓 background 新寫入的
-    // 紀錄即時出現在開著的頁面上。詳細視窗開著時以 url 重新定位
-    // detailEntry:找得到就「只刷新內容」(refreshDetail，不重置使用者正在
-    // 看的時間軸子層/展開全文——別處寫入無關紀錄不該打斷正在閱讀的人)，
-    // 找不到(已被刪除/清除)就關閉詳細視窗。條目真的換了(url 不同)才走
-    // 完整重置 openEntryDetail;此處以 url 定位，理論上恆為同 url，保留分支
-    // 只為語意清楚與防禦。renderHistoryViews 會整面重建紀錄卡片(警示名單卡
-    // 不動)，順帶保存/還原鍵盤焦點對應的條目(見 captureFocusedEntryKey/
-    // refocusEntryCard)。
+    // setHistory／setSyncSettings／setLocalSettings:onStorageChanged 的薄包
+    // 裝，保留給既有呼叫端(測試直接打)。setLocalSettings 不轉交 history 鍵:
+    // 那一鍵歸 setHistory，舊式接線(先 setHistory 再整包 setLocalSettings)
+    // 才不會讓同一批紀錄被處理兩次。
     function setHistory(list) {
-      var focusKey = captureFocusedEntryKey();
-      entries = sanitizeEntries(list);
-      if (detailEntry && isDialogOpen('detailOverlay')) {
-        var match = null;
-        for (var i = 0; i < entries.length; i++) {
-          if (entries[i].url === detailEntry.url) {
-            match = entries[i];
-            break;
-          }
-        }
-        if (match) {
-          if (detailEntry.url !== match.url) openEntryDetail(match);
-          else refreshDetail(match);
-        } else {
-          closeEntryDetail();
-        }
-      }
-      renderHistoryViews();
-      refocusEntryCard(focusKey);
+      onStorageChanged({ [HISTORY_KEY]: { newValue: list } }, 'local');
+    }
+    function setSyncSettings(changes) {
+      onStorageChanged(changes, 'sync');
+    }
+    function setLocalSettings(changes) {
+      if (!changes) return;
+      var rest = Object.assign({}, changes);
+      delete rest[HISTORY_KEY];
+      onStorageChanged(rest, 'local');
     }
 
     // 焦點保存:整面重建卡片前記下目前鍵盤焦點落在哪一條目(卡片本身
@@ -3689,71 +3719,6 @@
       }
     }
 
-    // storage.onChanged(sync 區)時由接線層呼叫:popup 或另一個開著的
-    // options 分頁改了設定(開關/語言/主題)，讓常開的本頁同步反映，不顯示
-    // 過期狀態。直接設定 checkbox.checked(不觸發 change 事件)，不會迴圈
-    // 寫回 storage;同一次變更是自己這頁寫的也會走到這裡，重複設同一個值
-    // 是無害的 no-op。
-    function setSyncSettings(changes) {
-      if (!changes) return;
-      SETTING_IDS.forEach(function (id) {
-        if (!Object.prototype.hasOwnProperty.call(changes, id)) return;
-        var el = byId(id);
-        if (!el) return;
-        var newValue = changes[id] && changes[id].newValue;
-        el.checked = typeof newValue === 'boolean' ? newValue : OPTIONS_DEFAULT_SETTINGS[id];
-      });
-      var needsRender = false;
-      if (Object.prototype.hasOwnProperty.call(changes, 'langPref')) {
-        var newLangPref = changes.langPref && changes.langPref.newValue;
-        langPref = newLangPref === 'zh' || newLangPref === 'en' ? newLangPref : null;
-        locale = i18n.resolveLocale(langPref);
-        needsRender = true;
-      }
-      if (Object.prototype.hasOwnProperty.call(changes, 'themePref')) {
-        var newThemePref = changes.themePref && changes.themePref.newValue;
-        themePref = THEME_ORDER.indexOf(newThemePref) !== -1 ? newThemePref : 'auto';
-        applyTheme();
-      }
-      if (needsRender) renderAll();
-    }
-
-    // storage.onChanged(local 區)的設定側，由接線層呼叫:純本機開關
-    // (LOCAL_SETTING_IDS)在別處被改動時(例如另一個開著的 options 分頁)，
-    // 讓常開的本頁同步反映。比照 setSyncSettings，直接設 checkbox.checked
-    // 不觸發 change 事件，不會迴圈寫回 storage;newValue 被整顆移除(型別非
-    // boolean)時退回預設值。
-    function setLocalSettings(changes) {
-      if (!changes) return;
-      LOCAL_SETTING_IDS.forEach(function (id) {
-        if (!Object.prototype.hasOwnProperty.call(changes, id)) return;
-        var el = byId(id);
-        if (!el) return;
-        var newValue = changes[id] && changes[id].newValue;
-        el.checked = typeof newValue === 'boolean' ? newValue : LOCAL_SETTING_DEFAULTS[id];
-      });
-      // 總開關別處被改動(另一個開著的 options 分頁、或狀態列的開啟鈕自己
-      // 那次寫入回彈)時，狀態列跟著即時反映——不等使用者手動重整。
-      if (Object.prototype.hasOwnProperty.call(changes, 'scamGuardEnabled')) {
-        renderScamDisabledBar();
-      }
-      // 黑名單整包由 background 寫入(解除/復原、掃描命中)，帶來新值就原地
-      // 重畫，常開的頁面不必手動重整。
-      if (Object.prototype.hasOwnProperty.call(changes, SCAM_BLOCKLIST_KEY)) {
-        var change = changes[SCAM_BLOCKLIST_KEY];
-        scamBlocklist = readScamBlocklist(change && change.newValue);
-        renderScamBlocklist();
-      }
-      // 帳號登入/登出由 background 改寫 syncState:刪除與清除全部依它分流
-      // 軟刪(留墓碑)或硬刪，頁面開著期間必須跟上，否則會照開頁當下的
-      // 登入態處理。這裡只換判斷依據，不重畫——畫面上的帳號卡片走
-      // setSyncState 那條(background 推送的卡片狀態)。
-      if (Object.prototype.hasOwnProperty.call(changes, SYNC_ACCOUNT_KEY)) {
-        var accountChange = changes[SYNC_ACCOUNT_KEY];
-        syncAccount = TCLCore.normalizeSyncState(accountChange && accountChange.newValue);
-      }
-    }
-
     // 常開分頁的相對時間標籤刷新(60s ticker 與 visibilitychange 回分頁時
     // 由接線層呼叫)。走輕量路徑:只逐一改已登錄時間節點的 textContent，
     // 不呼叫 renderAll 整面重建卡片——全量重建會偷走使用者的鍵盤焦點與
@@ -3773,6 +3738,7 @@
       setHistory: setHistory,
       setSyncSettings: setSyncSettings,
       setLocalSettings: setLocalSettings,
+      onStorageChanged: onStorageChanged,
       refresh: refresh,
       setSyncState: setSyncState,
       focusAccountArea: focusAccountArea,
