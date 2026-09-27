@@ -423,9 +423,9 @@ test.beforeEach(reset);
 //   - 任一監聽器回傳字面 true：通道保持開啟，等第一次 sendResponse。
 //   - 其餘（全部回 false／undefined 且沒人同步回應）：通道當場關閉，回
 //     responded:false，之後才呼叫的 sendResponse 一律忽略。
-// 通道開著卻遲遲沒有回應代表實作漏回，SAFETY_MS 後以 responded:false 結算，
-// 讓斷言給出明確失敗而不是整支測試卡死；回應一到就清除這顆計時器，不留下
-// 讓 settle() 誤當成「還在動」的殘留排程。
+// 通道開著卻遲遲沒有回應代表實作漏回，保底到期即以錯誤拒絕，讓測試直接失敗，
+// 不讓後續的副作用斷言在沒有回應的情況下照跑；回應一到就清除這顆計時器，不
+// 留下讓 settle() 誤當成「還在動」的殘留排程。
 // idle()：等目前所有通道開啟、尚未回應的訊息都結算完。
 function makeRuntimeSender(listeners, defaultSender) {
   const SAFETY_MS = 10000;
@@ -436,8 +436,10 @@ function makeRuntimeSender(listeners, defaultSender) {
     let channelOpen = true;
     let timer = null;
     let resolveFn;
-    const promise = new Promise((resolve) => {
+    let rejectFn;
+    const promise = new Promise((resolve, reject) => {
       resolveFn = resolve;
+      rejectFn = reject;
     });
     const finish = (payload) => {
       if (settled) return;
@@ -457,7 +459,12 @@ function makeRuntimeSender(listeners, defaultSender) {
     if (!settled) {
       if (keepOpen) {
         inflight.add(promise);
-        timer = setTimeout(() => finish({ responded: false, response: undefined }), SAFETY_MS);
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          inflight.delete(promise);
+          rejectFn(new Error('runtime 訊息 ' + message.type + ' 通道開啟 ' + SAFETY_MS + 'ms 未回應'));
+        }, SAFETY_MS);
       } else {
         channelOpen = false;
         finish({ responded: false, response: undefined });
