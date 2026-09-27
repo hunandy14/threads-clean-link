@@ -2,6 +2,9 @@
   "private": true,
   "name": "threads-clean-link",
   "version": "0.10.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
     "dev": "node tools/dev-browser.mjs --env local",
