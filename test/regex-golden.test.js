@@ -1,9 +1,9 @@
 // ============================================================
 // 【CS-1／XC-8】帳號型錨點與串文徽章正則的行為 golden 表＋病態輸入示範
 //
-// G2（閘門）：兩條有二次方回溯的正則（tcl-core 的 SCAM_ACCOUNT_ANCHOR_RES、
-// scam-guard 的 POSITION_BADGE_PATTERN）改寫之後，對下列語料的判定結果必須
-// 與改寫前逐條一致。golden 值取自改寫前的 main（0.10.0），透過公開入口
+// G2（閘門）：帳號型錨點（tcl-core 的 SCAM_ACCOUNT_ANCHOR_RES）與串文徽章
+// （scam-guard 的 stripPositionBadge）對下列語料的判定結果，必須與 main
+// 0.10.0 逐條一致。golden 值取自 main（0.10.0），透過公開入口
 // detectScamPitch／stripPositionBadge 觀察，不直接綁正則物件——改寫可以拆
 // 條、合併或換成程式判斷，只要對外行為不變。
 //
