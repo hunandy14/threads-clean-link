@@ -477,6 +477,9 @@ const syncEngine =
         clearTimeout: (handle) => clearTimeout(handle),
         // 每個後端請求的逾時 signal(涵蓋到讀完回應本文)。
         timeoutSignal: (ms) => AbortSignal.timeout(ms),
+        // 擴充功能版本，引擎據此帶 X-Client-Version 標頭。沒有 getManifest 的
+        // 環境(部分測試沙箱)給空字串，引擎就不帶這個標頭。
+        clientVersion: typeof chrome.runtime.getManifest === 'function' ? chrome.runtime.getManifest().version : '',
       })
     : null;
 

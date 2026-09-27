@@ -247,12 +247,17 @@
   function exchangeWithBackend(options) {
     var url = options.apiBase.replace(/\/+$/, '') + '/api/auth/sign-in/social';
     var signal = AbortSignal.timeout(options.timeoutMs || EXCHANGE_TIMEOUT_MS);
+    var headers = { 'Content-Type': 'application/json' };
+    // 擴充功能版本，與 sync.js call() 的同名標頭一致;呼叫端沒給就不帶。
+    if (typeof options.clientVersion === 'string' && options.clientVersion) {
+      headers['X-Client-Version'] = 'ext/' + options.clientVersion;
+    }
     return fetch(url, {
       method: 'POST',
       credentials: 'omit',
       redirect: 'error',
       signal: signal,
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify({
         provider: 'google',
         idToken: { token: options.idToken, nonce: options.nonce },
