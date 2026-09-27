@@ -1,123 +1,366 @@
-// test/support/settle.js — 六份測試檔(background/clipboard-guard/bridge/
-// history-schema/popup/options)曾經各自維護一份逐字相同(僅預設 ms 不同)
-// 的 settle() 收斂成這裡一份共用實作，供各檔用 installSettle() 掛載。
+// test/support/settle.js — 測試共用的假時間與收斂等待。各檔以
+// installSettle() 掛載，取得 settle／advance／advanceUntil／now 四支等待工具與
+// 每個測試開始時重新啟用假時間的 reset()。
 //
-// 【為什麼不能用固定牆鐘等待】原本的寫法是 await new Promise(r =>
-// setTimeout(r, ms))，等一段固定毫秒指望非同步鏈路(chrome.storage mock
-// 的 setTimeout(0) 落盤、postMessage 派送、og fetch 逾時競速等)跑完。這
-// 在 Windows 上兩頭不討好:作業系統計時器顆粒約 15.6ms，固定 ms 訂太小,
-// 機器忙、事件迴圈被其他工作餓死時鏈路還沒跑完就斷言，變成看機器心情的
-// 假紅燈；訂太大,鏈路早就跑完了每個 settle() 還是白等到底，整個檔案的
-// 耗時被不成比例地放大。
+// 【為什麼不用牆鐘】chrome.storage 替身每一步都以 setTimeout(0) 落盤、
+// postMessage 派送也經 setTimeout 排程，牆鐘等待在 Windows 上兩頭不討好：作
+// 業系統計時器顆粒約 15.6ms，每一步 0ms 計時器都可能吃掉一整格；og fetch
+// 2.5 秒逾時競速、橋接 2500ms 逾時、sync 2 秒去抖這類長計時器更得真的等滿；
+// 固定毫秒訂小了機器忙時等不完、訂大了閒時白等。這裡以 node:test 的
+// mock.timers 接管 setTimeout／setInterval，時間改由本檔推進，「等計時器」
+// 不再花牆鐘。
 //
-// 【改用計時器計數】全域 setTimeout/clearTimeout 包一層，同時記錄兩件
-// 事:
-//   (a) 只增不減的「累計排程次數」(totalTimersScheduled)。
-//   (b) 「目前尚未觸發」的計時器與其排定延遲(pendingTimers: Map<handle,
-//       delay>)。
-// 兩者缺一不可:
-//   - 只看(a)：像 og fetch 逾時競速、toast 自動隱藏這類一開始就排好、
-//     中途不會再新增排程的長效計時器，兩輪之間次數不會變，會被誤判成
-//     「已經沒事在跑」而提早收尾，等不到它真正觸發。
-//   - 只看(b)：0ms 延遲的計時器常常在下一輪輪詢前就已經觸發並從集合中
-//     移除，若只看「目前存活」會整個錯過那個瞬間、誤判成從未發生過排程。
-// 兩者任一有變化(次數增加，或仍有計時器待觸發)都算「還在動」，連續兩輪
-// 都沒有變化才視為鏈路真正跑完並穩定下來——若整條鏈路在 settle() 開始輪
-// 詢前就已經跑完(純同步分支、或呼叫端已自行 await 過一次的收尾流程)，
-// 兩輪都天生穩定，一樣算數，不強求「這次一定要親眼看到活動」。
+// 【虛擬時鐘】虛擬現在 = 牆鐘經過時間 + 累計跳躍量（整數毫秒），永遠不比牆
+// 鐘慢：
+//   - 不在任何等待工具裡時，到期的計時器照牆鐘節奏觸發（0ms 計時器立即觸
+//     發）。測試直接 await storage.get() 之類的寫法與真實計時器行為相同，不
+//     會卡住。
+//   - settle／advance／advanceUntil 期間，下一顆計時器只要落在各自允許的窗
+//     口內，時鐘就直接跳到它的到期點觸發，不等牆鐘。
+// 延遲的相對先後完全保留：誰先到期誰先觸發。逾時競速、延遲 storage 撐開讀
+// 改寫視窗這類競態仍由假時間的先後決定，不會被壓成同一個 tick。
 //
-// 【只等延遲不超過上限的計時器】pendingTimers 記的是「延遲」而不只是
-// 「有沒有」，判定「還在動」時只看延遲不超過本次 settle(ms) 逾時上限
-// (cap)的那些——這是相對於最早、逐字複製自 background.test.js 的版本
-// (用 Set，不分延遲長短一律當「還在動」)的加強:options.js 的 toast 會
-// 排一顆 2200ms 的自動隱藏計時器，若不分長短一律當成「還在動」，等於保
-// 證等不到、讓每一個發過 toast 的 settle() 白白吃滿上限。這種長效計時器
-// 本來就不屬於測試在等的那條鏈路，排除它不影響判準:需要真的等滿長逾時
-// 的呼叫點只要把 ms 開大，cap 跟著放大就會重新納入判準。background.js
-// 的 og fetch 2.5 秒逾時競速同理，用這個過濾後 settle() 能更快收斂，不
-// 必陪它硬等到底。
+// 【一次只觸發一顆】mock.timers.tick() 會把同一時點到期的計時器在同一個同
+// 步迴圈裡連續呼叫，中間不清微任務；真實 Node 則每顆回呼之後都先清空微任
+// 務。為保住這個時序，交給 mock 的回呼只負責把計時器排進就緒佇列，真正的
+// 回呼由驅動迴圈逐顆執行，每顆之間以原生 setImmediate 讓出一次，微任務必
+// 然清空；就緒後才被 clearTimeout 的計時器從佇列移除，不會誤觸發。
 //
-// 【settle(ms) 的時間語意】
-//   floor = max(floor(ms / 5), 20) — 穩定後仍至少等這麼久，吸收未經計
-//     時器、純微任務完成的收尾工作。
-//   cap   = max(ms + 500, 2000)    — 逾時上限，以 ms 為準再留緩衝，涵蓋
-//     需要真的等滿內部逾時競速的呼叫點(如 settle(2700))；逾時直接
-//     resolve、不吞錯，讓原本的斷言自己失敗，不把逾時偽裝成成功。
+// 【settle(ms) 的收斂判準】累計排程次數有變、就緒佇列不空、或窗口內仍有待
+// 觸發計時器都算「還在動」，連續三輪（每輪一次原生 setImmediate）都不動才收
+// 尾。只看「目前還有沒有計時器」會漏掉在兩輪之間就排定又觸發完的 0ms 計時
+// 器，所以累計次數與待觸發集合兩者都要看；純微任務的收尾工作在每輪
+// setImmediate 之前必然清空，不需要額外的最短等待。
+//   - 虛擬窗口 = ms + 500，只觸發到期點嚴格小於「進入 settle 時的虛擬現在 +
+//     窗口」的計時器。窗口外的長計時器（toast 2200ms 自動隱藏、sync 2 秒去
+//     抖等）不觸發，不屬於測試在等的那條鏈路；真要等長逾時的呼叫點把 ms 開
+//     大即可（如 og 2.5 秒逾時競速用 settle(2700)）。
+//   - 牆鐘上限 = max(ms + 500, 2000)，防止 0ms 計時器無窮自我重排時卡死；逾
+//     時直接 resolve、不吞錯，讓原本的斷言自己失敗，不把逾時偽裝成成功。
 //
-// 【輪詢用原生 setTimeout】要用 patch 前捕獲的原生 setTimeout 排程，不
-// 可用 setImmediate:check phase 在沒有其他 I/O 時不會真的讓出，會在同一
-// 個牆鐘毫秒內狂打數十萬次、Date.now() 幾乎不動，必須靠 setTimeout 讓每
-// 輪真的推進時間。(曾嘗試用 async_hooks 側錄「目前存活的 Timeout 資
-// 源」，但它對全域每一個 Promise/tick 都會觸發回呼，整檔跑下來拖慢兩成
-// 以上，改包 setTimeout 本身開銷小得多。)
+// 【生命週期】reset()（各檔 test.beforeEach(reset)）在每個測試開始時重新啟
+// 用 mock.timers；本檔自行註冊 afterEach／after 停用並丟棄殘留計時器，上一個
+// 測試遺留的長計時器不會跨測試觸發。全域 setTimeout 等四支在安裝時就換成常
+// 駐的分派函式，未啟用假時間時（測試之外）一律轉給原生計時器。每個呼叫檔
+// 各自安裝一次，各檔的狀態互不干擾。
+//
+// 【限制】本檔只接管 setTimeout／setInterval，任何 realm 的 Date.now 都是牆
+// 鐘，不隨虛擬時鐘跳躍；AbortSignal.timeout 走 Node 內部計時器，也不受影響。依賴真實 I/O（本機 HTTP 伺服器、非同步
+// 檔案讀寫等）的檔案不應掛載本檔：settle() 看不到 I/O，會在回應抵達前就收
+// 尾。
 'use strict';
 
-// installSettle({ defaultMs }) — 在呼叫檔案的全域環境 patch setTimeout /
-// clearTimeout(每個呼叫檔各自呼叫一次，各自的 pendingTimers/計數互不
-// 干擾)，回傳 { settle(ms), reset() }。defaultMs 對應各檔原本 settle()
-// 的預設值(background/history-schema 原為 150，其餘為 30)，讓既有呼叫
-// 點 settle()／settle(ms) 的簽名維持不變。reset() 供各檔
-// test.beforeEach(reset) 使用:pendingTimers 是整份檔案共用的單一集合，
-// 若測試留下一顆未等到的長效計時器(逾時競速、toast 自動隱藏之類)就結
-// 束，下一個測試呼叫 settle() 時會誤把這顆與自己無關的舊計時器當成
-// 「還在動」，每個測試開始前清空，只保留「這個測試自己造成的排程」。
+// installSettle({ defaultMs }) — defaultMs 是 settle() 不給參數時的 ms（各檔
+// 沿用原本的預設值：background／history-schema 為 150，其餘為 30）。
+// advanceUntil() 允許虛擬時鐘推進的上限（毫秒），超過即判定 promise 不會落地。
+const ADVANCE_UNTIL_LIMIT_MS = 60000;
+
 function installSettle({ defaultMs = 30 } = {}) {
-  let totalTimersScheduled = 0;
-  const pendingTimers = new Map();
+  const nodeTest = require('node:test');
+  const { mock } = nodeTest;
+  const { performance } = require('node:perf_hooks');
   const nativeSetTimeout = global.setTimeout;
   const nativeClearTimeout = global.clearTimeout;
+  const nativeSetInterval = global.setInterval;
+  const nativeClearInterval = global.clearInterval;
+  const nativeSetImmediate = global.setImmediate;
+  const realNow = () => performance.now();
+  const immediate = () => new Promise((resolve) => nativeSetImmediate(resolve));
 
-  global.setTimeout = function trackedSetTimeout(fn, ms, ...args) {
-    totalTimersScheduled++;
-    const handle = nativeSetTimeout((...cbArgs) => {
-      pendingTimers.delete(handle);
-      return fn(...cbArgs);
-    }, ms, ...args);
-    pendingTimers.set(handle, typeof ms === 'number' && isFinite(ms) ? ms : 0);
-    return handle;
-  };
-  global.clearTimeout = function trackedClearTimeout(handle) {
-    pendingTimers.delete(handle);
-    return nativeClearTimeout(handle);
-  };
+  let active = false;
+  // 每次啟用遞增；停用後仍在跑的舊驅動迴圈看到世代不符就退出。
+  let generation = 0;
+  let mockApi = null;
+  // 已排程、尚未觸發的假計時器：handle → { due, interval, fn, args }。
+  const timers = new Map();
+  // mock 已判定到期、等待驅動迴圈逐顆執行的 handle。
+  let ready = [];
+  let totalScheduled = 0;
+  // mock.timers 內部時鐘（相對啟用時點，毫秒）。
+  let mockNow = 0;
+  // 虛擬現在 = floor(realNow()) + offset，一律是整數毫秒（offset 與延遲都取
+  // 整數），到期點與經過量的比較不受浮點誤差影響。
+  let offset = 0;
+  // settle() 期間允許直接跳過去觸發的虛擬時點上限（不含）。
+  let horizon = -Infinity;
+  let driving = false;
+  let wake = null;
 
-  function reset() {
-    pendingTimers.clear();
+  const virtualNow = () => Math.floor(realNow()) + offset;
+
+  function normalizeDelay(ms) {
+    const n = Number(ms);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
   }
 
-  function settle(ms = defaultMs) {
-    return new Promise((resolve) => {
-      const start = Date.now();
-      const floor = Math.max(Math.floor(ms / 5), 20);
-      const cap = Math.max(ms + 500, 2000);
-      let lastCount = totalTimersScheduled;
-      let stableTicks = 0;
+  // 把 mock 時鐘推到 to（不倒退）：途中到期的計時器依到期先後排進 ready。
+  function advanceMock(to) {
+    const delta = Math.max(0, to - mockNow);
+    mock.timers.tick(delta);
+    mockNow += delta;
+  }
 
-      function tick() {
-        const countChanged = totalTimersScheduled !== lastCount;
-        if (countChanged) lastCount = totalTimersScheduled;
-        let stillPending = false;
-        pendingTimers.forEach((delay) => {
-          if (delay <= cap) stillPending = true;
-        });
-        if (countChanged || stillPending) {
-          stableTicks = 0;
-        } else {
-          stableTicks++;
-        }
-        const elapsed = Date.now() - start;
-        const settled = stableTicks >= 2 && elapsed >= floor;
-        if (settled || elapsed >= cap) {
-          resolve();
-          return;
-        }
-        nativeSetTimeout(tick, 4);
+  function schedule(kind, fn, ms, args) {
+    // 先把 mock 時鐘對齊虛擬現在，新計時器的到期點才以「此刻」起算，不會
+    // 排到先前排定、實際更早到期的計時器前面。
+    advanceMock(virtualNow());
+    const delay = normalizeDelay(ms);
+    totalScheduled++;
+    const entry = { due: mockNow + delay, interval: kind === 'interval' ? delay : 0, fn, args };
+    const onFire = () => {
+      ready.push(handle);
+      if (entry.interval) entry.due += entry.interval;
+    };
+    const handle =
+      kind === 'interval' ? mockApi.setInterval(onFire, delay) : mockApi.setTimeout(onFire, delay);
+    timers.set(handle, entry);
+    kick();
+    return handle;
+  }
+
+  function cancel(handle, kind) {
+    if (timers.has(handle)) {
+      timers.delete(handle);
+      ready = ready.filter((h) => h !== handle);
+      if (kind === 'interval') mockApi.clearInterval(handle);
+      else mockApi.clearTimeout(handle);
+      return undefined;
+    }
+    return kind === 'interval' ? nativeClearInterval(handle) : nativeClearTimeout(handle);
+  }
+
+  const dispatch = {
+    setTimeout(fn, ms, ...args) {
+      return active ? schedule('timeout', fn, ms, args) : nativeSetTimeout(fn, ms, ...args);
+    },
+    clearTimeout(handle) {
+      return cancel(handle, 'timeout');
+    },
+    setInterval(fn, ms, ...args) {
+      return active ? schedule('interval', fn, ms, args) : nativeSetInterval(fn, ms, ...args);
+    },
+    clearInterval(handle) {
+      return cancel(handle, 'interval');
+    },
+  };
+  function installDispatch() {
+    global.setTimeout = dispatch.setTimeout;
+    global.clearTimeout = dispatch.clearTimeout;
+    global.setInterval = dispatch.setInterval;
+    global.clearInterval = dispatch.clearInterval;
+  }
+  installDispatch();
+
+  function earliestDue() {
+    let min = null;
+    timers.forEach((entry, handle) => {
+      if (ready.includes(handle)) return;
+      if (min === null || entry.due < min) min = entry.due;
+    });
+    return min;
+  }
+
+  function runOne(handle) {
+    const entry = timers.get(handle);
+    if (!entry) return;
+    if (!entry.interval) timers.delete(handle);
+    try {
+      entry.fn(...entry.args);
+    } catch (err) {
+      // 與真實計時器一致：回呼丟出的例外成為未捕捉例外，由測試框架判紅。
+      nativeSetImmediate(() => {
+        throw err;
+      });
+    }
+  }
+
+  function kick() {
+    if (wake) wake();
+    if (!driving) drive();
+  }
+
+  // 以原生計時器睡到 ms 之後；kick() 可提早喚醒。
+  function sleepReal(ms) {
+    return new Promise((resolve) => {
+      const timer = nativeSetTimeout(done, Math.max(1, Math.ceil(ms)));
+      function done() {
+        nativeClearTimeout(timer);
+        if (wake === done) wake = null;
+        resolve();
       }
-      nativeSetTimeout(tick, 4);
+      wake = done;
     });
   }
 
-  return { settle, reset };
+  // 驅動迴圈：逐顆執行就緒計時器；沒有就緒時，下一顆若已到期（牆鐘追上）或
+  // 落在 settle 窗口內就推進 mock 時鐘觸發，否則以原生計時器睡到它到期（新
+  // 排程或新的 settle 會提早喚醒重算）。沒有任何待觸發計時器就結束，下次排
+  // 程再啟動。
+  async function drive() {
+    driving = true;
+    const mine = generation;
+    try {
+      while (active && mine === generation) {
+        await immediate();
+        if (!active || mine !== generation) break;
+        if (ready.length) {
+          runOne(ready.shift());
+          continue;
+        }
+        const next = earliestDue();
+        if (next === null) break;
+        const now = virtualNow();
+        if (next <= now) {
+          advanceMock(next);
+          continue;
+        }
+        if (next < horizon) {
+          offset += next - now;
+          advanceMock(next);
+          continue;
+        }
+        await sleepReal(next - now);
+      }
+    } finally {
+      if (mine === generation) driving = false;
+    }
+  }
+
+  function disable() {
+    if (!active) return;
+    active = false;
+    generation++;
+    driving = false;
+    if (wake) wake();
+    timers.clear();
+    ready = [];
+    horizon = -Infinity;
+    mock.timers.reset();
+    installDispatch();
+  }
+
+  function enable() {
+    disable();
+    mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    // enable() 把全域換成 mock 版本；取下來自用，全域換回常駐分派函式。
+    mockApi = {
+      setTimeout: global.setTimeout,
+      clearTimeout: global.clearTimeout,
+      setInterval: global.setInterval,
+      clearInterval: global.clearInterval,
+    };
+    installDispatch();
+    mockNow = 0;
+    offset = -Math.floor(realNow());
+    active = true;
+  }
+
+  nodeTest.afterEach(disable);
+  nodeTest.after(disable);
+
+  async function settle(ms = defaultMs) {
+    const cap = Math.max(ms + 500, 2000);
+    const span = ms + 500;
+    if (!active) {
+      // 測試之外（未啟用假時間）退回牆鐘等待。
+      await new Promise((resolve) => nativeSetTimeout(resolve, ms));
+      return;
+    }
+    const mine = generation;
+    const realStart = realNow();
+    const limit = virtualNow() + span;
+    horizon = Math.max(horizon, limit);
+    kick();
+    let lastCount = totalScheduled;
+    let stable = 0;
+    try {
+      while (active && mine === generation && realNow() - realStart < cap) {
+        await immediate();
+        const next = earliestDue();
+        const busy =
+          ready.length > 0 || (next !== null && next < limit) || totalScheduled !== lastCount;
+        lastCount = totalScheduled;
+        if (busy) {
+          stable = 0;
+          if (!driving) drive();
+        } else if (++stable >= 3) {
+          break;
+        }
+      }
+    } finally {
+      if (mine === generation && horizon === limit) horizon = -Infinity;
+    }
+  }
+
+  // advance(ms)：假時間版的「睡 ms 毫秒」。虛擬時鐘恰好前進 ms，途中到期的
+  // 計時器依先後逐顆觸發，時點之後的一顆都不動；對應牆鐘寫法
+  // await new Promise((r) => setTimeout(r, ms))，但不花牆鐘。
+  async function advance(ms) {
+    if (!active) {
+      await new Promise((resolve) => nativeSetTimeout(resolve, ms));
+      return;
+    }
+    const mine = generation;
+    let bound = -Infinity;
+    try {
+      await new Promise((resolve) => {
+        const handle = schedule('timeout', resolve, ms, []);
+        bound = timers.get(handle).due + 1;
+        horizon = Math.max(horizon, bound);
+        kick();
+      });
+    } finally {
+      if (mine === generation && horizon === bound) horizon = -Infinity;
+    }
+  }
+
+  // advanceUntil(promise)：等 promise 落地，期間下一顆計時器只要落在虛擬時間
+  // 上限（ADVANCE_UNTIL_LIMIT_MS）內就直接跳過去觸發。供「呼叫本身就卡在內部
+  // 逾時上」的寫法使用（例如 await 一個要等 2.5 秒逾時才 resolve 的 API）：牆
+  // 鐘寫法是直接 await 它、真的等滿，這裡改成假時間推進到它落地為止。promise
+  // 落地後（同一輪微任務內）窗口即撤銷，之後到期的計時器不會被順手觸發。
+  // promise 永不落地時，虛擬時鐘推過上限、或上限內已沒有計時器可觸發，都會
+  // 拋出帶訊息的錯誤，而不是一路掛到測試框架逾時。
+  async function advanceUntil(promise) {
+    if (!active) return promise;
+    const mine = generation;
+    const limit = virtualNow() + ADVANCE_UNTIL_LIMIT_MS;
+    let settled = false;
+    const tracked = Promise.resolve(promise).finally(() => {
+      settled = true;
+    });
+    horizon = limit;
+    kick();
+    try {
+      // 看門狗：每輪讓出一次，promise 未落地而上限內已無計時器可推進時判定卡死。
+      const watchdog = (async () => {
+        let idle = 0;
+        while (!settled && mine === generation) {
+          await immediate();
+          if (settled) return;
+          const next = earliestDue();
+          const stuck = ready.length === 0 && (next === null || next >= limit);
+          idle = stuck ? idle + 1 : 0;
+          if (idle >= 3) {
+            throw new Error(
+              'advanceUntil：虛擬時間推進 ' + ADVANCE_UNTIL_LIMIT_MS + 'ms 內 promise 仍未落地'
+            );
+          }
+        }
+      })();
+      return await Promise.race([tracked, watchdog.then(() => tracked)]);
+    } finally {
+      if (mine === generation && horizon === limit) horizon = -Infinity;
+    }
+  }
+
+  // now()：虛擬現在（毫秒）。量測「某段呼叫花了多久」時取代 Date.now()，
+  // 讀到的是假時間的經過量。
+  function now() {
+    return active ? virtualNow() : Date.now();
+  }
+
+  return { settle, reset: enable, advance, advanceUntil, now };
 }
 
 module.exports = { installSettle };
