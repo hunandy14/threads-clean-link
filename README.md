@@ -101,6 +101,7 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 - 淨化功能僅作用於 Chrome 載入的 Threads 網頁版分頁，不處理手機 App 或其他裝置產生的複製內容。
 - 網域、`/share/` 路徑格式、轉址行為、貼文網址格式、複製連結寫入格式若有變動，對應功能會直接失效而非靜默出錯，修復通常僅需調整比對規則。
+- 擴充功能更新或重載後，既開的 Threads 分頁會自動重注入 ISOLATED world 的 content script(`bridge.js`、`i18n.js`、`tcl-core.js`、`post-icon.js`、`scam-guard.js`)，舊實例靠兩層機制自行退場:要碰 `chrome.runtime`／`chrome.storage` 前先判活，發現自己已失效就收掉 observer、計時器與自己插入的節點;新實例啟動時也會在 document 上派送 `threads-clean-link:handoff` 交棒事件，讓舊實例立即讓位。MAIN world 的 `clipboard-guard.js` 不在此列:它以包裹頁面的 `navigator.clipboard` 運作，重注入會疊出第二層包裹，而舊包裹無法從外部拆除，因此更新後該分頁會沿用舊版 `clipboard-guard.js` 直到重新整理。舊版送出的訊息仍由重注入的 `bridge.js` 接手轉發，一般不影響使用;但新版若改了 `clipboard-guard.js` 本身的行為，要重新整理分頁才會生效。
 
 ## 開發
 
