@@ -274,7 +274,7 @@ function isOwnExtensionSender(sender) {
 // read-modify-write。
 
 // chrome.storage 的區域轉接:一律以 Promise 呼叫。區域本身在函式內才取值，
-// 沒有 chrome.storage.session 的環境(舊版瀏覽器/測試替身)不會在接線當下就炸。
+// 沒有 chrome.storage 的環境(測試替身)不會在接線當下就炸。
 function storageAreaAdapter(name) {
   function area() {
     const store = chrome.storage && chrome.storage[name];
@@ -428,7 +428,7 @@ const syncAuthApi = typeof TCLAuth !== 'undefined' ? TCLAuth : null;
 const syncEngine =
   typeof TCLSync !== 'undefined' && typeof TCLSync.create === 'function' && chrome.alarms
     ? TCLSync.create({
-        storage: { local: storageAreaAdapter('local'), session: storageAreaAdapter('session') },
+        storage: { local: storageAreaAdapter('local') },
         fetch: (url, init) => fetch(url, init),
         now: () => Date.now(),
         alarms: {
