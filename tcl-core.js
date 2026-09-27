@@ -217,6 +217,13 @@
 
   // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync.md 4.2/4.3) ----
 
+  // 同步後端的三個 API base，全專案唯一的定義處：sync.js 的 apiBase 白名單、
+  // options 頁的權限描述子與環境標籤、tools/dev-browser.mjs 的環境切換都讀
+  // 這三個常數。local 指向開發機自己跑的 wrangler dev。
+  var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
+  var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
+  var API_BASE_LOCAL = 'http://localhost:8787';
+
   // chrome.storage.local.syncState 的預設形狀。欄位齊備是同步引擎的前提:
   // 少一個鍵，讀到的是 undefined 而不是 null，各處「未登入」判定會失準。
   var DEFAULT_SYNC_STATE = {
@@ -2126,6 +2133,9 @@
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
+    API_BASE_PRODUCTION: API_BASE_PRODUCTION,
+    API_BASE_STAGING: API_BASE_STAGING,
+    API_BASE_LOCAL: API_BASE_LOCAL,
     normalizeSyncState: normalizeSyncState,
     sanitizeDisplayName: sanitizeDisplayName,
     sanitizeAvatarUrl: sanitizeAvatarUrl,

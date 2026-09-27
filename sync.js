@@ -27,9 +27,9 @@
   // token 送去別人家。local 指向開發機自己跑的 wrangler dev，只有
   // tools/dev-browser.mjs 產出的 manifest 副本才宣告 localhost 的 host
   // 權限，商店版連要求該權限都做不到，因此白名單多這一項不擴大攻擊面。
-  var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
-  var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
-  var API_BASE_LOCAL = 'http://localhost:8787';
+  var API_BASE_PRODUCTION = TCLCoreRef.API_BASE_PRODUCTION;
+  var API_BASE_STAGING = TCLCoreRef.API_BASE_STAGING;
+  var API_BASE_LOCAL = TCLCoreRef.API_BASE_LOCAL;
   var API_BASE_ALLOWED = [API_BASE_PRODUCTION, API_BASE_STAGING, API_BASE_LOCAL];
 
   // D5:Google Web client(公開值)。後端把 staging 與 production 的 client

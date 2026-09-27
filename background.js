@@ -448,8 +448,6 @@ const syncEngine =
         alarms: {
           create: (name, info) => chrome.alarms.create(name, info),
           clear: (name) => Promise.resolve(chrome.alarms.clear(name)),
-          get: (name) => Promise.resolve(chrome.alarms.get(name)),
-          getAll: () => Promise.resolve(chrome.alarms.getAll()),
         },
         // 廣播給 options/popup。沒有任何頁面開著時 sendMessage 會 reject，
         // 那是常態不是錯誤，安靜吞掉。
