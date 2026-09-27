@@ -696,7 +696,8 @@ async function attachToServiceWorker(port, extensionId, timeoutMs, attempts = 3)
 }
 
 // Extensions.loadUnpacked 會讓 Chrome 重讀 manifest，但 service worker 以
-// importScripts 拉進來的檔案(tcl-core.js／auth.js／sync.js)吃的是腳本快取，
+// importScripts 拉進來的檔案(tcl-core.js／auth.js／sync.js／sw-history.js／
+// sw-device.js／sw-og.js／sw-scam.js)吃的是腳本快取，
 // 換過 --ref 之後 manifest 是新的、SW 裡的模組卻還是舊版——現場驗證踩過這
 // 個坑，而且它安靜到會讓人以為程式碼沒生效是自己寫錯。chrome.runtime.reload()
 // 重建註冊，快取才真的失效。
