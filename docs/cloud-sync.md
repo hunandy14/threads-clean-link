@@ -181,10 +181,11 @@ LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結�
 D56 之前，marks 的上行靠 `syncState` 的推送水位線 `marksPushedAt`、被拒映射 `marksRejected` 與條目的本機提示 `pushAfter` 選批。升級後第一輪同步把它們換算成每筆 `dirty`：
 
 - **判準**：`loadContext` 另外保留原始 `syncState`，原始物件**帶 `marksPushedAt` 這個鍵**（值為 `null` 也算——舊版正規化會把每個鍵都寫出來）就是舊版。
-- **換算**：`runMarksRound` 開頭、看警示總開關之前，用一次名單寫入依舊規則標髒：`sel = max(updatedAt, pushAfter)`，`marksPushedAt === null`，或 `sel > marksPushedAt` 且 `marksRejected[key] !== sel` 的條目標 `dirty`；同一次寫入刪掉所有 `pushAfter`。遷移只標髒不清髒。
+- **換算**：`runMarksRound` 開頭、看警示總開關之前，用一次名單寫入依舊規則標髒：`sel = max(updatedAt, pushAfter)`，`(marksPushedAt === null || sel > marksPushedAt) && marksRejected[key] !== sel` 的條目標 `dirty`（與 0.10.0 的選批一致：被拒的那一版不論水位線是否為 `null` 都跳過）；同一次寫入刪掉所有 `pushAfter`。遷移只標髒不清髒。
 - **清除時機**：換算落地後，下一次寫回 `syncState` 就不再帶這兩格（新的正規化不輸出它們）。換算落地之前的寫回（例如 links 那一步失敗的一輪、`verifySession`）會把兩格原樣帶回去，不會在遷移之前被洗掉。
 - **冪等**：換算落地之後、`syncState` 寫回之前被殺，下一輪舊判準再算一次；`pushAfter` 已刪，重算的集合只會更小，已標的不會被洗回乾淨，至多多推一次，伺服器對逐欄相同的資料是零寫入。
 - **登出態**：未登入不跑同步，不遷移；登入時名單本來就全部標 `dirty`（D50），`syncState` 也整包重設成新形狀。殘留的 `pushAfter` 已無讀者，下一個 minor 由正規化剝除。
+- **移除時程**：遷移程式碼（`migrateLegacyMarks`、`loadContext` 的 `legacyMarks`、`saveState` 帶回兩格、`normalizeBlocklistEntry` 保留 `pushAfter`）於下一個 minor 移除。
 
 ## 4. 資料模型
 
