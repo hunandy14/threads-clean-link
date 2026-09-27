@@ -223,7 +223,7 @@ test('mergeImportedEntries:url 容忍尾隨斜線/query/hash 並正規化(前身
 });
 
 // 匯入的 author/handle/excerpt 逐條 sanitize(截斷 100/100/2000，非字串
-// 整欄丟棄)，規則與 background.js 落盤前的處理對齊。
+// 整欄丟棄)，規則與 sw-history.js 落盤前的處理對齊。
 test('mergeImportedEntries:author/handle 截斷至 100 字元、excerpt 截斷至 2000 字元，非字串欄位整欄丟棄', () => {
   const result = options.mergeImportedEntries(
     [],
@@ -301,7 +301,7 @@ test('mergeImportedEntries:匯入條目帶偽造 seen 時逐筆 sanitize，且�
 });
 
 // 匯入檔的 original/removedParams(對齊手機 ShareHistoryItem)屬外部輸入，
-// 同樣要逐欄 sanitize，規則與 background.js 落盤前的處理對齊。
+// 同樣要逐欄 sanitize，規則與 sw-history.js 落盤前的處理對齊。
 
 test('mergeImportedEntries:匯入條目帶合法的 original/removedParams 時原樣寫入；original 與(正規化後的)url 相同時整欄丟棄', () => {
   const result = options.mergeImportedEntries(
@@ -464,7 +464,7 @@ test('sanitizeEntries:url 形狀不對(非 threads 網域、缺 /post/ 區段、
 // entries 擴充選填 author/handle/excerpt。核心欄位(url/kind/at)合法時，
 // 選填欄位為字串則截斷至長度上限，非字串則整欄丟棄(不影響核心欄位本身，
 // entry 仍保留)——與 mergeImportedEntries 的 sanitizeTextField 規則一致，
-// 縱深防禦不依賴 background.js 寫入端沒漏。
+// 縱深防禦不依賴 sw-history.js 寫入端沒漏。
 test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，非字串則整欄丟棄(entry 仍保留)', () => {
   const cleaned = options.sanitizeEntries([
     { url: URL_A, kind: 'share', at: 1, author: 'A'.repeat(150), handle: 'H'.repeat(150), excerpt: 'E'.repeat(2500) },
@@ -482,7 +482,7 @@ test('sanitizeEntries:author/handle/excerpt 為字串時截斷至長度上限，
 // sanitize，偽造/損毀的記錄(at 非數字、kind 不在白名單、非物件)逐筆丟棄，
 // 不因此整個陣列作廢;真的沒有合法記錄剩下時整欄不寫入(缺席不落空陣列
 // 佔位，與 author/handle/excerpt 的慣例一致)。kind 缺席的記錄(手機版語意
-// 的起始種子紀錄，見 background.js 的 mergeHistoryEntry)須視為合法保留，
+// 的起始種子紀錄，見 sw-history.js 的 mergeHistoryEntry)須視為合法保留，
 // 不得誤殺。seen 整欄本身非陣列(不是陣列內某一筆形狀不對，是整個欄位型別
 // 就錯)同樣視為缺席，不輸出該欄。
 test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、缺 kind 的種子紀錄視為合法保留；全丟或整欄非陣列時都不寫入', () => {
@@ -633,7 +633,7 @@ test('buildDetailExtraRows:original 缺席/非字串/與 url 相同時都不產�
   assert.equal(options.buildDetailExtraRows({ url: 'https://x/y', original: 'https://x/y' }).length, 0, '與 url 相同');
 });
 // removedParams 元素的欄位名是 { key, value }(手機版 link-cleaner.ts:171、
-// detail-dialog 的 p.key，也是 background.js sanitizeRemovedParams 實際落盤
+// detail-dialog 的 p.key，也是 tcl-core.js sanitizeRemovedParams 實際落盤
 // 的形狀)，不是 { name, value }。
 test('buildDetailExtraRows:removedParams 逐筆產生「追蹤參數 {name}」列，形狀不對的項目濾掉不影響其他筆', () => {
   const entry = {
@@ -665,12 +665,12 @@ test('buildDetailExtraRows:removedParams 缺席或非陣列時不產生任何追
 // ---- 跨層釘住(表格驅動) ----
 //
 // 兩個權威來源(手機版 link-cleaner.ts:171 與 detail-dialog 的 p.key，
-// 以及 background.js 的 sanitizeRemovedParams 實際落盤形狀)的欄位名/長度
+// 以及 tcl-core.js 的 sanitizeRemovedParams 實際落盤形狀)的欄位名/長度
 // 上限必須與 options 讀取端一致。表格涵蓋 author/handle/excerpt/original/
 // removedParams 五個選填欄位 + url 形狀案例，任一欄的欄位名/長度上限漂移
 // 都能在這裡攔下。
 //
-// 每筆 case 把 message 餵給 background.js 真實的 extractHistoryExtraFields
+// 每筆 case 把 message 餵給 sw-history.js 真實的 extractHistoryExtraFields
 // (vm sandbox 載入真實原始碼，不是重新複製一份邏輯抄在測試裡)，取得
 // 「background 端真的會落盤的形狀」，原封不動餵給 options.sanitizeEntries
 // (options 端真實讀取路徑)，斷言兩層對同一筆輸入的認定完全一致——比
@@ -916,7 +916,7 @@ test('controller smoke:init 讀兩區 storage、整條渲染跑完，清單與�
   assert.equal(doc.ids.empty.hidden, true);
   assert.equal(doc.ids.statTotal.textContent, '2');
   // autoClean 預設值 false(popup/options 兩側鏡像同一個 fallback，
-  // 對齊 background.js 的預設)。
+  // 對齊 tcl-core.js 的預設)。
   assert.equal(doc.ids.autoClean.checked, false, '設定未存值時應套新預設 false');
 
   controller.setHistory([]);

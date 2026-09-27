@@ -407,7 +407,7 @@
 
   // 對齊手機版 CopyRow 的「原始連結」「追蹤參數 {name}」兩類列。
   // removedParams 元素的欄位名是 { key, value }(手機版 link-cleaner.ts:171
-  // 與 background.js 的 sanitizeRemovedParams 皆同);回傳物件用 name 是
+  // 與 tcl-core.js 的 sanitizeRemovedParams 皆同);回傳物件用 name 是
   // 顯示層/i18n 樣板插值命名(見下面 tf('opTrackingParamLabel', { name:
   // row.name })那行)，跟資料層的 key 是兩回事，不要混淆。entry.original
   // 缺席/非字串/與 cleaned 相同、entry.removedParams 缺席/非陣列/項目
@@ -2824,7 +2824,7 @@
     // openConfirm)。
     //
     // 以 url+at 精準命中(不只比 url):background 永久合併(同一篇貼文恆為一
-    // 張卡，見 background.js 的紀錄合併區塊)，但匯入的資料可能夾帶同
+    // 張卡，見 sw-history.js 的紀錄合併區塊)，但匯入的資料可能夾帶同
     // url 的多筆舊紀錄，比 url+at 才保證「刪一筆只刪中一筆」。onStorageChanged 已
     // 把 detailEntry 換成清單裡的新物件(見 refreshDetail)，at 不會過期，精
     // 準比對成立。

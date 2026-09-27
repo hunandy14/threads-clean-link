@@ -10,7 +10,7 @@
 // 跑完整往返，兩者都靠這條紀律。
 //
 // storage.local 的讀改寫一律經 TCLCore.createMutator 建的 mutate，佇列用注入
-// 的 writeChain(background.js 的 storageQueue)，與 recordHistory／遷移／警示
+// 的 writeChain(sw-history.js 的 storageQueue)，與 recordHistory／遷移／警示
 // 名單共用同一條序列佇列，否則兩邊的 read-modify-write 會互相覆蓋。
 (function (root) {
   'use strict';

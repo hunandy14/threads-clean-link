@@ -163,7 +163,7 @@
   // share/strip 解析在 Threads 頁面內失敗時(bridge.js 收到 resolveShare
   // 的 ok:false 回應或同義訊號)，用頁內 toast 提示使用者。文字沿用
   // background.js 右鍵路徑既有的失敗文案 i18n key，
-  // 三個已知原因(來自 background.js 的 handleResolveShareMessage)逐一
+  // 三個已知原因(來自 sw-og.js 的 handleResolveShareMessage)逐一
   // 對應；其餘原因(bridge/guard 自身的連線層失敗，如逾時、通道關閉、
   // sendMessage 例外)一律 fallback 到 bgUnexpected，比照右鍵路徑「未預
   // 期錯誤」的既有處理方式。純函式，供 Node 測試與瀏覽器共用。
@@ -577,7 +577,7 @@
       // RELATIVE_TIME_RE／COUNT_LIKE_RE／classifyExcerptCandidate 定義在
       // 檔案頂部的純函式區，供 Node 測試直接載入，這裡只呼叫。----
 
-      // 與 background.js 的長度上限對齊；這裡預先截斷一次，background 端
+      // 與 tcl-core.js 的長度上限對齊；這裡預先截斷一次，background 端
       // 仍會再做一次防禦性截斷，兩處各自獨立不互相依賴。
       var EXCERPT_MAX = 2000;
 

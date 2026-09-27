@@ -74,7 +74,7 @@ test('normalizePostUrl:容尾正規化——回傳去 query/hash/尾斜線後的
   assert.equal(C.normalizePostUrl(12345), null);
 });
 
-// extractPostId 是紀錄永久合併的主鍵來源(見 background.js 的紀錄合併區
+// extractPostId 是紀錄永久合併的主鍵來源(見 sw-history.js 的紀錄合併區
 // 塊):handle 可改名、post ID 終身不變，改名前後的網址靠它認出是同一篇。三
 // 案分別釘住:合法貼文網址抽得出 ID(且與 handle 無關)、分享短碼抽不出
 // (短碼只有 Meta 伺服器能對應)、畸形/帶尾隨內容一律 null(呼叫端據此退回整
