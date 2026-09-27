@@ -103,7 +103,7 @@
 
         <!-- 已登入/同步中/錯誤/登入過期:頭像觸發鈕 + 下拉選單，同一份
              DOM，內容依狀態切換顯隱(renderAccount)。 -->
-        <button class="account-trigger" id="acctTrigger" hidden aria-haspopup="menu" aria-expanded="false" data-i18n-aria="opAccountMenuLabel" aria-label="帳號選單">
+        <button class="account-trigger" id="acctTrigger" hidden aria-haspopup="menu" data-i18n-aria="opAccountMenuLabel" aria-label="帳號選單">
           <span class="avatar-wrap" id="avatarWrap">
             <span class="avatar-circle" id="avatarCircle">
               <span id="avatarLetter"></span>
@@ -114,7 +114,7 @@
           <span class="acc-name" id="acctHeaderName"></span>
         </button>
 
-        <div class="menu acct-menu" id="acctMenu" hidden role="menu">
+        <div class="menu acct-menu" id="acctMenu" popover role="menu">
           <!-- 錯誤態:紅字錯誤訊息 + 重試(直接重試同步 sync.now，不需重新授權)。 -->
           <div class="acct-error-row" id="acctErrorRow" hidden>
             <span id="acctErrorText"></span>
@@ -286,10 +286,10 @@
             <button class="ps" data-n="50">50</button>
             <button class="ps" data-n="100">100</button>
           <span data-i18n="opPerPageB">筆</span></span>
-          <button class="ghost-btn" id="moreBtn" data-i18n-title="opMoreTitle" title="更多動作" aria-haspopup="menu" aria-expanded="false">
+          <button class="ghost-btn" id="moreBtn" data-i18n-title="opMoreTitle" title="更多動作" aria-haspopup="menu">
             <svg class="icon"><use href="#i-more"/></svg>
           </button>
-          <div class="menu" id="moreMenu" hidden role="menu">
+          <div class="menu" id="moreMenu" popover role="menu">
             <button class="menu-item" id="exportBtn" role="menuitem">
               <svg class="icon"><use href="#i-download"/></svg><span data-i18n="opExportJson">匯出 JSON</span>
             </button>
@@ -309,10 +309,10 @@
           <input type="search" id="searchInput" data-i18n-ph="opSearchPh" placeholder="搜尋帳號或網址…" />
         </div>
         <div class="menu-wrap">
-          <button class="ghost-btn" id="filterBtn" data-i18n-title="opFilterTitle" title="依來源篩選" aria-expanded="false" aria-controls="chipsRow">
+          <button class="ghost-btn" id="filterBtn" data-i18n-title="opFilterTitle" title="依來源篩選" aria-controls="chipsRow">
             <svg class="icon"><use href="#i-filter"/></svg>
           </button>
-          <div class="menu chips-menu" id="chipsRow" hidden>
+          <div class="menu chips-menu" id="chipsRow" popover>
             <div class="chips" id="chips">
               <button class="chip on" data-kind="all" data-i18n="opChipAll">全部</button>
               <button class="chip" data-kind="share" data-i18n="opKindShare">短碼解析</button>
@@ -377,14 +377,14 @@
 
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" popover="manual"></div>
 
 <!-- 匯入對話框(匯出改為直接下載檔案，不經對話框) -->
-<div class="overlay" id="overlay" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+<dialog class="dlg" id="overlay" aria-labelledby="modalTitle">
+  <div class="modal">
     <h3 id="modalTitle"><svg class="icon"><use href="#i-upload"/></svg><span data-i18n="opImportTitle">匯入紀錄</span></h3>
     <div class="desc" data-i18n="opImportDesc">選擇先前匯出的 .json 檔，或直接貼上內容;與現有紀錄以網址去重合併。</div>
-    <textarea id="modalText" spellcheck="false" placeholder='{ "app": "threads-clean-link", "version": 1, "entries": [ … ] }'></textarea>
+    <textarea id="modalText" autofocus spellcheck="false" placeholder='{ "app": "threads-clean-link", "version": 1, "entries": [ … ] }'></textarea>
     <div class="modal-actions">
       <button class="btn" id="modalClose" data-i18n="opClose">關閉</button>
       <button class="btn" id="modalFile">
@@ -394,29 +394,29 @@
     </div>
     <input type="file" id="fileInput" accept=".json,application/json" hidden />
   </div>
-</div>
+</dialog>
 
 <!-- 清除全部:確認對話框 -->
-<div class="overlay" id="confirmOverlay" hidden>
-  <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmDesc">
+<dialog class="dlg" id="confirmOverlay" role="alertdialog" aria-labelledby="confirmTitle" aria-describedby="confirmDesc">
+  <div class="modal modal-sm">
     <h3 id="confirmTitle"><svg class="icon danger-ink" id="confirmIcon"><use href="#i-trash" id="confirmIconUse"/></svg><span id="confirmTitleText" data-i18n="opClearAll">清除全部紀錄</span></h3>
     <div class="desc" id="confirmDesc"></div>
     <div class="modal-actions">
-      <button class="btn" id="confirmCancel" data-i18n="opCancel">取消</button>
+      <button class="btn" id="confirmCancel" autofocus data-i18n="opCancel">取消</button>
       <button class="btn btn-danger-solid" id="confirmOk" data-i18n="opClearDo">確定清除</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- 裝置對話框:由帳號選單的「管理裝置」開啟。面板沿用詳細視窗的
-     .modal-detail 外觀(圓角 12、padding 16、右上 ✕)，只放寬到 480px;
-     移除確認框(#confirmOverlay，z-index 12)疊在這一層之上。
+     .modal-detail 外觀(圓角 12、padding 16、右上 ✕)，寬度沿用 .modal 的 520px;
+     移除確認框(#confirmOverlay)以巢狀 showModal 疊在這一層之上。
      清單列、空狀態的圖示與文案都由 options.js 以 createElement 產生(裝置
      名稱是使用者可自訂的字串，等於別台裝置寫進本頁的內容，一律走
      textContent，禁 innerHTML)，這裡只留容器。 -->
-<div class="overlay" id="devicesOverlay" hidden>
-  <div class="modal modal-detail modal-devices" role="dialog" aria-modal="true" aria-labelledby="devicesTitle">
-    <button class="detail-close" id="devicesClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+<dialog class="dlg" id="devicesOverlay" aria-labelledby="devicesTitle">
+  <div class="modal modal-detail modal-devices">
+    <button class="detail-close" id="devicesClose" autofocus data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <div class="devices-head">
       <h3 id="devicesTitle" data-i18n="opDevicesTitle">裝置</h3>
       <span class="hint" id="devicesHint"></span>
@@ -430,29 +430,29 @@
       </button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- 警示名單的「命中 N 篇」證據對話框:主卡只放最新一筆，全部證據在這裡逐筆
-     列出。外框沿用裝置對話框那一組 overlay/modal 樣式;內容由 options.js 的
+     列出。外框沿用裝置對話框那一組 dialog.dlg/modal 樣式;內容由 options.js 的
      renderScamHits 填。 -->
-<div class="overlay" id="scamHitsOverlay" hidden>
-  <div class="modal modal-detail modal-scam-hits" role="dialog" aria-modal="true" aria-labelledby="scamHitsTitle">
-    <button class="detail-close" id="scamHitsClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+<dialog class="dlg" id="scamHitsOverlay" aria-labelledby="scamHitsTitle">
+  <div class="modal modal-detail modal-scam-hits">
+    <button class="detail-close" id="scamHitsClose" autofocus data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <h3 id="scamHitsTitle"></h3>
     <div class="scam-hits-list" id="scamHitsList"></div>
   </div>
-</div>
+</dialog>
 
 <!-- 警示名單卡的「這個功能怎麼運作」說明視窗:五段條列，全部由 options.js
      以 textContent 寫入(文案走 i18n，不在 HTML 裡寫死)。外框沿用裝置／證據
-     對話框那一組 overlay/modal 樣式。 -->
-<div class="overlay" id="scamInfoOverlay" hidden>
-  <div class="modal modal-detail modal-scam-info" role="dialog" aria-modal="true" aria-labelledby="scamInfoTitle">
-    <button class="detail-close" id="scamInfoClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+     對話框那一組 dialog.dlg/modal 樣式。 -->
+<dialog class="dlg" id="scamInfoOverlay" aria-labelledby="scamInfoTitle">
+  <div class="modal modal-detail modal-scam-info">
+    <button class="detail-close" id="scamInfoClose" autofocus data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <h3 id="scamInfoTitle" data-i18n="opScamInfoTitle">這個功能怎麼運作</h3>
     <ol class="scam-info-list" id="scamInfoList"></ol>
   </div>
-</div>
+</dialog>
 
 <!-- 卡片詳細視窗:結構/行為/間距/字級/圓角/按鈕樣式一律照手機版
      history-detail-dialog.tsx + dialog-shell.tsx 的字面 token 值(唯一
@@ -460,11 +460,11 @@
      關閉。sr-only 標題供螢幕閱讀器用，視覺上不畫額外標題列，直接從卡頭
      (徽章/時間)開始。original/removedParams 兩列缺席容忍——沒資料就不
      畫，見 detailExtraRows/buildDetailExtraRows。 -->
-<div class="overlay" id="detailOverlay" hidden>
-  <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+<dialog class="dlg" id="detailOverlay" aria-labelledby="detailTitle">
+  <div class="modal modal-detail">
     <h3 id="detailTitle" class="sr-only" data-i18n="opDetailTitle">紀錄詳細資訊</h3>
     <!-- ✕ 關閉鈕，對齊 dialog-shell.tsx 的 DialogCloseButton。 -->
-    <button class="detail-close" id="detailClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+    <button class="detail-close" id="detailClose" autofocus data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <div class="detail-head">
       <div class="entry-meta">
         <span class="entry-badge" id="detailBadge"></span>
@@ -531,19 +531,19 @@
       <button class="dialog-btn destructive" id="detailDeleteBtn" data-i18n="opDeleteTitle">刪除這筆</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <!-- 時間軸子層視窗，照手機版 history-detail-dialog.tsx 的 showSeenHistory
      分支——疊在詳細視窗上，標題「解析時間軸(共 N 次)」含次數、右上 ✕
      關閉。手機版時間軸本來就是巢狀 Modal，沒有「展開全文」那條 iOS
      平台限制要迴避，故照抄巢狀結構，不用原地展開。 -->
-<div class="overlay" id="timelineOverlay" hidden>
-  <div class="modal modal-detail" role="dialog" aria-modal="true" aria-labelledby="timelineTitle">
-    <button class="detail-close" id="timelineClose" data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
+<dialog class="dlg" id="timelineOverlay" aria-labelledby="timelineTitle">
+  <div class="modal modal-detail">
+    <button class="detail-close" id="timelineClose" autofocus data-i18n-title="opClose" data-i18n-aria="opClose" title="關閉" aria-label="關閉">✕</button>
     <h3 id="timelineTitle" class="detail-author-name"></h3>
     <div id="detailTimeline"></div>
   </div>
-</div>
+</dialog>
 
 <script src="i18n.js"></script>
 <script src="tcl-core.js"></script>
