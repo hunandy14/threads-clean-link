@@ -301,6 +301,9 @@
     // 請求逾時的 signal 工廠((ms) => AbortSignal，background 接成
     // AbortSignal.timeout)。沒注入就不帶 signal，請求不設逾時。
     var timeoutSignal = typeof deps.timeoutSignal === 'function' ? deps.timeoutSignal : null;
+    // 擴充功能版本(manifest 的 version)。每個後端請求與登入交換都帶
+    // X-Client-Version: ext/<版本>，讓後端分辨客戶端版本;沒注入就不帶。
+    var clientVersion = typeof deps.clientVersion === 'string' && deps.clientVersion ? deps.clientVersion : null;
     // 本機裝置身分(§12 增補二)。舊版接線沒有這支，整組裝置歸屬功能就靜默
     // 缺席——同步照跑，只是請求不帶 device 區塊。
     var getLocalDevice = typeof deps.getLocalDevice === 'function' ? deps.getLocalDevice : null;
@@ -482,6 +485,7 @@
       // set-auth-token 標頭），等於把 token 的來源交給任何能讓後端轉址的人。
       var init = { method: method, credentials: 'omit', headers: {}, redirect: 'error' };
       init.headers.Authorization = 'Bearer ' + ctx.token;
+      if (clientVersion) init.headers['X-Client-Version'] = 'ext/' + clientVersion;
       if (body !== undefined) {
         init.headers['Content-Type'] = 'application/json';
         init.body = JSON.stringify(body);
@@ -1397,7 +1401,12 @@
               // 回報的值。
               var effective = typeof result.nonce === 'string' && result.nonce ? result.nonce : nonce;
               return auth
-                .exchangeWithBackend({ apiBase: ctx.apiBase, idToken: result.idToken, nonce: effective })
+                .exchangeWithBackend({
+                  apiBase: ctx.apiBase,
+                  idToken: result.idToken,
+                  nonce: effective,
+                  clientVersion: clientVersion,
+                })
                 .then(function (exchange) {
                   return finishSignIn(ctx, result, exchange);
                 });
