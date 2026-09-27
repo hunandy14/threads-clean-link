@@ -583,11 +583,10 @@ test('S5 常數:DEFAULT_SYNC_STATE 形狀', () => {
     lastSyncedAt: null,
     // 【斷言翻轉｜D53】clearedAt（清除全部的全域水位線）移除：清除全部改走墓碑。
     lastError: null,
-    // D38（車道 B）:警示名單 marks 通道的四格水位線，見 sync-marks 契約。
+    // D38（車道 B）:警示名單 marks 通道的下行狀態，見 sync-marks 契約。上行待推
+    // 記在名單條目的 dirty 上（SW-4b），syncState 沒有推送水位線與被拒映射。
     marksCursor: null,
-    marksPushedAt: null,
     marksEvicted: null,
-    marksRejected: null,
     // CR-2：回填的續填位置。回填一輪最多翻 20 頁，翻不完時不記位置就只能下一輪
     // 從第一頁重來——雲端筆數多到單輪翻不完的帳號因此永遠回填不到底，marks 通道
     // 卡在回填、一筆都推不出去。

@@ -1864,16 +1864,14 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
     'email',
     'lastError',
     'lastSyncedAt',
-    // D38（車道 B）：警示名單 marks 通道的四格。C 車道的「雲端額度滿了」提示
+    // D38（車道 B）：警示名單 marks 通道的三格。C 車道的「雲端額度滿了」提示
     // 讀的是 marksEvicted，不隨廣播帶出來那張提示就沒有筆數可顯示。
-    // CR-2：回填續填位置也隨 state 帶出（封閉鍵集 12 → 13）。它與其餘三格一樣
-    // 是診斷用的水位線，UI 不直接顯示，但 state 是唯一的對外形狀，少一格就沒有
-    // 任何管道看得出「這個帳號卡在回填第幾頁」。
+    // CR-2：回填續填位置也隨 state 帶出。它與 marksCursor 一樣是診斷用的游標，
+    // UI 不直接顯示，但 state 是唯一的對外形狀，少一格就沒有任何管道看得出「這
+    // 個帳號卡在回填第幾頁」。SW-4b：推送水位線與被拒映射退場（封閉鍵集 13 → 11）。
     'marksBackfillCursor',
     'marksCursor',
     'marksEvicted',
-    'marksPushedAt',
-    'marksRejected',
     'pendingCount',
     'status',
   ]);
@@ -1881,10 +1879,8 @@ test('T7 未登入時 getState 回計劃 5.2 的完整形狀', async () => {
   assert.equal(state.status, 'signed_out');
   assert.equal(state.email, null);
   assert.equal(state.apiBase, PRODUCTION_BASE);
-  assert.equal(state.marksCursor, null, '未登入時四格一律是預設值');
-  assert.equal(state.marksPushedAt, null);
+  assert.equal(state.marksCursor, null, '未登入時 marks 各格一律是預設值');
   assert.equal(state.marksEvicted, null);
-  assert.equal(state.marksRejected, null);
 });
 
 // ============================================================================
@@ -4467,7 +4463,7 @@ test('D50 deleteCloud 成功：本機登出——token 清、syncState 重設、
       cursor: 'cur-before',
       lastError: 'network_error',
       marksCursor: 'marks-before',
-      marksPushedAt: T0 - 1000,
+      marksEvicted: 3,
     },
     local: {
       syncDevices: { fetchedAt: T0 - 1000, devices: [{ deviceId: '11111111-2222-4333-8444-555555555555', name: '合成手機' }] },
