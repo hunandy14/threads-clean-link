@@ -1793,7 +1793,7 @@ test('T5 manifest 必須宣告 alarms 權限，否則 chrome.alarms 不存在', 
 // ============================================================================
 
 // 【斷言翻轉｜D50】原斷言「打 DELETE /api/v1/links、本機全部 dirty:false 不重推」
-// 作廢：刪雲端改打單一端點並登出，本機全部標髒，重新登入後全量重傳。
+// 作廢：刪雲端改打單一端點並登出，本機不動，重新登入後由 finishSignIn 標髒全量重傳（D54）。
 test('T6 deleteCloud：只打 R11 單一端點，本機紀錄原封不動（D50／D54）', async () => {
   const TCLSync = loadSync();
   const env = makeEnv({

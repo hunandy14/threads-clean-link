@@ -33,9 +33,14 @@
   --danger: light-dark(#d03b3b, #e66767);
   --danger-soft: light-dark(rgba(208, 59, 59, 0.1), rgba(230, 103, 103, 0.14));
   /* 帳號入口的「登入過期」語意色：綠(已同步)／紅(錯誤)之外的第三態黃，
-     供狀態點與選單提示列使用。淺色 #b8862b 對 --surface(#fcfcfb)約
-     3.16:1，過 WCAG 非文字元素 3:1 門檻(狀態點是純色塊，沒有文字襯托)。 */
-  --warn: light-dark(#b8862b, #e6b955);
+     供狀態點與選單提示列使用。淺色原本用 #b8862b，對 --surface(#fcfcfb)
+     約 3.16:1(過非文字元素 3:1 門檻)，但 .acct-warn-row 是文字(色文字壓
+     --warn-soft 淡底)，攤平 warn-soft 的 14% alpha 後底色約 #f2ebde，
+     文字對比只有 2.73:1，不過 WCAG 正文 4.5:1 門檻。改用較深的 #815e1e：
+     對 --surface 約 5.76:1，對攤平後的 --warn-soft 底色約 4.99:1，兩者
+     皆過門檻;深色 #e6b955 未動，維持原樣(對攤平後 --warn-soft 底色約
+     6.11:1，沒有退步)。 */
+  --warn: light-dark(#815e1e, #e6b955);
   /* 提示列的淡底色，比照 --accent-soft／--danger-soft「主色 + 淡底變體」
      慣例。 */
   --warn-soft: light-dark(rgba(184, 134, 43, 0.14), rgba(230, 185, 85, 0.2));
