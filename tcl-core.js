@@ -115,6 +115,34 @@
     postCopyEnabled: true,
   };
 
+  // options 與 popup 兩頁開關列的共用表。HTML 維持靜態列(防閃、popup 尺寸
+  // 量測)，本表只驅動讀值、change 綁定與 storage.onChanged 回填:
+  //   key    checkbox 的 id，同時是 storage 鍵
+  //   area   值存哪一區('sync' 跟帳號跨裝置同步，'local' 只留這台裝置)
+  //   def    缺值或非布林時的退回值;sync 區三顆與 DEFAULT_SETTINGS 一致
+  //   pages  哪幾頁有這顆控件('options'／'popup')
+  //   label  HTML 靜態列所用 i18n 鍵的對照(文件用途，不參與渲染)
+  //   view   值變動時 options 頁要額外重畫的視圖(見 options.js 的 VIEWS)
+  // scamGuardEnabled 講的是「這台裝置要不要掃描」，因此放 local 區。
+  var SETTINGS_SCHEMA = [
+    {
+      key: 'autoClean', area: 'sync', def: false, pages: ['options', 'popup'],
+      label: { options: ['opAutoCleanName', 'opAutoCleanDesc'], popup: 'ppAutoClean' },
+    },
+    {
+      key: 'postCopyEnabled', area: 'sync', def: true, pages: ['options', 'popup'],
+      label: { options: ['opPostCopyName', 'opPostCopyDesc'], popup: 'popPostCopyLabel' },
+    },
+    {
+      key: 'saveHistory', area: 'sync', def: true, pages: ['options'],
+      label: { options: ['opSaveName', 'opSaveDesc'] },
+    },
+    {
+      key: 'scamGuardEnabled', area: 'local', def: true, pages: ['options'],
+      label: { options: ['opScamGuardName', 'opScamGuardDesc'] }, view: 'scamBar',
+    },
+  ];
+
   // ---- 網址判定 ----
 
   // 嚴格錨定判定:寫入前的權威把關。非字串一律 false。
@@ -2304,6 +2332,7 @@
     NOTICE_KIND_LIST: NOTICE_KIND_LIST,
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
+    SETTINGS_SCHEMA: SETTINGS_SCHEMA,
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
     API_BASE_PRODUCTION: API_BASE_PRODUCTION,
     API_BASE_STAGING: API_BASE_STAGING,
