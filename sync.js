@@ -78,6 +78,9 @@
   var API_BASE_KEY = 'syncApiBase';
   var BACKOFF_KEY = 'syncBackoff';
   var VERIFIED_AT_KEY = 'syncVerifiedAt';
+  // 同步紀元(§3.3)：`{ userId, epoch }`，本機最後確認的雲端 epoch。不屬於帳號
+  // 五鍵——登出、過期、刪雲端都不清，只在採用另一個帳號的值時整筆覆寫。
+  var EPOCH_KEY = 'syncEpoch';
   // 「刪除雲端資料」的單一端點(契約 R11):硬刪該帳號全部雲端資料並撤銷所有
   // session，回 `{ ok, revokedSessions }`。
   var CLOUD_DATA_PATH = '/api/v1/cloud-data';
@@ -193,6 +196,17 @@
     var raw = exchange && exchange.body ? exchange.body.error : null;
     if (typeof raw === 'string' && ERROR_CODE_PATTERN.test(raw)) return raw;
     return 'sign_in_failed';
+  }
+
+  /** 後端 epoch 的合法形狀:非負整數。 */
+  function isEpoch(value) {
+    return typeof value === 'number' && isFinite(value) && value >= 0 && Math.floor(value) === value;
+  }
+
+  /** syncEpoch 紀錄裡屬於 userId 的 epoch;不是這個帳號的、或形狀不合，回 null。 */
+  function epochFor(record, userId) {
+    if (!record || typeof record !== 'object' || typeof userId !== 'string' || record.userId !== userId) return null;
+    return isEpoch(record.epoch) ? record.epoch : null;
   }
 
   function syncError(code) {
@@ -368,12 +382,18 @@
       defaults[API_BASE_KEY] = null;
       defaults[BACKOFF_KEY] = null;
       defaults[VERIFIED_AT_KEY] = null;
+      defaults[EPOCH_KEY] = null;
       return localGet(defaults).then(function (got) {
         var authRecord = got[AUTH_KEY];
         var backoff = got[BACKOFF_KEY];
         var rawState = got[STATE_KEY];
+        var state = TCLCoreRef.normalizeSyncState(rawState);
         return {
-          state: TCLCoreRef.normalizeSyncState(rawState),
+          state: state,
+          // 本機已知的雲端 epoch(只認 syncState 目前這個帳號的);null＝未知，
+          // 請求不帶 epoch。epochRecord 是原始紀錄，供 finishSignIn 對新帳號判讀。
+          epoch: epochFor(got[EPOCH_KEY], state.userId),
+          epochRecord: got[EPOCH_KEY],
           // 舊版 syncState 的推送水位線與被拒映射(原始物件帶 marksPushedAt 鍵
           // 即舊版，值為 null 也算)。這兩格只供 migrateLegacyMarks 讀;遷移落
           // 地前 saveState 原樣帶著它們寫回，
@@ -563,6 +583,8 @@
       // HTTP 狀態碼與錯誤碼分開帶:removeDevice 的冪等判定看的是 404 這個
       // 狀態，不是後端剛好回了哪一個 body.error。
       err.status = res.status;
+      // 409 epoch_mismatch 的回應體帶伺服器目前的 epoch，resetForEpoch 以它為準。
+      if (code === 'epoch_mismatch' && payload && isEpoch(payload.epoch)) err.epoch = payload.epoch;
       var header = res.headers && typeof res.headers.get === 'function' ? res.headers.get('retry-after') : null;
       var seconds = header !== null && header !== undefined && isFinite(Number(header)) ? Number(header) : null;
       if (seconds === null && payload && typeof payload.retryAfter === 'number' && isFinite(payload.retryAfter)) {
@@ -793,11 +815,12 @@
 
     /**
      * 發請求前的關卡。POST 從本輪額度扣一次;任何請求在最壞情況(再等滿一次
-     * CALL_TIMEOUT_MS)會超過本輪期限時一律不發。擋下時回 false 並記下「尚有待
-     * 推」，runSync 收尾時據此排 continue 續跑。
+     * CALL_TIMEOUT_MS)會超過本輪期限時一律不發;resetForEpoch 之後(halted)本
+     * 輪一律不發。擋下時回 false 並記下「尚有待推」，runSync 收尾時據此排
+     * continue 續跑。
      */
     function takeCall(ctx, isPost) {
-      if ((isPost && ctx.budget.left <= 0) || now() + CALL_TIMEOUT_MS > ctx.deadline) {
+      if (ctx.budget.halted || (isPost && ctx.budget.left <= 0) || now() + CALL_TIMEOUT_MS > ctx.deadline) {
         ctx.budget.exhausted = true;
         return false;
       }
@@ -806,35 +829,68 @@
     }
 
     /**
+     * 同步紀元的比對與重設(§3.3)。
+     *
+     * resetForEpoch:雲端 epoch 與本機已知的不同(回應帶了不同值，或 409
+     * epoch_mismatch)，代表雲端被整份清過。本機全部標髒、links 游標回 '0'、
+     * marks 兩格游標歸 null(下一輪重新回填)、寫回新 epoch，並把本輪停下
+     * (halted)，由 runSync 依 budget.exhausted 排 continue。寫入順序是標髒 →
+     * syncState → syncEpoch:中途被殺時本機仍帶舊 epoch，下一輪撞 409 重來一次。
+     */
+    function resetForEpoch(ctx, epoch) {
+      ctx.budget.halted = true;
+      ctx.budget.exhausted = true;
+      ctx.state.cursor = '0';
+      ctx.state.marksCursor = null;
+      ctx.state.marksBackfillCursor = null;
+      return resetMirrorFields()
+        .then(function () {
+          return saveState(ctx.state, ctx.legacyMarks);
+        })
+        .then(function () {
+          return saveEpoch(ctx, epoch);
+        });
+    }
+
+    function saveEpoch(ctx, epoch) {
+      if (typeof ctx.state.userId !== 'string') return Promise.resolve();
+      ctx.epoch = epoch;
+      var items = {};
+      items[EPOCH_KEY] = { userId: ctx.state.userId, epoch: epoch };
+      return localSet(items);
+    }
+
+    /**
+     * 一次 200 回應的 epoch 結算。回應沒有合法 epoch(舊後端)一律不動;本機未知
+     * 就採用;已知且不同就 resetForEpoch。
+     *
+     * @returns {Promise<boolean>} true＝已重設，這一次回應不落地、本輪停下。
+     */
+    async function reconcileEpoch(ctx, payload) {
+      var epoch = payload ? payload.epoch : undefined;
+      if (!isEpoch(epoch) || epoch === ctx.epoch) return false;
+      if (ctx.epoch === null) {
+        await saveEpoch(ctx, epoch);
+        return false;
+      }
+      await resetForEpoch(ctx, epoch);
+      return true;
+    }
+
+    /**
      * 一條通道「分批推 → 續拉」的共用外殼(links 與 marks 各走一次)。
      *
-     * - 每個 POST 前過 takeCall(ctx, true);擋下時整條通道當輪收手，沒送出的批
-     *   維持 dirty，runSync 依 budget.exhausted 排 continue 接著跑。
-     * - 批次推完後只看**最後一次**回應的 changes.hasMore 決定續拉:積壓要在同一
-     *   輪拉完，不能等下一個 alarm;續拉受 MAX_PULL_ROUNDS 與同一道額度關卡約
-     *   束。changes 為 null(或缺席)即不續拉。
-     * - 每個 POST 送出前重讀 ctx.state[cursorKey] 決定 since，續拉因此一律從已
-     *   落地的那一頁接著拉。
+     * - 每個 POST 前過 takeCall(ctx, true);擋下時當輪收手，沒送出的批維持 dirty。
+     * - 每個 POST 重讀 ctx.state[ch.cursorKey] 決定 since，本機已知 epoch 就在
+     *   body 頂層帶上;回應先過 reconcileEpoch，409 epoch_mismatch 走
+     *   resetForEpoch(那一批視為未送出)。
+     * - 先 apply 落地再前進游標:apply 拋錯時游標不動，例外原樣上拋。
+     * - 批次推完只看最後一次回應的 changes.hasMore 決定同輪續拉(上限
+     *   MAX_PULL_ROUNDS)。
      *
-     * 【順序】每次往返先 apply(落地)再前進游標。反過來的話，寫入失敗(配額、
-     * storage 壞掉)時失敗路徑的 saveState 會把已前進的游標寫進去，這一頁的增量
-     * 從此再也拉不回來——伺服器只認游標，不會重送。apply 拋錯時游標不動，例外
-     * 原樣往上拋，後續批與續拉都不送。
-     *
-     * @param {object} ctx 本輪情境(state、budget、deadline)。
-     * @param {object} ch 通道描述:
-     *   - path {string}:POST 的端點。
-     *   - cursorKey {string}:ctx.state 上存游標的欄位。
-     *   - sinceWhenNone {string|null}:沒有游標時送的 since;null 代表 body 不
-     *     寫出 since 鍵。
-     *   - batches {Array}:依序推送的批次，至少一批(推空的也要發，一次往返同
-     *     時處理推與拉)。
-     *   - bodyOf(batch) {function}:組出不含 since 的請求 body(每次回傳新物件)。
-     *   - decorate(body, isFirst) {function} 選填:送出前加掛欄位;isFirst 只在
-     *     本通道這一輪的第一個 POST 為 true。
-     *   - apply(payload, batch) {function}:把回應落地，回傳 Promise。
-     *   - pullBatch:續拉時交給 bodyOf 與 apply 的批次。
-     * @returns {Promise<void>}
+     * ch:path;cursorKey;sinceWhenNone(沒有游標時的 since，null＝不寫出 since);
+     * batches(至少一批);bodyOf(batch) 回傳新的 body;decorate(body, isFirst)
+     * 選填;apply(payload, batch) 回傳 Promise;pullBatch 為續拉用的批次。
      */
     async function drainChannel(ctx, ch) {
       var last = null;
@@ -845,11 +901,20 @@
         var since = isCursor(cursor) ? cursor : ch.sinceWhenNone;
         if (since !== null) body.since = since;
         if (ch.decorate) ch.decorate(body, first);
+        if (ctx.epoch !== null) body.epoch = ctx.epoch;
         first = false;
-        var payload = await call(ctx, 'POST', ch.path, body);
+        var payload;
+        try {
+          payload = await call(ctx, 'POST', ch.path, body);
+        } catch (err) {
+          if (err && err.code === 'epoch_mismatch' && isEpoch(err.epoch)) return resetForEpoch(ctx, err.epoch);
+          throw err;
+        }
+        if (await reconcileEpoch(ctx, payload)) return undefined;
         await ch.apply(payload, batch);
         if (payload && isCursor(payload.cursor)) ctx.state[ch.cursorKey] = payload.cursor;
         last = payload ? payload.changes : null;
+        return undefined;
       }
       for (var i = 0; i < ch.batches.length; i += 1) {
         if (!takeCall(ctx, true)) return;
@@ -862,7 +927,7 @@
     }
 
     function runRound(ctx) {
-      ctx.budget = { left: MAX_ROUND_POSTS, exhausted: false };
+      ctx.budget = { left: MAX_ROUND_POSTS, exhausted: false, halted: false };
       ctx.deadline = now() + ROUND_DEADLINE_MS;
 
       return readHistory()
@@ -1386,8 +1451,9 @@
      * 處置。欄位:
      *
      * - markDirty:寫帳號鍵之前把 history 全部標髒(serverUpdatedAt 歸 null)、
-     *   名單全部標 dirty(D50 登入＝重建鏡像)。只有登入標髒(D54):登出與刪雲
-     *   端不碰 history 與名單，下次登入時在這裡統一標髒重傳。
+     *   名單全部標 dirty(D50 重建鏡像)。只有登入可能標髒(D54):登出與刪雲端
+     *   不碰 history 與名單。登入的值由 finishSignIn 以 args.markDirty 覆寫:
+     *   本機沒有這個帳號的 syncEpoch 才標髒(§3.3)，其餘交給 epoch 比對。
      * - token:'new' 寫入這次換到的 token;null 清掉。
      * - state:'identity' 以這次登入的身分四欄整包重設(游標、lastSyncedAt、
      *   lastError、marks 三欄隨之歸 null);'patchExpired' 為合併 patch，只記
@@ -1430,15 +1496,17 @@
      * 4. 廣播 status。
      *
      * @param {string} kind RESET 的鍵。
-     * @param {{token?: string, identity?: object, prevState?: object, switched?: boolean}} [args]
+     * @param {{token?: string, identity?: object, prevState?: object, switched?: boolean, markDirty?: boolean}} [args]
      *   token:signIn 的新 token;identity:signIn 的身分四欄;prevState:
-     *   expired 合併 patch 的底;switched:signIn 是否換了帳號。
+     *   expired 合併 patch 的底;switched:signIn 是否換了帳號;markDirty:覆寫
+     *   表上的 markDirty。
      * @returns {Promise<void>} 標髒或帳號鍵寫入失敗時 reject，alarm 與廣播不跑。
      */
     function resetAccount(kind, args) {
       var spec = RESET[kind];
       var opts = args || {};
-      var ready = spec.markDirty ? resetMirrorFields() : Promise.resolve();
+      var markDirty = typeof opts.markDirty === 'boolean' ? opts.markDirty : spec.markDirty;
+      var ready = markDirty ? resetMirrorFields() : Promise.resolve();
       return ready
         .then(function () {
           var state = null;
@@ -1554,16 +1622,18 @@
       var rawAvatar = typeof user.image === 'string' ? user.image : claims.picture;
       var displayName = TCLCoreRef.sanitizeDisplayName(rawName);
       var avatarUrl = TCLCoreRef.sanitizeAvatarUrl(rawAvatar);
-      // 登入＝重建鏡像(D50):雲端可能已被刪除(本機或別台裝置發動)，也可能
-      // 換了帳號，本機無從分辨，因此每次登入都把 history 全部標髒重傳，墓碑
-      // 一併進 deletes[]。marks 的游標與回填位置隨 syncState 整包重設，名單同
-      // 樣全部標 dirty 重推。伺服器端的 upsert 與墓碑冪等，重傳不會長出重複資料。
-      // 別台裝置的清單屬於前一個帳號(D25):換人時清掉，同帳號重新登入不清。
+      // 重建鏡像(D50／§3.3):本機沒有這個帳號的 syncEpoch(升級後首次、換帳號、
+      // 全新安裝、舊後端)就把 history 全部標髒重傳(墓碑一併進 deletes[])、名單
+      // 全部標 dirty，第一趟不帶 epoch、採用回應的值。有的話不標髒:第一個 POST
+      // 帶本機 epoch，雲端若被清過會撞 409，由 resetForEpoch 標髒重傳。游標與回
+      // 填位置一律隨 syncState 整包重設。伺服器端的 upsert 與墓碑冪等，重傳不會
+      // 長出重複資料。別台裝置的清單屬於前一個帳號(D25):換人時清掉。
       var switched = ctx.state.userId !== null && userId !== null && ctx.state.userId !== userId;
       return resetAccount('signIn', {
         token: exchange.authToken,
         identity: { userId: userId, email: email, displayName: displayName, avatarUrl: avatarUrl },
         switched: switched,
+        markDirty: epochFor(ctx.epochRecord, userId) === null,
       }).then(function () {
         // 登入完成就跑一次:首次綁定的全量上傳(D3)與雲端既有資料的首輪拉
         // 取都在這一次完成，不必等第一個 alarm。
@@ -1713,8 +1783,8 @@
      * 資料並撤銷所有 session。成功(2xx，不看 revokedSessions)即本機登出
      * (RESET.deleted):清 token、syncState 整包重設、退避歸零、清別台裝置快
      * 取，以上一次寫入;停掉兩支 alarm，廣播 signed_out。本機 history 與名單
-     * 不動，下次登入由 finishSignIn 統一標髒重傳(D54)。本機身分 syncDevice 不
-     * 動。寫入失敗回 storage_write_failed、token 保留，使用者看得到錯誤，可以
+     * 不動，syncEpoch 也不動:伺服器 epoch 已 +1，下次登入第一個 POST 撞 409，
+     * 由 resetForEpoch 標髒重傳(D54／§3.3)。本機身分 syncDevice 不動。寫入失敗回 storage_write_failed、token 保留，使用者看得到錯誤，可以
      * 再按一次(端點冪等);伺服器 session 已撤銷，下一次請求會 401，走過期出口。
      *
      * 失敗(非 2xx／斷網)不登出、本機一格不動，只記 lastError;401 走 session
