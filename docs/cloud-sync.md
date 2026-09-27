@@ -64,7 +64,7 @@
 | D54 | 標髒只在 `finishSignIn`（D57 起另有 `resetForEpoch`，§3.3）；登出與刪雲端不標髒，也不碰名單。登入、session 過期、登出、刪雲端四條路徑收成 `resetAccount` 單表，帳號五鍵（`syncAuth`／`syncState`／`syncBackoff`／`syncVerifiedAt`／`syncDevices`）由同一次 `storage.local.set` 寫入；登入時退避歸零、`syncVerifiedAt` 記為登入當下 | 登入本來就會重建鏡像（D50），登出與刪雲端再標一次是重複寫入，而且把「標髒寫入失敗」變成登出的失敗條件；帳號鍵分多次寫會在中途失敗時留下半套狀態，單次 set 在 chrome.storage 是原子的 | 2026-09-27 |
 | D55 | `idLabelled` 命中後的排除詞判斷改由 JS 端做:取命中起點前 16 字（`SCAM_ID_LABEL_LOOKBACK`）交 `idLabelExclude` 比對是否吻合，取代原本寫在正則本體的前置負向 lookbehind；規則版本維持 4（不視為新規則，只是既有排除邏輯換一種等價寫法） | 排除詞表越列越長時，正則裡的前置負向 lookbehind 會讓單一樣式本體暴增、難以維護與除錯；改成「逐位置找 `idLabelled` 命中→切前 16 字→另一個正則判斷是否吻合排除詞」拆成兩條各自簡單的正則，語意與原本的負向 lookbehind 等價（每個起點各判一次），只是排除判斷從正則引擎搬到 JS 迴圈 | 2026-09-27 |
 | D56 | marks 上行改為每筆 `dirty`（S6）：名單條目新增本機專有欄位 `dirty`／`dirtyAt`，只送 `dirty` 的條目、依 `key` 切批，ack 時 `dirtyAt` 未變才清；`rejectedIds` 同樣清 `dirty`。`syncState` 刪除 `marksPushedAt`、`marksRejected`，條目刪除 `pushAfter`；舊版資料於升級後第一輪換算（§3.2）。對後端的請求形狀不變 | 單一條時戳水位線要表達的全是單筆的事——被動補證據不推進 `updatedAt`（`pushAfter`）、墓碑守衛要讓位（讓位下限、當場落地）、被拒要停送（被拒映射）、批尾撞值（`max-1`）——每一條都是在水位線上打補丁；逐筆記 dirty 之後這些補丁全部不需要，模型與 links 的 `dirty`／ack 版本比對同一套 | 2026-09-27 |
-| D57 | 同步紀元（epoch，SW-4a，後端決策 36）：本機記 `syncEpoch = { userId, epoch }`（不進帳號五鍵，跨登出保留、換帳號覆寫）；已知時每個 links／marks POST 在 body 頂層帶 `epoch`，回應頂層 `epoch` 未知就採用、不同就 `resetForEpoch`；`409 epoch_mismatch` 走同一路徑。登入時本機沒有該帳號的 epoch 一律全量標髒（EP-A）；舊後端（回應無 `epoch` 鍵）不寫、不標髒（EP-B）；`GET /api/v1/marks` 暫不帶 epoch（EP-D）；刪雲端不動本機 epoch（EP-E）。細則見 §3.3 | 「登入一律全量重傳」只是因為插件分辨不出雲端有沒有被清過；伺服器每次清空把 epoch +1 之後，同帳號重新登入只在真的清過時才重傳（本機或別台裝置發動的皆同，第一個 POST 就撞 409）。首次（無 epoch）仍全量是為了守住 D25 換帳號全量上傳，升級後多傳一輪伺服器零寫入 | 2026-09-27 |
+| D57 | 同步紀元（epoch，SW-4a，後端決策 36）：本機記 `syncEpoch = { userId, epoch }`（不進帳號五鍵，跨登出保留、換帳號覆寫）；已知時每個 links／marks POST 在 body 頂層帶 `epoch`，回應頂層 `epoch` 未知就採用、不同就 `resetForEpoch`；`409 epoch_mismatch` 走同一路徑。登入時本機沒有該帳號的 epoch 一律全量標髒（EP-A）；舊後端（回應無 `epoch` 鍵）不寫、不標髒（EP-B）；`GET /api/v1/marks` 不帶 epoch（後端不收、不回，EP-D）；刪雲端不動本機 epoch（EP-E）。細則見 §3.3 | 「登入一律全量重傳」只是因為插件分辨不出雲端有沒有被清過；伺服器每次清空把 epoch +1 之後，同帳號重新登入只在真的清過時才重傳（本機或別台裝置發動的皆同，第一個 POST 就撞 409）。首次（無 epoch）仍全量是為了守住 D25 換帳號全量上傳，升級後多傳一輪伺服器零寫入 | 2026-09-27 |
 
 ## 3. 插件端契約
 
@@ -182,10 +182,10 @@ LINE 群組引導警示的名單自 D35–D40 起隨雲端同步，走與連結�
 D56 之前，marks 的上行靠 `syncState` 的推送水位線 `marksPushedAt`、被拒映射 `marksRejected` 與條目的本機提示 `pushAfter` 選批。升級後第一輪同步把它們換算成每筆 `dirty`：
 
 - **判準**：`loadContext` 另外保留原始 `syncState`，原始物件**帶 `marksPushedAt` 這個鍵**（值為 `null` 也算——舊版正規化會把每個鍵都寫出來）就是舊版。
-- **換算**：`runMarksRound` 開頭、看警示總開關之前，用一次名單寫入依舊規則標髒：`sel = max(updatedAt, pushAfter)`，`(marksPushedAt === null || sel > marksPushedAt) && marksRejected[key] !== sel` 的條目標 `dirty`（與 0.10.0 的選批一致：被拒的那一版不論水位線是否為 `null` 都跳過）；同一次寫入刪掉所有 `pushAfter`。遷移只標髒不清髒。
-- **清除時機**：換算落地後，下一次寫回 `syncState` 就不再帶這兩格（新的正規化不輸出它們）。換算落地之前的寫回（例如 links 那一步失敗的一輪、`verifySession`）會把兩格原樣帶回去，不會在遷移之前被洗掉。
+- **換算**：`runRound` 開頭、本輪任何請求之前（因此早於任何 epoch 採用，§3.3），不看警示總開關，用一次名單寫入依舊規則標髒：`sel = max(updatedAt, pushAfter)`，`(marksPushedAt === null || sel > marksPushedAt) && marksRejected[key] !== sel` 的條目標 `dirty`（與 0.10.0 的選批一致：被拒的那一版不論水位線是否為 `null` 都跳過）；同一次寫入刪掉所有 `pushAfter`。遷移只標髒不清髒。
+- **清除時機**：換算落地後，下一次寫回 `syncState` 就不再帶這兩格（新的正規化不輸出它們）。換算落地之前的寫回（例如換算寫入本身失敗的一輪、`verifySession`）會把兩格原樣帶回去，不會在遷移之前被洗掉。
 - **冪等**：換算落地之後、`syncState` 寫回之前被殺，下一輪舊判準再算一次；`pushAfter` 已刪，重算的集合只會更小，已標的不會被洗回乾淨，至多多推一次，伺服器對逐欄相同的資料是零寫入。
-- **登出態**：未登入不跑同步，不遷移；`syncState` 在登入時整包重設成新形狀，舊的兩格隨之消失。本機沒有該帳號 `syncEpoch` 的登入（升級後首次必然如此）名單全部標 `dirty`（D50／D57），升級前未推的條目一併送出。殘留的 `pushAfter` 已無讀者，下一個 minor 由正規化剝除。
+- **登出態**：未登入不跑同步，不遷移；`syncState` 在登入時整包重設成新形狀，舊的兩格隨之消失。遷移已在登入前的任一輪落地；本機沒有該帳號 `syncEpoch` 的登入另外全量標髒（D50／D57）。殘留的 `pushAfter` 已無讀者，下一個 minor 由正規化剝除。
 - **移除時程**：遷移程式碼（`migrateLegacyMarks`、`loadContext` 的 `legacyMarks`、`saveState` 帶回兩格、`normalizeBlocklistEntry` 保留 `pushAfter`）於下一個 minor 移除。
 
 ### 3.3 同步紀元（epoch，D57）
@@ -193,7 +193,7 @@ D56 之前，marks 的上行靠 `syncState` 的推送水位線 `marksPushedAt`�
 後端（決策 36）為每個帳號記一個 `epoch`：非負整數，只增不減，從未刪過雲端＝0，`DELETE /api/v1/cloud-data` 每次 +1，links 與 marks 共用。`POST /api/v1/links/sync`、`POST /api/v1/marks/sync`、`GET /api/v1/links` 的 200 回應頂層一律帶 `epoch`；請求可選帶（POST 放 body 頂層，GET 放 query），不帶＝不校驗，壞值 `400 bad_epoch`，不符 `409 { error:"epoch_mismatch", epoch }` 且零寫入。
 
 - **本機紀錄**：`storage.local.syncEpoch = { userId, epoch }`（§4.2）。只認 `syncState.userId` 這個帳號的值，其餘一律視為未知；不屬於 `resetAccount` 的帳號五鍵，登出、過期、刪雲端都不清。
-- **請求**：本機已知時，每個 links／marks POST 在 body 頂層帶 `epoch`（整數）；未知就不帶（`null` 或缺鍵對後端都是不校驗）。`GET /api/v1/marks` 的回填**暫不帶 epoch**，待後端確認該端點也校驗再改（EP-D）；插件不打 `GET /api/v1/links`。每輪 POST 上限不變。
+- **請求**：本機已知時，每個 links／marks POST 在 body 頂層帶 `epoch`（整數）；未知就不帶（`null` 或缺鍵對後端都是不校驗）。`GET /api/v1/marks` 的回填**不帶 epoch**：該端點不在後端契約的 epoch 端點之列，不收也不回（EP-D）；插件不打 `GET /api/v1/links`。每輪 POST 上限不變。
 - **回應**：頂層沒有合法 `epoch`（舊後端）一律不動——不寫 `syncEpoch`、不標髒、不排續跑（EP-B）。本機未知就採用並寫成 `{ userId, epoch }`；已知且相同照常；已知且不同走 `resetForEpoch`。
 - **`resetForEpoch(newEpoch)`**（EP-C）：`409 epoch_mismatch` 與「回應 epoch ≠ 本機已知」同一路徑。history 全部標髒（`serverUpdatedAt` 歸 `null`）、名單全部標 `dirty`、`cursor` 設 `'0'`、`marksCursor` 與 `marksBackfillCursor` 歸 `null`、寫回新 epoch，本輪不再發任何請求，以 `continue` 30 秒後續跑。觸發的那一次回應不落地；409 那一批視為未送出（dirty 不清），不計入退避失敗，`lastError` 不記。寫入順序為標髒 → `syncState` → `syncEpoch`，中途被殺時本機仍是舊 epoch，下一輪撞 409 再來一次。
 - **登入**（EP-A）：本機沒有這個 `userId` 的 epoch（升級後首次、換帳號、全新安裝、舊後端）→ 一次性全量標髒並重設游標，第一趟不帶 epoch，採用回應的值。有的話不標髒，第一個 POST 就帶本機值；雲端若被清過會撞 409 走 `resetForEpoch`。

@@ -11,7 +11,7 @@
 // 插件端（design-sw §9.3）：
 // - `storage.local.syncEpoch = { userId, epoch }`，不進 resetAccount，跨登出保留，
 //   只有換帳號時覆寫。
-// - 本機已知時每個 sync POST 帶 body 頂層 epoch、回填 GET 帶 query epoch。
+// - 本機已知時每個 sync POST 帶 body 頂層 epoch。
 // - finishSignIn（PM 裁決 EP-A）：本機有此 userId 的 epoch 就不全量標髒；沒有（升
 //   級後首次、換帳號、全新安裝）就一律一次性全量標髒並重設游標，第一趟不帶，採用
 //   回應的值。
@@ -20,7 +20,7 @@
 //   resetForEpoch）：全部標髒、cursor '0'、marksCursor null、marksBackfillCursor
 //   null、寫回新 epoch、`setNext('continue')`，本輪不再發 POST；409 那批視為未送
 //   出、dirty 不清、不計入退避。
-// - 回填 GET /api/v1/marks 暫不帶 epoch（EP-D，待後端確認）；POST 已校驗。
+// - 回填 GET /api/v1/marks 不帶 epoch（EP-D：該端點後端不收、不回）；POST 已校驗。
 //
 // storage／alarms／auth 替身沿用 test/sync-reset-account.test.js 的 harness（同
 // sync.test.js：get/set/remove 一律 setTimeout(0) 延遲結算；setTimeout 注入成空
@@ -713,7 +713,7 @@ test('EP6 刪雲端：本機 syncEpoch 不動；同帳號再登入撞到 +1 後�
 //
 // 插件唯一的回填 GET 是 marks 的 `GET /api/v1/marks`（links 的首輪以 since:'0'
 // 的 POST 拉，插件不打 `GET /api/v1/links`）。後端契約只列 `GET /api/v1/links`；
-// PM 裁決 EP-D：後端確認前 GET /marks 一律不帶 epoch（POST 已校驗）。
+// PM 裁決 EP-D：GET /marks 不帶 epoch（後端不收、不回；POST 已校驗）。
 
 test('EP7 本機 epoch 已知：marks 回填 GET 不帶 query epoch（EP-D）', async () => {
   const TCLSync = loadSync();
@@ -881,6 +881,62 @@ test('EP9 舊後端、首次登入：不寫 syncEpoch，登入照常完成', asy
   assert.equal(env.localEpoch(), undefined, '回應沒有 epoch：不寫 syncEpoch');
   assert.equal(env.syncState().userId, 'user-abc');
   assert.equal(env.syncState().lastError, null);
+});
+
+// ============================================================================
+// EP10 — 舊版 marks 遷移必須早於 epoch 採用
+// ============================================================================
+
+test('EP10 升級後首輪採用 epoch、遷移前失敗、登出再登入：舊版水位線之後未推的 mark 仍送出', async () => {
+  const TCLSync = loadSync();
+  const big = [];
+  for (let i = 0; i < 60; i += 1) {
+    const url = `https://www.threads.com/@m${i}/post/M${String(i).padStart(10, '0')}`;
+    const at = T0 - 100_000 + i;
+    big.push(entry({ id: `mig-${i}`, url, at, receivedAt: at, seen: [{ at, kind: 'strip' }] }));
+  }
+  const pushedAt = T0 - 2 * DAY;
+  const env = makeEnv({
+    signedIn: true,
+    // 舊版 syncState：帶 marksPushedAt 鍵即舊版，觸發遷移。
+    syncState: { marksPushedAt: pushedAt, marksRejected: {} },
+    history: big,
+    blocklist: {
+      version: 2,
+      entries: {
+        7003: { state: 'active', handle: 'synthetic_c', source: 'auto', addedAt: T0 - 5 * DAY, updatedAt: T0 - DAY, evidence: [] },
+      },
+      handleIndex: { synthetic_c: '7003' },
+    },
+  });
+  // 第二個 links POST 斷線：第一個回應已採用 epoch，這一輪在 marks 之前失敗。
+  let linksPosts = 0;
+  const baseFetch = env.deps.fetch;
+  env.deps.fetch = (url, init) => {
+    if (init && init.method === 'POST' && String(url).endsWith(LINKS_SYNC)) {
+      linksPosts += 1;
+      if (linksPosts === 2) return Promise.reject(new TypeError('Failed to fetch'));
+    }
+    return baseFetch(url, init);
+  };
+  const engine = TCLSync.create(env.deps);
+
+  await engine.syncNow();
+  await settle();
+  assert.equal(env.syncState().lastError, 'network_error', '前置：首輪在 links 第二批失敗');
+  assert.deepEqual(env.localEpoch(), { userId: 'user-abc', epoch: 0 }, '前置：首輪已採用 epoch');
+  assert.equal(env.posts(MARKS_SYNC).length, 0, '前置：首輪沒走到 marks');
+
+  await engine.signOut();
+  await settle();
+  const from = env.mark();
+  await engine.signIn();
+  await settle();
+
+  assert.ok(
+    markKeys(env.posts(MARKS_SYNC, from)).includes('threads:7003'),
+    '水位線之後改過的舊版條目在遷移時已標 dirty，重新登入後送出'
+  );
 });
 
 // ============================================================================
