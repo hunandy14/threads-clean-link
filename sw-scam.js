@@ -12,7 +12,8 @@
 //
 // 依賴:前載的 tcl-core.js(TCLCore)、sw-history.js(mutate、
 // notifySyncRecorded)、sw-device.js(readLocalDeviceId)、sw-og.js
-// (OG_FETCH_HEADERS、OG_SCAN_LIMIT、escapeRegExp、decodeHtmlEntities)與 chrome。
+// (OG_FETCH_HEADERS、OG_SCAN_LIMIT、escapeRegExp、decodeHtmlEntities、
+// scanMetaTags)與 chrome。
 'use strict';
 
 // ------------------------------------------------------------
@@ -51,20 +52,6 @@ const SCAM_SCAN_LIMIT = 1048576;
 // 文件身分的 meta 屬性名：兩者的 content 都是本篇貼文的永久連結，任一個對得
 // 上請求的網址，就足以確認「拿回來的這份 HTML 就是我要的那一篇」。
 const SCAM_DOC_IDENTITY_PROPERTIES = ['og:url', 'al:android:url'];
-
-// <meta> 標籤與其屬性。屬性順序（property 在前或 content 在前）與引號種類
-// （雙引號、單引號、無引號）在真實 HTML 都不固定，逐標籤拆屬性而非把單一形
-// 狀寫死進正則。
-//
-// 標籤起點用正則找「<meta」加字界，標籤結尾交給 indexOf 找下一個 `>`:起點
-// 到 `>` 之間寫成 `[^>]*` 時，一串沒有 `>` 收尾的 `<meta` 會讓每個起點各掃
-// 一次到文件尾端。
-const SCAM_META_OPEN_PATTERN = /<meta\b/gi;
-// 屬性名後面的「= 值」整段可選：每段屬性名一律整段吃掉(沒帶值的由呼叫端略
-// 過)，下一次比對從它後面接著找，屬性名字元不會從中間各個起點重掃一遍。取
-// 到的帶值屬性與「值為必要」的寫法相同:屬性名必須整段比對完才輪得到 `=`，
-// 從屬性名中間起頭的比對不可能成立。
-const SCAM_META_ATTR_PATTERN = /([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
 
 // 交叉驗證的比對視窗（以命中的 post_author_id 位置為中心，前後各這麼多字）。
 // 整份文字比對太寬：頁面任何角落出現過本人的 username，就會替一個不相干的
@@ -217,40 +204,24 @@ function scamPostIdentityKey(url) {
   return head + normalized.slice(at);
 }
 
-// 逐個 <meta> 拆屬性，取出文件身分 meta（og:url／al:android:url）的 content，
-// entity 還原後回傳。真機回應的 content 是
-// `https://www.threads.com/&#064;<handle>/post/<code>`，`@` 以 entity 形式出
-// 現，不還原永遠對不上。property 與 name 兩種屬性名都認。
+// 逐個 <meta> 拆屬性（sw-og.js 的 scanMetaTags），取出文件身分 meta
+// （og:url／al:android:url）的 content，entity 還原後回傳。真機回應的
+// content 是 `https://www.threads.com/&#064;<handle>/post/<code>`，`@` 以
+// entity 形式出現，不還原永遠對不上。property 與 name 兩種屬性名都認，同一
+// 標籤裡重複出現時以後出現者為準。
 function scamDocIdentityUrls(scanText) {
   const urls = [];
-  // global 正則的 lastIndex 跨呼叫會殘留，每次掃描前歸零。
-  SCAM_META_OPEN_PATTERN.lastIndex = 0;
-  let open = SCAM_META_OPEN_PATTERN.exec(scanText);
-  while (open !== null) {
-    const attrsStart = open.index + open[0].length;
-    const close = scanText.indexOf('>', attrsStart);
-    // 這個 <meta 之後再也沒有 `>`，後面的 <meta 也都收不了尾。
-    if (close === -1) break;
-    const attrs = scanText.slice(attrsStart, close);
+  scanMetaTags(scanText).forEach((attrs) => {
     let property = '';
     let content = null;
-    SCAM_META_ATTR_PATTERN.lastIndex = 0;
-    let attr = SCAM_META_ATTR_PATTERN.exec(attrs);
-    while (attr !== null) {
-      const value = attr[2] !== undefined ? attr[2] : attr[3] !== undefined ? attr[3] : attr[4];
-      if (value !== undefined) {
-        const name = attr[1].toLowerCase();
-        if (name === 'property' || name === 'name') property = value.toLowerCase();
-        else if (name === 'content') content = value;
-      }
-      attr = SCAM_META_ATTR_PATTERN.exec(attrs);
-    }
+    attrs.forEach(([name, value]) => {
+      if (name === 'property' || name === 'name') property = value.toLowerCase();
+      else if (name === 'content') content = value;
+    });
     if (content !== null && SCAM_DOC_IDENTITY_PROPERTIES.indexOf(property) !== -1) {
       urls.push(decodeHtmlEntities(content));
     }
-    SCAM_META_OPEN_PATTERN.lastIndex = close + 1;
-    open = SCAM_META_OPEN_PATTERN.exec(scanText);
-  }
+  });
   return urls;
 }
 
