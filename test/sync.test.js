@@ -20,7 +20,7 @@
 //     auth,         // TCLAuth（signInWithGoogle／exchangeWithBackend）
 //     permissions,  // { contains(descriptor) => Promise<boolean> }
 //     randomUUID,   // () => string，新 entry 的 id 來源
-//     writeChain,   // (fn) => Promise，background.js 的 historyWriteChain
+//     writeChain,   // (fn) => Promise，sw-history.js 的 historyWriteChain
 //     setTimeout,   // (fn, ms) => handle，去抖的 SW 存活期路徑（T5 雙保險）
 //     clearTimeout, // (handle) => void
 //   }) => engine
@@ -3099,7 +3099,7 @@ async function seedServerDevices(env, rows) {
 }
 
 /**
- * 把 writeChain 換成**真的序列化**的版本（background.js 的 enqueueHistoryWrite
+ * 把 writeChain 換成**真的序列化**的版本（sw-history.js 的 enqueueHistoryWrite
  * 就是這個語意）。§12 增補四：引擎若在 writeChain(fn) 的回呼內才呼叫
  * getLocalDevice（它自己也要進同一條鏈），就是在鏈上等自己＝死鎖。
  */

@@ -2,7 +2,7 @@
 
 給開發者主控台(Chrome Web Store Developer Dashboard)逐欄位填寫用，標題即欄位名稱，內文都是可直接複製貼上的文字。所有隱私相關表述均與 [README.md](../README.md) 的〈運作原理與隱私〉一節保持一致，不得在此加碼、也不得弱化。
 
-> **範例網址一律使用虛構佔位字串**:`https://www.threads.com/share/AbCdEfGhI`、`https://www.threads.com/@username/post/AbCd123EfGh`。這兩條是刻意做成「格式擬真但明顯是佔位」的假資料(大小寫混合、`@username`)，不對應任何真實帳號或真實短碼，與 background.js 註解、README 範例區塊用的是同一組。
+> **範例網址一律使用虛構佔位字串**:`https://www.threads.com/share/AbCdEfGhI`、`https://www.threads.com/@username/post/AbCd123EfGh`。這兩條是刻意做成「格式擬真但明顯是佔位」的假資料(大小寫混合、`@username`)，不對應任何真實帳號或真實短碼，與 sw-og.js 註解、README 範例區塊用的是同一組。
 
 ---
 

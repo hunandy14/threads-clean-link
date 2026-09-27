@@ -160,7 +160,7 @@
 
   // 抽出貼文識別碼(`/post/` 之後那一段)，抽不出回傳 null。
   //
-  // 【用途】紀錄的永久合併以 post ID 為主鍵(見 background.js 的紀錄合併區
+  // 【用途】紀錄的永久合併以 post ID 為主鍵(見 sw-history.js 的紀錄合併區
   // 塊):handle 可以改名，同一篇貼文的乾淨網址會跟著換樣子
   // (/@old/post/ID → /@new/post/ID)，post ID 則終身不變，只有它能讓改名前
   // 後的紀錄仍認得是同一篇。

@@ -13,7 +13,7 @@
 //   - 插件現況(將被取代/並存的舊行為):tcl-core.js 的 extractPostId(第
 //     112-128 行，只認 STRICT_POST_URL_PATTERN——無尾斜線、無 query、僅
 //     www. 可選前綴、handle 白名單字元類 [A-Za-z0-9._]{1,80}、code 上限
-//     [A-Za-z0-9_-]{1,80})與 background.js 的 historyDedupKey(第 820 行，
+//     [A-Za-z0-9_-]{1,80})與 sw-history.js 的 historyDedupKey(第 221 行，
 //     `TCLCore.extractPostId(url) || url`)。
 //   - 目標介面:TCLCore.postKeyOf(url)——純函式，ES5 IIFE 風格，SW 與擴充頁
 //     共用，輸入輸出與手機 postKeyOf 完全等價。

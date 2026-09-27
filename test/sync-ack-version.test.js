@@ -7,7 +7,7 @@
 // 契約：切批當下記下每筆的版本，ack 時重讀本機現值，版本未變才清 dirty；版本
 // 已變則保持 dirty，下一輪照常送出。墓碑（deletes）路徑與 marks 通道不變。
 //
-// 【往返期間的改動形狀】模擬 background.js recordHistory 的真實寫法：經注入的
+// 【往返期間的改動形狀】模擬 sw-history.js recordHistory 的真實寫法：經注入的
 // writeChain 讀改寫、整批換新物件（不就地改引擎可能持有的舊物件），at 前進、
 // seen 追加一筆、dirty 維持 true。現行 history entry 沒有 updatedAt 欄位，本檔
 // 也不憑空補上；版本判準須能從既有欄位看出這種改動。
