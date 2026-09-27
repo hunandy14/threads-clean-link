@@ -498,21 +498,20 @@
     };
   }
 
-  // ---- 雲端同步(車道 E，消費 docs/cloud-sync.md 第 5 節的 state 形狀) ----
+  // ---- 雲端同步(消費 docs/cloud-sync.md 第 5 節的 state 形狀) ----
 
   // state.status 的合法枚舉，逐字照文件第 5.2 節。
   var SYNC_STATUSES = ['signed_out', 'signed_in', 'syncing', 'error'];
 
-  // background 尚未實作同步引擎(車道 D)前的安全預設:未登入。也是
-  // sync.getState 無回應／回應形狀不對時的退回值(見 fetchSyncState)。
-  // displayName/avatarUrl 為車道 A 新增的兩欄(docs/cloud-sync.md 第 5.2
-  // 節)，缺席一律視為 null——帳號入口的頭像/名字渲染需要備援到
+  // 帳號卡片的安全預設:未登入。也是 sync.getState 無回應／回應形狀不對時
+  // 的退回值(見 fetchSyncState)。displayName/avatarUrl(docs/cloud-sync.md
+  // 第 5.2 節)缺席一律視為 null——帳號入口的頭像/名字渲染需要備援到
   // email，見 renderAccount。
   //
   // 命名:DEFAULT_SYNC_CARD_STATE/normalizeSyncCardState 特意不叫
   // DEFAULT_SYNC_STATE/normalizeSyncState——TCLCore 已有同名的
-  // normalizeSyncState(chrome.storage.local 的帳號同步狀態，車道 D6，形狀
-  // 完全不同，見上面 syncAccount)，兩者撞名容易在呼叫端讀岔;這裡的
+  // normalizeSyncState(chrome.storage.local 的帳號同步狀態，形狀完全不同，
+  // 見上面 syncAccount)，兩者撞名容易在呼叫端讀岔;這裡的
   // CardState 專指「頁首帳號卡片目前顯示的狀態」。
   var DEFAULT_SYNC_CARD_STATE = {
     status: 'signed_out',
@@ -523,7 +522,7 @@
     pendingCount: 0,
     lastError: null,
     apiBase: '',
-    // 雲端配額用罄而被淘汰(未上傳)的警示名單筆數(D35 ＋ 顯示，車道 C)。
+    // 雲端配額用罄而被淘汰(未上傳)的警示名單筆數。
     // 警示名單卡頭以小字提示，見 renderScamEvictedHint。
     marksEvicted: 0,
   };
@@ -532,9 +531,9 @@
   // production／staging 的 host 宣告在商店版 manifest 的
   // optional_host_permissions;local 只宣告在 tools/dev-browser.mjs 產出的
   // 開發用 manifest 副本裡，商店版沒有這一項，request 自然拿不到。
-  var SYNC_API_BASE_FALLBACK = 'https://api.metalinkclearer.workers.dev';
-  var SYNC_API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
-  var SYNC_API_BASE_LOCAL = 'http://localhost:8787';
+  var SYNC_API_BASE_FALLBACK = TCLCore.API_BASE_PRODUCTION;
+  var SYNC_API_BASE_STAGING = TCLCore.API_BASE_STAGING;
+  var SYNC_API_BASE_LOCAL = TCLCore.API_BASE_LOCAL;
 
   // 頁面上兩處環境標籤共用同一份判斷邏輯(見 renderEnvBadge):頁首標題
   // 旁與「紀錄」卡頭旁,對應 options.html 的 #envBadge/#envBadgeHistory。
@@ -597,8 +596,7 @@
       return Date.now();
     };
     // runtime 是選配依賴(chrome.runtime 形狀:sendMessage({type,...}) →
-    // Promise<response>)，車道 D 的同步引擎完成前接線層可能還沒注入，
-    // 或注入了但 background 端沒有對應 handler——兩種情況下面的
+    // Promise<response>)。未注入或 background 端沒有對應 handler 時，下面的
     // fetchSyncState/sendSyncAction 都要優雅退回，不丟例外、不卡渲染。
     var runtime = deps.runtime || null;
     // permissions 是選配依賴(chrome.permissions 形狀:contains/request 回
@@ -637,7 +635,7 @@
     // 透過 setSyncState 轉發 background 的 sync.stateChanged 廣播。
     var syncState = DEFAULT_SYNC_CARD_STATE;
     // 刪除雲端資料送出當下先顯示「正在刪除」的 toast，最後依 sync.deleteCloud
-    // 的回應定案。回應形狀不明(舊版 background)時以這顆旗標退回廣播判讀:
+    // 的回應定案。回應形狀不明時以這顆旗標退回廣播判讀:
     // 下一則非 syncing 的 setSyncState 若帶 lastError 就蓋成錯誤訊息，轉成已
     // 登出就換成「已刪除、已登出」。見 acctDeleteBtn 的 click handler 與
     // setSyncState。
@@ -1133,7 +1131,7 @@
     // 跟 background 要一次目前狀態(頁面載入時呼叫一次)。runtime 未注入、
     // sendMessage 拋例外、或 background 端沒有對應 handler(MV3 對無人接聽
     // 的訊息一律 resolve(undefined) 或 reject)都退回 DEFAULT_SYNC_CARD_STATE，
-    // 讓帳號入口優雅顯示未登入態，不因車道 D 還沒做完就卡住整頁。
+    // 讓帳號入口優雅顯示未登入態，不卡住整頁。
     function fetchSyncState() {
       if (!runtime || typeof runtime.sendMessage !== 'function') {
         return Promise.resolve(DEFAULT_SYNC_CARD_STATE);
@@ -1340,10 +1338,9 @@
         var deviceNoteEl0 = byId('deviceNote');
         if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
 
-        // 完整重設(回歸:曾經提早 return，從 expired/error 切回真正登出時，
-        // 狀態點顏色、錯誤/過期列、姓名/信箱等文字會殘留上一態的內容——觸發
-        // 鈕雖然 hidden，但選單內容本身沒清，下次顯示前若有任何路徑忘記先
-        // 呼叫 renderAccount 就會露出舊資料)。
+        // 完整重設:狀態點顏色、錯誤/過期列、姓名/信箱等文字一律清掉。觸發
+        // 鈕雖然 hidden，選單內容不清的話，下次顯示前若有任何路徑忘記先呼叫
+        // renderAccount 就會露出上一態的舊資料。
         var headerNameEl0 = byId('acctHeaderName');
         if (headerNameEl0) headerNameEl0.textContent = '';
         var menuNameEl0 = byId('acctMenuName');
@@ -1353,9 +1350,9 @@
         var menuSubEl0 = byId('acctMenuSub');
         if (menuSubEl0) menuSubEl0.textContent = '';
 
-        // 頭像三件(字母/img/圓框)一併重設(真機實證回歸:登出後兩顆 img
-        // 的 src 沒清，下次任何帳號改用同一顆 img 元素前若又先渲染一次
-        // 「有大頭照」以外的中繼態，舊圖會先閃現)。renderAvatars 走的是
+        // 頭像三件(字母/img/圓框)一併重設:img 的 src 不清，下次任何帳號改
+        // 用同一顆 img 元素前若又先渲染一次「有大頭照」以外的中繼態，舊圖會
+        // 先閃現。renderAvatars 走的是
         // 「usePhoto 才設 src」的邏輯，這裡直接手動清，不繞回
         // renderAvatars(登出態沒有 initial/avatarUrl 可傳)。
         AVATAR_INSTANCES.forEach(function (a) {
@@ -1369,8 +1366,7 @@
           if (photoEl) {
             photoEl.hidden = true;
             // 清 src 的 IDL 屬性與底層 attribute 都要動:.src 是實際觸發
-            // 瀏覽器發請求/快取圖片的那一份，只清 attribute 不夠(真機
-            // 實證回歸)。
+            // 瀏覽器發請求/快取圖片的那一份，只清 attribute 不夠。
             photoEl.src = '';
             if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
           }
@@ -1412,8 +1408,7 @@
       var dot = byId('statusDot');
       // 狀態文字的 aria 通道只掛在觸發鈕(button)自己的 aria-label，不掛在
       // 巢狀 statusDot span 上——aria-label 只認最近的可及性物件，button
-      // 已有自己的 aria-label 時，子節點的 aria-label 不會被讀屏器讀到
-      // (回歸:曾經掛在 statusDot 上，讀屏器一律只唸出「帳號選單」)。
+      // 已有自己的 aria-label 時，子節點的 aria-label 不會被讀屏器讀到。
       var statusAriaKey = null;
       if (dot) {
         dot.classList.remove('is-danger', 'is-warning');
@@ -1679,9 +1674,9 @@
       }
     }
 
-    // popup 導向的 #cloud-sync hash 舊行為是捲到雲端同步卡片;卡片已移除，
-    // 改為捲回頁首並嘗試開啟帳號選單(未登入時沒有選單可開，退回聚焦登入
-    // 鈕)，接線層在 init() resolve 後呼叫(見 options-init.js)。
+    // popup 導向的 #cloud-sync hash:捲回頁首並嘗試開啟帳號選單(未登入時
+    // 沒有選單可開，退回聚焦登入鈕)，接線層在 init() resolve 後呼叫(見
+    // options-init.js)。
     function focusAccountArea() {
       var area = byId('acctArea');
       if (area && typeof area.scrollIntoView === 'function') {
@@ -2350,11 +2345,11 @@
     // displayName 與證據片段都是他人貼文帶進來的字串:整張卡逐一
     // createElement ＋ textContent，不走 innerHTML。
 
-    // storage 讀回的黑名單:entries、handleIndex 與 allowlist 三張表都直接取
-    // TCLCore.normalizeScamBlocklist 的結果(與 background 寫入側共用同一把
-    // 尺)。allowlist 的 handle 與 entries 的 handle 同樣是他人帳號帶進來的字
-    // 串，清洗尺度只能有一把——本頁若另讀一份，摺疊空白與截長的規則就會與
-    // core 漂移，髒 handle 一路畫到「已解除」小節上。
+    // storage 讀回的黑名單直接取 TCLCore.normalizeScamBlocklist 的結果(與
+    // background 寫入側共用同一把尺)。「已解除」小節從 entries 挑 dismissed
+    // 條目來畫，entries 的 handle 是他人帳號帶進來的字串，清洗尺度只能有一
+    // 把——本頁若另讀一份，摺疊空白與截長的規則就會與 core 漂移，髒 handle
+    // 一路畫到「已解除」小節上。
     function readScamBlocklist(raw) {
       return TCLCore.normalizeScamBlocklist(raw);
     }
@@ -2378,11 +2373,10 @@
     }
 
     // 已解除的清單依解除時間降冪;缺解除時間的紀錄 at 退成 0，一律排在最後
-    // (buildScamAllowRow 對 at<=0 另有「不明時不畫日期」的處理，見審查
-    // F1)。直接掃 entries 挑 state==='dismissed'(與 sortedScamEntries 挑
-    // active 對稱，「已解除小節由 state 產生」的語意本就要求如此)，不再另
-    // 讀 scamBlocklist.allowlist 那份衍生視圖——解除／復原兩處也就不必再
-    // 手工同步那張表(見 submitScamRemove/submitScamRestore，審查建議 3)。
+    // (buildScamAllowRow 對 at<=0 另有「不明時不畫日期」的處理)。直接掃
+    // entries 挑 state==='dismissed'(與 sortedScamEntries 挑 active 對稱)，
+    // 不讀 scamBlocklist.allowlist 那份衍生視圖，解除／復原兩處也就不必手
+    // 工同步那張表(見 submitScamRemove/submitScamRestore)。
     function sortedScamAllow() {
       var map = scamBlocklist.entries;
       return Object.keys(map)
@@ -2583,11 +2577,9 @@
     // 一筆證據 ＝ 一則貼文的樣子，就兩列:作者列(名字、時間連結、標記 pill)
     // 與本文。
     //
-    // 本文下方原本還有一條 meta 列(「整串 ↗」連結與訊號 chips)，兩者都拿掉
-    // 了:證據貼文連的就是錨點那一篇，回串頭是 Threads 自己的事，多一條連結
-    // 只是把兩個去處擺在一起讓人猶豫;訊號 chips 則是判定的內部分類，使用者
-    // 看片段本身就知道為什麼被標記。threadUrl 與 signals 照存不動(它們是證
-    // 據的一部分，也還有除錯與日後調參的價值)，只是不畫。
+    // threadUrl 與 signals 照存但不畫:證據貼文連的就是錨點那一篇，回串頭
+    // 是 Threads 自己的事;signals 是判定的內部分類，使用者看片段本身就知道
+    // 為什麼被標記。兩者留作除錯與日後調參之用。
     //
     // 主卡上的那一筆與「命中 N 篇」對話框裡的每一筆都走這支，兩邊的結構與
     // class 因此逐一相同——證據長什麼樣只有一個定義，改版時不會有一邊被漏掉。
@@ -2849,7 +2841,7 @@
       // 時間、滿七天改絕對日期;絕對日期另留在 title。dismissedAt 缺席時
       // TCLCore 補成 0(見 finiteOr)，0 代表「解除時間不明」而非真的發生在
       // 1970 年——formatScamDate(0) 會照樣算出一個滿七天前的絕對日期，誤
-      // 導使用者以為那是真實的解除時間，不明時乾脆不畫這個節點(審查 F1)。
+      // 導使用者以為那是真實的解除時間，不明時乾脆不畫這個節點。
       var dismissedAt = finiteOrNull(item.at);
       if (dismissedAt !== null && dismissedAt > 0) {
         var dateEl = document.createElement('span');
@@ -3085,7 +3077,7 @@
         // `__proto__` 之類的髒鍵)，容易與 core 那把尺(isUnsafeMapKey／
         // isScamUserIdKey)漂移;重跑一次 readScamBlocklist 讓 core 從
         // entries 整份重建 handleIndex／allowlist 兩張衍生表，同一把尺，
-        // 也不留舊 allowlist 視圖的殘影(審查建議 2)。
+        // 也不留舊 allowlist 視圖的殘影。
         scamBlocklist = readScamBlocklist(scamBlocklist);
         renderScamBlocklist();
       });
@@ -3141,8 +3133,8 @@
     // 刪除入口)，且經一道確認框(見 bindDetailDialog 的 detailDeleteBtn →
     // openConfirm)。
     //
-    // 以 url+at 精準命中(不只比 url):background 已改為永久合併(同一篇貼文
-    // 恆為一張卡，見 background.js 的紀錄合併區塊)，但匯入的資料可能夾帶同
+    // 以 url+at 精準命中(不只比 url):background 永久合併(同一篇貼文恆為一
+    // 張卡，見 background.js 的紀錄合併區塊)，但匯入的資料可能夾帶同
     // url 的多筆舊紀錄，比 url+at 才保證「刪一筆只刪中一筆」。setHistory 已
     // 把 detailEntry 換成清單裡的新物件(見 refreshDetail)，at 不會過期，精
     // 準比對成立。

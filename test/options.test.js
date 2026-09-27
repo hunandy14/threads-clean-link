@@ -6147,7 +6147,7 @@ test('警示名單卡:storage 沒有 scamBlocklist 時顯示空狀態、計數 0
   );
 });
 
-// 【斷言翻轉】原斷言為「第二行是『加入於 <日期>』(opScamAddedOn)」。副標列
+// 【斷言翻轉】原斷言為「第二行是『加入於 <日期>』」。副標列
 // 先併進標題列，使用者再定案為**不顯示**——`addedAt` 照存不動，只是畫面上不
 // 再出現。作者列改成 Threads 的貼文排法：顯示名、@handle、那篇的時間。
 test('警示名單卡:兩位作者依 addedAt 降冪各畫一列，作者列有 displayName ＋ @handle ＋ 貼文時間', async () => {
@@ -7452,35 +7452,24 @@ function signalOf(node) {
 test('證據卡文案:新增的 i18n 鍵 zh／en 都要備齊', () => {
   const expected = {
     opScamHitCount: ['命中 {n} 篇', '{n} hits'],
-    // 標題列的貼文日期(可點，連到最新那篇證據貼文)。
-    opScamPostedAt: ['貼文 {date}', 'Posted {date}'],
-    opScamSignalLink: ['連結', 'Link'],
-    opScamSignalLine: ['LINE', 'LINE'],
-    opScamSignalGroup: ['群組', 'Group'],
-    opScamSignalJoin: ['加入', 'Join'],
-    opScamSignalPitch: ['話術', 'Pitch'],
   };
   Object.keys(expected).forEach((key) => {
     assert.equal(i18n.t('zh', key), expected[key][0], key + ' 的 zh 文案');
     assert.equal(i18n.t('en', key), expected[key][1], key + ' 的 en 文案');
   });
 
-  // 【斷言翻轉】原本這裡還釘 opScamShowMore（details 摺疊區的 summary）、
-  // opScamLastHit（副標的「最近命中」）與 opScamSameText（同文異篇合併的
-  // 「出現在 N 篇」）。三者的 UI 在這一輪改版裡都沒了:摺疊區換成對話框、
-  // 副標整列撤掉、證據改為逐筆呈現不再合併。opScamLastHit 依 PM 指示留在
-  // 字典但不再有人用，不在此釘。
+  // 證據卡已不畫的文案鍵(貼文日期、訊號 chip、回串頭連結等)依 S5 自字典
+  // 刪除，不在此釘。
   //
-  // 這兩鍵的英文由實作定稿，只釘「鍵要存在且兩語不同於鍵名」——i18n.t 查無
+  // 這鍵的英文由實作定稿，只釘「鍵要存在且兩語不同於鍵名」——i18n.t 查無
   // 鍵時會退回鍵名本身，退回就代表字典沒補。
-  ['opScamEvidencePost', 'opScamEvidenceThread'].forEach((key) => {
+  ['opScamEvidencePost'].forEach((key) => {
     ['zh', 'en'].forEach((locale) => {
       assert.notEqual(i18n.t(locale, key), key, key + ' 的 ' + locale + ' 文案尚未進字典');
     });
   });
   // 日期連結的無障礙名稱(連結文字只有一個日期，讀屏讀不出它連去哪)。
   assert.ok(i18n.t('zh', 'opScamEvidencePost').includes('證據貼文'), 'opScamEvidencePost 的 zh 文案為「證據貼文」');
-  assert.ok(i18n.t('zh', 'opScamEvidenceThread').includes('整串'), 'opScamEvidenceThread 的 zh 文案為「整串」');
 });
 
 // ---- 卡頭:名稱連結、日期、命中數 ----
@@ -7930,9 +7919,9 @@ test('證據卡:右上角是 ⋯ 選項鈕(#i-more)，選單只放「解除」;�
   assert.equal(findByClass(rowA, 'scam-quick-btn').length, 0, '不得再畫 ⊖ 快捷鈕');
 });
 
-// 【斷言翻轉】原斷言為「證據區上方有 .scam-evidence-title 小標(opScamEvidence)」。
+// 【斷言翻轉】原斷言為「證據區上方有 .scam-evidence-title 小標」。
 // 卡片只剩一筆證據時，「證據」兩個字佔一整行卻不帶任何資訊，使用者看過預覽
-// 後決定拿掉。
+// 後決定拿掉。小標文案鍵已依 S5 自字典刪除，只釘節點不存在。
 test('證據卡:證據區不再畫「證據」小標', async () => {
   const ctx = makeScamCardCtx();
   await initScamPage(ctx);
@@ -7940,10 +7929,6 @@ test('證據卡:證據區不再畫「證據」小標', async () => {
   [SCAM_ID_A, SCAM_ID_B].forEach((id) => {
     const row = scamRowById(ctx.doc, id);
     assert.equal(findByClass(row, 'scam-evidence-title').length, 0, '不得再畫證據小標');
-    assert.ok(
-      !joinedText(row).includes(i18n.t('zh', 'opScamEvidence')),
-      '「證據」小標文字不得出現在卡片上'
-    );
   });
 });
 
@@ -8173,7 +8158,7 @@ test('證據卡:片段含 <b> 時逐字呈現(createElement/textContent，不得
 // 『出現在 N 篇』」。證據改由對話框逐筆列出(主卡那筆與對話框每一筆走同一
 // 個 buildScamEvidenceItem，不另寫第二套渲染)，合併邏輯連帶撤掉:一位作者
 // 最多三筆證據，在可捲動的對話框裡各自成列不會擁擠，而合併會讓「每筆一個
-// 節點」這條共用結構破例。opScamSameText 依 PM 指示留在字典但不再有人用。
+// 節點」這條共用結構破例。對應的文案鍵已依 S5 自字典刪除。
 test('證據卡:片段逐字相同的多筆證據在對話框裡各自成列，不合併', async () => {
   const SAME = '加 LINE：ab12cd，我把你拉進群組一起聊，群裡不報明牌也不收費。';
   const list = scamCardFixture();

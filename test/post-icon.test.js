@@ -153,6 +153,12 @@ function createFakeDocument(staleIconCount) {
   };
 }
 
+// 不觀察任何東西的 MutationObserver 替身：沙箱只需要 observer 建得起來，
+// 掃描由測試自己觸發。
+function IdleMutationObserver() {}
+IdleMutationObserver.prototype.observe = function () {};
+IdleMutationObserver.prototype.disconnect = function () {};
+
 // chromeRef 傳 null 代表「連 chrome 都沒有」；傳 { runtime: {} } 代表孤兒。
 function loadPostIconInFakeDom(doc, chromeRef) {
   const warnings = [];
@@ -171,6 +177,7 @@ function loadPostIconInFakeDom(doc, chromeRef) {
     setTimeout,
     clearTimeout,
     URL,
+    MutationObserver: IdleMutationObserver,
   };
   if (chromeRef) sandbox.chrome = chromeRef;
   runInSandbox(SRC, sandbox);
@@ -1309,6 +1316,7 @@ function injectIntoFakeFeed(labelMode) {
     setTimeout,
     clearTimeout,
     URL,
+    MutationObserver: IdleMutationObserver,
     chrome: { runtime: { id: 'tcl-test-ext' } },
   };
   runInSandbox(SRC, sandbox);

@@ -229,6 +229,13 @@
 
   // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync.md 4.2/4.3) ----
 
+  // 同步後端的三個 API base，全專案唯一的定義處：sync.js 的 apiBase 白名單、
+  // options 頁的權限描述子與環境標籤、tools/dev-browser.mjs 的環境切換都讀
+  // 這三個常數。local 指向開發機自己跑的 wrangler dev。
+  var API_BASE_PRODUCTION = 'https://api.metalinkclearer.workers.dev';
+  var API_BASE_STAGING = 'https://api-staging.metalinkclearer.workers.dev';
+  var API_BASE_LOCAL = 'http://localhost:8787';
+
   // chrome.storage.local.syncState 的預設形狀。欄位齊備是同步引擎的前提:
   // 少一個鍵，讀到的是 undefined 而不是 null，各處「未登入」判定會失準。
   var DEFAULT_SYNC_STATE = {
@@ -251,9 +258,6 @@
     // 底後清回 null。
     marksBackfillCursor: null,
   };
-
-  // chrome.storage.local.syncAuth 的預設形狀(D10:bearer token 明文存 local)。
-  var DEFAULT_SYNC_AUTH = { token: null };
 
   function optionalString(value) {
     return typeof value === 'string' ? value : null;
@@ -901,11 +905,9 @@
   // 900-1,600 位(含證據五欄)，由位元組預算先觸發淘汰，MAX_ENTRIES 5000 是
   // 證據稀疏時的筆數硬保險。
   //
-  // MAX_ENTRIES 自 v2 起由 active 與 dismissed 兩態共用;MAX_ALLOWLIST 隨著
-  // allowlist 降為派生視圖而廢止，常數保留只為不讓舊呼叫端讀到 undefined。
+  // MAX_ENTRIES 自 v2 起由 active 與 dismissed 兩態共用。
   var SCAM_LIMITS = {
     MAX_ENTRIES: 5000,
-    MAX_ALLOWLIST: 5000,
     MAX_EVIDENCE: 3,
     SNIPPET_MAX: 120,
     SNIPPET_CONTEXT: 40,
@@ -1609,9 +1611,8 @@
   }
 
   // 由 entries 重建三張派生表。handleIndex 只含 active:解除過的作者不該再
-  // 佔住反查鍵，河道也就不再替他標記。allowlist 是 dismissed 條目的唯讀視
-  // 圖，沿用 v1 的 { at, handle } 形狀讓既有讀者(content script 的解除比
-  // 對、選項頁的「已解除」小節)零改動;它只活在記憶體，不跟著落盤。
+  // 佔住反查鍵，河道也就不再替他標記。allowlist 是 dismissed 條目的派生視
+  // 圖({ at, handle })，產品端目前無讀者，只活在記憶體、不落盤。
   // lineIdIndex 是 { lineId → userId } 的反查表，與 handleIndex 同樣只含
   // active:使用者解除過的作者不該再靠一個 ID 把別人也拖下水。它與 allowlist
   // 同款，只活在記憶體、不跟著落盤(capScamBlocklist 落盤只挑三把鍵)。
@@ -2179,7 +2180,9 @@
     LIMITS: LIMITS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     DEFAULT_SYNC_STATE: DEFAULT_SYNC_STATE,
-    DEFAULT_SYNC_AUTH: DEFAULT_SYNC_AUTH,
+    API_BASE_PRODUCTION: API_BASE_PRODUCTION,
+    API_BASE_STAGING: API_BASE_STAGING,
+    API_BASE_LOCAL: API_BASE_LOCAL,
     normalizeSyncState: normalizeSyncState,
     sanitizeDisplayName: sanitizeDisplayName,
     sanitizeAvatarUrl: sanitizeAvatarUrl,

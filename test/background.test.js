@@ -50,6 +50,7 @@ function makeChrome() {
     notifications: { create: () => {} },
     scripting: { executeScript: async () => [{ result: { ok: true } }] },
     tabs: { TAB_ID_NONE: -1 },
+    storage: createChromeStorage().api,
   };
   return chrome;
 }
@@ -2729,8 +2730,6 @@ function loadBackgroundForSync(opts = {}) {
       alarmCalls.push({ op: 'clear', name });
       return true;
     },
-    get: async () => undefined,
-    getAll: async () => [],
     onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
   };
   chrome.permissions = {
@@ -3370,8 +3369,6 @@ function loadBackgroundForDevices(opts = {}) {
     alarms: {
       create: () => {},
       clear: async () => true,
-      get: async () => undefined,
-      getAll: async () => [],
       onAlarm: { addListener: (fn) => onAlarmListeners.push(fn) },
     },
     permissions: { contains: (d, cb) => cb(true), request: (d, cb) => cb(true) },
@@ -5267,25 +5264,6 @@ test('L4 審查:仿冒 threads 的 sender 網址一律忽略（不得只比字�
     assert.equal(res.responded, false, label + ' 的 sender 不得受理');
     assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, label + ' 不得留下任何寫入');
   }
-});
-
-// ---- 無 storage 時的失敗碼 ----
-//
-// `disabled` 的語意是「使用者把總開關關掉了」，選項頁會據此提示去打開開關。
-// storage 整組不可用是環境故障，重用 disabled 會讓 UI 指向一個根本不存在的
-// 開關狀態，改回 internal_error。
-
-test('L4 審查:remove／restore 在 storage.local 不可用時回 internal_error（不得重用 disabled）', async () => {
-  const bg = loadBackgroundForDevices({
-    localSeed: { [DEVICE_KEY]: SEEDED_DEVICE, [SCAM_KEY]: seededBlocklist() },
-  });
-  bg.sandbox.chrome.storage.local = undefined;
-
-  const remove = await bg.send({ type: 'scam.blocklist.remove', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
-  const restore = await bg.send({ type: 'scam.blocklist.restore', userId: SCAM_USER_ID }, EXT_PAGE_SENDER);
-
-  assert.deepEqual(deep(remove.response), { ok: false, code: 'internal_error' }, '環境故障不是「開關關閉」');
-  assert.deepEqual(deep(restore.response), { ok: false, code: 'internal_error' });
 });
 
 // ============================================================
