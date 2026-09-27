@@ -672,11 +672,11 @@ function validateScamHit(message) {
   if (postUrl === null) return null;
   if (typeof message.snippet !== 'string' || message.snippet.length > TCLCore.SCAM_LIMITS.SNIPPET_MAX) return null;
   if (typeof message.at !== 'number' || !isFinite(message.at)) return null;
-  // at 是頁面端送來的數字，夾在「現在」以內。這個值一路流進證據的 at、新建條
-  // 目的 addedAt／updatedAt，以及補證據時的 pushAfter——推送成功後 pushAfter
-  // 會成為 marksPushedAt，一個偽造的未來時戳就讓此後整份名單都落在水位線之
-  // 下，marks 通道靜默停推（沒有錯誤碼，水位線也只能往前推）。往回的時戳不夾：
-  // 補送舊命中是正常情形，太舊只會讓它排在證據清單後面。
+  // at 是頁面端送來的數字，夾在「現在」以內。這個值一路流進證據的 at 與新建條
+  // 目的 addedAt／updatedAt：證據依 at 降冪排列、裁筆數時留最新的，一個偽造的
+  // 未來時戳會永遠霸佔榜首、把真正的新證據擠出去；updatedAt 是跨裝置 LWW 的判
+  // 準，未來值會讓這筆在合併裡永遠勝出。往回的時戳不夾：補送舊命中是正常情
+  // 形，太舊只會讓它排在證據清單後面。
   const at = Math.min(message.at, Date.now());
 
   let userId = null;
@@ -1029,8 +1029,11 @@ async function handleScamHit(message) {
 
     const added = !existing;
     if (added) {
-      list.entries[userId] = TCLCore.makeBlocklistEntry(
-        Object.assign({ handle: hit.handle, displayName: hit.displayName, source: 'auto' }, evidence)
+      list.entries[userId] = TCLCore.markScamEntryDirty(
+        TCLCore.makeBlocklistEntry(
+          Object.assign({ handle: hit.handle, displayName: hit.displayName, source: 'auto' }, evidence)
+        ),
+        Date.now()
       );
     } else {
       const merged = TCLCore.mergeBlocklistEvidence(existing, evidence);
@@ -1044,13 +1047,9 @@ async function handleScamHit(message) {
       // 【被動掃描不動 updatedAt／state】updatedAt 是跨裝置 LWW 的唯一判準，
       // 「這台機器又掃到一次」不是使用者的意思表示。推進它等於讓一次背景掃描
       // 勝過別台裝置更早做的解除，使用者按掉的標記會在下一次捲到同一位作者時
-      // 自己長回來。新證據改以本機專有的 pushAfter 讓下一輪的推送批選得到
-      // （選批水位線取 updatedAt 與它的較大者），這一格不上雲。
-      merged.pushAfter = Math.max(
-        typeof existing.pushAfter === 'number' && isFinite(existing.pushAfter) ? existing.pushAfter : 0,
-        hit.at
-      );
-      list.entries[userId] = merged;
+      // 自己長回來。新證據改以本機專有的 dirty 讓下一輪推得出去，已經 dirty
+      // 的也要換一版 dirtyAt。
+      list.entries[userId] = TCLCore.markScamEntryDirty(merged, Date.now());
     }
 
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
@@ -1089,7 +1088,7 @@ async function handleScamBlocklistRemove(message) {
     }
     // handleIndex 不在這裡手動維護：capScamBlocklist 內的正規化一律由
     // entries 重建，dismissed 不進反查表，孤兒鍵沒有任何機會留下。
-    list.entries[userId] = Object.assign({}, entry, patch);
+    list.entries[userId] = TCLCore.markScamEntryDirty(Object.assign({}, entry, patch), now);
     return { next: list };
   }, SCAM_MUTATE_OPTS);
   notifySyncRecorded();
@@ -1106,7 +1105,8 @@ async function handleScamBlocklistRestore(message) {
   const out = await mutate(SCAM_BLOCKLIST_KEY, (list) => {
     const entry = list.entries[userId];
     if (!entry) return undefined;
-    const restored = Object.assign({}, entry, { state: 'active', updatedAt: Date.now() });
+    const now = Date.now();
+    const restored = TCLCore.markScamEntryDirty(Object.assign({}, entry, { state: 'active', updatedAt: now }), now);
     delete restored.dismissedAt;
     list.entries[userId] = restored;
     return { next: list };
