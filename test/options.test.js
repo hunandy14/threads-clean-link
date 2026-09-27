@@ -8,7 +8,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const { createChromeStorage, runInSandbox } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 const { makeNode, makeDocumentStub, isPopoverOpen } = require('./support/options-dom');
 
 const options = require(path.join(__dirname, '..', 'options.js'));
@@ -676,12 +677,6 @@ test('buildDetailExtraRows:removedParams 缺席或非陣列時不產生任何追
 // 「比對兩邊原始碼字面上寫的欄位名/數字」這種容易同步漂移的弱驗證更難被
 // 同類回歸繞過。
 function loadBackgroundSandboxForCrossLayer() {
-  const bgSrc =
-    fs.readFileSync(path.join(__dirname, '..', 'i18n.js'), 'utf8') +
-    '\n' +
-    fs.readFileSync(path.join(__dirname, '..', 'tcl-core.js'), 'utf8') +
-    '\n' +
-    fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
   // 最小 chrome mock:只滿足 background.js 檔案最外層註冊監聽器所需的
   // 呼叫面(見 background.test.js 的 makeChrome 同一組道理)，不需要完整
   // 還原每個 API，這裡只是借殼跑幾顆頂層 sanitize 函式。
@@ -692,7 +687,7 @@ function loadBackgroundSandboxForCrossLayer() {
     },
     contextMenus: { onClicked: { addListener: () => {} } },
   };
-  return runInSandbox(bgSrc, { chrome, console });
+  return loadSwSources({ chrome, console });
 }
 
 const CROSS_LAYER_BASE_URL = URL_A;

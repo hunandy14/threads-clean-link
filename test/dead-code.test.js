@@ -22,6 +22,10 @@ function readSource(relative) {
 // 擴充功能實際出貨、會引用字典鍵或承載守衛的產品檔。
 const PRODUCT_JS = [
   'background.js',
+  'sw-history.js',
+  'sw-device.js',
+  'sw-og.js',
+  'sw-scam.js',
   'options.js',
   'popup.js',
   'options-init.js',

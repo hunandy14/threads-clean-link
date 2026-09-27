@@ -20,13 +20,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
 
 const REPO_ROOT = path.join(__dirname, '..');
-const BG_SRC = ['i18n.js', 'tcl-core.js', 'background.js']
-  .map((file) => fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))
-  .join('\n');
 
 function loadSync() {
   return require('../sync.js');
@@ -126,7 +124,7 @@ async function loadBackground(localSeed = {}) {
     AbortController,
     AbortSignal,
   };
-  runInSandbox(BG_SRC, sandbox);
+  loadSwSources(sandbox);
   await realDelay(40);
   storage.localCalls.set.length = 0;
   return { sandbox, storage };
@@ -245,17 +243,19 @@ test('SQ background 寫入次序等於排隊次序：recordHistory×3 與 handle
 
 // ---- 原始碼守衛 ----
 
-test('SRC background.js 不再有手寫的 historyWriteChain 讀改寫鏈', () => {
-  const src = fs.readFileSync(path.join(REPO_ROOT, 'background.js'), 'utf8');
+test('SRC background.js／sw-history.js 不再有手寫的 historyWriteChain 讀改寫鏈', () => {
+  const src = ['background.js', 'sw-history.js']
+    .map((file) => fs.readFileSync(path.join(REPO_ROOT, file), 'utf8'))
+    .join('\n');
   const hits = src.match(/historyWriteChain\s*=\s*historyWriteChain\s*\.then/g) || [];
   assert.equal(hits.length, 0, '三處手寫鏈（recordHistory、migrateHistoryMerge、migrateHistorySchema）應統一走 enqueue');
 });
 
-test('SRC background.js 以 TCLCore 工廠建立佇列與 mutate；sync.js 以 createMutator 自建 mutate', () => {
-  const bg = fs.readFileSync(path.join(REPO_ROOT, 'background.js'), 'utf8');
+test('SRC sw-history.js 以 TCLCore 工廠建立佇列與 mutate；sync.js 以 createMutator 自建 mutate', () => {
+  const bg = fs.readFileSync(path.join(REPO_ROOT, 'sw-history.js'), 'utf8');
   const sync = fs.readFileSync(path.join(REPO_ROOT, 'sync.js'), 'utf8');
-  assert.ok(/TCLCore\.createSerialQueue\(/.test(bg), 'background.js 應以 TCLCore.createSerialQueue() 建佇列');
-  assert.ok(/TCLCore\.createMutator\(/.test(bg), 'background.js 應以 TCLCore.createMutator() 建 mutate');
+  assert.ok(/TCLCore\.createSerialQueue\(/.test(bg), 'sw-history.js 應以 TCLCore.createSerialQueue() 建佇列');
+  assert.ok(/TCLCore\.createMutator\(/.test(bg), 'sw-history.js 應以 TCLCore.createMutator() 建 mutate');
   assert.ok(/createMutator\(/.test(sync), 'sync.js 應以 createMutator() 自建 mutate（enqueue 用注入的 writeChain）');
 });
 

@@ -31,9 +31,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const { runInSandbox, createChromeStorage } = require('./support/helpers');
+const { createChromeStorage } = require('./support/helpers');
+const { loadSwSources } = require('./support/sw-sources');
 
 const TCLCore = require('../tcl-core.js');
 const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
@@ -757,10 +756,6 @@ test('MD5 墓碑守衛：本機比墓碑新的條目留下並標 dirty，下一�
 // MD6 — background 的三條寫入路徑設 dirty
 // ============================================================================
 
-const BG_SRC = ['i18n.js', 'tcl-core.js', 'background.js']
-  .map((file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8'))
-  .join('\n');
-
 const BG_EXT_ID = 'marks-dirty-test-extension-id';
 const BG_SCAM_KEY = 'scamBlocklist';
 const BG_USER_ID = '10000000001';
@@ -864,7 +859,7 @@ async function loadBackground(localSeed = {}) {
     AbortController,
     AbortSignal,
   };
-  runInSandbox(BG_SRC, sandbox);
+  loadSwSources(sandbox);
   await new Promise((resolve) => setTimeout(resolve, 40));
   return { sandbox, storage };
 }
