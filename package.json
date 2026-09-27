@@ -10,5 +10,8 @@
     "dev": "node tools/dev-browser.mjs --env local",
     "dev:staging": "node tools/dev-browser.mjs --env staging",
     "verify-id": "node tools/verify-extension-id.mjs"
+  },
+  "devDependencies": {
+    "recheck": "^4.5.0"
   }
 }

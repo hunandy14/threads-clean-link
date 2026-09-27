@@ -60,13 +60,22 @@
     return 'sign_in_failed';
   }
 
+  // 剝掉 str 尾端連續出現的 chars 字元，由尾往前逐字檢查，整串最多走一遍;
+  // 尾端剝除不寫成 `X+$` 正則，那在沒有起點錨定時最差是二次方。與 tcl-core.js
+  // 的 trimEndChars 同一支：本模組在 Node 測試單獨 require，不依賴 TCLCore。
+  function trimEndChars(str, chars) {
+    var end = str.length;
+    while (end > 0 && chars.indexOf(str.charAt(end - 1)) !== -1) end--;
+    return end === str.length ? str : str.slice(0, end);
+  }
+
   // 256 bits 的隨機值，以 base64url 呈現(無填充,URL 安全)。
   function generateNonce() {
     var bytes = new Uint8Array(32);
     root.crypto.getRandomValues(bytes);
     var binary = '';
     for (var i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
-    return root.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return trimEndChars(root.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_'), '=');
   }
 
   function buildAuthorizeUrl(options) {
@@ -169,7 +178,7 @@
   }
 
   function permissionsFor(apiBase) {
-    return { permissions: ['identity'], origins: [apiBase.replace(/\/+$/, '') + '/*'] };
+    return { permissions: ['identity'], origins: [trimEndChars(apiBase, '/') + '/*'] };
   }
 
   // SW 端的權限探測:只回報「有沒有」，不發起 request(見檔頭「權限」段落)。
@@ -241,7 +250,7 @@
   // 等於把整個工作階段的來源交給任何能讓後端轉址的人;與 sync.js 的 call()
   // 同一條紀律，登入這支更是 token 的第一個入口。
   function exchangeWithBackend(options) {
-    var url = options.apiBase.replace(/\/+$/, '') + '/api/auth/sign-in/social';
+    var url = trimEndChars(options.apiBase, '/') + '/api/auth/sign-in/social';
     return fetch(url, {
       method: 'POST',
       credentials: 'omit',

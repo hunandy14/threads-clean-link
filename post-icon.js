@@ -179,6 +179,16 @@
     return 'bgUnexpected';
   }
 
+  // 剝掉 str 尾端連續出現的 chars 字元，由尾往前逐字檢查，整串最多走一遍;
+  // 尾端剝除不寫成 `X+$` 正則，那在沒有起點錨定時最差是二次方。與 tcl-core.js
+  // 的 trimEndChars 同一支：本檔的純函式供 Node 測試單獨 require，不依賴
+  // TCLCore。
+  function trimEndChars(str, chars) {
+    var end = str.length;
+    while (end > 0 && chars.indexOf(str.charAt(end - 1)) !== -1) end--;
+    return end === str.length ? str : str.slice(0, end);
+  }
+
   // bridge.js 收到 TCL_CLEANED_NOTICE 轉發給 background 前，需要在目前
   // 頁面 DOM 找出「這個乾淨網址對應的貼文容器」，才能就地補
   // author/handle/excerpt。findContainerByCleanUrl(見下)的比對核心抽成
@@ -194,7 +204,7 @@
     if (typeof value !== 'string' || !value) return null;
     try {
       var url = new URL(value, 'http://tcl-path-placeholder.invalid');
-      var pathname = url.pathname.replace(/\/+$/, '');
+      var pathname = trimEndChars(url.pathname, '/');
       return pathname || '/';
     } catch (e) {
       return null;
