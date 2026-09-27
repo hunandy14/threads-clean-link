@@ -96,7 +96,28 @@ chrome.runtime.onInstalled.addListener(() => {
   // 得齊七個雲端欄位。兩支都掛在同一條 historyWriteChain 上，串行執行。
   migrateHistoryMerge();
   migrateHistorySchema();
+  removeLegacyGuardKeys();
 });
+
+// 舊版的兩把自清守衛鍵(D19／D41 舊語意)。清空水位線已由 D50 廢除，這兩把
+// 鍵不再讀寫，這裡在 onInstalled 把舊版殘留清一次。
+const LEGACY_GUARD_KEYS = ['syncClearGuard', 'syncMarksClearGuard'];
+
+/**
+ * 移除舊版殘留的守衛鍵。盡力而為:remove 缺席或失敗都只記 warn，不影響其他
+ * onInstalled 工作;鍵本來就不存在時 remove 什麼也不做。
+ */
+function removeLegacyGuardKeys() {
+  const local = chrome.storage && chrome.storage.local;
+  if (!local || typeof local.remove !== 'function') return;
+  try {
+    Promise.resolve(local.remove(LEGACY_GUARD_KEYS)).catch((err) => {
+      console.warn('[threads-clean-link] 移除舊版守衛鍵失敗', err);
+    });
+  } catch (err) {
+    console.warn('[threads-clean-link] 移除舊版守衛鍵失敗', err);
+  }
+}
 
 // ------------------------------------------------------------
 // 擴充功能安裝/更新後的自癒重注入
