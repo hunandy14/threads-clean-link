@@ -1301,8 +1301,14 @@
             if (circleEl) circleEl.classList.remove('has-photo');
             if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
           };
-          if (usePhoto) photoEl.src = safeUrl;
-          else if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+          if (usePhoto) {
+            photoEl.src = safeUrl;
+          } else {
+            // IDL 屬性與底層 attribute 都要清:.src 才是實際觸發瀏覽器發請求／
+            // 快取圖片的那一份，只清 attribute 會讓下一個帳號先閃出舊圖。
+            photoEl.src = '';
+            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
+          }
         }
         if (circleEl) circleEl.classList.toggle('has-photo', usePhoto);
       });
@@ -1328,11 +1334,6 @@
       return 'signedIn';
     }
 
-    // 純函式風格的更新器:只依 state 決定畫面，不讀寫其他外部狀態(entries
-    // 除外——僅在登入確認框組文案時讀取，不在這裡改動)。未登入/其餘四態
-    // 共用同一份觸發鈕與選單 DOM，用 hidden 切換;deviceNote 那一列(紀錄
-    // 清單卡片頁尾)也在此一併更新，因為它的文案同樣隨登入態切換(見
-    // options.html 的 #deviceNote 註解)。
     // 頁首標題(h1)與「紀錄」卡頭旁各一顆環境標籤(ENV_BADGE_IDS):狀態
     // 來源同 renderAccount 的 state.apiBase(docs/cloud-sync.md 5.2 節),
     // 跟登入態無關——未登入也要顯示,讓開發時誤連正式環境或忘記切換環境
@@ -1366,199 +1367,144 @@
       });
     }
 
-    function renderAccount(state) {
-      var s = state || DEFAULT_SYNC_CARD_STATE;
+    // 帳號區的 view-model:把 normalizeSyncCardState 的結果換算成要寫進 DOM 的
+    // 每一欄，純函式(只讀 locale 與 now，不讀寫 DOM 或其他狀態)。五態共用同
+    // 一份觸發鈕與選單 DOM，靠 hidden 切換;未登入態每一欄都給明確的重設值
+    // (清空文字、收起列、頭像退回空字母)，觸發鈕雖然 hidden，任何路徑下次
+    // 顯示前都不會露出上一態的舊資料。
+    //   text      textContent 表
+    //   hidden    hidden 表
+    //   disabled  disabled 表(未登入不碰「立即同步」)
+    //   avatar    頭像首字母與大頭照網址(未登入為 '' 與 null)
+    //   dotClass  狀態點顏色:error 紅、expired 黃，其餘無
+    //   devices   'reset' 丟掉裝置快取(帳號沒了)、'refetch' 只標記下次要重打
+    //             (同一個帳號 token 過期，快取留給紀錄詳細 join 裝置名)
+    //   closeDevices 沒有可用的工作階段就拉不到清單，開著的裝置對話框收起
+    function accountView(s) {
       var mode = accountMode(s);
       var signedOut = mode === 'signedOut';
-      renderEnvBadge(s.apiBase);
-
-      var signInBtn = byId('acctSignInBtn');
-      var trigger = byId('acctTrigger');
-      if (signInBtn) signInBtn.hidden = !signedOut;
-      if (trigger) trigger.hidden = signedOut;
-
+      var base = tt('opAccountMenuLabel');
       if (signedOut) {
-        if (trigger) {
-          // 觸發鈕的 aria-label 重設回不帶狀態的基本文字(見下方 signedIn
-          // 分支併狀態文字進 aria-label 那段)——同一份防殘留邏輯:忘記先
-          // renderAccount 就重新顯示時，不該唸出上一態的「同步錯誤」。
-          trigger.setAttribute('aria-label', tt('opAccountMenuLabel'));
-        }
-        hidePop(byId('acctMenu'));
-        // 沒有帳號就沒有裝置清單可管:整項連同台數收掉，快取一併丟掉(它是
-        // 綁在這個帳號上的顯示層資料，留著只會在下次登入時先閃出舊台數)。
-        var manageBtn0 = byId('acctManageDevicesBtn');
-        if (manageBtn0) {
-          manageBtn0.hidden = true;
-          manageBtn0.disabled = false;
-        }
-        deviceCache = null;
-        devicesLoadError = false;
-        devicesEverFetched = false;
-        renderDeviceCount();
-        // 開著的裝置對話框要一起收掉:沒有帳號就拉不到清單，留在畫面上只會
-        // 是一框死內容，而選單裡的入口這時已經收起，使用者也沒有正規途徑
-        // 再開一次。觸發鈕這時已隱藏，焦點落點見 bindDevices 的 close 善後。
-        closeDialog('devicesOverlay');
-        var deviceNoteEl0 = byId('deviceNote');
-        if (deviceNoteEl0) deviceNoteEl0.textContent = tt('opDeviceNote');
-
-        // 完整重設:狀態點顏色、錯誤/過期列、姓名/信箱等文字一律清掉。觸發
-        // 鈕雖然 hidden，選單內容不清的話，下次顯示前若有任何路徑忘記先呼叫
-        // renderAccount 就會露出上一態的舊資料。
-        var headerNameEl0 = byId('acctHeaderName');
-        if (headerNameEl0) headerNameEl0.textContent = '';
-        var menuNameEl0 = byId('acctMenuName');
-        if (menuNameEl0) menuNameEl0.textContent = '';
-        var menuEmailEl0 = byId('acctMenuEmail');
-        if (menuEmailEl0) menuEmailEl0.textContent = '';
-        var menuSubEl0 = byId('acctMenuSub');
-        if (menuSubEl0) menuSubEl0.textContent = '';
-
-        // 頭像三件(字母/img/圓框)一併重設:img 的 src 不清，下次任何帳號改
-        // 用同一顆 img 元素前若又先渲染一次「有大頭照」以外的中繼態，舊圖會
-        // 先閃現。renderAvatars 走的是
-        // 「usePhoto 才設 src」的邏輯，這裡直接手動清，不繞回
-        // renderAvatars(登出態沒有 initial/avatarUrl 可傳)。
-        AVATAR_INSTANCES.forEach(function (a) {
-          var letterEl = byId(a.letter);
-          var photoEl = byId(a.photo);
-          var circleEl = byId(a.circle);
-          if (letterEl) {
-            letterEl.textContent = '';
-            letterEl.hidden = false;
-          }
-          if (photoEl) {
-            photoEl.hidden = true;
-            // 清 src 的 IDL 屬性與底層 attribute 都要動:.src 是實際觸發
-            // 瀏覽器發請求/快取圖片的那一份，只清 attribute 不夠。
-            photoEl.src = '';
-            if (typeof photoEl.removeAttribute === 'function') photoEl.removeAttribute('src');
-          }
-          if (circleEl) circleEl.classList.remove('has-photo');
-        });
-
-        var dot0 = byId('statusDot');
-        if (dot0) {
-          dot0.classList.remove('is-danger', 'is-warning');
-          dot0.hidden = true;
-        }
-
-        var errorRow0 = byId('acctErrorRow');
-        if (errorRow0) errorRow0.hidden = true;
-        var errorText0 = byId('acctErrorText');
-        if (errorText0) errorText0.textContent = '';
-
-        var expiredRow0 = byId('acctExpiredRow');
-        if (expiredRow0) expiredRow0.hidden = true;
-        var expiredText0 = byId('acctExpiredText');
-        if (expiredText0) expiredText0.textContent = '';
-
-        return;
+        return {
+          mode: mode,
+          signedOut: true,
+          text: {
+            acctHeaderName: '', acctMenuName: '', acctMenuEmail: '', acctMenuSub: '', acctErrorText: '', acctExpiredText: '',
+          },
+          hidden: {
+            acctSignInBtn: false, acctTrigger: true, acctErrorRow: true, acctExpiredRow: true,
+            acctManageDevicesBtn: true, statusDot: true,
+          },
+          disabled: { acctManageDevicesBtn: false },
+          avatar: { initial: '', url: null },
+          dotClass: '',
+          syncing: false,
+          // 觸發鈕的 aria-label 重設回不帶狀態的基本文字，重新顯示時不會唸出
+          // 上一態的「同步錯誤」。
+          triggerAria: base,
+          syncLabelKey: null,
+          deviceNoteKey: 'opDeviceNote',
+          devices: 'reset',
+          closeDevices: true,
+          closeMenu: true,
+        };
       }
 
       var name = accountDisplayName(s);
-      renderAvatars(accountInitial(s), s.avatarUrl);
+      var hasError = mode === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
+      // 待上傳筆數只在 N>0 時附上(D52);N=0 就是雲端與本機一致，不必顯示。
+      var sub = tf('opAccountLastSync', { t: s.lastSyncedAt !== null ? relTime(s.lastSyncedAt) : tt('opSyncNever') });
+      if (s.pendingCount > 0) sub += ' · ' + tf('opAccountPending', { n: s.pendingCount });
+      // 狀態文字只併進觸發鈕(button)自己的 aria-label，不掛在巢狀 statusDot
+      // 上——button 有 aria-label 時，讀屏器不讀子節點的 aria-label。
+      // syncing 只要求外圈轉圈，不疊角標小圓點，避免視覺過雜。
+      var statusKey = {
+        error: 'opAccountStatusError', expired: 'opAccountStatusExpired', signedIn: 'opAccountStatusSynced',
+      }[mode] || null;
+      return {
+        mode: mode,
+        signedOut: false,
+        text: {
+          acctHeaderName: name,
+          acctMenuName: name,
+          acctMenuEmail: s.email || '',
+          acctMenuSub: sub,
+          acctErrorText: hasError ? syncErrorText(s.lastError) : '',
+          // 靜態文案理論上靠 data-i18n 就會套上，仍顯式覆寫:此列剛從 hidden
+          // 切到顯示時不必等下一輪語言切換才補上正確文字。
+          acctExpiredText: tt('opAccountExpired'),
+        },
+        hidden: {
+          acctSignInBtn: true, acctTrigger: false, acctErrorRow: !hasError, acctExpiredRow: mode !== 'expired',
+          // 登入過期沒有可用的工作階段(清單一定拉不到)，比照未登入收掉管理
+          // 裝置，只留「重新登入」這條有意義的路。
+          acctManageDevicesBtn: mode === 'expired',
+          statusDot: statusKey === null,
+        },
+        disabled: {
+          // 過期時必須先重新登入;同步中本來就在跑，同樣停用避免重複觸發。
+          acctSyncNowBtn: mode === 'syncing' || mode === 'expired',
+          // 同步中這一輪可能正在註冊／更新裝置，進去改名或移除只會拿到馬上被
+          // 蓋掉的結果。
+          acctManageDevicesBtn: mode === 'syncing',
+        },
+        avatar: { initial: accountInitial(s), url: s.avatarUrl },
+        dotClass: mode === 'error' ? 'is-danger' : mode === 'expired' ? 'is-warning' : '',
+        syncing: mode === 'syncing',
+        triggerAria: statusKey ? tf('opAccountMenuLabelStatus', { label: base, status: tt(statusKey) }) : base,
+        syncLabelKey: mode === 'syncing' ? 'opAccountSyncing' : mode === 'error' ? 'opAccountRetry' : 'opAccountSyncNow',
+        // expired 的同步實質上沒在跑(等待重新登入)，比照未登入顯示「僅保存於
+        // 這台裝置」，避免謊報已同步。
+        deviceNoteKey: mode === 'expired' ? 'opDeviceNote' : 'opDeviceNoteSynced',
+        devices: mode === 'expired' ? 'refetch' : null,
+        closeDevices: mode === 'expired',
+        closeMenu: false,
+      };
+    }
 
-      var headerNameEl = byId('acctHeaderName');
-      if (headerNameEl) headerNameEl.textContent = name;
-      var menuNameEl = byId('acctMenuName');
-      if (menuNameEl) menuNameEl.textContent = name;
-      var menuEmailEl = byId('acctMenuEmail');
-      if (menuEmailEl) menuEmailEl.textContent = s.email || '';
+    function setEach(table, prop) {
+      Object.keys(table).forEach(function (id) {
+        var el = byId(id);
+        if (el) el[prop] = table[id];
+      });
+    }
 
+    // 把 accountView 的結果寫進 DOM。deviceNote(紀錄卡片頁尾那一列)的文案同
+    // 樣隨登入態切換，一併在這裡更新(見 options.html 的 #deviceNote 註解)。
+    function applyAccountView(v) {
+      setEach(v.hidden, 'hidden');
+      setEach(v.text, 'textContent');
+      setEach(v.disabled, 'disabled');
+      var trigger = byId('acctTrigger');
+      if (trigger) trigger.setAttribute('aria-label', v.triggerAria);
+      if (v.closeMenu) hidePop(byId('acctMenu'));
+      renderAvatars(v.avatar.initial, v.avatar.url);
       var wrap = byId('avatarWrap');
-      if (wrap) wrap.classList.toggle('is-syncing', mode === 'syncing');
-
+      if (wrap) wrap.classList.toggle('is-syncing', v.syncing);
       var dot = byId('statusDot');
-      // 狀態文字的 aria 通道只掛在觸發鈕(button)自己的 aria-label，不掛在
-      // 巢狀 statusDot span 上——aria-label 只認最近的可及性物件，button
-      // 已有自己的 aria-label 時，子節點的 aria-label 不會被讀屏器讀到。
-      var statusAriaKey = null;
       if (dot) {
         dot.classList.remove('is-danger', 'is-warning');
-        if (mode === 'error') {
-          dot.hidden = false;
-          dot.classList.add('is-danger');
-          statusAriaKey = 'opAccountStatusError';
-        } else if (mode === 'expired') {
-          dot.hidden = false;
-          dot.classList.add('is-warning');
-          statusAriaKey = 'opAccountStatusExpired';
-        } else if (mode === 'signedIn') {
-          dot.hidden = false;
-          statusAriaKey = 'opAccountStatusSynced';
-        } else {
-          // syncing:規格只要求外圈轉圈，不疊角標小圓點，避免視覺過雜。
-          dot.hidden = true;
-        }
+        if (v.dotClass) dot.classList.add(v.dotClass);
       }
-      if (trigger) {
-        trigger.setAttribute(
-          'aria-label',
-          statusAriaKey
-            ? tf('opAccountMenuLabelStatus', { label: tt('opAccountMenuLabel'), status: tt(statusAriaKey) })
-            : tt('opAccountMenuLabel')
-        );
-      }
-
-      var hasError = mode === 'error' && typeof s.lastError === 'string' && s.lastError !== '';
-      var errorRow = byId('acctErrorRow');
-      var errorText = byId('acctErrorText');
-      if (errorRow) errorRow.hidden = !hasError;
-      if (errorText) errorText.textContent = hasError ? syncErrorText(s.lastError) : '';
-
-      var expiredRow = byId('acctExpiredRow');
-      var expiredText = byId('acctExpiredText');
-      if (expiredRow) expiredRow.hidden = mode !== 'expired';
-      // 靜態文案理論上靠 data-i18n 就會套上，這裡仍顯式覆寫一次:此列剛從
-      // hidden 切到顯示時不需要等下一輪語言切換才補上正確文字。
-      if (expiredText) expiredText.textContent = tt('opAccountExpired');
-
-      var subEl = byId('acctMenuSub');
-      if (subEl) {
-        var timeText = s.lastSyncedAt !== null ? relTime(s.lastSyncedAt) : tt('opSyncNever');
-        // 待上傳筆數只在 N>0 時附上(D52);N=0 就是雲端與本機一致，不必顯示。
-        var subText = tf('opAccountLastSync', { t: timeText });
-        if (s.pendingCount > 0) subText += ' · ' + tf('opAccountPending', { n: s.pendingCount });
-        subEl.textContent = subText;
-      }
-
-      var syncBtn = byId('acctSyncNowBtn');
       var syncLabel = byId('acctSyncLabel');
-      // 登入過期時必須先重新登入，「立即同步」停用，逼使用者走上方的
-      // 「重新登入」;同步中本來就在跑，同樣停用避免重複觸發。
-      var syncDisabled = mode === 'syncing' || mode === 'expired';
-      if (syncBtn) syncBtn.disabled = syncDisabled;
-      if (syncLabel) {
-        syncLabel.textContent = tt(
-          mode === 'syncing' ? 'opAccountSyncing' : mode === 'error' ? 'opAccountRetry' : 'opAccountSyncNow'
-        );
-      }
+      if (syncLabel && v.syncLabelKey) syncLabel.textContent = tt(v.syncLabelKey);
 
-      // deviceNote:expired 態的同步實質上沒在跑(等待重新登入)，比照
-      // signedOut 顯示「僅保存於這台裝置」，避免謊報已同步。
-      // 管理裝置:登入過期時同樣沒有可用的工作階段(清單一定拉不到)，比照
-      // 未登入收掉，只留「重新登入」這條有意義的路。同步中則比照上面的
-      // 「立即同步」停用——這一輪同步本來就可能註冊/更新裝置，讓人在資料
-      // 正要變的當下進去改名或移除，只會拿到馬上被蓋掉的結果。
-      var manageBtn = byId('acctManageDevicesBtn');
-      if (manageBtn) {
-        manageBtn.hidden = mode === 'expired';
-        manageBtn.disabled = mode === 'syncing';
+      if (v.devices === 'reset') {
+        deviceCache = null;
+        devicesLoadError = false;
       }
-      if (mode === 'expired') {
-        // 同上:沒有可用的工作階段就拉不到清單，開著的對話框收起來。快取
-        // 留著讓紀錄詳細的裝置名還 join 得到(同一個帳號，只是 token 過期)，
-        // 但重新登入後要再打一次，免得台數停在過期前那一刻。
-        devicesEverFetched = false;
-        closeDialog('devicesOverlay');
-      }
+      if (v.devices) devicesEverFetched = false;
       renderDeviceCount();
+      // 觸發鈕這時已隱藏或入口已收起，焦點落點見 bindDevices 的 close 善後。
+      if (v.closeDevices) closeDialog('devicesOverlay');
+      var deviceNote = byId('deviceNote');
+      if (deviceNote) deviceNote.textContent = tt(v.deviceNoteKey);
+    }
 
-      var deviceSynced = mode === 'signedIn' || mode === 'syncing' || mode === 'error';
-      var deviceNoteEl = byId('deviceNote');
-      if (deviceNoteEl) deviceNoteEl.textContent = tt(deviceSynced ? 'opDeviceNoteSynced' : 'opDeviceNote');
+    function renderAccount(state) {
+      var s = state || DEFAULT_SYNC_CARD_STATE;
+      renderEnvBadge(s.apiBase);
+      applyAccountView(accountView(s));
     }
 
     // 接線層在收到 background 的 {type:"sync.stateChanged"} 廣播時呼叫
@@ -3739,6 +3685,8 @@
       setSyncSettings: setSyncSettings,
       setLocalSettings: setLocalSettings,
       onStorageChanged: onStorageChanged,
+      accountView: accountView,
+      applyAccountView: applyAccountView,
       refresh: refresh,
       setSyncState: setSyncState,
       focusAccountArea: focusAccountArea,
