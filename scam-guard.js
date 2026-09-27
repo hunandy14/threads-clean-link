@@ -457,7 +457,7 @@
       // 本次 session 是否已經跳過「首次入黑名單」的 toast。
       var toasted = false;
 
-      // 本機黑名單的記憶體快取，正規化後的 { entries, handleIndex, allowlist }
+      // 本機黑名單的記憶體快取，正規化後的 { entries, handleIndex, lineIdIndex }
       // 形狀；沒有任何可查的作者時一律留 null，查表可以立刻收工、不走訪 DOM。
       // 只有 background 寫 chrome.storage.local.scamBlocklist，本段唯讀。
       var blocklist = null;
