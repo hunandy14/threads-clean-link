@@ -6825,8 +6825,8 @@ test('D45 scam.hit:證據記下的 rulesVersion 是 v4', async () => {
 
   assert.equal(
     scamEntry(bg).evidence[0].rulesVersion,
-    4,
-    'rulesVersion 由寫入端記下，升版後新證據一律是 4（跨裝置對帳與調參靠它分新舊）'
+    5,
+    'rulesVersion 由寫入端記下，升版後新證據一律是 5（跨裝置對帳與調參靠它分新舊）'
   );
 });
 
