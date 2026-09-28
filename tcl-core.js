@@ -1560,6 +1560,21 @@
   // 帳號段允許的字元，逐 code point 做 NFKC 後比對。
   var SCAM_ID_CHAR_RE = /^[A-Za-z0-9._-]$/;
 
+  // 原文 text 在 pos 起的一個 code point，做 NFKC 並小寫後若是單一帳號字元，
+  // 回 { ch, width }(width 是這個 code point 佔的 code unit 數，代理對為 2);
+  // 否則回 null。帳號段的擷取與定位共用這一步，兩邊對「原文哪一段是這個 ID」
+  // 的認定因此一致。
+  function scamIdCharAt(text, pos) {
+    var code = text.charCodeAt(pos);
+    var width = 1;
+    if (code >= 0xd800 && code <= 0xdbff && pos + 1 < text.length) {
+      var low = text.charCodeAt(pos + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) width = 2;
+    }
+    var ch = text.slice(pos, pos + width).normalize('NFKC');
+    return SCAM_ID_CHAR_RE.test(ch) ? { ch: ch.toLowerCase(), width: width } : null;
+  }
+
   // 從原文 clean 的 index 起逐 code point 擷取帳號段:每個 code point 取 NFKC，
   // 結果是單一帳號字元就併入，到 LINE_ID_MAX 字或遇到不合格字元為止，再剝掉
   // 尾端的 . _ -(句讀不是帳號的一部分)。回 { id, index, end } 或 null(短於
@@ -1575,24 +1590,43 @@
     var widths = [];
     var pos = index;
     while (pos < clean.length && chars.length < SCAM_LIMITS.LINE_ID_MAX) {
-      var code = clean.charCodeAt(pos);
-      var width = 1;
-      if (code >= 0xd800 && code <= 0xdbff && pos + 1 < clean.length) {
-        var low = clean.charCodeAt(pos + 1);
-        if (low >= 0xdc00 && low <= 0xdfff) width = 2;
-      }
-      var ch = clean.slice(pos, pos + width).normalize('NFKC');
-      if (!SCAM_ID_CHAR_RE.test(ch)) break;
-      chars.push(ch);
-      widths.push(width);
-      pos += width;
+      var unit = scamIdCharAt(clean, pos);
+      if (!unit) break;
+      chars.push(unit.ch);
+      widths.push(unit.width);
+      pos += unit.width;
     }
     while (chars.length > 0 && '._-'.indexOf(chars[chars.length - 1]) !== -1) {
       chars.pop();
       pos -= widths.pop();
     }
     if (chars.length < SCAM_LIMITS.LINE_ID_MIN) return null;
-    return { id: chars.join('').toLowerCase(), index: index, end: pos };
+    return { id: chars.join(''), index: index, end: pos };
+  }
+
+  // 在原文 text 裡定位 lineId，回第一個原文區間 { start, end } 或 null。從每
+  // 個 code point 起點逐 code point 取 NFKC 小寫，與 lineId 逐字比對;起點與
+  // 終點都落在 code point 邊界上。lineId 是正規化後的鍵(ex01abc)，原文卻可能
+  // 寫成大寫、全形或數學粗體(EX01ABC、ｅｘ０１ａｂｃ、ex𝟎𝟏𝐚𝐛𝐜)，
+  // 直接在原文 indexOf 找不到。非字串或空字串回 null。
+  function findLineIdSpan(text, lineId) {
+    if (typeof text !== 'string' || typeof lineId !== 'string' || lineId.length === 0) return null;
+    var start = 0;
+    while (start < text.length) {
+      var pos = start;
+      var k = 0;
+      while (k < lineId.length && pos < text.length) {
+        var unit = scamIdCharAt(text, pos);
+        if (!unit || unit.ch !== lineId[k]) break;
+        k++;
+        pos += unit.width;
+      }
+      if (k === lineId.length) return { start: start, end: pos };
+      var code = text.charCodeAt(start);
+      var next = start + 1 < text.length ? text.charCodeAt(start + 1) : 0;
+      start += code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? 2 : 1;
+    }
+    return null;
   }
 
   // 抓出這段文字裡對方的 LINE 帳號本體，回 { id, index, end } 或 null。三段依序:
@@ -2785,6 +2819,7 @@
     SCAM_SIGNALS: SCAM_SIGNALS,
     SCAM_ANCHOR_MATCH_MAX: SCAM_ANCHOR_MATCH_MAX,
     detectScamPitch: detectScamPitch,
+    findLineIdSpan: findLineIdSpan,
     isPostDetailPath: isPostDetailPath,
     normalizeScamEvidence: normalizeScamEvidence,
     normalizeScamLineId: normalizeScamLineId,
