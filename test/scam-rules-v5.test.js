@@ -281,3 +281,89 @@ test('buildScamRules：由表建出的規則包與預設 SCAM_RULES 對 fixture 
     assert.equal(C.detectScamPitch(f.body, built).hit, C.detectScamPitch(f.body).hit, f.name);
   }
 });
+
+// ---- 模糊自測：probe 只供定位，lineId 與 anchorMatch 的內容一律來自原文 ----
+//
+// 以固定種子拼出含拆字 LINE、代理對、全形字元的隨機句子，只驗兩條不變式，不
+// 綁任何一條規則的判定結果：
+//   - lineId 必須等於原文某個 code point 起點上「逐 code point NFKC、屬帳號
+//     字元者連續串接、裁到 20 字、剝掉尾端 . _ -」的結果（小寫）。
+//   - anchorMatch 必須是原文的子字串，頭尾不切在半個代理對上；有 lineId 且命
+//     中時，anchorMatch 逐 code point NFKC 後就是 lineId。
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const FUZZ_PIECES = [
+  'LINE', 'line', 'L.I.N.E', 'L I N E', 'L·I·N·E', 'L-I-N-E', 'L|NE', 'l1ne', '𝐋𝐈𝐍𝐄', 'Ｌｉｎｅ', 'ⓛⓘⓝⓔ',
+  '賴', '籟', '：', ':', ' ', '　', 'ID', '帳號', '是',
+  'ex', 'abc', 'shop', '𝟔𝟔𝟔', '𝐝ef', '１２３', '99', '.', '-', '_',
+  '私訊我', '進群', '加入', '加我', '群組', '報明牌', '傳個信息（110）',
+  'line.me/ti/p/~', 'lin.ee/', 'online', '訂單 ID：',
+];
+
+const ID_CHAR = /^[A-Za-z0-9._-]$/;
+
+function codePoints(text) {
+  return Array.from(text);
+}
+
+// 原文第 k 個 code point 起的帳號段（逐 code point NFKC）。
+function idRunAt(points, k) {
+  const chars = [];
+  for (let i = k; i < points.length && chars.length < 20; i++) {
+    const ch = points[i].normalize('NFKC');
+    if (!ID_CHAR.test(ch)) break;
+    chars.push(ch);
+  }
+  while (chars.length > 0 && '._-'.includes(chars[chars.length - 1])) chars.pop();
+  return chars.join('').toLowerCase();
+}
+
+function isHigh(code) {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLow(code) {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+test('模糊自測：lineId 只來自原文帳號段，anchorMatch 是原文子字串且不切半個代理對（200 條，固定種子）', () => {
+  const rand = mulberry32(20260928);
+  for (let n = 0; n < 200; n++) {
+    const count = 3 + Math.floor(rand() * 8);
+    let text = '';
+    for (let i = 0; i < count; i++) text += FUZZ_PIECES[Math.floor(rand() * FUZZ_PIECES.length)];
+    const res = C.detectScamPitch(text);
+    const clean = C.stripControlChars(text);
+    const tag = JSON.stringify(text);
+
+    if (res.lineId !== null) {
+      const points = codePoints(clean);
+      let ok = false;
+      for (let k = 0; k < points.length && !ok; k++) ok = idRunAt(points, k) === res.lineId;
+      assert.ok(ok, tag + ' 的 lineId ' + JSON.stringify(res.lineId) + ' 不是原文上的帳號段');
+    }
+
+    if (res.anchorMatch !== '') {
+      assert.ok(clean.includes(res.anchorMatch), tag + ' 的 anchorMatch 不是原文子字串：' + JSON.stringify(res.anchorMatch));
+      assert.ok(!isLow(res.anchorMatch.charCodeAt(0)), tag + ' 的 anchorMatch 起點切在代理對中間');
+      assert.ok(
+        !isHigh(res.anchorMatch.charCodeAt(res.anchorMatch.length - 1)),
+        tag + ' 的 anchorMatch 終點切在代理對中間'
+      );
+      if (res.hit && res.lineId !== null) {
+        const normalized = codePoints(res.anchorMatch).map((ch) => ch.normalize('NFKC')).join('').toLowerCase();
+        assert.equal(normalized, res.lineId, tag + ' 的 anchorMatch 應是 lineId 的原文寫法');
+      }
+    }
+  }
+});
