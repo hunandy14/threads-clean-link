@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: fold-leet-line,anchor-account-line
+# note: 數字 1 冒充 i
+
+l1ne：abc123 拉你進群

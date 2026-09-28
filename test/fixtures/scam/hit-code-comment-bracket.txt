@@ -1,0 +1,6 @@
+# expect: hit
+# lineId: null
+# rules: mention-line-word,code-comment-bracket
+# note: 留言【代碼】
+
+LINE 那邊留言【18】就拿得到

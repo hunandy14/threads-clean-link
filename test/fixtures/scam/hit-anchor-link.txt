@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: anchor-link
+# note: 連結型錨點單獨成立
+
+資料都放這裡 lin.ee/abc123
