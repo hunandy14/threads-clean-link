@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: null
+# anchorMatch: L.I.N.E
+# rules: fold-spaced-line,mention-line-word,join-active
+# note: 只靠單字型提及命中時，標亮涵蓋完整的拆字原文
+
+L.I.N.E 上私訊我

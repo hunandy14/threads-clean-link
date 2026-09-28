@@ -1022,9 +1022,15 @@
   //
   // 判定前先把文字「折疊」成比對用的形狀:相容字元還原成基本字元，LINE 的拆
   // 字與混淆寫法收合成 `LINE`。**只供比對**:每一步的輸出都與輸入逐 UTF-16
-  // code unit 等長對齊，正則在折疊結果上取得的 index/length 可以直接套回原文
-  // 切片——anchorMatch 與 snippet 因此保留使用者實際看到的寫法(全形、
-  // L.I.N.E、數學粗體)，證據卡要讓人一眼看出對方用了規避字元。
+  // code unit 等長對齊，正則在折疊結果上取得的 index 可以直接套回原文切片——
+  // anchorMatch 與 snippet 因此保留使用者實際看到的寫法(全形、L.I.N.E、數學
+  // 粗體)，證據卡要讓人一眼看出對方用了規避字元。
+  //
+  // 等長只保證**起點**對齊:LINE 收合把 `L.I.N.E` 改寫成 `LINE` 加補位空白，
+  // 折疊結果上量到的長度不等於原文長度，帳號段也可能被改寫(`賴：li.ne`)。
+  // 因此字元層折疊(規則表標 base:true 的 fold-nfkc)的結果另外保留:帳號段由
+  // extractLineId 在字元層結果的同一起點重擷，提及本體的標亮終點由
+  // scamMentionEnd 在字元層結果上重量。
   //
   // 折疊只在 LINE 前後的邊界成立時才產生 `LINE`，英文詞裡的 line 片段不會被
   // 改寫成獨立 token，單字型提及的 `(?<![A-Za-z])LINE(?![A-Za-z])` 照舊擋得住
@@ -1062,27 +1068,31 @@
     return out;
   }
 
-  // 拆字 LINE:字母之間夾 0-2 個分隔字元(空白、. - _ * · ・ ‧)，至少要有一個
-  // 分隔字元——連續的 LINE 原樣保留。收合成 `LINE` 並以空白補足原長度，空白
-  // 放在尾端，後面帳號型錨點的 `\s*[:：]` 會自然吃掉。
+  // 拆字 LINE:**每兩個字母之間**都夾 1-2 個分隔字元(空白、. - _ * · ・ ‧)。
+  // 只拆一部分的(「Lin E」「Li Ne」)是人名或英文，不折;連續的 LINE 本來就
+  // 認得，不必折。收合成 `LINE` 並以空白補足原長度，空白放在尾端，後面帳號型錨點的 `\s*[:：]` 會自然吃掉。
   //
   // 前後邊界:緊貼英數、或隔著一個非空白分隔字元貼著英數時不折(擋
   // O.N.L.I.N.E);「空白＋英文」刻意放行，否則「L I N E ID：xxx」會斷在 ID
   // 前面。
   var SCAM_SPACED_LINE_RE =
-    /(?<![A-Za-z0-9]|[A-Za-z0-9][.\-_*·・‧])L[\s.\-_*·・‧]{0,2}I[\s.\-_*·・‧]{0,2}N[\s.\-_*·・‧]{0,2}E(?![A-Za-z0-9]|[.\-_*·・‧][A-Za-z0-9])/gi;
+    /(?<![A-Za-z0-9]|[A-Za-z0-9][.\-_*·・‧])L[\s.\-_*·・‧]{1,2}I[\s.\-_*·・‧]{1,2}N[\s.\-_*·・‧]{1,2}E(?![A-Za-z0-9]|[.\-_*·・‧][A-Za-z0-9])/gi;
+
+  // 同一拆字樣式的黏著版，不帶前後邊界:scamMentionEnd 在已知起點上量原文拆
+  // 字段的長度，邊界已在折疊時由 SCAM_SPACED_LINE_RE 判過。
+  var SCAM_SPACED_LINE_STICKY_RE = /L[\s.\-_*·・‧]{1,2}I[\s.\-_*·・‧]{1,2}N[\s.\-_*·・‧]{1,2}E/iy;
 
   function foldSpacedLine(text) {
     return text.replace(SCAM_SPACED_LINE_RE, function (m) {
-      return m.length === 4 ? m : 'LINE' + ' '.repeat(m.length - 4);
+      return 'LINE' + ' '.repeat(m.length - 4);
     });
   }
 
   // leet LINE:`L1NE`、`L!NE`、`L|NE` 收合成 `LINE`(等長)。邊界含數字，帳號
-  // 段裡的 l1ne(`LINE:l1ne99`、`LINE:xl1ne`)不會被改寫;緊接在冒號(與至多
-  // 一個空白)之後的也不折——那個位置是帳號段起點，`LINE：l1ne` 的 l1ne 是帳
-  // 號本體，改寫了 lineId 就會用錯的鍵進跨帳號索引。
-  var SCAM_LEET_LINE_RE = /(?<![A-Za-z0-9]|[:：]\s?)L[1!|]NE(?![A-Za-z0-9])/gi;
+  // 段裡的 l1ne(`LINE:l1ne99`、`LINE:xl1ne`)不會被改寫。獨立成段的帳號本體
+  // (`LINE：l1ne`)照樣會折，lineId 由 extractLineId 在字元層結果上重擷，取回
+  // 原寫法。
+  var SCAM_LEET_LINE_RE = /(?<![A-Za-z0-9])L[1!|]NE(?![A-Za-z0-9])/gi;
 
   function foldLeetLine(text) {
     return text.replace(SCAM_LEET_LINE_RE, 'LINE');
@@ -1095,7 +1105,9 @@
   // 到哪些列;fixtures 列出 test/fixtures/scam/ 裡驗證這一列的樣本檔。
   //
   // kind 與判定引擎的對應:
-  //   fold            折疊前置，依表中順序套用，有改到任一字元即計入 ruleIds。
+  //   fold            折疊前置，依表中順序套用，有改出任一英數字元即計入
+  //                   ruleIds(只動標點、空白的不算)。base:true 的列是字元層
+  //                   折疊，它的結果保留下來供帳號段重擷與標亮量長。
   //   mention         單字型 LINE 提及。
   //   anchor-link     連結型錨點(單獨即構成命中)。
   //   anchor-account  帳號型錨點，捕獲群是帳號段本體。
@@ -1114,6 +1126,7 @@
       kind: 'fold',
       desc: '逐字元 NFKC:全形、圈圍字母、數學字母、相容漢字還原成基本字元',
       fold: foldNfkcForMatch,
+      base: true,
       fixtures: ['hit-fold-fullwidth-line.txt', 'hit-fold-circled-line.txt', 'hit-fold-math-bold-line.txt'],
     },
     {
@@ -1462,16 +1475,30 @@
 
   var SCAM_RULES = buildScamRules(SCAM_RULE_TABLE);
 
-  // 依序套用規則包的 fold 列。回 { text, ruleIds }:ruleIds 是有改到任一字元
-  // 的那些列。
+  // 折疊前後有沒有哪個位置改出了英數字元。只動到標點、空白的折疊(全形標點
+  // 轉半形)不算規則命中。
+  function foldChangedAlnum(before, after) {
+    for (var i = 0; i < after.length; i++) {
+      if (before.charCodeAt(i) === after.charCodeAt(i)) continue;
+      var c = after.charCodeAt(i);
+      if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) return true;
+    }
+    return false;
+  }
+
+  // 依序套用規則包的 fold 列。回 { text, base, ruleIds }:text 是全部折疊後
+  // 的比對用字串;base 是 base:true 那一列(字元層折疊)套用後的中間結果，沒
+  // 有這種列時等於輸入;ruleIds 是改出英數字元的那些列。
   function applyScamFolds(text, folds) {
     var ruleIds = [];
+    var base = text;
     for (var i = 0; i < folds.length; i++) {
       var next = folds[i].fold(text);
-      if (next !== text) ruleIds.push(folds[i].id);
+      if (foldChangedAlnum(text, next)) ruleIds.push(folds[i].id);
       text = next;
+      if (folds[i].base === true) base = text;
     }
-    return { text: text, ruleIds: ruleIds };
+    return { text: text, base: base, ruleIds: ruleIds };
   }
 
   // 折疊前置的公開入口:以預設規則表的 fold 列折疊文字，輸出與輸入逐位等長。
@@ -1542,7 +1569,7 @@
   // 明確的那一個。
   //
   // 傳入的是折疊後的 probe，index 與原文逐位對齊，呼叫端拿它切原文。
-  function extractLineId(probe, cfg) {
+  function findLineIdCapture(probe, cfg) {
     var found = scamIdCapture(firstScamAnchor(probe, cfg.accountAnchors), 0);
     if (found) return found;
 
@@ -1562,6 +1589,38 @@
     }
 
     return scamIdCapture(cfg.idDeepLink.exec(probe), 0);
+  }
+
+  // 帳號段本體的黏著樣式，形狀與各抓取樣式的捕獲群相同，在已知起點上重擷。
+  var SCAM_ID_SEGMENT_STICKY_RE = /[A-Za-z0-9][A-Za-z0-9._-]{2,19}/y;
+
+  // 抓出對方的 LINE 帳號本體，回 { id, index } 或 null。起點由
+  // findLineIdCapture 在折疊後的 probe 上找;帳號段本體改在字元層結果 base
+  // 的同一起點重擷——LINE 收合會改寫長得像 LINE 的帳號段(`賴：li.ne`、
+  // `LINE：l1ne`)，直接取 probe 上的捕獲會把它們一律變成 line，跨帳號索引
+  // 的鍵就撞在一起。重擷不到合格帳號段時退回 probe 上的捕獲。
+  function extractLineId(probe, base, cfg) {
+    var found = findLineIdCapture(probe, cfg);
+    if (!found) return null;
+    SCAM_ID_SEGMENT_STICKY_RE.lastIndex = found.index;
+    var segment = SCAM_ID_SEGMENT_STICKY_RE.exec(base);
+    var id = segment ? normalizeLineIdValue(segment[0]) : null;
+    return id ? { id: id, index: found.index } : found;
+  }
+
+  // 提及本體在原文上的終點。折疊後的提及若以收合出來的 LINE 結尾，改在字元
+  // 層結果 base 的同一位置以黏著拆字樣式重量:`L.I.N.E` 在 probe 上只佔
+  // `LINE` 四格，原文卻是七格。終點落在代理對中間(數學粗體 𝐄 的高位)時往
+  // 後補齊一格，切片才不會切出半個字元。
+  function scamMentionEnd(clean, base, scan, end) {
+    if (end >= 4 && scan.slice(end - 4, end) === 'LINE') {
+      SCAM_SPACED_LINE_STICKY_RE.lastIndex = end - 4;
+      var spaced = SCAM_SPACED_LINE_STICKY_RE.exec(base);
+      if (spaced) end = end - 4 + spaced[0].length;
+    }
+    var last = clean.charCodeAt(end - 1);
+    if (end < clean.length && last >= 0xd800 && last <= 0xdbff) end++;
+    return end;
   }
 
   // 以錨點起點為中心取上下文:前面 SNIPPET_CONTEXT 字，起點往後 SNIPPET_CONTEXT
@@ -1749,7 +1808,7 @@
       ? hasGroup || hasJoin
       : hasIndependentWord(scan, cfg.activeJoinWords, spans) || matchesAnyPattern(probe, cfg.codeWords);
 
-    var found = extractLineId(probe, cfg);
+    var found = extractLineId(probe, folded.base, cfg);
     var lineId = found ? found.id : null;
 
     // 順序與 SCAM_SIGNALS 一致，證據卡的 chip 才不必再排一次。
@@ -1780,7 +1839,9 @@
 
     // 標亮位置:抓到帳號本體就標它，抓不到才退回提及本體那段片語。
     var start = found ? found.index : mention.index;
-    var length = found ? found.id.length : mention[0].length;
+    var length = found
+      ? found.id.length
+      : scamMentionEnd(clean, folded.base, scan, mention.index + mention[0].length) - start;
     return {
       hit: true,
       anchorMatch: clean.slice(start, start + length),
