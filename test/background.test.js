@@ -6817,7 +6817,7 @@ test('D45 scam.hit:signals 白名單收得下 account／phrase／id／id-match�
   assert.deepEqual(scamEntry(bg).evidence[0].signals, signals, '新類別要落盤，證據卡才畫得出 chip');
 });
 
-test('D45 scam.hit:證據記下的 rulesVersion 是 v4', async () => {
+test('D45 scam.hit:證據記下的 rulesVersion 是 v5', async () => {
   const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
 
   await bg.send(scamHitRich(), SCAM_TAB_SENDER);

@@ -3691,7 +3691,7 @@ test.describe('D45 規則 v4:暗號型行動呼籲', () => {
     assert.equal(C.detectScamPitch('公司公告:內部通知改用 LINE 群組發布，請同仁自行加入').hit, false);
   });
 
-  test('D45 SCAM_RULES.version 升為 4;SCAM_SIGNALS 併入 account／phrase／id／id-match，既有五類順序不變', () => {
+  test('D45 SCAM_RULES.version 升為 5;SCAM_SIGNALS 併入 account／phrase／id／id-match，既有五類順序不變', () => {
     assert.equal(C.SCAM_RULES.version, 5, '規則版本 4 → 5(證據的 rulesVersion 靠它分辨新舊判定)');
     assert.deepEqual(
       C.SCAM_SIGNALS.slice(0, 5),
