@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: fold-spaced-line,anchor-account-line
+# note: 字母間插半形句點
+
+搜索L.I.N.E：abc123 拉你進群

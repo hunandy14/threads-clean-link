@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: fold-nfkc,anchor-account-line
+# note: 圈圍字母（單一 code unit，NFKC 還原成 line）
+
+ⓛⓘⓝⓔ：abc123 拉你進群

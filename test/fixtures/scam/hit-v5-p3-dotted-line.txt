@@ -1,0 +1,18 @@
+# expect: hit
+# lineId: ck6667
+# anchorMatch: ck6667
+# rules: fold-spaced-line,mention-line-word,anchor-account-line,group-build,code-message-bracket
+# source: 2026-09 漏網實例（使用者截圖轉錄，帳號名省略）
+# note: L.I.N.E 拆字＋小寫 line 緊貼中文＋「傳個信息（110）」暗號＋「建個群」
+
+具體品牌名稱和代號這裡分享不了，會被刪........
+但是我整理了完整的資料包含
+① 公司到底做什麼
+② 為什麼會跟量子 / HPC 扯上關係
+③ 目前68元附近到底在炒什麼
+④ 如果真的走出主升段，哪些價位需要特別注意
+一次整理給大家。
+有需要了解和領取的line上給我傳個信息（110）我建個群分享出來自行參考
+搜索L.I.N.E：ck6667
+注意：都是免費分享，僅供參考
+如果有人以我的名義跟你收費，請提高警覺，千萬不要匯款。

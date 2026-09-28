@@ -1,0 +1,6 @@
+# expect: hit
+# lineId: null
+# rules: anchor-phrase-add-line,join-active
+# note: 「加 LINE」片語＋私訊我
+
+有興趣的加 LINE 之後私訊我

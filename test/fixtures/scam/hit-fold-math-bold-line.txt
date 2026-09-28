@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: fold-nfkc,fold-spaced-line,anchor-account-line
+# note: 數學粗體（代理對，NFKC 後補位成拆字，再由 fold-spaced-line 收合）
+
+𝐋𝐈𝐍𝐄：abc123 拉你進群
