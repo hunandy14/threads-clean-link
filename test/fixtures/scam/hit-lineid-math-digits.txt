@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: ex6667
+# anchorMatch: ex𝟔𝟔𝟔𝟕
+# rules: anchor-account-lai,join-active
+# note: 帳號段混入數學粗體數字（代理對），lineId 取正規化後全段，標亮涵蓋完整原文
+
+賴：ex𝟔𝟔𝟔𝟕 私訊我
