@@ -3692,7 +3692,7 @@ test.describe('D45 規則 v4:暗號型行動呼籲', () => {
   });
 
   test('D45 SCAM_RULES.version 升為 4;SCAM_SIGNALS 併入 account／phrase／id／id-match，既有五類順序不變', () => {
-    assert.equal(C.SCAM_RULES.version, 4, '規則版本 3 → 4(證據的 rulesVersion 靠它分辨新舊判定)');
+    assert.equal(C.SCAM_RULES.version, 5, '規則版本 4 → 5(證據的 rulesVersion 靠它分辨新舊判定)');
     assert.deepEqual(
       C.SCAM_SIGNALS.slice(0, 5),
       ['link', 'line', 'group', 'join', 'pitch'],
