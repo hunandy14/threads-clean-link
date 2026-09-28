@@ -88,14 +88,14 @@ for (const f of FIXTURES) {
 
 // ---- 漏網實例 p3：拆字 L.I.N.E＋小寫 line 緊貼中文＋「傳個信息（110）」 ----
 
-test('v5 p3 漏網實例：命中、標亮 LINE ID 本體 ck6667，證據片段保留原文的拆字寫法', () => {
+test('v5 p3 漏網實例：命中、標亮 LINE ID 本體 ex6667，證據片段保留原文的拆字寫法', () => {
   const f = byName.get('hit-v5-p3-dotted-line.txt');
   assert.ok(f, 'p3 fixture 必須存在');
   const res = C.detectScamPitch(f.body);
   assert.equal(res.hit, true, 'p3 必須命中');
-  assert.equal(res.lineId, 'ck6667');
-  assert.equal(res.anchorMatch, 'ck6667', '標亮的是 ID 本體');
-  assert.ok(res.snippet.includes('L.I.N.E：ck6667'), 'snippet 取自原文，拆字寫法原樣保留：' + JSON.stringify(res.snippet));
+  assert.equal(res.lineId, 'ex6667');
+  assert.equal(res.anchorMatch, 'ex6667', '標亮的是 ID 本體');
+  assert.ok(res.snippet.includes('L.I.N.E：ex6667'), 'snippet 取自原文，拆字寫法原樣保留：' + JSON.stringify(res.snippet));
   for (const s of ['line', 'account', 'id']) {
     assert.ok(res.signals.includes(s), 'signals 應含 ' + s + '，實得 ' + res.signals.join(','));
   }
@@ -116,7 +116,7 @@ const FOLD_POSITIVES = [
   'l.i.n.e：abc123',
   'Ｌｉｎｅ：abc123',
   'l1ne：abc123',
-  '搜索L.I.N.E：ck6667',
+  '搜索L.I.N.E：ex6667',
 ];
 
 // 純 ASCII 的反例：折疊不得動到任何一個字元。
