@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: l1ne
+# anchorMatch: l1ne
+# rules: fold-leet-line,anchor-account-line,join-active
+# note: 冒號後兩個空白的 leet 帳號段，折疊後 lineId 仍取原寫法 l1ne
+
+LINE：  l1ne 私訊我
