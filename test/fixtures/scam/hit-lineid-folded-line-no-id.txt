@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: null
+# anchorMatch: LINE：L·I·N·E
+# rules: fold-spaced-line,anchor-account-line,join-active
+# note: 折疊出的 LINE 不得當成帳號，抓不到合格帳號段時 lineId 為 null，標亮退回提及本體原文
+
+LINE：L·I·N·E 私訊我

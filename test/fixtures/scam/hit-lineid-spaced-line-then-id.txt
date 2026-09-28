@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: fold-spaced-line,anchor-account-line,join-active
+# note: 冒號後的拆字 LINE 不是帳號段，lineId 改由視窗內的 ID 欄位取得
+
+LINE：L I N E ID：abc123 私訊我
