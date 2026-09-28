@@ -4404,6 +4404,50 @@ test('F6 ID 跨帳號：原文大寫的 ID 照樣定位得到——錨點指向�
   assert.ok(payload.snippet.includes(V4_LINE_ID.toUpperCase()), 'snippet 也要含原文那一段');
 });
 
+// 原文把 ID 後段寫成數學粗體（ex𝟎𝟏𝐚𝐛𝐜），靶在第二篇。判定抽出的 lineId 是
+// NFKC 正規化後的 ex01abc，證據卡定位必須回原文逐 code point 比對才找得到。
+const V5_MATH_LINE_ID_TEXT = 'ex𝟎𝟏𝐚𝐛𝐜';
+const V5_MATH_POSTS = [
+  {
+    code: 'DxMaThB0001',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 1,
+    selfThreadLength: 2,
+    captionText: '入行十年，這些年踩過的坑我整理成了一份筆記。',
+  },
+  {
+    code: 'DxMaThB0002',
+    userId: POSTS[0].userId,
+    username: AUTHOR,
+    position: 2,
+    selfThreadLength: 2,
+    captionText: `想聊的朋友可以找我。\nLINE ID：${V5_MATH_LINE_ID_TEXT}`,
+  },
+];
+const V5_MATH_PATH = `/@${AUTHOR}/post/${V5_MATH_POSTS[0].code}`;
+
+test('v5 ID 跨帳號：原文為數學粗體 ID 時，錨點指向帶 ID 那一篇，anchorMatch／snippet 取原文寫法', async () => {
+  const env = loadEnv({
+    pathname: V5_MATH_PATH,
+    page: [createSsrScript(V5_MATH_POSTS[0]), createScanDom(V5_MATH_POSTS)],
+    local: { scamBlocklist: buildLineIdBlocklist() },
+  });
+  await env.flush();
+  env.triggerObserver();
+  await env.waitFor(() => env.hits().length === 1, { label: '數學粗體 ID 的跨帳號命中' });
+
+  const payload = env.hits()[0];
+  assert.equal(payload.lineId, V4_LINE_ID, 'lineId 是 NFKC 正規化後的小寫 ID');
+  assert.equal(
+    payload.anchorPostUrl,
+    `${ORIGIN}/@${AUTHOR}/post/${V5_MATH_POSTS[1].code}`,
+    '錨點要指向帶 ID 那一篇，不是退回串頭'
+  );
+  assert.equal(payload.anchorMatch, V5_MATH_LINE_ID_TEXT, '標亮字串取原文切片，保留數學粗體寫法');
+  assert.ok(payload.snippet.includes(V5_MATH_LINE_ID_TEXT), 'snippet 要含原文那一段：' + JSON.stringify(payload.snippet));
+});
+
 test('B1 ID 跨帳號（目標側）：本篇只有 LINE 提及＋ID 欄位、沒有帳號型錨點或深連結時不成立', async () => {
   const env = loadEnv({
     pathname: V4_WEAK_PATH,

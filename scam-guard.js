@@ -1049,40 +1049,34 @@
       // 同一把尺。純靠 ID 跨帳號成立的那條路上 detectScamPitch 不產 snippet，
       // 證據卡沒有原文就只剩一串網址，使用者看不出自己被警示的是哪一句。
       //
-      // 比對用的小寫化只平移 ASCII：String#toLowerCase 在少數字元上會改變長
-      // 度（U+0130），那會讓算出來的位置錯位。ID 在原文是全形時找不到位置，
-      // 回空字串即可——那是加值資訊，不是證據成立的必要條件。
+      // 位置由 TCLCore.findLineIdSpan 在原文逐 code point 比對取得，原文寫成
+      // 大寫、全形或數學粗體都定位得到。仍找不到時回空字串——那是加值資訊，
+      // 不是證據成立的必要條件。
       function snippetAroundLineId(text, lineId, core) {
         if (typeof text !== 'string' || !lineId) return '';
         var clean = core.stripControlChars(text);
-        var index = lowerAscii(clean).indexOf(lineId);
-        if (index === -1) return '';
+        var span = core.findLineIdSpan(clean, lineId);
+        if (!span) return '';
+        var index = span.start;
         var context = core.SCAM_LIMITS.SNIPPET_CONTEXT;
         var max = core.SCAM_LIMITS.SNIPPET_MAX;
         return clean.slice(Math.max(0, index - context), index + context).slice(0, max);
       }
 
-      // 只平移 ASCII 大寫的小寫化。String#toLowerCase 在少數字元上會改變長度
-      // （U+0130 等），拿它算出來的位置套回原文會錯位。
-      function lowerAscii(text) {
-        return text.replace(/[A-Z]/g, function (ch) {
-          return String.fromCharCode(ch.charCodeAt(0) + 32);
-        });
-      }
-
       // 逐篇找出第一篇帶這個 lineId 的貼文，回 { index, match }，都沒有回
-      // null。lineId 一律是小寫，原文卻可能是大寫（「LINE ID：EX01ABC」），
-      // 因此比對前兩邊都平移成小寫；**標亮字串取原文切片**，卡片上要標得出使
-      // 用者實際看到的那一段。
+      // null。lineId 是正規化後的小寫鍵，原文卻可能是大寫、全形或數學粗體
+      // （「LINE ID：EX01ABC」「ex𝟎𝟏𝐚𝐛𝐜」），定位交給 TCLCore.findLineIdSpan
+      // 在原文逐 code point 比對；**標亮字串取原文切片**，卡片上要標得出使用者
+      // 實際看到的那一段。
       //
       // 純 id-match 那條路沒有 anchorMatch 可用（判定本身沒命中），錨點定位只
       // 能靠這支：找不到就會退回串頭，使用者點進證據連結看不到那句話。
-      function findLineIdAnchor(items, lineId, strip) {
+      function findLineIdAnchor(items, lineId, core) {
         if (!Array.isArray(items) || !lineId) return null;
         for (var i = 0; i < items.length; i++) {
-          var clean = strip(typeof items[i].text === 'string' ? items[i].text : '');
-          var at = lowerAscii(clean).indexOf(lineId);
-          if (at !== -1) return { index: i, match: clean.slice(at, at + lineId.length) };
+          var clean = core.stripControlChars(typeof items[i].text === 'string' ? items[i].text : '');
+          var span = core.findLineIdSpan(clean, lineId);
+          if (span) return { index: i, match: clean.slice(span.start, span.end) };
         }
         return null;
       }
@@ -1195,7 +1189,7 @@
         // 判定沒命中（純靠 ID 跨帳號成立）時 detectScamPitch 不產 anchorMatch
         // 與 snippet——那兩欄只在命中時有意義。證據卡仍要指得出是哪一串的哪一
         // 段，這裡改以抓到的 ID 逐篇定位（大小寫不敏感），標亮取原文切片。
-        var idAnchor = detection.hit ? null : findLineIdAnchor(items, lineId, core.stripControlChars);
+        var idAnchor = detection.hit ? null : findLineIdAnchor(items, lineId, core);
         var anchorText = detection.anchorMatch || (idAnchor ? idAnchor.match : '');
         var snippet = detection.snippet || (idMatched ? snippetAroundLineId(threadText, lineId, core) : '');
         var anchorItem =

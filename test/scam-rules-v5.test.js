@@ -367,3 +367,39 @@ test('模糊自測：lineId 只來自原文帳號段，anchorMatch 是原文子�
     }
   }
 });
+
+// ---- findLineIdSpan：在原文逐 code point 定位 lineId ----
+
+test('findLineIdSpan：ASCII 原文照樣定位，大小寫不拘，回原文區間', () => {
+  assert.equal(typeof C.findLineIdSpan, 'function', 'findLineIdSpan 應掛在 TCLCore 匯出');
+  const text = '想聊的找我 LINE ID：EX6667 謝謝';
+  const span = C.findLineIdSpan(text, 'ex6667');
+  assert.deepEqual(span, { start: text.indexOf('EX6667'), end: text.indexOf('EX6667') + 6 });
+});
+
+test('findLineIdSpan：全形原文定位得到，區間切出的是原文全形那一段', () => {
+  const text = 'LINE ID：ｅｘ６６６７ 私訊我';
+  const span = C.findLineIdSpan(text, 'ex6667');
+  assert.ok(span, '全形寫法要定位得到');
+  assert.equal(text.slice(span.start, span.end), 'ｅｘ６６６７');
+});
+
+test('findLineIdSpan：數學粗體原文定位得到，終點落在完整字元邊界', () => {
+  const text = '賴：ex𝟔𝟔𝟔𝟕 私訊我';
+  const span = C.findLineIdSpan(text, 'ex6667');
+  assert.ok(span, '數學粗體寫法要定位得到');
+  assert.equal(text.slice(span.start, span.end), 'ex𝟔𝟔𝟔𝟕');
+});
+
+test('findLineIdSpan：找不到回 null；不會從代理對中間起算或切在半個代理對上', () => {
+  assert.equal(C.findLineIdSpan('完全沒有帳號的一句話', 'ex6667'), null);
+  assert.equal(C.findLineIdSpan('ex666', 'ex6667'), null, '原文只有前綴時不算');
+  assert.equal(C.findLineIdSpan('', 'ex6667'), null);
+  assert.equal(C.findLineIdSpan('ex6667', ''), null, '空 lineId 回 null');
+  const text = '𝐞𝐱𝟔𝟔𝟔𝟕';
+  const span = C.findLineIdSpan(text, 'ex6667');
+  assert.deepEqual(span, { start: 0, end: text.length }, '整段代理對寫法要完整涵蓋');
+  const high = (code) => code >= 0xd800 && code <= 0xdbff;
+  const low = (code) => code >= 0xdc00 && code <= 0xdfff;
+  assert.ok(!low(text.charCodeAt(span.start)) && !high(text.charCodeAt(span.end - 1)));
+});
