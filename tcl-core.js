@@ -1563,9 +1563,14 @@
   // 原文 text 在 pos 起的一個 code point，做 NFKC 並小寫後若是單一帳號字元，
   // 回 { ch, width }(width 是這個 code point 佔的 code unit 數，代理對為 2);
   // 否則回 null。帳號段的擷取與定位共用這一步，兩邊對「原文哪一段是這個 ID」
-  // 的認定因此一致。
+  // 的認定因此一致。ASCII(< 0x80)的 NFKC 是自身，直接判定與小寫，不呼叫
+  // normalize。
   function scamIdCharAt(text, pos) {
     var code = text.charCodeAt(pos);
+    if (code < 0x80) {
+      var ascii = text[pos];
+      return SCAM_ID_CHAR_RE.test(ascii) ? { ch: ascii.toLowerCase(), width: 1 } : null;
+    }
     var width = 1;
     if (code >= 0xd800 && code <= 0xdbff && pos + 1 < text.length) {
       var low = text.charCodeAt(pos + 1);
@@ -1604,30 +1609,42 @@
     return { id: chars.join(''), index: index, end: pos };
   }
 
-  // 在原文 text 裡定位 lineId，回第一個原文區間 { start, end } 或 null。從每
-  // 個 code point 起點逐 code point 取 NFKC 小寫，與 lineId 逐字比對;起點與
-  // 終點都落在 code point 邊界上。lineId 是正規化後的鍵(ex01abc)，原文卻可能
-  // 寫成大寫、全形或數學粗體(EX01ABC、ｅｘ０１ａｂｃ、ex𝟎𝟏𝐚𝐛𝐜)，
-  // 直接在原文 indexOf 找不到。非字串或空字串回 null。
+  // 在原文 text 裡定位 lineId，回第一個原文區間 { start, end } 或 null。lineId
+  // 是正規化後的鍵(ex01abc)，原文卻可能寫成大寫、全形或數學粗體(EX01ABC、
+  // ｅｘ０１ａｂｃ、ex𝟎𝟏𝐚𝐛𝐜)，直接在原文 indexOf 找不到。非字串或空字串回
+  // null。
+  //
+  // 先逐 code point 以 scamIdCharAt 正規化一次，記下每個 code point 的正規化
+  // 字元(不是帳號字元記 null)與原文起點，之後每個起點的比對只做字元比較:
+  // 逐起點重做 normalize 在最壞情況(每個起點都比到 lineId 最後一字才失敗)
+  // 會把 NFKC 的成本乘上 lineId 長度。起點與終點都落在 code point 邊界上。
   function findLineIdSpan(text, lineId) {
     if (typeof text !== 'string' || typeof lineId !== 'string' || lineId.length === 0) return null;
-    var start = 0;
-    while (start < text.length) {
-      var pos = start;
-      var k = 0;
-      while (k < lineId.length && pos < text.length) {
-        var unit = scamIdCharAt(text, pos);
-        if (!unit || unit.ch !== lineId[k]) break;
-        k++;
-        pos += unit.width;
+    var chars = [];
+    var starts = [];
+    var pos = 0;
+    while (pos < text.length) {
+      var unit = scamIdCharAt(text, pos);
+      var code = text.charCodeAt(pos);
+      var width = unit ? unit.width : 1;
+      if (!unit && code >= 0xd800 && code <= 0xdbff && pos + 1 < text.length) {
+        var low = text.charCodeAt(pos + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) width = 2;
       }
-      if (k === lineId.length) return { start: start, end: pos };
-      var code = text.charCodeAt(start);
-      var next = start + 1 < text.length ? text.charCodeAt(start + 1) : 0;
-      start += code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? 2 : 1;
+      chars.push(unit ? unit.ch : null);
+      starts.push(pos);
+      pos += width;
+    }
+    starts.push(text.length);
+    var last = chars.length - lineId.length;
+    for (var i = 0; i <= last; i++) {
+      var k = 0;
+      while (k < lineId.length && chars[i + k] === lineId[k]) k++;
+      if (k === lineId.length) return { start: starts[i], end: starts[i + k] };
     }
     return null;
   }
+
 
   // 抓出這段文字裡對方的 LINE 帳號本體，回 { id, index, end } 或 null。三段依序:
   //   1. 帳號型錨點的帳號段(「賴：xxx」「LINE ID：xxx」)——寫得最明確。

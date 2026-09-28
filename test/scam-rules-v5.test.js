@@ -403,3 +403,26 @@ test('findLineIdSpan：找不到回 null；不會從代理對中間起算或切�
   const low = (code) => code >= 0xdc00 && code <= 0xdfff;
   assert.ok(!low(text.charCodeAt(span.start)) && !high(text.charCodeAt(span.end - 1)));
 });
+
+// 最壞情況：每個起點都比對到 lineId 最後一字才失敗。量三次取最小值，避開 CI
+// 排程抖動。
+function minElapsedMs(fn) {
+  let best = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const t0 = process.hrtime.bigint();
+    fn();
+    best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+  }
+  return best;
+}
+
+test('findLineIdSpan 效能：全形與 ASCII 各 200000 字的最壞情況都在 100 ms 內', () => {
+  const lineId = 'a'.repeat(19) + 'b';
+  for (const [label, text] of [
+    ['全形', 'ａ'.repeat(200000)],
+    ['ASCII', 'a'.repeat(200000)],
+  ]) {
+    const ms = minElapsedMs(() => assert.equal(C.findLineIdSpan(text, lineId), null));
+    assert.ok(ms < 100, label + ' 最壞情況耗時 ' + ms.toFixed(1) + ' ms，超過 100 ms');
+  }
+});
