@@ -416,7 +416,11 @@ function minElapsedMs(fn) {
   return best;
 }
 
-test('findLineIdSpan 效能：全形與 ASCII 各 200000 字的最壞情況都在 100 ms 內', () => {
+// 效能門檻用牆鐘時間，在 37 個 suite 併行時會抖，因此只在 TCL_BENCH=1 手動或
+// 單檔執行時生效。
+test('findLineIdSpan 效能：全形與 ASCII 各 200000 字的最壞情況都在 100 ms 內', {
+  skip: !process.env.TCL_BENCH && '基準測試只在 TCL_BENCH=1 時執行，全套併行時牆鐘時間不可靠',
+}, () => {
   const lineId = 'a'.repeat(19) + 'b';
   for (const [label, text] of [
     ['全形', 'ａ'.repeat(200000)],
