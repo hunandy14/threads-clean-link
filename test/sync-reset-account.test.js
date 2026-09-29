@@ -22,13 +22,9 @@ const assert = require('node:assert/strict');
 
 const TCLCore = require('../tcl-core.js');
 const { postKeyOf } = TCLCore;
-const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
+const { loadSync, signedInState: baseSignedInState, createSyncEnv } = require('./support/sync-env');
 const { createChromeStorage } = require('./support/helpers');
 const { loadSwSources } = require('./support/sw-sources');
-
-function loadSync() {
-  return require('../sync.js');
-}
 
 const T0 = 1_700_000_000_000;
 const DAY = 24 * 60 * 60_000;
@@ -40,157 +36,6 @@ const POST_D = 'https://www.threads.com/@dave/post/DDDDDDDDDDD';
 // 帳號五鍵。
 const ACCOUNT_KEYS = ['syncAuth', 'syncState', 'syncBackoff', 'syncVerifiedAt', 'syncDevices'];
 const LEGACY_GUARD_KEYS = ['syncClearGuard', 'syncMarksClearGuard'];
-
-// ---- storage 替身（同 sync.test.js 的 createSyncStorage） ----
-function createSyncStorage(localSeed = {}, sessionSeed = {}) {
-  const chainDepth = { value: 0 };
-  const writes = [];
-  let seq = 0;
-
-  function later(fn) {
-    setTimeout(fn, 0);
-  }
-
-  function makeArea(name, seed) {
-    const data = Object.assign({}, seed);
-
-    function read(keys) {
-      if (keys === null || keys === undefined) return Object.assign({}, data);
-      if (typeof keys === 'string') {
-        return Object.prototype.hasOwnProperty.call(data, keys) ? { [keys]: data[keys] } : {};
-      }
-      if (Array.isArray(keys)) {
-        const out = {};
-        keys.forEach((k) => {
-          if (Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
-        });
-        return out;
-      }
-      const out = Object.assign({}, keys);
-      Object.keys(keys).forEach((k) => {
-        if (Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
-      });
-      return out;
-    }
-
-    return {
-      data,
-      api: {
-        get(keys) {
-          return new Promise((resolve) => later(() => resolve(read(keys))));
-        },
-        set(items) {
-          seq += 1;
-          writes.push({
-            area: name,
-            keys: Object.keys(items),
-            value: JSON.parse(JSON.stringify(items)),
-            inChain: chainDepth.value > 0,
-            seq,
-          });
-          return new Promise((resolve) =>
-            later(() => {
-              Object.assign(data, items);
-              resolve();
-            })
-          );
-        },
-        remove(keys) {
-          seq += 1;
-          const list = Array.isArray(keys) ? keys : [keys];
-          writes.push({ area: name, keys: list, removed: true, inChain: chainDepth.value > 0, seq });
-          return new Promise((resolve) =>
-            later(() => {
-              list.forEach((k) => delete data[k]);
-              resolve();
-            })
-          );
-        },
-      },
-    };
-  }
-
-  const local = makeArea('local', localSeed);
-  const session = makeArea('session', sessionSeed);
-
-  return {
-    api: { local: local.api, session: session.api },
-    localData: local.data,
-    writes,
-    chainDepth,
-    history() {
-      return local.data.history || [];
-    },
-    syncAuth() {
-      return local.data.syncAuth || null;
-    },
-  };
-}
-
-function createAlarmsMock() {
-  const calls = [];
-  const table = new Map();
-  return {
-    calls,
-    api: {
-      create(name, info) {
-        calls.push({ op: 'create', name, info: Object.assign({}, info) });
-        table.set(name, Object.assign({ name }, info));
-      },
-      clear(name) {
-        calls.push({ op: 'clear', name });
-        table.delete(name);
-        return Promise.resolve(true);
-      },
-      get(name) {
-        return Promise.resolve(table.get(name) || undefined);
-      },
-      getAll() {
-        return Promise.resolve([...table.values()]);
-      },
-    },
-    creates() {
-      return calls.filter((c) => c.op === 'create');
-    },
-    clears() {
-      return calls.filter((c) => c.op === 'clear');
-    },
-  };
-}
-
-function createAuthMock(server) {
-  return {
-    signInWithGoogle() {
-      return Promise.resolve({
-        idToken: 'fake.id.token',
-        nonce: 'nonce-from-auth',
-        email: 'someone@example.com',
-        payload: { sub: 'user-abc', email: 'someone@example.com', name: 'Fake Payload Name' },
-      });
-    },
-    exchangeWithBackend(options) {
-      const url = String(options.apiBase).replace(/\/+$/, '') + '/api/auth/sign-in/social';
-      return server
-        .fetch(url, {
-          method: 'POST',
-          credentials: 'omit',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: 'google', idToken: { token: options.idToken, nonce: options.nonce } }),
-        })
-        .then((res) =>
-          res.json().then((body) => ({
-            status: res.status,
-            ok: res.ok,
-            authToken: res.headers.get('set-auth-token'),
-            body,
-          }))
-        );
-    },
-    permissionsFor(apiBase) {
-      return { permissions: ['identity'], origins: [String(apiBase).replace(/\/$/, '') + '/*'] };
-    },
-  };
-}
 
 function entry(over = {}) {
   const at = over.at !== undefined ? over.at : T0 - 60_000;
@@ -248,80 +93,37 @@ function sampleBlocklist() {
   return { version: 2, entries, handleIndex: { synthetic_a: '7001', synthetic_b: '7002' } };
 }
 
+// 已登入的 syncState：共用範本再帶本檔的 links／marks 游標與 marksEvicted。
 function signedInState(over = {}) {
-  return Object.assign(
-    {
-      userId: 'user-abc',
-      email: 'someone@example.com',
-      cursor: 'cur-before',
-      lastSyncedAt: T0 - 10 * 60_000,
-      lastError: null,
-      marksCursor: 'marks-before',
-      marksEvicted: 3,
-    },
-    over
-  );
+  return baseSignedInState(Object.assign({ cursor: 'cur-before', marksCursor: 'marks-before', marksEvicted: 3 }, over));
 }
 
+// 本檔的環境設定：storage 以 setTimeout(0) 落盤（走假時間）、登入回傳的
+// id_token payload 不帶 picture。
+const ENV_PROFILE = {
+  storage: { defer: 'timeout' },
+  auth: { payloadPicture: null },
+  signedInState,
+};
+
+// 組一整套注入環境（見 test/support/sync-env.js 的 createSyncEnv），另外記下
+// 每則廣播與每次 fetch 發出當下的寫入數，供界定寫入窗口。
 function makeEnv(opts = {}) {
-  const clock = { t: T0 };
-  const now = () => clock.t;
-  const server = createMockSyncServer({ now });
-  const localSeed = Object.assign({}, opts.local);
-  if (opts.history) localSeed.history = opts.history;
-  if (opts.signedIn) {
-    localSeed.syncAuth = { token: server.grantToken('tok-seeded') };
-    localSeed.syncState = signedInState(opts.syncState);
-  }
-  const storage = createSyncStorage(localSeed);
-  const alarms = createAlarmsMock();
-  const broadcasts = [];
+  const env = createSyncEnv(opts, ENV_PROFILE);
+  const { server, storage, broadcasts } = env;
   // 每則廣播送出時的寫入數，用來界定「登入完成前」的寫入窗口。
   const broadcastWriteMarks = [];
   // 每次 fetch 發出時的寫入數，用來界定「401 之後」的寫入窗口。
   const fetchWriteMarks = [];
-  let uuidSeq = 0;
-  const deps = {
-    storage: storage.api,
-    fetch: (url, init) => {
-      fetchWriteMarks.push({ url: String(url), at: storage.writes.length });
-      return server.fetch(url, init);
-    },
-    now,
-    alarms: alarms.api,
-    broadcast: (message) => {
-      broadcasts.push(message);
-      broadcastWriteMarks.push(storage.writes.length);
-    },
-    auth: createAuthMock(server),
-    permissions: {
-      contains() {
-        return Promise.resolve(true);
-      },
-      request() {
-        return Promise.resolve(true);
-      },
-    },
-    randomUUID: () => `uuid-${(uuidSeq += 1)}`,
-    setTimeout: () => ({}),
-    clearTimeout: () => {},
-    writeChain: (fn) => {
-      storage.chainDepth.value += 1;
-      return Promise.resolve()
-        .then(fn)
-        .finally(() => {
-          storage.chainDepth.value -= 1;
-        });
-    },
+  env.deps.fetch = (url, init) => {
+    fetchWriteMarks.push({ url: String(url), at: storage.writes.length });
+    return server.fetch(url, init);
   };
-
-  return {
-    clock,
-    server,
-    storage,
-    alarms,
-    broadcasts,
-    deps,
+  env.deps.broadcast = (message) => {
+    broadcasts.push(message);
+    broadcastWriteMarks.push(storage.writes.length);
+  };
+  return Object.assign(env, {
     statuses() {
       return broadcasts.filter((m) => m && m.type === 'sync.stateChanged').map((m) => m.state.status);
     },
@@ -335,7 +137,7 @@ function makeEnv(opts = {}) {
       const hit = fetchWriteMarks.find((m) => m.url.indexOf(pathPart) !== -1);
       return hit ? hit.at : null;
     },
-  };
+  });
 }
 
 async function settle(rounds = 10) {

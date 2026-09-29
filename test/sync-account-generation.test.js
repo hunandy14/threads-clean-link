@@ -22,10 +22,7 @@ const assert = require('node:assert/strict');
 
 const { postKeyOf } = require('../tcl-core.js');
 const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
-
-function loadSync() {
-  return require('../sync.js');
-}
+const { loadSync, createAlarmsMock: createSharedAlarmsMock } = require('./support/sync-env');
 
 const T0 = 1_700_000_000_000;
 const POST_A = 'https://www.threads.com/@alice/post/AAAAAAAAAAA';
@@ -117,29 +114,9 @@ function createSyncStorage(localSeed = {}) {
   };
 }
 
+// 本檔的 alarms 替身只側錄呼叫、不保存排程。
 function createAlarmsMock() {
-  const calls = [];
-  const table = new Map();
-  return {
-    calls,
-    api: {
-      create(name, info) {
-        calls.push({ op: 'create', name, info: Object.assign({}, info) });
-        table.set(name, Object.assign({ name }, info));
-      },
-      clear(name) {
-        calls.push({ op: 'clear', name });
-        table.delete(name);
-        return Promise.resolve(true);
-      },
-      get(name) {
-        return Promise.resolve(table.get(name) || undefined);
-      },
-      getAll() {
-        return Promise.resolve([...table.values()]);
-      },
-    },
-  };
+  return createSharedAlarmsMock({ stateful: false });
 }
 
 function response(status, body, headers = {}) {

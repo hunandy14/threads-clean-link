@@ -37,10 +37,7 @@ const assert = require('node:assert/strict');
 const TCLCore = require('../tcl-core.js');
 const { postKeyOf } = TCLCore;
 const { createMockSyncServer, CLOUD_DATA_CONTRACT } = require('./helpers/mock-sync-server.js');
-
-function loadSync() {
-  return require('../sync.js');
-}
+const { loadSync, signedInState: baseSignedInState, createSyncEnv } = require('./support/sync-env');
 
 const T0 = 1_700_000_000_000;
 const DAY = 24 * 60 * 60_000;
@@ -57,157 +54,6 @@ const EPOCH_KEY = 'syncEpoch';
 const LINKS_BODY_KEYS = ['upserts', 'deletes', 'since', 'device'];
 const MARKS_BODY_KEYS = ['upserts', 'deletes', 'since'];
 const MAX_ROUND_POSTS = 12;
-
-// ---- storage 替身（同 sync.test.js 的 createSyncStorage） ----
-function createSyncStorage(localSeed = {}, sessionSeed = {}) {
-  const chainDepth = { value: 0 };
-  const writes = [];
-  let seq = 0;
-
-  function later(fn) {
-    setTimeout(fn, 0);
-  }
-
-  function makeArea(name, seed) {
-    const data = Object.assign({}, seed);
-
-    function read(keys) {
-      if (keys === null || keys === undefined) return Object.assign({}, data);
-      if (typeof keys === 'string') {
-        return Object.prototype.hasOwnProperty.call(data, keys) ? { [keys]: data[keys] } : {};
-      }
-      if (Array.isArray(keys)) {
-        const out = {};
-        keys.forEach((k) => {
-          if (Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
-        });
-        return out;
-      }
-      const out = Object.assign({}, keys);
-      Object.keys(keys).forEach((k) => {
-        if (Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
-      });
-      return out;
-    }
-
-    return {
-      data,
-      api: {
-        get(keys) {
-          return new Promise((resolve) => later(() => resolve(read(keys))));
-        },
-        set(items) {
-          seq += 1;
-          writes.push({
-            area: name,
-            keys: Object.keys(items),
-            value: JSON.parse(JSON.stringify(items)),
-            inChain: chainDepth.value > 0,
-            seq,
-          });
-          return new Promise((resolve) =>
-            later(() => {
-              Object.assign(data, items);
-              resolve();
-            })
-          );
-        },
-        remove(keys) {
-          seq += 1;
-          const list = Array.isArray(keys) ? keys : [keys];
-          writes.push({ area: name, keys: list, removed: true, inChain: chainDepth.value > 0, seq });
-          return new Promise((resolve) =>
-            later(() => {
-              list.forEach((k) => delete data[k]);
-              resolve();
-            })
-          );
-        },
-      },
-    };
-  }
-
-  const local = makeArea('local', localSeed);
-  const session = makeArea('session', sessionSeed);
-
-  return {
-    api: { local: local.api, session: session.api },
-    localData: local.data,
-    writes,
-    chainDepth,
-    history() {
-      return local.data.history || [];
-    },
-    syncAuth() {
-      return local.data.syncAuth || null;
-    },
-  };
-}
-
-function createAlarmsMock() {
-  const calls = [];
-  const table = new Map();
-  return {
-    calls,
-    api: {
-      create(name, info) {
-        calls.push({ op: 'create', name, info: Object.assign({}, info) });
-        table.set(name, Object.assign({ name }, info));
-      },
-      clear(name) {
-        calls.push({ op: 'clear', name });
-        table.delete(name);
-        return Promise.resolve(true);
-      },
-      get(name) {
-        return Promise.resolve(table.get(name) || undefined);
-      },
-      getAll() {
-        return Promise.resolve([...table.values()]);
-      },
-    },
-    creates() {
-      return calls.filter((c) => c.op === 'create');
-    },
-    clears() {
-      return calls.filter((c) => c.op === 'clear');
-    },
-  };
-}
-
-function createAuthMock(server) {
-  return {
-    signInWithGoogle() {
-      return Promise.resolve({
-        idToken: 'fake.id.token',
-        nonce: 'nonce-from-auth',
-        email: 'someone@example.com',
-        payload: { sub: 'user-abc', email: 'someone@example.com', name: 'Fake Payload Name' },
-      });
-    },
-    exchangeWithBackend(options) {
-      const url = String(options.apiBase).replace(/\/+$/, '') + '/api/auth/sign-in/social';
-      return server
-        .fetch(url, {
-          method: 'POST',
-          credentials: 'omit',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: 'google', idToken: { token: options.idToken, nonce: options.nonce } }),
-        })
-        .then((res) =>
-          res.json().then((body) => ({
-            status: res.status,
-            ok: res.ok,
-            authToken: res.headers.get('set-auth-token'),
-            body,
-          }))
-        );
-    },
-    permissionsFor(apiBase) {
-      return { permissions: ['identity'], origins: [String(apiBase).replace(/\/$/, '') + '/*'] };
-    },
-  };
-}
 
 function entry(over = {}) {
   const at = over.at !== undefined ? over.at : T0 - 60_000;
@@ -265,86 +111,37 @@ function sampleBlocklist() {
   return { version: 2, entries, handleIndex: { synthetic_a: '7001', synthetic_b: '7002' } };
 }
 
-/** 已登入的 syncState；游標一律用 mock 認得的純數字。 */
+// 已登入的 syncState：共用範本再帶本檔的 links／marks 游標。
 function signedInState(over = {}) {
-  return Object.assign(
-    {
-      userId: 'user-abc',
-      email: 'someone@example.com',
-      cursor: '100',
-      lastSyncedAt: T0 - 10 * 60_000,
-      lastError: null,
-      marksCursor: '200',
-      marksEvicted: null,
-    },
-    over
-  );
+  return baseSignedInState(Object.assign({ cursor: '100', marksCursor: '200', marksEvicted: null }, over));
 }
 
+// 本檔的環境設定：storage 以 setTimeout(0) 落盤（走假時間）、登入回傳的
+// id_token payload 不帶 picture。
+const ENV_PROFILE = {
+  storage: { defer: 'timeout' },
+  auth: { payloadPicture: null },
+  signedInState,
+};
+
 /**
+ * 組一整套注入環境（見 test/support/sync-env.js 的 createSyncEnv）。
  * @param {object} opts
  *   history、blocklist、local（其他本機鍵）、signedIn、syncState（patch）、
  *   epoch（本機 syncEpoch；undefined＝不種）、
  *   afterFetch(record, server)：每次 fetch 結算後呼叫（模擬往返之間別台裝置動作）。
  */
 function makeEnv(opts = {}) {
-  const clock = { t: T0 };
-  const now = () => clock.t;
-  const server = createMockSyncServer({ now });
-  const localSeed = Object.assign({}, opts.local);
-  if (opts.history) localSeed.history = opts.history;
-  if (opts.blocklist) localSeed.scamBlocklist = opts.blocklist;
-  if (opts.epoch !== undefined) localSeed[EPOCH_KEY] = opts.epoch;
-  if (opts.signedIn) {
-    localSeed.syncAuth = { token: server.grantToken('tok-seeded') };
-    localSeed.syncState = signedInState(opts.syncState);
-  }
-  const storage = createSyncStorage(localSeed);
-  const alarms = createAlarmsMock();
-  const broadcasts = [];
-  let uuidSeq = 0;
-  const deps = {
-    storage: storage.api,
-    fetch: (url, init) =>
-      server.fetch(url, init).then((res) => {
-        if (opts.afterFetch) opts.afterFetch(server.lastRequest(), server);
-        return res;
-      }),
-    now,
-    alarms: alarms.api,
-    broadcast: (message) => broadcasts.push(message),
-    auth: createAuthMock(server),
-    permissions: {
-      contains() {
-        return Promise.resolve(true);
-      },
-      request() {
-        return Promise.resolve(true);
-      },
-    },
-    randomUUID: () => `uuid-${(uuidSeq += 1)}`,
-    setTimeout: () => ({}),
-    clearTimeout: () => {},
-    writeChain: (fn) => {
-      storage.chainDepth.value += 1;
-      return Promise.resolve()
-        .then(fn)
-        .finally(() => {
-          storage.chainDepth.value -= 1;
-        });
-    },
-  };
-
-  return {
-    clock,
-    server,
-    storage,
-    alarms,
-    broadcasts,
-    deps,
-    advance(ms) {
-      clock.t += ms;
-    },
+  const local = Object.assign({}, opts.local);
+  if (opts.epoch !== undefined) local[EPOCH_KEY] = opts.epoch;
+  const env = createSyncEnv(Object.assign({}, opts, { local }), ENV_PROFILE);
+  const { server, storage, alarms } = env;
+  env.deps.fetch = (url, init) =>
+    server.fetch(url, init).then((res) => {
+      if (opts.afterFetch) opts.afterFetch(server.lastRequest(), server);
+      return res;
+    });
+  return Object.assign(env, {
     localEpoch() {
       return storage.localData[EPOCH_KEY];
     },
@@ -367,7 +164,7 @@ function makeEnv(opts = {}) {
     debounceCreates(from = 0) {
       return alarms.calls.slice(from).filter((c) => c.op === 'create' && c.name === 'tcl-sync-debounce');
     },
-  };
+  });
 }
 
 async function settle(rounds = 20) {
