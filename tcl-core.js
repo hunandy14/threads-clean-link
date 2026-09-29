@@ -1018,108 +1018,372 @@
     SOFT_BUDGET: 2 * 1024 * 1024,
   };
 
-  // 投資話術詞表，分強弱兩級。否定語境(「不收費」「不代操」)照樣算證據——詐
-  // 騙貼文的標準開場白就是先撇清收費與代操。
+  // ---- 詐騙偵測:折疊前置 ----
   //
-  // 強詞:投資招攬語境專屬，與錨點構成「錨點 + 強話術詞」那一條命中路徑。
-  var SCAM_PITCH_STRONG_WORDS = ['黑馬股', '報明牌', '代操', '帶單', '飆股', '穩賺', '獲利分享'];
+  // 判定前先把文字「折疊」成比對用的形狀:相容字元還原成基本字元，LINE 的拆
+  // 字與混淆寫法收合成 `LINE`。**只供比對**:每一步的輸出都與輸入逐 UTF-16
+  // code unit 等長對齊，正則在折疊結果上取得的 index 可以直接套回原文切片——
+  // anchorMatch 與 snippet 因此保留使用者實際看到的寫法(全形、L.I.N.E、數學
+  // 粗體)，證據卡要讓人一眼看出對方用了規避字元。
+  //
+  // 【原則】折疊結果(probe)只供定位，不供內容:從 probe 上可以取「位置」
+  // (match.index、捕獲群起點)，任何要輸出或當鍵用的**內容與長度**都回原文
+  // clean 取。等長只保證位置對齊，不保證內容與長度:LINE 收合把 `L.I.N.E`
+  // 改寫成 `LINE` 加補位空白，也會改寫長得像 LINE 的帳號段(`賴：li.ne`);
+  // NFKC 把代理對縮成一格加補位空白。對應的取法:
+  //   - lineId 與它的標亮終點:rescanLineId 從原文的帳號段起點逐 code point
+  //     擷取。
+  //   - 提及本體的標亮終點:scamMentionEnd 在字元層折疊結果(規則表標
+  //     base:true 的 fold-nfkc)上重量收合前的拆字長度，並補齊代理對。
+  //   - snippet:只拿起點位置切原文。
+  //
+  // 折疊只在 LINE 前後的邊界成立時才產生 `LINE`，英文詞裡的 line 片段不會被
+  // 改寫成獨立 token，單字型提及的 `(?<![A-Za-z])LINE(?![A-Za-z])` 照舊擋得住
+  // online、lineup、timeline。
+  //
+  // 已知限制:全空白拆開的英文詞(「O N L I N E」「L I N E S」)會折出 LINE;
+  // 單字型提及仍需主動招攬詞才命中，誤判面有限。注音、諧音、代稱等非拉丁寫
+  // 法不在折疊範圍，要認得它們就在規則表加一列 mention。
 
-  // 弱詞:列入 pitchMatches 供證據卡呈現，但不構成任何命中路徑，兩個弱詞相加
-  // 也不足以命中。「免費教學」「不收費」在補習、餐飲、健身、公益貼文裡是中
-  // 性詞;「明牌」單獨出現時多半指樂透或廟口明牌，辨識力遠低於「報明牌」。
-  var SCAM_PITCH_WEAK_WORDS = ['明牌', '免費教學', '不收費'];
+  // 逐字元 NFKC。整串 String#normalize 會改變長度(㈱ → (株)、™ → TM、代理對
+  // → 單一 code unit)，因此逐字元處理:結果與原字元等長就採用;原字元是代理
+  // 對、結果縮成一個 code unit 時補一個半形空白(𝐋𝐈𝐍𝐄 → `L I N E `，交給
+  // foldSpacedLine 收合);其餘長度變化保留原字元。涵蓋全形英數與標點、圈圍
+  // 字母、羅馬數字、數學字母、相容漢字。
+  function foldNfkcForMatch(text) {
+    var out = '';
+    for (var i = 0; i < text.length; i++) {
+      var code = text.charCodeAt(i);
+      if (code < 0x80) {
+        out += text[i];
+        continue;
+      }
+      var width = 1;
+      if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+        var low = text.charCodeAt(i + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) width = 2;
+      }
+      var unit = text.slice(i, i + width);
+      var folded = unit.normalize('NFKC');
+      if (folded.length === width) out += folded;
+      else if (width === 2 && folded.length === 1) out += folded + ' ';
+      else out += unit;
+      i += width - 1;
+    }
+    return out;
+  }
 
-  // 連結型錨點:LINE 加好友(ti/p)/群組(ti/g)深連結、lin.ee 短網址、linktr.ee
-  // 聚合頁。line.me 的其他路徑(官網首頁、分享頁)不是引導私訊的入口，不在白
-  // 名單內。
+  // 拆字 LINE:**每兩個字母之間**都夾 1-2 個分隔字元(空白、. - _ * · ・ ‧)。
+  // 只拆一部分的(「Lin E」「Li Ne」)是人名或英文，不折;連續的 LINE 本來就
+  // 認得，不必折。收合成 `LINE` 並以空白補足原長度，空白放在尾端，後面帳號
+  // 型錨點的 `\s*[:：]` 會自然吃掉。
   //
-  // scheme 與 www. 都可省:招攬文常直接寫「lin.ee/xxx」,Threads 自己會把它
-  // 渲染成連結。省掉 scheme 後必須擋住黏在別的網域後面的情形——前置的負向
-  // lookbehind 排除英數/點/@/斜線，`xxline.me/ti/g/x`、`a.linktr.ee/x`、
-  // `https://line.me/...` 裡面那段 `line.me` 都不會各自起頭再匹配一次。
-  //
-  // ti/p 的路徑段容許前導 `~`:`line.me/ti/p/~帳號` 是 LINE 官方的加好友深連
-  // 結寫法，字元類少了它就在 `~` 前斷開，整條連結收不進錨點。
-  var SCAM_LINK_ANCHOR_RE =
-    /(?<![A-Za-z0-9.@/])(?:https?:\/\/)?(?:www\.)?(?:line\.me\/(?:R\/)?ti\/[gp]\/[A-Za-z0-9@._~-]+|lin\.ee\/[A-Za-z0-9._-]+|linktr\.ee\/[A-Za-z0-9._-]+)/i;
+  // 前後邊界:緊貼英數、或隔著一個非空白分隔字元貼著英數時不折(擋
+  // O.N.L.I.N.E);「空白＋英文」刻意放行，否則「L I N E ID：xxx」會斷在 ID
+  // 前面。
+  var SCAM_SPACED_LINE_RE =
+    /(?<![A-Za-z0-9]|[A-Za-z0-9][.\-_*·・‧])L[\s.\-_*·・‧]{1,2}I[\s.\-_*·・‧]{1,2}N[\s.\-_*·・‧]{1,2}E(?![A-Za-z0-9]|[.\-_*·・‧][A-Za-z0-9])/gi;
 
-  // 帳號型錨點:賴/籟/LINE(ID 兩字可省) + 冒號 + 至少 3 位帳號字元。全形/半
-  // 形冒號、冒號前後空白、大小寫都吃。帳號段少於 3 位的是標點誤判，不是帳
-  // 號。實際招攬句寫的就是「LINE：帳號」，不會補上 ID 兩個字。
-  // 帳號段長度上限取 LINE ID 的官方上限 20 字:沒有上限時，帳號後面緊接的英
-  // 數字串(長串識別碼、無空白的後文)會被一路吃進錨點。
-  //
-  // 【負向邊界】「賴」前面接 信/依/無/仰/倚 時整個詞是信賴/依賴/無賴/仰賴/
-  // 倚賴，後面的冒號是正常標點(「我信賴：Apple 的品質」)，不是 LINE 帳號引
-  // 導。這類句子常同時帶投資詞，光靠 PITCH 二次確認擋不住，錨點本身必須排
-  // 除。排除清單只列這五個字——詐騙招攬句「我的賴：ex01abc」前面也是中文，擴
-  // 成「前面是中文就不算」會整組漏抓。
-  // 繫詞(是／ID／帳號／號／號ID／號碼)可選，大小寫不拘，冒號前後容許空白(含
-  // 全形空白——`\s` 認得 U+3000)。負向邊界照舊:實際招攬句常寫「賴是：xxx」
-  // 「加我賴號ID：xxx」「LINE 帳號 : xxx」，不只是「賴：xxx」這種裸冒號寫法。
-  // 繫詞連同它前面的空白包成同一個可選段，繫詞到冒號之間只有一段 `\s*`:兩段
-  // 相鄰的 `\s*` 夾著可省的繫詞時，同一串空白能任意拆給前後兩段，比對失敗前
-  // 每種拆法都要試過，空白一長就是二次方。
-  //
-  // 繫詞是封閉的選項清單，不是「任意字」:`LINE Pay ID：abc123` 的 `Pay` 不在
-  // 清單裡，整條樣式就在那裡斷開——LINE Pay 的收款 ID 不是加好友帳號。
-  //
-  // 括號捕獲的是帳號段本體，供 extractLineId 取用(證據卡標亮的就是這一段)。
-  var SCAM_ACCOUNT_ANCHOR_RES = [
-    /(?<![信依無仰倚])[賴籟](?:\s*(?:是|ID|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
-    /(?<![A-Za-z])LINE(?:\s*(?:ID|是|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
-  ];
+  // 同一拆字樣式的黏著版，不帶前後邊界:scamMentionEnd 在已知起點上量原文拆
+  // 字段的長度，邊界已在折疊時由 SCAM_SPACED_LINE_RE 判過。
+  var SCAM_SPACED_LINE_STICKY_RE = /L[\s.\-_*·・‧]{1,2}I[\s.\-_*·・‧]{1,2}N[\s.\-_*·・‧]{1,2}E/iy;
 
-  // 片語型錨點:「加入我的 LINE」這類明確的加好友祈使句。中文「賴」是姓氏
-  // (賴清德)也是常用動詞(賴床、賴皮、信賴、無賴)，誤殺成本遠高於漏抓，因
-  // 此「加」後面必須接「入」或「我」——光認「加賴」會把「加賴床」「加賴帳
-  // 號」一起收進來。
-  var SCAM_PHRASE_ANCHOR_RES = [
-    /加(?:入我的|入我|入|我的|我)\s*(?:賴|籟|LINE(?![A-Za-z]))/i,
-    // 「加 LINE」「加LINE」:LINE 是專名，沒有「加賴床」那種歧義，因此不必
-    // 要求「入」或「我」。
-    /加\s*LINE(?![A-Za-z])/i,
-  ];
+  function foldSpacedLine(text) {
+    return text.replace(SCAM_SPACED_LINE_RE, function (m) {
+      return 'LINE' + ' '.repeat(m.length - 4);
+    });
+  }
 
-  // 單字型提及:LINE 前後都不接英文字母。ONLINE、deadline、LINEUP、headline
-  // 的 line 片段是英文詞的一部分，不是在講通訊軟體。
-  var SCAM_LINE_WORD_RE = /(?<![A-Za-z])LINE(?![A-Za-z])/i;
+  // leet LINE:`L1NE`、`L!NE`、`L|NE` 收合成 `LINE`(等長)。邊界含數字，帳號
+  // 段裡的 l1ne(`LINE:l1ne99`、`LINE:xl1ne`)不會被改寫。獨立成段的帳號本體
+  // (`LINE：l1ne`)照樣會折，lineId 由 rescanLineId 從原文擷取，取回原寫法。
+  var SCAM_LEET_LINE_RE = /(?<![A-Za-z0-9])L[1!|]NE(?![A-Za-z0-9])/gi;
 
-  // 群組詞與加入詞:招攬串的行動呼籲。這兩類詞單獨出現在任何社團、讀書會、
-  // Discord 貼文裡都很常見，必須與 LINE 提及並存才構成命中。
-  //
-  // 暗號類(暗號／通關密語)是同一種行動呼籲的另一種寫法，招攬者不寫「加入群
-  // 組」，改叫人帶著一組代碼私訊過來，好在對話一開始就分辨得出來人是從哪一
-  // 篇來的。
-  //
-  // 【負例是本體】「密語」不列入——它是「加密語音」的子字串，列進去會把講資
-  // 安、講通訊軟體功能的貼文整批誤判。
-  var SCAM_GROUP_WORDS = ['群組', '社群', '群裡', '進群', '拉進', '拉你進', '小群'];
-  var SCAM_JOIN_WORDS = ['加入', '加我', '私訊我', '暗號', '通關密語'];
+  function foldLeetLine(text) {
+    return text.replace(SCAM_LEET_LINE_RE, 'LINE');
+  }
 
-  // 主動招攬詞:上面兩張表裡描述「把你帶走」這個動作的子集，單字型提及只認
-  // 這一組。「群組」「社群」「加入」是名詞，公司公告、社區公告、讀書會、商
-  // 家會員貼文本來就會跟 LINE 同框(「公司公告改用 LINE 群組發布」),配單字
-  // 型提及遠不足以構成招攬;錨點型提及(連結/帳號/片語)已經帶著帳號或祈使
-  // 句，才吃完整詞表。
-  var SCAM_ACTIVE_JOIN_WORDS = ['進群', '拉進', '拉你進', '小群', '加我', '私訊我', '暗號', '通關密語'];
+  // ---- 詐騙偵測:規則表 ----
+  //
+  // 每列是一條可歸因的規則:{ id, kind, desc, words | re | res | fold, active?,
+  // fixtures }。id 是穩定的規則識別碼，detectScamPitch 以 ruleIds 回報這次踩
+  // 到哪些列;fixtures 列出 test/fixtures/scam/ 裡驗證這一列的樣本檔。
+  //
+  // kind 與判定引擎的對應:
+  //   fold            折疊前置，依表中順序套用，有改出任一英數字元即計入
+  //                   ruleIds(只動標點、空白的不算)。base:true 的列是字元層
+  //                   折疊，它的結果保留下來供帳號段重擷與標亮量長。
+  //   mention         單字型 LINE 提及。
+  //   anchor-link     連結型錨點(單獨即構成命中)。
+  //   anchor-account  帳號型錨點，捕獲群是帳號段本體。
+  //   anchor-phrase   片語型錨點(「加入我的 LINE」)。
+  //   group／join     行動呼籲詞表。active:true 的列是主動招攬詞，單字型提及
+  //                   只認這些;錨點型提及認全部。
+  //   code            暗號型行動呼籲樣式，一律視同主動招攬，與 join 同一訊號。
+  //   pitch-strong    強話術詞，與錨點構成「錨點＋強話術詞」那條路。
+  //   pitch-weak      弱話術詞，只進 pitchMatches，不構成命中。
+  //
+  // 表內只放正則字面量與詞表(indexOf 比對)，不組動態 RegExp:
+  // regex-safety.test.js 逐條靜態分析字面量，動態樣式分析不到。
+  var SCAM_RULE_TABLE = [
+    {
+      id: 'fold-nfkc',
+      kind: 'fold',
+      desc: '逐字元 NFKC:全形、圈圍字母、數學字母、相容漢字還原成基本字元',
+      fold: foldNfkcForMatch,
+      base: true,
+      fixtures: ['hit-fold-fullwidth-line.txt', 'hit-fold-circled-line.txt', 'hit-fold-math-bold-line.txt'],
+    },
+    {
+      id: 'fold-spaced-line',
+      kind: 'fold',
+      desc: '拆字 LINE(L.I.N.E、L I N E、L-I-N-E、L·I·N·E)收合成 LINE',
+      fold: foldSpacedLine,
+      fixtures: [
+        'hit-fold-dotted-line.txt',
+        'hit-fold-spaced-line.txt',
+        'hit-fold-dashed-line.txt',
+        'hit-fold-middot-line.txt',
+        'hit-fold-math-bold-line.txt',
+        'hit-v5-p3-dotted-line.txt',
+      ],
+    },
+    {
+      id: 'fold-leet-line',
+      kind: 'fold',
+      desc: 'leet LINE(L1NE、L!NE、L|NE)收合成 LINE',
+      fold: foldLeetLine,
+      fixtures: ['hit-fold-leet-line.txt'],
+    },
 
-  // 暗號型行動呼籲的樣式，詞表認不出「傳「177」給我」「留言【18】」這種把代
-  // 碼包在引號／括號裡的祈使句，只能用樣式抓。
-  //
-  // 代碼一律限 **2-8 位數字**，「留言」那一條另外**強制要有括號**。這兩道限
-  // 制都是誤判面來的:
-  //   - 代碼放行英數時，「傳 email 給我」「傳 LINE 給我」這種日常請求會被當
-  //     成暗號句。
-  //   - 一位數字不是暗號，是選項編號(「留言【1】索取懶人包」)。
-  //   - 「留言」不強制括號時，「留言 1 抽獎」這種抽獎活動整批誤判。
-  // 上限 8 位:再長就不是人記得住的暗號，而是識別碼或網址片段。
-  //
-  // 「傳」那一條收兩種形狀:代碼被引號／括號包住時本身就是暗號句(「傳訊
-  // 「63」」)，不必再有「給我」;裸代碼則要接「給我」(「傳 177 給我」)。
-  var SCAM_CODE_WORD_RES = [
-    /傳(?:送|訊)?\s*(?:[「【(\[]\s*[0-9]{2,8}\s*[」】)\]]|[0-9]{2,8}\s*給我)/,
-    /留言\s*[「【(\[]\s*[0-9]{2,8}\s*[」】)\]]/,
+    // 單字型提及:LINE 前後都不接英文字母。ONLINE、deadline、LINEUP、headline
+    // 的 line 片段是英文詞的一部分，不是在講通訊軟體。
+    {
+      id: 'mention-line-word',
+      kind: 'mention',
+      desc: '單字型 LINE 提及',
+      re: /(?<![A-Za-z])LINE(?![A-Za-z])/i,
+      fixtures: [
+        'hit-code-send-bracket.txt',
+        'hit-code-comment-bracket.txt',
+        'hit-code-message-bracket.txt',
+        'hit-group-active.txt',
+        'hit-join-codeword.txt',
+        'hit-v5-p3-dotted-line.txt',
+        'miss-pitch-weak-only.txt',
+      ],
+    },
+
+    // 連結型錨點:LINE 加好友(ti/p)/群組(ti/g)深連結、lin.ee 短網址、linktr.ee
+    // 聚合頁。line.me 的其他路徑(官網首頁、分享頁)不是引導私訊的入口，不在白
+    // 名單內。
+    //
+    // scheme 與 www. 都可省:招攬文常直接寫「lin.ee/xxx」,Threads 自己會把它
+    // 渲染成連結。省掉 scheme 後必須擋住黏在別的網域後面的情形——前置的負向
+    // lookbehind 排除英數/點/@/斜線，`xxline.me/ti/g/x`、`a.linktr.ee/x`、
+    // `https://line.me/...` 裡面那段 `line.me` 都不會各自起頭再匹配一次。
+    //
+    // ti/p 的路徑段容許前導 `~`:`line.me/ti/p/~帳號` 是 LINE 官方的加好友深連
+    // 結寫法，字元類少了它就在 `~` 前斷開，整條連結收不進錨點。
+    {
+      id: 'anchor-link',
+      kind: 'anchor-link',
+      desc: 'LINE 加好友／群組深連結、lin.ee、linktr.ee',
+      re: /(?<![A-Za-z0-9.@/])(?:https?:\/\/)?(?:www\.)?(?:line\.me\/(?:R\/)?ti\/[gp]\/[A-Za-z0-9@._~-]+|lin\.ee\/[A-Za-z0-9._-]+|linktr\.ee\/[A-Za-z0-9._-]+)/i,
+      fixtures: ['hit-anchor-link.txt'],
+    },
+
+    // 帳號型錨點:賴/籟/LINE(ID 兩字可省) + 冒號 + 至少 3 位帳號字元。全形/半
+    // 形冒號、冒號前後空白、大小寫都吃。帳號段少於 3 位的是標點誤判，不是帳
+    // 號。實際招攬句寫的就是「LINE：帳號」，不會補上 ID 兩個字。
+    // 帳號段長度上限取 LINE ID 的官方上限 20 字:沒有上限時，帳號後面緊接的英
+    // 數字串(長串識別碼、無空白的後文)會被一路吃進錨點。
+    //
+    // 【負向邊界】「賴」前面接 信/依/無/仰/倚 時整個詞是信賴/依賴/無賴/仰賴/
+    // 倚賴，後面的冒號是正常標點(「我信賴：Apple 的品質」)，不是 LINE 帳號引
+    // 導。這類句子常同時帶投資詞，光靠 PITCH 二次確認擋不住，錨點本身必須排
+    // 除。排除清單只列這五個字——詐騙招攬句「我的賴：ex01abc」前面也是中文，擴
+    // 成「前面是中文就不算」會整組漏抓。
+    // 繫詞(是／ID／帳號／號／號ID／號碼)可選，大小寫不拘，冒號前後容許空白(含
+    // 全形空白——`\s` 認得 U+3000)。負向邊界照舊:實際招攬句常寫「賴是：xxx」
+    // 「加我賴號ID：xxx」「LINE 帳號 : xxx」，不只是「賴：xxx」這種裸冒號寫法。
+    // 繫詞連同它前面的空白包成同一個可選段，繫詞到冒號之間只有一段 `\s*`:兩段
+    // 相鄰的 `\s*` 夾著可省的繫詞時，同一串空白能任意拆給前後兩段，比對失敗前
+    // 每種拆法都要試過，空白一長就是二次方。
+    //
+    // 繫詞是封閉的選項清單，不是「任意字」:`LINE Pay ID：abc123` 的 `Pay` 不在
+    // 清單裡，整條樣式就在那裡斷開——LINE Pay 的收款 ID 不是加好友帳號。
+    //
+    // 括號捕獲的是帳號段本體，extractLineId 取它的起點，再由 rescanLineId 從原
+    // 文擷取本體(證據卡標亮的就是這一段)。
+    {
+      id: 'anchor-account-lai',
+      kind: 'anchor-account',
+      desc: '賴／籟＋冒號＋帳號段',
+      re: /(?<![信依無仰倚])[賴籟](?:\s*(?:是|ID|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
+      fixtures: ['hit-anchor-account-lai.txt', 'hit-group-build.txt'],
+    },
+    {
+      id: 'anchor-account-line',
+      kind: 'anchor-account',
+      desc: 'LINE＋冒號＋帳號段',
+      re: /(?<![A-Za-z])LINE(?:\s*(?:ID|是|帳號|號碼|號ID|號))?\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i,
+      fixtures: [
+        'hit-join-noun.txt',
+        'hit-fold-dotted-line.txt',
+        'hit-fold-spaced-line.txt',
+        'hit-fold-dashed-line.txt',
+        'hit-fold-middot-line.txt',
+        'hit-fold-fullwidth-line.txt',
+        'hit-fold-circled-line.txt',
+        'hit-fold-math-bold-line.txt',
+        'hit-fold-leet-line.txt',
+        'hit-v5-p3-dotted-line.txt',
+      ],
+    },
+
+    // 片語型錨點:「加入我的 LINE」這類明確的加好友祈使句。中文「賴」是姓氏
+    // (賴清德)也是常用動詞(賴床、賴皮、信賴、無賴)，誤殺成本遠高於漏抓，因
+    // 此「加」後面必須接「入」或「我」——光認「加賴」會把「加賴床」「加賴帳
+    // 號」一起收進來。
+    {
+      id: 'anchor-phrase-join',
+      kind: 'anchor-phrase',
+      desc: '加入我的／加我＋賴／LINE',
+      re: /加(?:入我的|入我|入|我的|我)\s*(?:賴|籟|LINE(?![A-Za-z]))/i,
+      fixtures: ['hit-anchor-phrase-join.txt'],
+    },
+    // 「加 LINE」「加LINE」:LINE 是專名，沒有「加賴床」那種歧義，因此不必要
+    // 求「入」或「我」。
+    {
+      id: 'anchor-phrase-add-line',
+      kind: 'anchor-phrase',
+      desc: '加＋LINE',
+      re: /加\s*LINE(?![A-Za-z])/i,
+      fixtures: ['hit-anchor-phrase-add-line.txt'],
+    },
+
+    // 群組詞與加入詞:招攬串的行動呼籲。這兩類詞單獨出現在任何社團、讀書會、
+    // Discord 貼文裡都很常見，必須與 LINE 提及並存才構成命中。
+    //
+    // active:true 的列是主動招攬詞，描述「把你帶走」這個動作，單字型提及只認
+    // 這些。名詞型(群組、社群、加入)與建群類(建群、開個群)在公司公告、社區
+    // 公告、讀書會、家長會貼文裡本來就會跟 LINE 同框(「公司改用 LINE 群組公
+    // 告，行政會建個群通知大家」)，配單字型提及遠不足以構成招攬;錨點型提及
+    // (連結/帳號/片語)已經帶著帳號或祈使句，才吃全部的列。
+    {
+      id: 'group-noun',
+      kind: 'group',
+      desc: '名詞型群組詞',
+      active: false,
+      words: ['群組', '社群', '群裡'],
+      fixtures: ['hit-anchor-phrase-join.txt'],
+    },
+    {
+      id: 'group-active',
+      kind: 'group',
+      desc: '主動拉人進群',
+      active: true,
+      words: ['進群', '拉進', '拉你進', '小群'],
+      fixtures: ['hit-group-active.txt'],
+    },
+    {
+      id: 'group-build',
+      kind: 'group',
+      desc: '建群、開群',
+      active: false,
+      words: ['建群', '建個群', '開群', '開個群'],
+      fixtures: ['hit-group-build.txt', 'hit-v5-p3-dotted-line.txt'],
+    },
+    {
+      id: 'join-noun',
+      kind: 'join',
+      desc: '名詞型加入詞',
+      active: false,
+      words: ['加入'],
+      fixtures: ['hit-join-noun.txt'],
+    },
+    {
+      id: 'join-active',
+      kind: 'join',
+      desc: '主動要人加好友、私訊',
+      active: true,
+      words: ['加我', '私訊我'],
+      fixtures: ['hit-anchor-phrase-add-line.txt'],
+    },
+    // 暗號類是同一種行動呼籲的另一種寫法:招攬者不寫「加入群組」，改叫人帶著
+    // 一組代碼私訊過來，好在對話一開始就分辨得出來人是從哪一篇來的。
+    //
+    // 【負例是本體】「密語」不列入——它是「加密語音」的子字串，列進去會把講資
+    // 安、講通訊軟體功能的貼文整批誤判。
+    {
+      id: 'join-codeword',
+      kind: 'join',
+      desc: '暗號、通關密語',
+      active: true,
+      words: ['暗號', '通關密語'],
+      fixtures: ['hit-join-codeword.txt'],
+    },
+
+    // 暗號型行動呼籲的樣式，詞表認不出「傳「177」給我」「留言【18】」這種把代
+    // 碼包在引號／括號裡的祈使句，只能用樣式抓。
+    //
+    // 代碼一律限 **2-8 位數字**，「留言」那一條另外**強制要有括號**。這兩道限
+    // 制都是誤判面來的:
+    //   - 代碼放行英數時，「傳 email 給我」「傳 LINE 給我」這種日常請求會被當
+    //     成暗號句。
+    //   - 一位數字不是暗號，是選項編號(「留言【1】索取懶人包」)。
+    //   - 「留言」不強制括號時，「留言 1 抽獎」這種抽獎活動整批誤判。
+    // 上限 8 位:再長就不是人記得住的暗號，而是識別碼或網址片段。
+    //
+    // 「傳」那一條收兩種形狀:代碼被引號／括號包住時本身就是暗號句(「傳訊
+    // 「63」」)，不必再有「給我」;裸代碼則要接「給我」(「傳 177 給我」)。
+    {
+      id: 'code-send-bracket',
+      kind: 'code',
+      desc: '傳／傳送／傳訊＋括號代碼，或裸代碼＋給我',
+      re: /傳(?:送|訊)?\s*(?:[「【(\[]\s*[0-9]{2,8}\s*[」】)\]]|[0-9]{2,8}\s*給我)/,
+      fixtures: ['hit-code-send-bracket.txt'],
+    },
+    {
+      id: 'code-comment-bracket',
+      kind: 'code',
+      desc: '留言＋括號代碼',
+      re: /留言\s*[「【(\[]\s*[0-9]{2,8}\s*[」】)\]]/,
+      fixtures: ['hit-code-comment-bracket.txt'],
+    },
+    // 「傳個信息（110）」「發訊息【63】」:動詞＋(個)＋訊息類名詞＋括號代碼。
+    // 動詞前排除 上／流／外／宣／遺(上傳、流傳、外傳、宣傳、遺傳)。括號後緊
+    // 接數字或連字號時不算——「傳個訊息（02）2345-6789」的括號是電話區碼。
+    {
+      id: 'code-message-bracket',
+      kind: 'code',
+      desc: '傳／發／回＋(個)訊息類名詞＋括號代碼',
+      re: /(?<![上流外宣遺])(?:傳|發|回)個?(?:訊息|信息|消息|私訊|簡訊)\s*[「【(\[]\s*[0-9]{2,8}\s*[」】)\]](?![0-9-])/,
+      fixtures: ['hit-code-message-bracket.txt', 'hit-v5-p3-dotted-line.txt'],
+    },
+
+    // 投資話術詞表，分強弱兩級。否定語境(「不收費」「不代操」)照樣算證據——詐
+    // 騙貼文的標準開場白就是先撇清收費與代操。
+    //
+    // 強詞:投資招攬語境專屬，與錨點構成「錨點 + 強話術詞」那一條命中路徑。
+    {
+      id: 'pitch-strong',
+      kind: 'pitch-strong',
+      desc: '投資招攬強話術詞',
+      words: ['黑馬股', '報明牌', '代操', '帶單', '飆股', '穩賺', '獲利分享'],
+      fixtures: ['hit-anchor-account-lai.txt'],
+    },
+    // 弱詞:列入 pitchMatches 供證據卡呈現，但不構成任何命中路徑，兩個弱詞相加
+    // 也不足以命中。「免費教學」「不收費」在補習、餐飲、健身、公益貼文裡是中
+    // 性詞;「明牌」單獨出現時多半指樂透或廟口明牌，辨識力遠低於「報明牌」。
+    {
+      id: 'pitch-weak',
+      kind: 'pitch-weak',
+      desc: '中性語境也常見的弱話術詞',
+      words: ['明牌', '免費教學', '不收費'],
+      fixtures: ['miss-pitch-weak-only.txt'],
+    },
   ];
 
   // lineId 抓取第二段的兩把尺。idMention 是「這段文字在講 LINE」的起點(單字
@@ -1139,6 +1403,8 @@
   // 字交給 idLabelExclude(以 `$` 錨定在這段結尾)判斷，語意等同把排除詞寫成
   // 前置負向 lookbehind。排除詞寫進 lookbehind 時，「詞＋0-2 個空白」在每個起
   // 點都要往回展開一遍，靜態分析證不出線性。
+  //
+  // 這組是取值邏輯而不是命中規則，不進規則表，由 buildScamRules 固定掛進規則包。
   var SCAM_ID_MENTION_RE = /(?<![A-Za-z])LINE(?![A-Za-z])|(?<![信依無仰倚])[賴籟]/i;
   var SCAM_ID_LABELLED_RE = /(?:ID|帳號|號碼)\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
   var SCAM_ID_LABEL_EXCLUDE_RE =
@@ -1154,26 +1420,100 @@
   var SCAM_ID_DEEP_LINK_RE =
     /(?<![A-Za-z0-9.@/])(?:https?:\/\/)?(?:www\.)?(?:line\.me\/(?:R\/)?ti\/p\/|lin\.ee\/)~?([A-Za-z0-9][A-Za-z0-9._-]{2,19})/i;
 
-  // 判定用的規則資料。**規則是資料，判定是邏輯**:detectScamPitch 只認這個形
-  // 狀，不認特定來源，因此同一份判定可以吃本機常數，也可以吃日後由後端下發
-  // 的規則包。version 是規則版本，下發時用來比對新舊。
-  var SCAM_RULES = {
-    version: 4,
-    strongWords: SCAM_PITCH_STRONG_WORDS,
-    weakWords: SCAM_PITCH_WEAK_WORDS,
-    groupWords: SCAM_GROUP_WORDS,
-    joinWords: SCAM_JOIN_WORDS,
-    activeJoinWords: SCAM_ACTIVE_JOIN_WORDS,
-    codeWords: SCAM_CODE_WORD_RES,
-    linkAnchor: SCAM_LINK_ANCHOR_RE,
-    accountAnchors: SCAM_ACCOUNT_ANCHOR_RES,
-    phraseAnchors: SCAM_PHRASE_ANCHOR_RES,
-    lineWord: SCAM_LINE_WORD_RE,
-    idMention: SCAM_ID_MENTION_RE,
-    idLabelled: SCAM_ID_LABELLED_RE,
-    idLabelExclude: SCAM_ID_LABEL_EXCLUDE_RE,
-    idDeepLink: SCAM_ID_DEEP_LINK_RE,
-  };
+  // 規則表的一列帶的樣式清單(re 單條或 res 多條)。
+  function scamRowPatterns(row) {
+    return row.res || (row.re ? [row.re] : []);
+  }
+
+  // 把規則表轉成 detectScamPitch 吃的規則包。**規則是資料，判定是邏輯**:
+  // detectScamPitch 只認規則包的形狀，不認特定來源，同一份判定可以吃本機的
+  // 表，也可以吃日後由後端下發的表。version 是規則版本，證據記下它來分辨新
+  // 舊判定。
+  //
+  // 規則包的欄位依 kind 把各列的詞表與樣式依表中順序串接;activeJoinWords 是
+  // group／join 列中 active:true 那些列的詞。rows 保留非 fold 的原列供
+  // ruleIds 歸因，folds 是 fold 列(依序套用)。
+  function buildScamRules(table) {
+    var rules = {
+      version: 5,
+      folds: [],
+      rows: [],
+      strongWords: [],
+      weakWords: [],
+      groupWords: [],
+      joinWords: [],
+      activeJoinWords: [],
+      codeWords: [],
+      mentions: [],
+      linkAnchors: [],
+      accountAnchors: [],
+      phraseAnchors: [],
+      idMention: SCAM_ID_MENTION_RE,
+      idLabelled: SCAM_ID_LABELLED_RE,
+      idLabelExclude: SCAM_ID_LABEL_EXCLUDE_RE,
+      idDeepLink: SCAM_ID_DEEP_LINK_RE,
+    };
+    var patternField = {
+      mention: 'mentions',
+      'anchor-link': 'linkAnchors',
+      'anchor-account': 'accountAnchors',
+      'anchor-phrase': 'phraseAnchors',
+      code: 'codeWords',
+    };
+    var wordField = { group: 'groupWords', join: 'joinWords', 'pitch-strong': 'strongWords', 'pitch-weak': 'weakWords' };
+    for (var i = 0; i < table.length; i++) {
+      var row = table[i];
+      if (row.kind === 'fold') {
+        rules.folds.push(row);
+        continue;
+      }
+      rules.rows.push(row);
+      if (Object.prototype.hasOwnProperty.call(patternField, row.kind)) {
+        var field = rules[patternField[row.kind]];
+        field.push.apply(field, scamRowPatterns(row));
+      } else if (Object.prototype.hasOwnProperty.call(wordField, row.kind)) {
+        rules[wordField[row.kind]] = rules[wordField[row.kind]].concat(row.words);
+        if (row.active === true) rules.activeJoinWords = rules.activeJoinWords.concat(row.words);
+      }
+    }
+    return rules;
+  }
+
+  var SCAM_RULES = buildScamRules(SCAM_RULE_TABLE);
+
+  // 折疊前後有沒有哪個位置改出了英數字元。只動到標點、空白的折疊(全形標點
+  // 轉半形)不算規則命中。
+  function foldChangedAlnum(before, after) {
+    for (var i = 0; i < after.length; i++) {
+      if (before.charCodeAt(i) === after.charCodeAt(i)) continue;
+      var c = after.charCodeAt(i);
+      if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) return true;
+    }
+    return false;
+  }
+
+  // 依序套用規則包的 fold 列。回 { text, base, ruleIds }:text 是全部折疊後
+  // 的比對用字串;base 是 base:true 那一列(字元層折疊)套用後的中間結果，沒
+  // 有這種列時等於輸入;ruleIds 是改出英數字元的那些列。
+  function applyScamFolds(text, folds) {
+    var ruleIds = [];
+    var base = text;
+    for (var i = 0; i < folds.length; i++) {
+      var next = folds[i].fold(text);
+      if (foldChangedAlnum(text, next)) ruleIds.push(folds[i].id);
+      text = next;
+      if (folds[i].base === true) base = text;
+    }
+    return { text: text, base: base, ruleIds: ruleIds };
+  }
+
+  // 折疊前置的公開入口:以預設規則表的 fold 列折疊文字，輸出與輸入逐位等長。
+  // 非字串回空字串。輸出只供定位:在上面比對得到的位置可以套回原文，內容與
+  // 長度一律回原文取(見折疊前置段首的原則)。
+  function foldScamText(text) {
+    if (typeof text !== 'string') return '';
+    return applyScamFolds(text, SCAM_RULES.folds).text;
+  }
 
   // 取一組樣式中位置最前的命中，都沒中回 null。
   function firstScamAnchor(text, patterns) {
@@ -1193,23 +1533,12 @@
     return false;
   }
 
-  // 帳號段本體正規化:一律小寫、先裁到 LINE ID 的官方上限 20 字、再剝掉尾端
-  // 的 . _ -(句讀不是帳號的一部分)。剝完短於下限時回 null。
-  function normalizeLineIdValue(raw) {
-    if (typeof raw !== 'string') return null;
-    var id = trimEndChars(raw.toLowerCase().slice(0, SCAM_LIMITS.LINE_ID_MAX), '._-');
-    return id.length >= SCAM_LIMITS.LINE_ID_MIN ? id : null;
-  }
-
-  // 一次樣式命中換算成 { id, index }。三段抓取用的樣式都把帳號段放在整段的結
-  // 尾，因此捕獲群的起點就是 `整段結尾 - 捕獲長度`;正規化只從尾端裁切，算出
-  // 來的 id 因此永遠是捕獲段的前綴，index 直接套回原文就是標亮位置。offset 是
-  // 樣式跑在切片上時的切片起點。
-  function scamIdCapture(match, offset) {
-    if (!match) return null;
-    var id = normalizeLineIdValue(match[1]);
-    if (id === null) return null;
-    return { id: id, index: offset + match.index + match[0].length - match[1].length };
+  // 一次抓取樣式命中裡帳號段的起點。三段抓取用的樣式都把帳號段放在整段的結
+  // 尾，因此捕獲群的起點就是 `整段結尾 - 捕獲長度`。這是折疊後字串上的位置，
+  // 折疊逐位等長，這個位置套回原文就是帳號段在原文的起點;帳號段的內容與長度
+  // 一律由 rescanLineId 回原文取。offset 是樣式跑在切片上時的切片起點。
+  function scamIdStart(match, offset) {
+    return offset + match.index + match[0].length - match[1].length;
   }
 
   // 在 text 裡找第一個前面不是排除詞的 idLabelled 命中，回 exec 結果或 null。
@@ -1228,21 +1557,114 @@
     return null;
   }
 
-  // 抓出這段文字裡對方的 LINE 帳號本體，回 { id, index } 或 null。三段依序:
+  // 帳號段允許的字元，逐 code point 做 NFKC 後比對。
+  var SCAM_ID_CHAR_RE = /^[A-Za-z0-9._-]$/;
+
+  // 原文 text 在 pos 起的一個 code point，做 NFKC 並小寫後若是單一帳號字元，
+  // 回 { ch, width }(width 是這個 code point 佔的 code unit 數，代理對為 2);
+  // 否則回 null。帳號段的擷取與定位共用這一步，兩邊對「原文哪一段是這個 ID」
+  // 的認定因此一致。ASCII(< 0x80)的 NFKC 是自身，直接判定與小寫，不呼叫
+  // normalize。
+  function scamIdCharAt(text, pos) {
+    var code = text.charCodeAt(pos);
+    if (code < 0x80) {
+      var ascii = text[pos];
+      return SCAM_ID_CHAR_RE.test(ascii) ? { ch: ascii.toLowerCase(), width: 1 } : null;
+    }
+    var width = 1;
+    if (code >= 0xd800 && code <= 0xdbff && pos + 1 < text.length) {
+      var low = text.charCodeAt(pos + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) width = 2;
+    }
+    var ch = text.slice(pos, pos + width).normalize('NFKC');
+    return SCAM_ID_CHAR_RE.test(ch) ? { ch: ch.toLowerCase(), width: width } : null;
+  }
+
+  // 從原文 clean 的 index 起逐 code point 擷取帳號段:每個 code point 取 NFKC，
+  // 結果是單一帳號字元就併入，到 LINE_ID_MAX 字或遇到不合格字元為止，再剝掉
+  // 尾端的 . _ -(句讀不是帳號的一部分)。回 { id, index, end } 或 null(短於
+  // LINE_ID_MIN):id 是正規化(NFKC、小寫)後的帳號本體，end 是它在原文上的
+  // 終點，一律落在 code point 邊界上。
+  //
+  // 走原文而不是折疊結果:LINE 收合會改寫長得像 LINE 的帳號段(`賴：li.ne`、
+  // `LINE：l1ne`)，也會把拆字的 `L I N E` 收成一個看似合格的 `LINE`;NFKC
+  // 又會把代理對字元(數學粗體 𝟔)縮成一格加補位空白。帳號段取自折疊結果，
+  // 鍵就會被改寫、被截斷或全部撞成 line。
+  function rescanLineId(clean, index) {
+    var chars = [];
+    var widths = [];
+    var pos = index;
+    while (pos < clean.length && chars.length < SCAM_LIMITS.LINE_ID_MAX) {
+      var unit = scamIdCharAt(clean, pos);
+      if (!unit) break;
+      chars.push(unit.ch);
+      widths.push(unit.width);
+      pos += unit.width;
+    }
+    while (chars.length > 0 && '._-'.indexOf(chars[chars.length - 1]) !== -1) {
+      chars.pop();
+      pos -= widths.pop();
+    }
+    if (chars.length < SCAM_LIMITS.LINE_ID_MIN) return null;
+    return { id: chars.join(''), index: index, end: pos };
+  }
+
+  // 在原文 text 裡定位 lineId，回第一個原文區間 { start, end } 或 null。lineId
+  // 是正規化後的鍵(ex01abc)，原文卻可能寫成大寫、全形或數學粗體(EX01ABC、
+  // ｅｘ０１ａｂｃ、ex𝟎𝟏𝐚𝐛𝐜)，直接在原文 indexOf 找不到。非字串或空字串回
+  // null。
+  //
+  // 先逐 code point 以 scamIdCharAt 正規化一次，記下每個 code point 的正規化
+  // 字元(不是帳號字元記 null)與原文起點，之後每個起點的比對只做字元比較:
+  // 逐起點重做 normalize 在最壞情況(每個起點都比到 lineId 最後一字才失敗)
+  // 會把 NFKC 的成本乘上 lineId 長度。起點與終點都落在 code point 邊界上。
+  function findLineIdSpan(text, lineId) {
+    if (typeof text !== 'string' || typeof lineId !== 'string' || lineId.length === 0) return null;
+    var chars = [];
+    var starts = [];
+    var pos = 0;
+    while (pos < text.length) {
+      var unit = scamIdCharAt(text, pos);
+      var code = text.charCodeAt(pos);
+      var width = unit ? unit.width : 1;
+      if (!unit && code >= 0xd800 && code <= 0xdbff && pos + 1 < text.length) {
+        var low = text.charCodeAt(pos + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) width = 2;
+      }
+      chars.push(unit ? unit.ch : null);
+      starts.push(pos);
+      pos += width;
+    }
+    starts.push(text.length);
+    var last = chars.length - lineId.length;
+    for (var i = 0; i <= last; i++) {
+      var k = 0;
+      while (k < lineId.length && chars[i + k] === lineId[k]) k++;
+      if (k === lineId.length) return { start: starts[i], end: starts[i + k] };
+    }
+    return null;
+  }
+
+
+  // 抓出這段文字裡對方的 LINE 帳號本體，回 { id, index, end } 或 null。三段依序:
   //   1. 帳號型錨點的帳號段(「賴：xxx」「LINE ID：xxx」)——寫得最明確。
   //   2. LINE／賴提及本體結尾起 ID_WINDOW 字內的「ID／帳號＋冒號＋帳號段」。
   //   3. 加好友深連結的路徑段(ti/p 與 lin.ee)。
   // 前一段抓得到就不看後面:同一串同時出現三種來源時，證據卡要標的是寫得最
   // 明確的那一個。
   //
-  // 傳入的是半形正規化後的 probe，index 與原文逐位對齊，呼叫端拿它切原文。
-  function extractLineId(probe, cfg) {
-    var found = scamIdCapture(firstScamAnchor(probe, cfg.accountAnchors), 0);
+  // 各段的樣式跑在折疊後的 probe 上，只用來找帳號段的**起點**;帳號段本體由
+  // rescanLineId 從原文 clean 的同一起點擷取。某一段的起點在原文上擷不出合格
+  // 帳號段(`LINE：L I N E ID：abc123` 的第一段只擷得到 `L`)，這一段就不算數，
+  // 接著走下一段，絕不拿 probe 上的捕獲內容頂替。
+  function extractLineId(probe, base, scan, clean, cfg) {
+    var account = firstScamAnchor(probe, cfg.accountAnchors);
+    var found = account ? rescanLineId(clean, scamIdStart(account, 0)) : null;
     if (found) return found;
 
     var mention = cfg.idMention.exec(probe);
     if (mention) {
-      var from = mention.index + mention[0].length;
+      var from = scamMentionEnd(clean, base, scan, mention.index + mention[0].length);
       // 切片放寬到視窗再加「一個帳號段 ＋ 標籤與冒號」的長度，**限制改由匹配
       // 起點來把關**:切片剛好切在視窗邊界時，落在邊界上的 ID 欄位會被攔腰截
       // 斷，樣式在半截字串上照樣匹配得出一個短帳號——抓回半截帳號比抓不到更
@@ -1250,12 +1672,28 @@
       var slice = probe.slice(from, from + SCAM_LIMITS.ID_WINDOW + SCAM_LIMITS.LINE_ID_MAX + 8);
       var labelled = findIdLabelled(slice, cfg);
       if (labelled && labelled.index < SCAM_LIMITS.ID_WINDOW) {
-        found = scamIdCapture(labelled, from);
+        found = rescanLineId(clean, scamIdStart(labelled, from));
         if (found) return found;
       }
     }
 
-    return scamIdCapture(cfg.idDeepLink.exec(probe), 0);
+    var deep = cfg.idDeepLink.exec(probe);
+    return deep ? rescanLineId(clean, scamIdStart(deep, 0)) : null;
+  }
+
+  // 提及本體在原文上的終點。折疊後的提及若以收合出來的 LINE 結尾，改在字元
+  // 層結果 base 的同一位置以黏著拆字樣式重量:`L.I.N.E` 在 probe 上只佔
+  // `LINE` 四格，原文卻是七格。終點落在代理對中間(數學粗體 𝐄 的高位)時往
+  // 後補齊一格，切片才不會切出半個字元。
+  function scamMentionEnd(clean, base, scan, end) {
+    if (end >= 4 && scan.slice(end - 4, end) === 'LINE') {
+      SCAM_SPACED_LINE_STICKY_RE.lastIndex = end - 4;
+      var spaced = SCAM_SPACED_LINE_STICKY_RE.exec(base);
+      if (spaced) end = end - 4 + spaced[0].length;
+    }
+    var last = clean.charCodeAt(end - 1);
+    if (end < clean.length && last >= 0xd800 && last <= 0xdbff) end++;
+    return end;
   }
 
   // 以錨點起點為中心取上下文:前面 SNIPPET_CONTEXT 字，起點往後 SNIPPET_CONTEXT
@@ -1268,18 +1706,7 @@
     return text.slice(start, index + SCAM_LIMITS.SNIPPET_CONTEXT).slice(0, SCAM_LIMITS.SNIPPET_MAX);
   }
 
-  // 全形英數/標點(U+FF01-FF5E)平移 0xFEE0 即得對應的半形 ASCII。**只供比
-  // 對**:全形區每個字元都是單一 UTF-16 code unit，換成半形後字串等長且逐位
-  // 對齊，正則在這份字串上取得的 index/length 可以直接套回原文切片——
-  // anchorMatch 與 snippet 因此保留使用者實際看到的全形字元。詐騙帳號會用
-  // 全形英數規避純 ASCII 的帳號樣式，證據卡要讓人一眼看出對方用了規避字元。
-  function toHalfWidthForMatch(text) {
-    return text.replace(/[\uFF01-\uFF5E]/g, function (ch) {
-      return String.fromCharCode(ch.charCodeAt(0) - 0xfee0);
-    });
-  }
-
-  // 把 ASCII 小寫平移成大寫。**只供比對**:與 toHalfWidthForMatch 同樣逐位對
+  // 把 ASCII 小寫平移成大寫。**只供比對**:與折疊前置同樣逐位對
   // 齊(a-z 各自對應單一大寫字母),詞表比對取得的 index 可以直接套回原文。用
   // String#toUpperCase 會在少數字元上改變長度(ß → SS),那會讓位置錯位。
   function toUpperAsciiForMatch(text) {
@@ -1311,11 +1738,10 @@
   // 的獨立性以此為準。
   function scamMentionSpans(probe, rules) {
     var spans = [];
-    var i;
-    collectMatchSpans(rules.linkAnchor, probe, spans);
-    for (i = 0; i < rules.accountAnchors.length; i++) collectMatchSpans(rules.accountAnchors[i], probe, spans);
-    for (i = 0; i < rules.phraseAnchors.length; i++) collectMatchSpans(rules.phraseAnchors[i], probe, spans);
-    collectMatchSpans(rules.lineWord, probe, spans);
+    var groups = [rules.linkAnchors, rules.accountAnchors, rules.phraseAnchors, rules.mentions];
+    for (var g = 0; g < groups.length; g++) {
+      for (var i = 0; i < groups[g].length; i++) collectMatchSpans(groups[g][i], probe, spans);
+    }
     return spans;
   }
 
@@ -1364,7 +1790,32 @@
     return out;
   }
 
-  // 偵測詐騙招攬貼文。回傳 { hit, anchorMatch, pitchMatches, snippet, signals };
+  // 這次比對踩到的規則表列 id，依表中順序。樣式列(mention／anchor-*／code)
+  // 有任一條在 probe 上成立即計入;group／join 列要有詞在提及本體之外獨立出
+  // 現，與判定的行動呼籲同一把尺;pitch 列要有詞留在 pitchMatches 裡(被長詞
+  // 包含而剔除的短詞不算)。
+  function collectScamRuleIds(rows, probe, scan, spans, pitchMatches) {
+    var ids = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var matched;
+      if (row.kind === 'group' || row.kind === 'join') {
+        matched = hasIndependentWord(scan, row.words, spans);
+      } else if (row.kind === 'pitch-strong' || row.kind === 'pitch-weak') {
+        matched = false;
+        for (var j = 0; j < row.words.length && !matched; j++) {
+          matched = pitchMatches.indexOf(row.words[j]) !== -1;
+        }
+      } else {
+        matched = matchesAnyPattern(probe, scamRowPatterns(row));
+      }
+      if (matched) ids.push(row.id);
+    }
+    return ids;
+  }
+
+  // 偵測詐騙招攬貼文。回傳 { hit, anchorMatch, pitchMatches, snippet, signals,
+  // lineId, ruleIds };
   // 非字串/空字串/未命中皆回 hit:false 且不產 snippet，永不拋錯。第二參數是
   // 規則資料，預設 SCAM_RULES——判定邏輯與規則來源分離，規則換成後端下發的
   // 版本時這支函式不動。
@@ -1381,6 +1832,8 @@
   // 檻不足而未命中時照樣回報，呼叫端(除錯、調參、之後的人工複核)才看得出差
   // 在哪裡。anchorMatch 與 snippet 則只在命中時才有意義，未命中一律空字串。
   // signals 列出這次踩到的訊號類別，供證據卡與調參回溯判定走的是哪一條路。
+  // ruleIds 列出這次踩到的規則表列 id(折疊列在前)，命中與否都回報，供除錯
+  // 與 fixture 歸因;它不進證據，scam.hit 不帶這一欄。
   //
   // lineId 是這段文字裡對方的 LINE 帳號本體(小寫、3-20 字，抓不到為 null)。
   // 它與 pitchMatches 同一個待遇:**未命中照樣回報**——跨帳號比對(同一個 ID 換
@@ -1389,11 +1842,12 @@
   // 看到對方的帳號，而不是「LINE：」那三個字。
   function detectScamPitch(text, rules) {
     var cfg = rules || SCAM_RULES;
-    var miss = { hit: false, anchorMatch: '', pitchMatches: [], snippet: '', signals: [], lineId: null };
+    var miss = { hit: false, anchorMatch: '', pitchMatches: [], snippet: '', signals: [], lineId: null, ruleIds: [] };
     if (typeof text !== 'string' || text.length === 0) return miss;
     var clean = stripControlChars(text);
     if (clean.length === 0) return miss;
-    var probe = toHalfWidthForMatch(clean);
+    var folded = applyScamFolds(clean, cfg.folds || []);
+    var probe = folded.text;
     var scan = toUpperAsciiForMatch(probe);
 
     var pitchWords = cfg.strongWords.concat(cfg.weakWords);
@@ -1408,13 +1862,13 @@
       if (cfg.strongWords.indexOf(pitchMatches[i]) !== -1) strongCount++;
     }
 
-    var link = cfg.linkAnchor.exec(probe);
+    var link = firstScamAnchor(probe, cfg.linkAnchors);
     var account = firstScamAnchor(probe, cfg.accountAnchors);
     var phrase = firstScamAnchor(probe, cfg.phraseAnchors);
     // 錨點＝連結/帳號/片語三型，是「錨點 + 強話術詞」那條路認的形狀;提及再
     // 多收單字型。
     var anchor = link || account || phrase;
-    var mention = anchor || cfg.lineWord.exec(probe);
+    var mention = anchor || firstScamAnchor(probe, cfg.mentions);
 
     var spans = scamMentionSpans(probe, cfg);
     var hasGroup = hasIndependentWord(scan, cfg.groupWords, spans);
@@ -1427,7 +1881,7 @@
       ? hasGroup || hasJoin
       : hasIndependentWord(scan, cfg.activeJoinWords, spans) || matchesAnyPattern(probe, cfg.codeWords);
 
-    var found = extractLineId(probe, cfg);
+    var found = extractLineId(probe, folded.base, scan, clean, cfg);
     var lineId = found ? found.id : null;
 
     // 順序與 SCAM_SIGNALS 一致，證據卡的 chip 才不必再排一次。
@@ -1441,21 +1895,32 @@
     if (phrase) signals.push('phrase');
     if (lineId) signals.push('id');
 
+    var ruleIds = folded.ruleIds.concat(collectScamRuleIds(cfg.rows || [], probe, scan, spans, pitchMatches));
+
     var hit = !!link || (!!mention && hasCallToAction) || (!!anchor && strongCount > 0);
     if (!hit) {
-      return { hit: false, anchorMatch: '', pitchMatches: pitchMatches, snippet: '', signals: signals, lineId: lineId };
+      return {
+        hit: false,
+        anchorMatch: '',
+        pitchMatches: pitchMatches,
+        snippet: '',
+        signals: signals,
+        lineId: lineId,
+        ruleIds: ruleIds,
+      };
     }
 
     // 標亮位置:抓到帳號本體就標它，抓不到才退回提及本體那段片語。
     var start = found ? found.index : mention.index;
-    var length = found ? found.id.length : mention[0].length;
+    var end = found ? found.end : scamMentionEnd(clean, folded.base, scan, mention.index + mention[0].length);
     return {
       hit: true,
-      anchorMatch: clean.slice(start, start + length),
+      anchorMatch: clean.slice(start, end),
       pitchMatches: pitchMatches,
       snippet: scamSnippet(clean, start),
       signals: signals,
       lineId: lineId,
+      ruleIds: ruleIds,
     };
   }
 
@@ -2364,10 +2829,14 @@
     createSerialQueue: createSerialQueue,
     createMutator: createMutator,
     SCAM_LIMITS: SCAM_LIMITS,
+    SCAM_RULE_TABLE: SCAM_RULE_TABLE,
     SCAM_RULES: SCAM_RULES,
+    buildScamRules: buildScamRules,
+    foldScamText: foldScamText,
     SCAM_SIGNALS: SCAM_SIGNALS,
     SCAM_ANCHOR_MATCH_MAX: SCAM_ANCHOR_MATCH_MAX,
     detectScamPitch: detectScamPitch,
+    findLineIdSpan: findLineIdSpan,
     isPostDetailPath: isPostDetailPath,
     normalizeScamEvidence: normalizeScamEvidence,
     normalizeScamLineId: normalizeScamLineId,

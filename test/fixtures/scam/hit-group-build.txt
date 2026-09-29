@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: anchor-account-lai,group-build
+# note: 帳號型錨點＋「建個群」
+
+賴：abc123 我建個群大家一起看

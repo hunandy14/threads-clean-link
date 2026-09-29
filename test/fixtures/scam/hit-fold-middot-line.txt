@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: fold-spaced-line,anchor-account-line
+# note: 字母間插中點（・）
+
+加我 L・I・N・E：abc123 進群領資料

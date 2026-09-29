@@ -1,0 +1,5 @@
+# expect: miss
+# lineId: null
+# note: lineup 不是 LINE 提及
+
+先看 lineup 再決定要不要進群

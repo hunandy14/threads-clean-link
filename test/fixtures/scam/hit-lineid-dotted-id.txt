@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: li.ne
+# anchorMatch: li.ne
+# rules: anchor-account-lai,join-active
+# note: 帳號本體本身長得像拆字 LINE，lineId 與標亮要取原寫法，不得折成 line
+
+賴：li.ne 私訊我

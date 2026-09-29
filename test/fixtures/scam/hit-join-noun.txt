@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: anchor-account-line,join-noun
+# note: 帳號型錨點＋名詞型加入詞
+
+LINE ID：abc123 歡迎加入

@@ -1,0 +1,6 @@
+# expect: miss
+# lineId: null
+# rules: mention-line-word,pitch-weak
+# note: 弱話術詞＋單字型提及不構成命中
+
+LINE 又改版了，今天的明牌是什麼
