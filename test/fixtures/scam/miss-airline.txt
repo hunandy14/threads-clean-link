@@ -1,0 +1,5 @@
+# expect: miss
+# lineId: null
+# note: airline 不是 LINE 提及
+
+airline 會員 ID：abc123 歡迎加入社群

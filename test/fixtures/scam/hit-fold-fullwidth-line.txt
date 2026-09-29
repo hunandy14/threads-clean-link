@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: abc123
+# anchorMatch: abc123
+# rules: fold-nfkc,anchor-account-line
+# note: 全形英數（v4 已靠半形化抓到，v5 起歸 fold-nfkc）
+
+Ｌｉｎｅ：abc123 拉你進群

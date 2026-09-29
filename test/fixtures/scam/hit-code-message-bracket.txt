@@ -1,0 +1,6 @@
+# expect: hit
+# lineId: null
+# rules: mention-line-word,code-message-bracket
+# note: 單字型提及＋「傳個信息（代碼）」，不靠拆字也要命中
+
+有需要了解和領取的line上給我傳個信息（110）我建個群分享出來自行參考

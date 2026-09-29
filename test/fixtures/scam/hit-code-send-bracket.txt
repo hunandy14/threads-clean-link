@@ -1,0 +1,6 @@
+# expect: hit
+# lineId: null
+# rules: mention-line-word,code-send-bracket
+# note: 傳「代碼」給我
+
+想要名單的 LINE 傳「177」給我

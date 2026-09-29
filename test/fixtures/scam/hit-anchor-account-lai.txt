@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: ex01abc
+# anchorMatch: ex01abc
+# rules: anchor-account-lai,pitch-strong
+# note: 帳號型錨點（賴）＋強話術詞
+
+下一檔黑馬股已經在路上，我的賴：ex01abc

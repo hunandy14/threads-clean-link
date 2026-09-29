@@ -1,0 +1,6 @@
+# expect: hit
+# lineId: null
+# rules: anchor-phrase-join,group-noun
+# note: 片語型錨點＋名詞型群組詞
+
+加入我的 LINE 群組一起看盤

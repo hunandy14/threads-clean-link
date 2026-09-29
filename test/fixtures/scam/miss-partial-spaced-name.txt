@@ -1,0 +1,5 @@
+# expect: miss
+# lineId: null
+# note: 人名裡的部分拆字（Lin E）不得折出 LINE
+
+我是 Lin E Chun 老師，想上課的私訊我

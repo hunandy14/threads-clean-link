@@ -1,0 +1,7 @@
+# expect: hit
+# lineId: shop888
+# anchorMatch: shop𝟖𝟖𝟖
+# rules: anchor-account-line,group-noun,join-noun
+# note: LINE ID 繫詞＋數學粗體數字帳號段，不得截在第一個代理對
+
+LINE ID：shop𝟖𝟖𝟖 加入群組

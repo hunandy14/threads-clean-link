@@ -1,0 +1,6 @@
+# expect: hit
+# lineId: null
+# rules: mention-line-word,group-active
+# note: 單字型提及＋主動群組詞
+
+LINE 上找我，拉你進群

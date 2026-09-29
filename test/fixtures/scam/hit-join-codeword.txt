@@ -1,0 +1,6 @@
+# expect: hit
+# lineId: null
+# rules: mention-line-word,join-codeword
+# note: 單字型提及＋暗號詞
+
+LINE 上報暗號領資料
