@@ -40,7 +40,6 @@ const { createChromeStorage } = require('./support/helpers');
 const { loadSwSources } = require('./support/sw-sources');
 
 const TCLCore = require('../tcl-core.js');
-const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
 const { loadSync, signedInState: baseSignedInState, createSyncEnv } = require('./support/sync-env');
 
 // Mark 固定九欄（§3.1 R1）。

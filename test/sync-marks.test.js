@@ -52,7 +52,6 @@ const assert = require('node:assert/strict');
 
 const TCLCore = require('../tcl-core.js');
 const {
-  createMockSyncServer,
   MARKS_FREE_QUOTA,
   CHANGES_LIMIT,
   CLOUD_DATA_CONTRACT,
