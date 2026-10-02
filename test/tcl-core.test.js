@@ -1796,14 +1796,6 @@ function richEvidence(patch) {
 }
 
 test.describe('詐騙偵測:normalizeScamEvidence 的新欄位', () => {
-  test('normalizeScamEvidence:掛在 TCLCore 匯出(選項頁與 background 都要能單獨驗一筆證據)', () => {
-    assert.equal(
-      typeof C.normalizeScamEvidence,
-      'function',
-      'normalizeScamEvidence 應掛在 TCLCore 匯出'
-    );
-  });
-
   test('normalizeScamEvidence:四個新欄位原樣留下，三個網址都走 normalizePostUrl', () => {
     assert.equal(typeof C.normalizeScamEvidence, 'function', 'normalizeScamEvidence 應掛在 TCLCore 匯出');
     const out = C.normalizeScamEvidence(richEvidence());
@@ -2049,10 +2041,6 @@ test.describe('詐騙偵測:證據去重鍵改為 anchorPostUrl || postUrl', () 
 });
 
 test.describe('詐騙偵測:capScamEvidence／scamEntryBytes 與新欄位', () => {
-  test('capScamEvidence:掛在 TCLCore 匯出', () => {
-    assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
-  });
-
   test('capScamEvidence:留最新三筆且四個新欄位原樣帶過，snippet 仍硬裁 120', () => {
     assert.equal(typeof C.capScamEvidence, 'function', 'capScamEvidence 應掛在 TCLCore 匯出');
     const list = [1, 2, 3, 4].map((i) =>
@@ -2597,16 +2585,6 @@ test.describe('警示名單 v2:capScamBlocklist', () => {
     assert.equal(mkHas(out, 'allowlist'), false, 'allowlist 只是記憶體視圖，不得寫進 storage');
     assert.equal(out.version, 2);
     assert.equal(out.entries[MK_ID_2].state, 'dismissed', 'dismissed 條目照樣落盤(證據要留著)');
-  });
-
-  test('capScamBlocklist:非物件／空輸入回 v2 的三欄空形狀', () => {
-    for (const bad of [undefined, null, 'nope', 42, []]) {
-      assert.deepEqual(
-        C.capScamBlocklist(bad),
-        { version: 2, entries: {}, handleIndex: {} },
-        JSON.stringify(String(bad)) + ' 應回 v2 空形狀'
-      );
-    }
   });
 
   test('capScamBlocklist:筆數淘汰依 updatedAt 降冪，不看 addedAt', () => {

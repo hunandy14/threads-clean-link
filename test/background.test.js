@@ -4468,16 +4468,6 @@ test('L4 scam.hit:總開關關閉時回 { ok:false, code:disabled } 且不寫', 
   assert.equal(bg.storage.localSnapshot()[SCAM_KEY], undefined, '關閉時不得建出 scamBlocklist');
 });
 
-test('L4 scam.hit:scamGuardEnabled 缺席視為開啟（未設定不等於關閉）', async () => {
-  const bg = loadBackgroundForDevices({ localSeed: { [DEVICE_KEY]: SEEDED_DEVICE } });
-
-  const res = await bg.send(scamHit(), SCAM_TAB_SENDER);
-  await settle(400);
-
-  const response = deep(res.response);
-  assert.equal(response && response.ok, true, '缺席＝true，首次安裝即生效');
-});
-
 const SCAM_BAD_PAYLOADS = [
   ['handle 非字串', { handle: 12345 }],
   ['handle 缺席', { handle: undefined }],

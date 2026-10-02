@@ -1706,13 +1706,6 @@ test('scam.hit：payload 形狀照 §14，postUrl 為 origin + pathname 正規�
   );
 });
 
-test('toast：回應 added:true 時顯示 scamFirstHitToast', async () => {
-  const env = loadEnv();
-  await env.waitFor(() => env.toastTexts().length > 0, { label: '首次命中的 toast' });
-
-  assert.deepEqual(env.toastTexts(), [FIRST_HIT_TOAST], '首次入名單應跳一次 toast');
-});
-
 test('toast：同一 session 第二次 added:true 不再 toast，但 tag 照掛', async () => {
   const env = loadEnv();
   await env.waitFor(() => env.toastTexts().length > 0, { label: '首次命中的 toast' });

@@ -22,9 +22,9 @@
 // pushAfter。下一次 saveState 把舊欄位清掉。登出態不遷移，登入後第一輪才遷
 // 移。遷移與推送之間被殺只多推一次。
 //
-// harness：sync 部分（createSyncStorage／createAlarmsMock／createAuthMock／
-// localEntry／localEvidence／blocklist／makeEnv／settle）逐字取自
-// test/sync-marks.test.js，兩邊修改時需同步；唯一差異是 signedInState 不帶
+// harness：storage／alarms／auth 替身與環境組裝取自 test/support/sync-env.js；
+// localEntry／localEvidence／blocklist／signedInState／makeEnv／settle 與
+// test/sync-marks.test.js 相同，兩邊修改時需同步。signedInState 不帶
 // marksPushedAt／marksRejected 兩鍵——帶了就是舊版 syncState，會觸發遷移。
 // background 部分比照 test/storage-mutate-callers.test.js 的精簡載入器。
 'use strict';
@@ -40,11 +40,7 @@ const { createChromeStorage } = require('./support/helpers');
 const { loadSwSources } = require('./support/sw-sources');
 
 const TCLCore = require('../tcl-core.js');
-const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
-
-function loadSync() {
-  return require('../sync.js');
-}
+const { loadSync, signedInState: baseSignedInState, createSyncEnv } = require('./support/sync-env');
 
 // Mark 固定九欄（§3.1 R1）。
 const MARK_KEYS = ['key', 'state', 'dismissedAt', 'handle', 'displayName', 'source', 'evidence', 'addedAt', 'updatedAt'];
@@ -56,170 +52,6 @@ const T0 = 1_700_000_000_000;
 const DAY = 24 * 60 * 60 * 1000;
 
 const MARKS_SYNC_PATH = '/api/v1/marks/sync';
-
-// ---- storage 替身（逐字取自 test/sync-marks.test.js） ----
-
-function createSyncStorage(localSeed = {}, sessionSeed = {}) {
-  const chainDepth = { value: 0 };
-  const writes = [];
-  let seq = 0;
-
-  function later(fn) {
-    setImmediate(fn);
-  }
-
-  function makeArea(name, seed) {
-    const data = JSON.parse(JSON.stringify(seed));
-
-    function read(keys) {
-      if (keys === null || keys === undefined) return JSON.parse(JSON.stringify(data));
-      if (typeof keys === 'string') {
-        return Object.prototype.hasOwnProperty.call(data, keys) ? { [keys]: data[keys] } : {};
-      }
-      if (Array.isArray(keys)) {
-        const out = {};
-        keys.forEach((k) => {
-          if (Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
-        });
-        return out;
-      }
-      const out = Object.assign({}, keys);
-      Object.keys(keys).forEach((k) => {
-        if (Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
-      });
-      return out;
-    }
-
-    return {
-      data,
-      api: {
-        get(keys) {
-          return new Promise((resolve) => later(() => resolve(read(keys))));
-        },
-        set(items) {
-          seq += 1;
-          writes.push({
-            area: name,
-            keys: Object.keys(items),
-            inChain: chainDepth.value > 0,
-            seq,
-          });
-          return new Promise((resolve) =>
-            later(() => {
-              Object.assign(data, items);
-              resolve();
-            })
-          );
-        },
-        remove(keys) {
-          seq += 1;
-          const list = Array.isArray(keys) ? keys : [keys];
-          writes.push({ area: name, keys: list, removed: true, inChain: chainDepth.value > 0, seq });
-          return new Promise((resolve) =>
-            later(() => {
-              list.forEach((k) => delete data[k]);
-              resolve();
-            })
-          );
-        },
-      },
-    };
-  }
-
-  const local = makeArea('local', localSeed);
-  const session = makeArea('session', sessionSeed);
-
-  return {
-    api: { local: local.api, session: session.api },
-    localData: local.data,
-    writes,
-    chainDepth,
-    syncState() {
-      return local.data.syncState || null;
-    },
-    syncAuth() {
-      return local.data.syncAuth || null;
-    },
-    blocklist() {
-      return local.data.scamBlocklist || null;
-    },
-    entries() {
-      const list = local.data.scamBlocklist;
-      return (list && list.entries) || {};
-    },
-    writesTo(key) {
-      return writes.filter((w) => w.area === 'local' && w.keys.indexOf(key) !== -1);
-    },
-  };
-}
-
-function createAlarmsMock() {
-  const calls = [];
-  return {
-    calls,
-    api: {
-      create(name, info) {
-        calls.push({ op: 'create', name, info: Object.assign({}, info) });
-      },
-      clear(name) {
-        calls.push({ op: 'clear', name });
-        return Promise.resolve(true);
-      },
-      get() {
-        return Promise.resolve(undefined);
-      },
-      getAll() {
-        return Promise.resolve([]);
-      },
-    },
-    lastCreate() {
-      const list = calls.filter((c) => c.op === 'create');
-      return list[list.length - 1] || null;
-    },
-  };
-}
-
-// TCLAuth 的替身（只保留 marks 測試會用到的登入往返，形狀比照 test/sync.test.js）。
-function createAuthMock(server) {
-  const calls = { signIn: [], exchange: [] };
-  return {
-    calls,
-    signInWithGoogle(options) {
-      calls.signIn.push(options);
-      return Promise.resolve({
-        idToken: 'fake.id.token',
-        nonce: 'nonce-from-auth',
-        email: 'someone@example.com',
-        payload: { sub: 'user-abc', email: 'someone@example.com' },
-      });
-    },
-    exchangeWithBackend(options) {
-      calls.exchange.push(options);
-      const url = String(options.apiBase).replace(/\/+$/, '') + '/api/auth/sign-in/social';
-      return server
-        .fetch(url, {
-          method: 'POST',
-          credentials: 'omit',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            provider: 'google',
-            idToken: { token: options.idToken, nonce: options.nonce },
-          }),
-        })
-        .then((res) =>
-          res.json().then((body) => ({
-            status: res.status,
-            ok: res.ok,
-            authToken: res.headers.get('set-auth-token'),
-            body,
-          }))
-        );
-    },
-    permissionsFor(apiBase) {
-      return { permissions: ['identity'], origins: [String(apiBase).replace(/\/$/, '') + '/*'] };
-    },
-  };
-}
 
 // ---- 本機資料建構 ----
 
@@ -255,108 +87,30 @@ function blocklist(entries) {
 }
 
 
-/**
- * 新模型的已登入 syncState：刻意不帶 marksPushedAt／marksRejected 兩鍵。原始物
- * 件帶 marksPushedAt 鍵就是舊版（§9.2 遷移判準），會在第一輪觸發遷移。
- */
+// 已登入的 syncState：共用範本再帶 marks 通道的三個游標欄位。
 function signedInState(over = {}) {
-  return Object.assign(
-    {
-      userId: 'user-abc',
-      email: 'someone@example.com',
-      cursor: '0',
-      lastSyncedAt: T0 - 10 * 60_000,
-      lastError: null,
-      marksCursor: null,
-      marksEvicted: null,
-      marksBackfillCursor: null,
-    },
-    over
-  );
+  return baseSignedInState(Object.assign({ marksCursor: null, marksEvicted: null, marksBackfillCursor: null }, over));
 }
 
 
+// marks 系列的環境設定：storage 種子與整區讀取深拷貝、alarms 不保存排程、
+// 登入回傳的 id_token payload 不帶 name／picture。
+const ENV_PROFILE = {
+  storage: { deepClone: true },
+  alarms: { stateful: false },
+  auth: { payloadName: null, payloadPicture: null },
+  signedInState,
+};
+
 /**
- * 組一整套注入環境。`failPath` 讓故障綁在**路徑**上而不是「下一次請求」——
- * links 與 marks 在同一輪各發各的請求，用全域的 failNext 會綁不住是哪一條。
+ * 組一整套注入環境（見 test/support/sync-env.js 的 createSyncEnv）。`failPath`
+ * 讓故障綁在**路徑**上而不是「下一次請求」——links 與 marks 在同一輪各發各的
+ * 請求，用全域的 failNext 會綁不住是哪一條。
  */
 function makeEnv(opts = {}) {
-  // opts.shareWith：與另一個 env 共用同一台 mock 伺服器與時鐘（D50 的多裝置
-  // 情境）。第二台的 token 走 issueSession，不頂掉第一台那一枚。
-  const clock = opts.shareWith ? opts.shareWith.clock : { t: opts.startAt || T0 };
-  const now = () => clock.t;
-  const server = opts.shareWith ? opts.shareWith.server : createMockSyncServer(Object.assign({ now }, opts.server));
-
-  const localSeed = Object.assign({}, opts.local);
-  if (opts.blocklist !== undefined) localSeed.scamBlocklist = opts.blocklist;
-  if (opts.history !== undefined) localSeed.history = opts.history;
-  if (opts.scamGuardEnabled !== undefined) localSeed.scamGuardEnabled = opts.scamGuardEnabled;
-  if (opts.signedIn) {
-    localSeed.syncAuth = { token: opts.shareWith ? server.issueSession() : server.grantToken('tok-seeded') };
-    localSeed.syncState = signedInState(opts.syncState);
-  }
-
-  const storage = createSyncStorage(localSeed, opts.session);
-  const alarms = createAlarmsMock();
-  const broadcasts = [];
-  const auth = createAuthMock(server);
-
-  const pathFailures = new Map();
-  function fetchImpl(input, init) {
-    const path = new URL(String(input)).pathname;
-    const queue = pathFailures.get(path);
-    // failNext 是全域佇列，但這裡緊接著就同步呼叫 server.fetch，中間沒有
-    // await，因此注入的故障必定落在這一次請求上。
-    if (queue && queue.length) server.failNext(queue.shift(), 1);
-    return server.fetch(input, init);
-  }
-
-  let uuidSeq = 0;
-  const deps = {
-    storage: storage.api,
-    fetch: fetchImpl,
-    now,
-    alarms: alarms.api,
-    broadcast: (message) => broadcasts.push(message),
-    auth,
-    permissions: {
-      contains: () => Promise.resolve(true),
-      request: () => Promise.resolve(true),
-    },
-    randomUUID: () => `uuid-${(uuidSeq += 1)}`,
-    setTimeout: (fn, ms) => ({ fn, ms }),
-    clearTimeout: () => {},
-    writeChain: (fn) => {
-      storage.chainDepth.value += 1;
-      return Promise.resolve()
-        .then(fn)
-        .finally(() => {
-          storage.chainDepth.value -= 1;
-        });
-    },
-  };
-
-  return {
-    clock,
-    now,
-    server,
-    storage,
-    alarms,
-    broadcasts,
-    auth,
-    deps,
-    advance(ms) {
-      clock.t += ms;
-    },
-    failPath(path, failure, times = 1) {
-      if (!pathFailures.has(path)) pathFailures.set(path, []);
-      const queue = pathFailures.get(path);
-      for (let i = 0; i < times; i += 1) queue.push(Object.assign({}, failure));
-    },
-    lastState() {
-      const list = broadcasts.filter((m) => m && m.type === 'sync.stateChanged');
-      return list.length ? list[list.length - 1].state : null;
-    },
+  const env = createSyncEnv(opts, ENV_PROFILE);
+  const { server } = env;
+  return Object.assign(env, {
     marksPosts() {
       return server.requestsTo('/api/v1/marks/sync', 'POST');
     },
@@ -376,7 +130,7 @@ function makeEnv(opts = {}) {
       });
       return out;
     },
-  };
+  });
 }
 
 /** 讓所有 setImmediate 排程的 storage 結算跑完。 */
