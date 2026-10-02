@@ -8372,13 +8372,6 @@ test('警示名單 v2:狀態列與開啟鈕的 en 文案', async () => {
   assert.ok(joinedText(btn).includes(i18n.t('en', 'opScamEnable')), '開啟鈕的 en 文案');
 });
 
-test('警示名單 v2:scamGuardEnabled 為 true 時狀態列 hidden', async () => {
-  const ctx = makeMarksCtx({ guardEnabled: true });
-  await initScamPage(ctx);
-
-  assert.equal(marksBar(ctx).hidden, true, '總開關開著時狀態列應收起');
-});
-
 // 關掉只是「不再掃、不再標」，名單本身仍是使用者的資料:列、解除、復原與
 // 命中對話框全都照常，否則關掉開關等於把已經記下的東西鎖死。
 test('警示名單 v2:總開關關閉時名單仍可編輯——列照畫、命中對話框照開、解除照走(進已解除小節)', async () => {

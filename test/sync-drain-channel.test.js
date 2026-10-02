@@ -29,10 +29,11 @@ const path = require('node:path');
 
 const TCLCore = require('../tcl-core.js');
 const { createMockSyncServer } = require('./helpers/mock-sync-server.js');
-
-function loadSync() {
-  return require('../sync.js');
-}
+const {
+  loadSync,
+  createAlarmsMock: createSharedAlarmsMock,
+  signedInState: baseSignedInState,
+} = require('./support/sync-env');
 
 const SYNC_SOURCE_PATH = path.join(__dirname, '..', 'sync.js');
 const API_BASE = 'https://api.metalinkclearer.workers.dev';
@@ -106,29 +107,9 @@ function createSyncStorage(localSeed, log) {
   return { api: { local: local.api, session: session.api }, localData: local.data, chainDepth };
 }
 
+// 本檔的 alarms 替身只側錄呼叫、不保存排程。
 function createAlarmsMock() {
-  const calls = [];
-  const table = new Map();
-  return {
-    calls,
-    api: {
-      create(name, info) {
-        calls.push({ op: 'create', name, info: Object.assign({}, info) });
-        table.set(name, Object.assign({ name }, info));
-      },
-      clear(name) {
-        calls.push({ op: 'clear', name });
-        table.delete(name);
-        return Promise.resolve(true);
-      },
-      get(name) {
-        return Promise.resolve(table.get(name) || undefined);
-      },
-      getAll() {
-        return Promise.resolve([...table.values()]);
-      },
-    },
-  };
+  return createSharedAlarmsMock({ stateful: false });
 }
 
 // ---- 腳本化後端 ----
@@ -262,19 +243,10 @@ function incomingMark(i) {
   return TCLCore.toScamMark(id, entry);
 }
 
+// 已登入的 syncState：共用範本再帶本檔的 links／marks 游標。
 function signedInState(over = {}) {
-  return Object.assign(
-    {
-      userId: 'user-abc',
-      email: 'someone@example.com',
-      cursor: 'c0',
-      lastSyncedAt: T0 - 10 * 60_000,
-      lastError: null,
-      marksCursor: 'm0',
-      marksEvicted: null,
-      marksBackfillCursor: null,
-    },
-    over
+  return baseSignedInState(
+    Object.assign({ cursor: 'c0', marksCursor: 'm0', marksEvicted: null, marksBackfillCursor: null }, over)
   );
 }
 

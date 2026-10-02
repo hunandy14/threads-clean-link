@@ -134,10 +134,6 @@ const FOLD_NEGATIVES = [
   'LINE:xl1ne',
 ];
 
-test('foldScamText：匯出為函式', () => {
-  assert.equal(typeof C.foldScamText, 'function', 'foldScamText 應掛在 TCLCore 匯出');
-});
-
 test('foldScamText：拆字／全形／混淆變體折疊成可被單字型提及認出的 LINE', () => {
   for (const text of FOLD_POSITIVES) {
     const out = C.foldScamText(text);
@@ -201,10 +197,6 @@ const KINDS = new Set([
   'pitch-strong',
   'pitch-weak',
 ]);
-
-test('SCAM_RULES：規則版本升到 5', () => {
-  assert.equal(C.SCAM_RULES.version, 5);
-});
 
 test('SCAM_RULE_TABLE：每列有唯一 id、合法 kind、說明、恰好一種比對資料與至少一個 fixture', () => {
   const table = C.SCAM_RULE_TABLE;

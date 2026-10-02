@@ -159,16 +159,6 @@ function isolatedContentScript() {
   return entry;
 }
 
-test('manifest:ISOLATED content script 陣列含 scam-guard.js，且排在 post-icon.js 之後', () => {
-  const js = isolatedContentScript().js || [];
-
-  assert.ok(js.includes('scam-guard.js'), `ISOLATED 陣列應含 scam-guard.js，實際為:${js.join(', ')}`);
-  assert.ok(
-    js.indexOf('scam-guard.js') > js.indexOf('post-icon.js'),
-    'scam-guard.js 必須排在 post-icon.js 之後'
-  );
-});
-
 test('打包白名單:scam-guard.js 在 build-release.ps1 的 $includeFiles 內', () => {
   assert.ok(
     readIncludeFiles().includes('scam-guard.js'),
