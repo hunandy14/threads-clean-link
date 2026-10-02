@@ -26,28 +26,12 @@ const test = require('node:test');
 const fakeClock = require('./support/settle').installSettle();
 test.beforeEach(fakeClock.reset);
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
 const { postKeyOf } = require('../tcl-core.js');
 const {
-  MAX_SYNC_UPSERTS,
-  MAX_SYNC_SEEN_ROWS,
   CLOUD_DATA_CONTRACT,
 } = require('./helpers/mock-sync-server.js');
 const { loadSync, createSyncEnv } = require('./support/sync-env');
-
-const REPO_ROOT = path.join(__dirname, '..');
-
-const PRODUCTION_BASE = 'https://api.metalinkclearer.workers.dev';
-const STAGING_BASE = 'https://api-staging.metalinkclearer.workers.dev';
-const LOCAL_BASE = 'http://localhost:8787';
-
-// 後端把 staging 與 production 的 Google Web client 分家了，三個 apiBase
-// 各自對應的 client_id（local 沒有自己的 client，併到 production 那組—— 本
-// 機後端的 .dev.vars 仍設定舊 client）。
-const CLIENT_ID_PRODUCTION = '17054024593-p003rp6cqmm9ks4r8mdphal1ahr3rhum.apps.googleusercontent.com';
-const CLIENT_ID_STAGING = '17054024593-846tl3brfgd5f09ouavituflf5b7v6qi.apps.googleusercontent.com';
 
 const POST_A = 'https://www.threads.com/@alice/post/AAAAAAAAAAA';
 const POST_B = 'https://www.threads.com/@bob/post/BBBBBBBBBBB';
@@ -140,11 +124,6 @@ function rewriteHistory(env, patchById) {
 /** 同一貼文再被複製一次：at 前進、seen 追加、dirty 維持 true。 */
 function recopied(at) {
   return (e) => Object.assign(e, { at, seen: e.seen.concat([{ at, kind: 'strip' }]), dirty: true });
-}
-
-/** options.js 的刪除寫法：登入中留墓碑並標 dirty。 */
-function tombstoned(deletedAt) {
-  return (e) => Object.assign(e, { deletedAt, dirty: true });
 }
 
 function byId(env, id) {
