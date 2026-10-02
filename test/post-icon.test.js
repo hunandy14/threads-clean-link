@@ -864,16 +864,6 @@ test('extractExcerpt(D48 主文):多行內文照樣完整收集，互動列計�
   assert.equal(excerpt, FX_LINE_1 + '\n' + FX_LINE_2);
 });
 
-test('extractExcerpt(D48 回文 focus):整列包在 [role="button"] 內的配樂標示列不得混進摘要', () => {
-  const excerpt = excerptOf(createReplyFocusContainer());
-
-  assert.equal(
-    excerpt.indexOf(FX_MUSIC_ROW),
-    -1,
-    '配樂標示列在 [role="button"] 內，屬互動元素不是內文'
-  );
-});
-
 // 嚴格讀法:配樂列被跳過(skip、不中止)之後，後面「尚無回覆」這種同樣不在
 // 按鈕內的區段標題會接著被收——那不是貼文內文，摘要應該就停在內文。上一
 // 條只釘「配樂列不得出現」，這條額外釘「摘要乾淨等於內文」。
