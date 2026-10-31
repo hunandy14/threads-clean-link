@@ -59,6 +59,11 @@
   // 輸入不會是正常的分享網址，直接不認。
   var INSTAGRAM_URL_MAX = 2048;
 
+  // Instagram 的站內保留路徑段。它們出現在使用者前綴的位置時不是帳號名稱，
+  // 後面接的也不是貼文 shortcode(例如 /share/reel/<token>/ 的 token 是分享短
+  // 碼，只有 Instagram 伺服器能對應到哪一篇)，整條網址不認。比對不分大小寫。
+  var INSTAGRAM_RESERVED_SEGMENTS = ['share', 'explore', 'reels', 'stories', 'accounts', 'direct'];
+
   // 控制字元剝除範圍。剝:C0(U+0000-001F,**保留 tab U+0009 與 newline
   // U+000A**)、C1(U+007F-009F)、bidi 控制字元(U+061C 阿拉伯字母標記、
   // U+200E/200F LRM/RLM、U+202A-202E 嵌入/覆寫、U+2066-2069 隔離)。**不剝**
@@ -186,11 +191,16 @@
 
   // Instagram 的容尾正規化:清掉整段 query/hash 與使用者前綴，host 的
   // www./m. 前綴與路徑尾斜線原樣保留，scheme 統一 https，host 轉小寫。非貼文
-  // 路徑、非 http(s)、超過 INSTAGRAM_URL_MAX 一律回 null。
+  // 路徑、非 http(s)、超過 INSTAGRAM_URL_MAX、使用者前綴位置是保留路徑段(見
+  // INSTAGRAM_RESERVED_SEGMENTS)一律回 null。
   function normalizeInstagramPostUrl(url) {
     if (typeof url !== 'string' || url.length > INSTAGRAM_URL_MAX) return null;
     var match = INSTAGRAM_POST_URL_PATTERN.exec(url);
-    return match ? 'https://' + match[1].toLowerCase() + '/' + match[3] : null;
+    if (!match) return null;
+    if (match[2] !== undefined && INSTAGRAM_RESERVED_SEGMENTS.indexOf(match[2].slice(1).toLowerCase()) !== -1) {
+      return null;
+    }
+    return 'https://' + match[1].toLowerCase() + '/' + match[3];
   }
 
   // 容尾正規化:通過白名單就回傳正規化後的乾淨網址，否則 null。讀取/匯入時

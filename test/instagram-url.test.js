@@ -76,6 +76,9 @@ const NORMALIZE_NULL_CASES = [
   'https://instagram.com.evil.example/p/ABC/',
   'https://evilinstagram.com/p/ABC/',
   'https://www.instagram.com/p/' + 'A'.repeat(300) + '/',
+  'https://www.instagram.com/share/p/AbCdEfGhI/',
+  'https://www.instagram.com/share/reel/AbCdEfGhI/?igsh=1',
+  'https://www.instagram.com/share/AbCdEfGhI/',
 ];
 
 for (const input of NORMALIZE_NULL_CASES) {
