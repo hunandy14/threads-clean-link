@@ -246,6 +246,18 @@ Optional host permissions, off by default and never requested at install time �
 選用 host permissions，安裝當下不會要求，只有使用者在「紀錄與設定」頁登入時，才會與 identity 一起被請求。用途單一:把使用者自己的清理紀錄(清理前後的網址、被移除的追蹤參數、貼文作者名稱與帳號、貼文摘要、清理時間)，以及警示名單(作者數字識別碼、帳號與顯示名快照、證據貼文網址、掃到時間與貼文時間、判定訊號類別如 link／line／group／join／pitch——不含命中的原文、規則版本、回報裝置識別碼;不含貼文文字片段)同步到開發者自營的後端伺服器，這套伺服器與開發者自製的手機 App 共用，讓同一份紀錄在使用者的裝置間保持一致。不會傳送使用者的瀏覽紀錄或分頁清單(上傳的僅限被標記貼文本身的永久連結)、cookie、Threads 帳號密碼，或任何未清理的頁面內容。所有傳輸皆為 HTTPS。api-staging.metalinkclearer.workers.dev 是開發者針對同一項同步功能的上線前測試端點。使用者若從未登入，這兩個網域都不會被連線。
 ```
 
+### Host permissions(選用):`https://*.instagram.com/*`
+
+**English:**
+```
+Optional host permission, off by default and never requested at install time. It is requested only when the user turns on the "Instagram support" switch on the History & Settings page. Once granted, the extension registers a content script on instagram.com that reads the page DOM to add a "copy original link" button to each post's action bar — the same button the extension already shows on Threads. The script makes no network requests to Instagram or anywhere else, does not read messages, cookies or account data, and sends nothing off the page. Turning the switch off unregisters the script and gives the permission back. If the user never turns it on, instagram.com is never accessed.
+```
+
+**繁中對照:**
+```
+選用 host permission，安裝當下不會要求，只有使用者在「紀錄與設定」頁打開「Instagram 支援」開關時才會請求。授權後，擴充功能在 instagram.com 註冊一支 content script，只讀取頁面 DOM，在每篇貼文的互動列加上「複製原始連結」按鈕——與本擴充功能在 Threads 上已有的按鈕相同。這支腳本不對 Instagram 或任何地方發出網路請求，不讀取私訊、cookie 或帳號資料，也不把任何內容送出頁面。關閉開關即取消註冊腳本並交還權限。使用者若從未打開，instagram.com 永遠不會被存取。
+```
+
 ---
 
 ## 7. 資料使用揭露(Privacy practices 表單勾選指引)

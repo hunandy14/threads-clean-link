@@ -97,6 +97,12 @@ Chrome MV3 擴充功能，將 Threads 分享短連結與官方「複製連結」
 
 上述兩項為 `optional_permissions`／`optional_host_permissions`，安裝當下不會要求，未登入狀態下不會被請求，也不會有任何相關網路連線。
 
+### 選用權限(Instagram 支援，開啟開關當下才請求)
+
+| 權限 | 用途 |
+|---|---|
+| `host_permissions`(選用，`*.instagram.com`) | 在 Instagram 貼文互動列插入複製原始連結按鈕;僅在使用者於設定頁打開「Instagram 支援」開關時請求，只讀取頁面 DOM、不對 instagram.com 發出任何請求，關閉開關即交還權限 |
+
 ## 已知限制
 
 - 淨化功能僅作用於 Chrome 載入的 Threads 網頁版分頁，不處理手機 App 或其他裝置產生的複製內容。

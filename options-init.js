@@ -67,6 +67,18 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         });
       },
+      // Instagram 開關關閉時交還 instagram.com 的選用權限。
+      remove: function (descriptor) {
+        return new Promise(function (resolve) {
+          try {
+            chrome.permissions.remove(descriptor, function (removed) {
+              resolve(!chrome.runtime.lastError && removed === true);
+            });
+          } catch (e) {
+            resolve(false);
+          }
+        });
+      },
     },
     runtime: {
       sendMessage: function (message) {
