@@ -600,6 +600,11 @@
   var IG_RESERVED_SEGMENTS = ['explore', 'reels', 'direct', 'accounts', 'stories'];
   // canonicalUrl 認得的貼文路徑:可帶使用者前綴的 p／reel／reels／tv。
   var IG_CANONICAL_PATH_RE = /^\/(?:[^/]+\/)?((?:p|reel|reels|tv)\/[^/]+\/?)$/;
+  // reels 牆上的錨點形狀「/reel/<code>/<數字媒體 id>/」:canonical 去掉尾段 id。
+  var IG_REEL_MEDIA_ID_PATH_RE = /^\/(?:[^/]+\/)?(reel\/[^/]+\/)\d+\/?$/;
+  // 從 /reel/<code>/、/reel/<code>/<id>/、/reels/<code>/(可帶使用者前綴)取出
+  // code。
+  var IG_REEL_CODE_RE = /^\/(?:[^/]+\/)?reels?\/([^/]+)\/(?:\d+\/?)?$/;
   // Node.DOCUMENT_POSITION_FOLLOWING
   var DOCUMENT_POSITION_FOLLOWING = 4;
 
@@ -751,19 +756,30 @@
     return items;
   }
 
-  // reel 的 permalink:項目內路徑等於網址列(兩邊都去使用者前綴、比對時忽
-  // 略尾斜線)的連結。只有作用中那則與網址列一致，其餘回傳 null。作用中項
-  // 目帶 a[href="/reels/<code>/"] 這個節點形狀尚未實測，待真機驗證。
+  // 路徑(去 query／hash)中的 reel code，不是 reel 路徑回傳 null。
+  function igReelCode(value) {
+    if (typeof value !== 'string' || !value) return null;
+    try {
+      var match = IG_REEL_CODE_RE.exec(new URL(value, 'http://tcl-path-placeholder.invalid').pathname);
+      return match ? match[1] : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // reel 的 permalink:項目內 a[href^="/reel/"] 且 code 與網址列(/reels/<code>/
+  // 或 /reel/<code>/)相同者。只有作用中那則一致，其餘回傳 null。錨點形狀依
+  // 2026-11 真機實測為 /reel/<code>/<數字媒體 id>/，也接受沒有尾段 id 的
+  // /reel/<code>/。
   function igReelPermalink(item, ctx) {
-    if (!ctx || typeof ctx.pathname !== 'string') return null;
-    var target = extractPostPath(igStripUserPrefix(ctx.pathname));
+    if (!ctx) return null;
+    var target = igReelCode(ctx.pathname);
     if (!target) return null;
     var anchors = item.querySelectorAll('a');
     for (var i = 0; i < anchors.length; i++) {
       var href = anchors[i].getAttribute('href');
-      if (typeof href !== 'string') continue;
-      var path = extractPostPath(href);
-      if (path && igStripUserPrefix(path + '/') === target + '/') return href;
+      if (typeof href !== 'string' || href.indexOf('/reel/') !== 0) continue;
+      if (igReelCode(href) === target) return href;
     }
     return null;
   }
@@ -890,14 +906,15 @@
       }
     },
     // 「/<user>/p/<code>/」收斂成「/p/<code>/」，去 query 與 hash；主機名
-    // 稱(含 www)與尾斜線照原樣。不同源或不是 p／reel／reels／tv 路徑回傳
+    // 稱(含 www)與尾斜線照原樣；「/reel/<code>/<數字媒體 id>/」去掉尾段 id。
+    // 不同源或不是 p／reel／reels／tv 路徑回傳
     // null。
     canonicalUrl: function (href, origin) {
       if (typeof href !== 'string') return null;
       try {
         var url = new URL(href, origin);
         if (url.origin !== new URL(origin).origin) return null;
-        var match = IG_CANONICAL_PATH_RE.exec(url.pathname);
+        var match = IG_CANONICAL_PATH_RE.exec(url.pathname) || IG_REEL_MEDIA_ID_PATH_RE.exec(url.pathname);
         if (!match) return null;
         return url.origin + '/' + match[1];
       } catch (e) {

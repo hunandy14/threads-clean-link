@@ -9,9 +9,10 @@
 //     post-icon 載進 sandbox，在 fixture 頁面上跑完整注入、點擊與退場。
 //
 // fixture（test/fixtures/instagram/*.html）手寫、匿名，層級比照 2026-11-01
-// zh-tw 實測。Reels 作用中項目的 permalink 節點（a[href="/reels/<code>/"]）實
-// 測快照沒錄到，形狀為假設；若實測不同，改 fixture 與 reels 相關斷言即可，
-// 「只在 permalink 等於網址列的那一則放按鈕」這條規則不變。
+// zh-tw 實測。Reels 作用中項目的 permalink 節點依 2026-11 真機證據為
+// a[href="/reel/<code>/<數字媒體 id>/"]（也可能沒有尾段 id），網址列則是
+// /reels/<code>/；兩邊以 code 比對，「只在 permalink 與網址列同一則的那則放
+// 按鈕」，複製的是去掉尾段 id 的 /reel/<code>/。
 //
 // 整合層的環境預設開啟 Trusted Types 強制模式：對 innerHTML 指派一般字串會
 // 丟 TypeError（Instagram 的 CSP 就是如此），所以按鈕的 svg 必須用
@@ -37,6 +38,7 @@ const FEED_PATH = '/';
 const POST_PATH = '/fx_author_c/p/FXPOST0001/';
 const REELS_PATH = '/reels/FXREEL0001/';
 const REELS_NEXT_PATH = '/reels/FXREEL0002/';
+const REELS_CANONICAL = ORIGIN + '/reel/FXREEL0001/';
 
 const FEED_CTX = { pageType: 'feed', pathname: FEED_PATH, origin: ORIGIN };
 const POST_CTX = { pageType: 'post', pathname: POST_PATH, origin: ORIGIN };
@@ -128,6 +130,8 @@ test('C2 canonicalUrl：去使用者前綴、去 query 與 hash，www 與尾斜�
     ['/p/FXCODE', ORIGIN, ORIGIN + '/p/FXCODE'],
     ['/reel/FXCODE/', ORIGIN, ORIGIN + '/reel/FXCODE/'],
     ['/fx_user/reel/FXCODE/?utm_source=ig_web', ORIGIN, ORIGIN + '/reel/FXCODE/'],
+    ['/reel/FXCODE/27857656860525429/', ORIGIN, ORIGIN + '/reel/FXCODE/'],
+    ['/reel/FXCODE/27857656860525429/?a=1', ORIGIN, ORIGIN + '/reel/FXCODE/'],
     ['/reels/FXCODE/', ORIGIN, ORIGIN + '/reels/FXCODE/'],
     ['/tv/FXCODE/', ORIGIN, ORIGIN + '/tv/FXCODE/'],
     ['/p/FXCODE/', 'https://instagram.com', 'https://instagram.com/p/FXCODE/'],
@@ -283,7 +287,7 @@ test('C2 reels：每個容器只含一則 reel；只有 permalink 等於網址�
   });
   const active = reelsContainerOf(ig, doc, 'fx-reel-active-row');
   assert.ok(active, '作用中那一則要在容器清單裡');
-  assert.equal(ig.canonicalUrl(ig.permalinkOf(active, REELS_CTX), ORIGIN), ORIGIN + REELS_PATH);
+  assert.equal(ig.canonicalUrl(ig.permalinkOf(active, REELS_CTX), ORIGIN), REELS_CANONICAL);
 
   ['fx-reel-prev-row', 'fx-reel-ad-row', 'fx-reel-next-row'].forEach((rowId) => {
     const c = reelsContainerOf(ig, doc, rowId);
@@ -374,7 +378,7 @@ test('C2 整合 post：整頁只有本篇一顆按鈕，「更多貼文」區不
   assert.ok(!p.excerpt.includes('示意留言'));
 });
 
-test('C2 整合 reels：只有作用中那一則有按鈕，插在分享與儲存之間；點擊複製 /reels/<code>/', async () => {
+test('C2 整合 reels：只有作用中那一則有按鈕，插在分享與儲存之間；點擊複製 /reel/<code>/', async () => {
   const env = await loadPage('reels.html', REELS_PATH);
   assert.equal(env.icons().length, 1);
   const ids = childIds(env.byId('fx-reel-active-row'));
@@ -387,9 +391,9 @@ test('C2 整合 reels：只有作用中那一則有按鈕，插在分享與儲�
   });
 
   await clickIcon(env, iconIn(env, 'fx-reel-active'));
-  assert.deepEqual(env.clipboardWrites, [ORIGIN + REELS_PATH]);
+  assert.deepEqual(env.clipboardWrites, [REELS_CANONICAL]);
   const p = env.payloads()[0];
-  assert.equal(p.cleanUrl, ORIGIN + REELS_PATH);
+  assert.equal(p.cleanUrl, REELS_CANONICAL);
   assert.equal(p.author, 'fx_author_e');
   assert.equal(p.handle, 'fx_author_e');
 });
@@ -408,6 +412,9 @@ test('C2 整合 reels：捲到下一則（網址列改變）後按鈕跟著移�
   const at = ids.indexOf('<icon>');
   assert.equal(ids[at - 1], 'fx-reel-next-share');
   assert.equal(ids[at + 1], 'fx-reel-next-save');
+
+  await clickIcon(env, iconIn(env, 'fx-reel-next'));
+  assert.deepEqual(env.clipboardWrites, [ORIGIN + '/reel/FXREEL0002/'], '沒有尾段 id 的 /reel/<code>/ 也要命中');
 });
 
 test('C2 標籤備援：svg 沒有 aria-label、只有英文 <title> 時照樣認出互動列', async () => {
