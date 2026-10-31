@@ -42,6 +42,23 @@
   var NORMALIZE_POST_URL_PATTERN =
     /^(https:\/\/(?:www\.)?threads\.(?:com|net)\/(@[A-Za-z0-9._]{1,80}\/post\/[A-Za-z0-9_-]{1,80}))\/?(?:[?#].*)?$/i;
 
+  // Instagram 貼文網址，鏡射手機 App 的 link-cleaner:host 為 instagram.com、
+  // www.instagram.com 或 m.instagram.com，路徑 /(p|reel|reels|tv)/<shortcode>
+  // (尾斜線可有可無)，前面可帶一段 /<user>/ 前綴(個人頁內點開貼文時的網址形
+  // 狀)，scheme 容許 http 或 https，尾端可帶任意 query/hash。
+  //   group 1 = host(含 www./m. 前綴，原樣保留)
+  //   group 2 = 使用者前綴(含前導斜線，缺席為 undefined)
+  //   group 3 = 正規路徑(p|reel|reels|tv + shortcode + 尾斜線，尾斜線原樣保留)
+  //   group 4 = query/hash 尾段(缺席為 undefined)
+  // 使用者名稱字元類取 Instagram 的實際字母表(英數、底線、句點，至多 30
+  // 字);shortcode 字元類同 postKeyOf 的 INSTAGRAM_POST，長度上限 80。
+  var INSTAGRAM_POST_URL_PATTERN =
+    /^https?:\/\/((?:www\.|m\.)?instagram\.com)(\/[A-Za-z0-9._]{1,30})?\/((?:p|reel|reels|tv)\/[A-Za-z0-9_-]{1,80}\/?)([?#].*)?$/i;
+
+  // Instagram 網址整串的長度上限，與 original 欄位上限一致:超過這個長度的
+  // 輸入不會是正常的分享網址，直接不認。
+  var INSTAGRAM_URL_MAX = 2048;
+
   // 控制字元剝除範圍。剝:C0(U+0000-001F,**保留 tab U+0009 與 newline
   // U+000A**)、C1(U+007F-009F)、bidi 控制字元(U+061C 阿拉伯字母標記、
   // U+200E/200F LRM/RLM、U+202A-202E 嵌入/覆寫、U+2066-2069 隔離)。**不剝**
@@ -146,16 +163,47 @@
   // ---- 網址判定 ----
 
   // 嚴格錨定判定:寫入前的權威把關。非字串一律 false。
+  //   - Threads:STRICT_POST_URL_PATTERN(無尾斜線、無 query/hash)。
+  //   - Instagram:https、無 query、無 hash、無使用者前綴的貼文網址;尾斜線
+  //     可有可無(正規化結果保留原樣，兩種都是乾淨網址)。
   function isCleanPostUrl(url) {
-    return typeof url === 'string' && STRICT_POST_URL_PATTERN.test(url);
+    if (typeof url !== 'string') return false;
+    if (STRICT_POST_URL_PATTERN.test(url)) return true;
+    if (url.length > INSTAGRAM_URL_MAX) return false;
+    var match = INSTAGRAM_POST_URL_PATTERN.exec(url);
+    return match !== null && match[2] === undefined && match[4] === undefined && url.slice(0, 8).toLowerCase() === 'https://';
   }
 
-  // 容尾正規化:通過白名單就回傳正規化後的乾淨網址(去 query/hash/尾斜線),
-  // 否則 null。讀取/匯入時的形狀驗證與去重鍵都吃這個回傳值。
-  function normalizePostUrl(url) {
+  // Threads 專用的容尾正規化:通過白名單就回傳正規化後的乾淨網址(去
+  // query/hash/尾斜線)，否則 null。詐騙黑名單的證據網址(postUrl／
+  // anchorPostUrl／threadUrl)只走這一支——掃描只在 Threads 上進行，其他站點
+  // 的網址一律不得進 marks。
+  function normalizeThreadsPostUrl(url) {
     if (typeof url !== 'string') return null;
     var match = NORMALIZE_POST_URL_PATTERN.exec(url);
     return match ? match[1] : null;
+  }
+
+  // Instagram 的容尾正規化:清掉整段 query/hash 與使用者前綴，host 的
+  // www./m. 前綴與路徑尾斜線原樣保留，scheme 統一 https，host 轉小寫。非貼文
+  // 路徑、非 http(s)、超過 INSTAGRAM_URL_MAX 一律回 null。
+  function normalizeInstagramPostUrl(url) {
+    if (typeof url !== 'string' || url.length > INSTAGRAM_URL_MAX) return null;
+    var match = INSTAGRAM_POST_URL_PATTERN.exec(url);
+    return match ? 'https://' + match[1].toLowerCase() + '/' + match[3] : null;
+  }
+
+  // 容尾正規化:通過白名單就回傳正規化後的乾淨網址，否則 null。讀取/匯入時
+  // 的形狀驗證與去重鍵都吃這個回傳值。認得的站點:Threads(見
+  // normalizeThreadsPostUrl)與 Instagram(見 normalizeInstagramPostUrl)。
+  function normalizePostUrl(url) {
+    return normalizeThreadsPostUrl(url) || normalizeInstagramPostUrl(url);
+  }
+
+  // 是否為 Instagram 貼文網址(容尾判定，接受正規化前的形狀)。顯示層據此決
+  // 定卡片要不要掛站點徽章。
+  function isInstagramPostUrl(url) {
+    return normalizeInstagramPostUrl(url) !== null;
   }
 
   // 抽出貼文識別碼(`/post/` 之後那一段)，抽不出回傳 null。
@@ -170,6 +218,10 @@
   // 容的網址回 null(呼叫端退回整條 url 當 fallback key，最多分成兩張卡),
   // 也不要讓寬鬆匹配把兩篇不同貼文算成同一篇。分享短碼(/share/XXXX)本來就
   // 抽不出 ID——短碼只有 Meta 伺服器能對應，本機無從得知它指向哪一篇。
+  //
+  // 【只認 Threads】Instagram 貼文網址一律回 null:本函式的唯一讀者是詐騙
+  // 名單證據的貼文代碼顯示，證據只來自 Threads;跨站點的合併鍵由 postKeyOf
+  // 負責(instagram:<shortcode>)。
   function extractPostId(url) {
     if (typeof url !== 'string') return null;
     var match = STRICT_POST_URL_PATTERN.exec(url);
@@ -516,6 +568,9 @@
   //     'share'。
   //   - seen 取雲端與本機的聯集(同 at 去重)，按 at 升序裁到 SEEN_MAX。
   //   - at 是本機顯示用的最後出現時間，取 max(receivedAt, seen 最大 at)。
+  //   - url 取較新的一方:同一個合併鍵可能對應不同的乾淨網址(Threads 的
+  //     handle 改名、Instagram 的 /p 與 /reel)，本機卡的 at 晚於雲端這筆的
+  //     最後事件時留本機的 url，否則用雲端的 cleaned。
   //   - dirty 清為 false(剛從雲端拉下來)、deletedAt 清為 null(雲端仍存在的
   //     卡片必須復活，否則別台裝置重新分享的貼文在這台永遠看不到)。
   function fromSyncItem(item, existing) {
@@ -523,9 +578,19 @@
     var url = normalizePostUrl(item.cleaned) || item.cleaned;
     var receivedAt = optionalFiniteNumber(item.receivedAt);
 
+    var cloudLatest = receivedAt;
+    var cloudEvents = cloudSeenEvents(item.seen);
+    for (var c = 0; c < cloudEvents.length; c++) {
+      var cloudAt = optionalFiniteNumber(cloudEvents[c].at);
+      if (cloudAt !== null && (cloudLatest === null || cloudAt > cloudLatest)) cloudLatest = cloudAt;
+    }
+    var baseAt = optionalFiniteNumber(base && base.at);
+    var baseUrl = base ? normalizePostUrl(base.url) : null;
+    if (baseUrl !== null && baseAt !== null && cloudLatest !== null && baseAt > cloudLatest) url = baseUrl;
+
     // 雲端 seen 先把 source 反映射成本機 kind，再走共用的 unionSeen(同 at 去
     // 重、升序、裁到 SEEN_MAX)。雲端那一份排在前，同一時刻以伺服器的說法為準。
-    var events = unionSeen(cloudSeenEvents(item.seen), base && base.seen, LIMITS.SEEN_MAX);
+    var events = unionSeen(cloudEvents, base && base.seen, LIMITS.SEEN_MAX);
 
     var latest = receivedAt === null ? null : receivedAt;
     for (var k = 0; k < events.length; k++) {
@@ -2007,7 +2072,7 @@
   // 補 null 也不補空字串):選項頁靠「鍵在不在」決定要不要畫那一行。
   function normalizeScamEvidence(raw) {
     if (!isPlainObject(raw)) return null;
-    var postUrl = normalizePostUrl(raw.postUrl);
+    var postUrl = normalizeThreadsPostUrl(raw.postUrl);
     if (postUrl === null) return null;
     if (typeof raw.at !== 'number' || !isFinite(raw.at)) return null;
     var out = {
@@ -2015,9 +2080,9 @@
       snippet: typeof raw.snippet === 'string' ? stripControlChars(raw.snippet) : '',
       at: raw.at,
     };
-    var anchorPostUrl = normalizePostUrl(raw.anchorPostUrl);
+    var anchorPostUrl = normalizeThreadsPostUrl(raw.anchorPostUrl);
     if (anchorPostUrl !== null) out.anchorPostUrl = anchorPostUrl;
-    var threadUrl = normalizePostUrl(raw.threadUrl);
+    var threadUrl = normalizeThreadsPostUrl(raw.threadUrl);
     if (threadUrl !== null) out.threadUrl = threadUrl;
     var anchorMatch = sanitizeText(raw.anchorMatch, SCAM_ANCHOR_MATCH_MAX);
     if (anchorMatch !== undefined) out.anchorMatch = anchorMatch;
@@ -2465,7 +2530,7 @@
     if (!isPlainObject(item)) return null;
     var url = typeof item.anchorPostUrl === 'string' ? item.anchorPostUrl : item.postUrl;
     if (typeof url !== 'string') return null;
-    return normalizePostUrl(url) || url;
+    return normalizeThreadsPostUrl(url) || url;
   }
 
   // 證據清單裡是否已有同一篇錨點貼文。
@@ -2528,12 +2593,12 @@
   // postUrl 就是錨點篇)，兩者皆缺的證據沒有可對帳的主鍵，整筆不送。
   function toScamMarkEvidence(item) {
     if (!isPlainObject(item)) return null;
-    var anchor = normalizePostUrl(item.anchorPostUrl);
-    if (anchor === null) anchor = normalizePostUrl(item.postUrl);
+    var anchor = normalizeThreadsPostUrl(item.anchorPostUrl);
+    if (anchor === null) anchor = normalizeThreadsPostUrl(item.postUrl);
     if (anchor === null) return null;
     return {
       anchorPostUrl: anchor,
-      threadUrl: normalizePostUrl(item.threadUrl),
+      threadUrl: normalizeThreadsPostUrl(item.threadUrl),
       // signals 的契約型別是 string[]:缺席送空陣列，讀取端永遠可以直接走
       // 訪。純量欄位才以 null 表缺席。
       signals: Array.isArray(item.signals) ? item.signals.slice() : [],
@@ -2636,7 +2701,7 @@
     if (!isPlainObject(item)) return 'x' + index;
     var url = item.anchorPostUrl || item.postUrl;
     if (typeof url !== 'string') return 'x' + index;
-    return normalizePostUrl(url) || url;
+    return normalizeThreadsPostUrl(url) || url;
   }
 
   // 證據的淺複製。signals 另外複製一份:輸出會落盤並在呼叫端之間流轉，與輸
@@ -2791,6 +2856,8 @@
     trimEndChars: trimEndChars,
     isCleanPostUrl: isCleanPostUrl,
     normalizePostUrl: normalizePostUrl,
+    normalizeThreadsPostUrl: normalizeThreadsPostUrl,
+    isInstagramPostUrl: isInstagramPostUrl,
     extractPostId: extractPostId,
     postKeyOf: postKeyOf,
     KIND_LIST: KIND_LIST,
