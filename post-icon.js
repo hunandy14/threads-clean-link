@@ -575,8 +575,9 @@
 
   // ---- Instagram ----
   //
-  // 三種頁型各有不同的容器與互動列版面(zh-tw 介面實測；英文標籤為推測，
-  // 讀標籤時 aria-label 優先、svg > title 備援，見 readActionLabel):
+  // 三種頁型各有不同的容器與互動列版面(zh-tw 介面實測；英文標籤為推測、
+  // 尚待真機驗證，讀標籤時 aria-label 優先、svg > title 備援，見
+  // readActionLabel):
   //   feed  首頁 '/':容器為 main article，互動列為容器內第一個含「讚」的
   //         section，按鈕接在左組(讚/回應/轉發/分享)最後。
   //   post  單篇 /p/<code>/、/reel/<code>/(可帶使用者前綴):沒有 article，
@@ -751,7 +752,8 @@
   }
 
   // reel 的 permalink:項目內路徑等於網址列(兩邊都去使用者前綴、比對時忽
-  // 略尾斜線)的連結。只有作用中那則與網址列一致，其餘回傳 null。
+  // 略尾斜線)的連結。只有作用中那則與網址列一致，其餘回傳 null。作用中項
+  // 目帶 a[href="/reels/<code>/"] 這個節點形狀尚未實測，待真機驗證。
   function igReelPermalink(item, ctx) {
     if (!ctx || typeof ctx.pathname !== 'string') return null;
     var target = extractPostPath(igStripUserPrefix(ctx.pathname));
@@ -902,7 +904,9 @@
         return null;
       }
     },
-    // 只觀察 main；main 尚未渲染時先觀察 body，之後掃描時再換到 main。
+    // 只觀察 main；main 尚未渲染時先觀察 body，之後掃描時再換到 main。假
+    // 設 Instagram SPA 換頁時保留同一個 main(待真機驗證)；main 被整個換
+    // 掉時由 observeTargets 另掛的外殼觀察接手。
     observeRoot: function (doc) {
       return doc.querySelector('main') || doc.body || doc.documentElement;
     },
@@ -1850,7 +1854,7 @@
           var observer = new MutationObserver(function () {
             scheduleScan();
           });
-          observer.observe(target, { childList: true, subtree: true });
+          observeTargets(observer, target);
           // 留住參照，退場時要 disconnect(見 retireOrphanInstance)。
           observerRef = observer;
           observedTarget = target;
@@ -1866,8 +1870,25 @@
         var target = site.observeRoot(document);
         if (!target || target === observedTarget) return;
         observerRef.disconnect();
-        observerRef.observe(target, { childList: true, subtree: true });
+        observeTargets(observerRef, target);
         observedTarget = target;
+      }
+
+      // 讓 observer 觀察 target(childList＋subtree)。target 不是 body 時，
+      // 同一個 observer 另外以 childList(不開 subtree)觀察 body 與 target
+      // 的父節點:target 整個被換掉時，舊 target 的 subtree 觀察收不到任何
+      // 紀錄，改由這兩處的子節點變動觸發掃描，retargetObserver 再換到新
+      // target。外殼觀察先掛、target 最後掛，disconnect 一次全部拆掉。
+      function observeTargets(observer, target) {
+        var body = document.body;
+        if (body && target !== body) {
+          observer.observe(body, { childList: true });
+          var parent = target.parentNode;
+          if (parent && parent !== body && parent.nodeType === 1) {
+            observer.observe(parent, { childList: true });
+          }
+        }
+        observer.observe(target, { childList: true, subtree: true });
       }
 
       // ---- chrome.storage.onChanged:即時更新頁面上既有 icon 的語言 ----
