@@ -9,7 +9,7 @@
 // 對外提供的全域名稱:
 //   CLEAN_POST_URL_PATTERN、OG_SCAN_LIMIT、OG_FETCH_HEADERS、escapeRegExp、
 //   decodeHtmlEntities、scanMetaTags、extractOgFields、sanitizeOgFields、mergeOgIntoFields、
-//   cacheOgFields、peekOgFields、fetchOgFieldsForLocalKind、diffRemovedParams、
+//   cacheOgFields、peekOgFields、isOgFetchableUrl、fetchOgFieldsForLocalKind、diffRemovedParams、
 //   handleResolveShareMessage、resolveFinalUrl、extractCleanPostUrl
 //
 // 依賴:前載的 tcl-core.js(TCLCore)與 SW 原生的 fetch／AbortSignal。
@@ -426,6 +426,20 @@ function peekOgFields(cleanUrl) {
 // 本檔案獨立維護同一個數值，兩處環境不同沒有共用單一來源的機制)。
 const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
 
+// og 補強允許發請求的 host:只有 Threads 兩個網域(含 www.)，且必須是 https。
+const OG_FETCH_HOSTS = ['threads.com', 'www.threads.com', 'threads.net', 'www.threads.net'];
+
+// cleanUrl 是否落在 OG_FETCH_HOSTS 白名單內。無法解析的字串一律 false。
+function isOgFetchableUrl(cleanUrl) {
+  let parsed;
+  try {
+    parsed = new URL(cleanUrl);
+  } catch (e) {
+    return false;
+  }
+  return parsed.protocol === 'https:' && OG_FETCH_HOSTS.indexOf(parsed.hostname.toLowerCase()) !== -1;
+}
+
 // 本地路徑(icon/strip)專用:貼文按鈕複製與 ?xmt 剪參的 web 動態牆 DOM
 // 沒有個人顯示名稱(只有 username)，單靠 DOM 的 author 永遠等於 handle、
 // 被重複值防禦丟棄，卡片只剩 @handle；DOM 擷取的摘要還可能吸到讚數等雜
@@ -445,6 +459,10 @@ const OG_LOCAL_FETCH_TIMEOUT_MS = 2500;
 // 不影響紀錄照常落盤——逾時之後 fetch 仍在背景跑完的話，結果照樣存回快取
 // (正或負)供下一次事件重用(這次事件用不到，但沒有浪費)。
 async function fetchOgFieldsForLocalKind(cleanUrl) {
+  // host 白名單:只對 Threads 貼文頁補 og。其他站點(Instagram 等)的網址直接
+  // 回 null(沒有 og 欄位)，不查快取也不發任何請求——擴充功能對 Threads 以
+  // 外的站點零背景請求。
+  if (!isOgFetchableUrl(cleanUrl)) return null;
   const cached = peekOgFields(cleanUrl);
   // 正快取回傳結果;負快取(sentinel)回傳 null(沒收穫但不再 fetch)。
   if (cached !== null) return cached === OG_NEGATIVE ? null : cached;

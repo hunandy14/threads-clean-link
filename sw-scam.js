@@ -92,7 +92,7 @@ function validateScamHit(message) {
   // handleIndex 的鍵、也直接顯示在名單卡片上，帶 @ 的原始文字或夾帶控制字元
   // 的值不得入庫;userId 是 entries 的鍵，只收 1–20 位數字字串。
   if (!TCLCore.isScamMarkHandle(message.handle)) return null;
-  const postUrl = TCLCore.normalizePostUrl(message.postUrl);
+  const postUrl = TCLCore.normalizeThreadsPostUrl(message.postUrl);
   if (postUrl === null) return null;
   if (typeof message.snippet !== 'string' || message.snippet.length > TCLCore.SCAM_LIMITS.SNIPPET_MAX) return null;
   if (typeof message.at !== 'number' || !isFinite(message.at)) return null;
@@ -111,13 +111,13 @@ function validateScamHit(message) {
 
   let anchorPostUrl;
   if (message.anchorPostUrl !== null && message.anchorPostUrl !== undefined) {
-    anchorPostUrl = TCLCore.normalizePostUrl(message.anchorPostUrl);
+    anchorPostUrl = TCLCore.normalizeThreadsPostUrl(message.anchorPostUrl);
     if (anchorPostUrl === null) return null;
   }
 
   let threadUrl;
   if (message.threadUrl !== null && message.threadUrl !== undefined) {
-    threadUrl = TCLCore.normalizePostUrl(message.threadUrl);
+    threadUrl = TCLCore.normalizeThreadsPostUrl(message.threadUrl);
     if (threadUrl === null) return null;
   }
 
@@ -197,7 +197,7 @@ const SCAM_IDENTITY_HOST = 'https://www.threads.com/';
 // 兩側（請求的 postUrl 與回應宣告的身分網址）都走這支，歸一規則必然一致。不
 // 是貼文永久連結（正規化失敗）回 null——無從比對，不算身分宣告。
 function scamPostIdentityKey(url) {
-  const normalized = TCLCore.normalizePostUrl(url);
+  const normalized = TCLCore.normalizeThreadsPostUrl(url);
   if (normalized === null) return null;
   const at = normalized.lastIndexOf('/post/');
   const head = normalized.slice(0, at).toLowerCase().replace(SCAM_IDENTITY_HOST_PATTERN, SCAM_IDENTITY_HOST);

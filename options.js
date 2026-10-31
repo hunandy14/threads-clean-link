@@ -2789,7 +2789,11 @@
       // TLD(com/net)一併捕獲並如實顯示:網址本來就可能來自 threads.net
       // (POST_URL_PATTERN 同時允許 com 與 net)，不可硬寫死 'threads.com/'。
       var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(url);
-      if (!handleMatch) return h('div', { class: className, text: url });
+      if (!handleMatch) {
+        // 非 Threads 網址(Instagram 等)沒有帳號段可強調，顯示去掉 scheme 與網域
+        // 的路徑(如 reel/Db44wsMgVBI/)，與詳細視窗「淨化後連結」的顯示值一致。
+        return h('div', { class: className, text: formatDisplayUrl(url) });
+      }
       var handleEl = h('b', { text: handleMatch[2] });
       return h('div', { class: className }, 'threads.' + handleMatch[1] + '/', handleEl, '/' + handleMatch[3]);
     }
@@ -2876,6 +2880,10 @@
       var headTime = h('span', { class: 'entry-time', text: relTime(e.at), 'data-at': String(e.at) });
       timeNodes.push({ node: headTime, at: e.at });
       var badge = h('span', { class: 'entry-badge', text: tt(KINDS[e.kind].key) });
+      // 站點徽章:Instagram 貼文在 kind 徽章旁多掛一顆純文字「Instagram」。站
+      // 名是專有名詞，各語系同字，不走 i18n;Threads 是預設站點，不掛。
+      var siteBadge =
+        TCLCore.isInstagramPostUrl(e.url) && h('span', { class: 'entry-badge entry-site-badge', text: 'Instagram' });
 
       var body = [];
       if (hasCardPreview(e)) {
@@ -2935,7 +2943,7 @@
           openEntryDetail(e);
         },
       };
-      var header = h('div', { class: 'entry-header' }, h('div', { class: 'entry-meta' }, badge, headTime));
+      var header = h('div', { class: 'entry-header' }, h('div', { class: 'entry-meta' }, badge, siteBadge, headTime));
       var quickWrap = h('div', { class: 'entry-quick' }, quickCopyBtn, quickOpenBtn);
       return h('div', cardProps, header, ...body, quickWrap);
     }
