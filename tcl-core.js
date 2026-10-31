@@ -570,7 +570,9 @@
   //   - at 是本機顯示用的最後出現時間，取 max(receivedAt, seen 最大 at)。
   //   - url 取較新的一方:同一個合併鍵可能對應不同的乾淨網址(Threads 的
   //     handle 改名、Instagram 的 /p 與 /reel)，本機卡的 at 晚於雲端這筆的
-  //     最後事件時留本機的 url，否則用雲端的 cleaned。
+  //     最後事件時留本機的 url，否則用雲端的 cleaned。這條規則只管 url;
+  //     author/handle/excerpt/removedParams 一律以雲端有值者為準，雲端缺席才
+  //     沿用本機。
   //   - dirty 清為 false(剛從雲端拉下來)、deletedAt 清為 null(雲端仍存在的
   //     卡片必須復活，否則別台裝置重新分享的貼文在這台永遠看不到)。
   function fromSyncItem(item, existing) {
