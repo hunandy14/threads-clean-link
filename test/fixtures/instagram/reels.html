@@ -1,0 +1,99 @@
+<!--
+  Instagram Reels 牆（pathname '/reels/FXREEL0001/'）的最小 DOM。手寫、匿名。
+  層級比照 2026-11-01 zh-tw 實測：每則 reel 是一個項目，媒體區疊著作者
+  （/<user>/reels/ 形狀）與說明，旁邊是直排的互動欄（讚、計數、留言、計數、
+  轉發、計數、分享、儲存、更多、配樂縮圖）。
+  - fx-reel-prev：作用中之前的一則，沒有 DOM permalink。
+  - fx-reel-active：作用中那一則，帶 a[href="/reels/FXREEL0001/"]，與網址列一
+    致。（實測快照沒錄到作用中項目的 permalink 節點，形狀為假設，見測試檔
+    註解。）
+  - fx-reel-ad：廣告，沒有 permalink。
+  - fx-reel-next：下一則，permalink 是 /reels/FXREEL0002/，與網址列不同，
+    捲動到它之前都不算作用中。
+-->
+<main role="main">
+  <div id="fx-reels-wall">
+    <div id="fx-reel-prev" data-virtualized="false">
+      <div>
+        <div><video></video></div>
+        <div>
+          <a aria-label="fx_author_d的 Reel" href="/fx_author_d/reels/" role="link"><span dir="auto">fx_author_d</span></a>
+          <div aria-disabled="false" role="button"><div dir="auto"><span>示意前一則短片說明</span><span aria-hidden="true">… 更多</span></div></div>
+        </div>
+      </div>
+      <div id="fx-reel-prev-row" style="display: flex; flex-direction: column">
+        <span><div data-visualcompletion="ignore-dynamic"><div role="button"><div><span><svg aria-label="讚" role="img"><title>讚</title></svg></span></div></div></div></span>
+        <div role="button"><span dir="auto"><span>3,210</span></span></div>
+        <div aria-expanded="false" aria-haspopup="menu" role="button"><div><svg aria-label="留言" role="img"><title>留言</title></svg></div></div>
+        <div role="button"><span dir="auto"><span>45</span></span></div>
+        <div role="button"><svg aria-label="轉發" role="img"><title>轉發</title></svg></div>
+        <div role="button"><span dir="auto"><span>6</span></span></div>
+        <div role="button" id="fx-reel-prev-share"><svg aria-label="分享" role="img"><title>分享</title></svg><div role="none"></div></div>
+        <div id="fx-reel-prev-save"><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
+        <div aria-expanded="false" aria-haspopup="dialog" role="button"><div><svg aria-label="更多" role="img"><title>更多</title></svg></div></div>
+        <a href="/fx_author_d/audio/1000000002/" role="link"><img alt="" src="about:blank"></a>
+      </div>
+    </div>
+
+    <div id="fx-reel-active" data-virtualized="false">
+      <div>
+        <a href="/reels/FXREEL0001/" role="link" tabindex="-1"><div><video></video></div></a>
+        <div>
+          <a aria-label="fx_author_e的 Reel" href="/fx_author_e/reels/" role="link"><span role="link"><img alt="" src="about:blank"></span></a>
+          <a aria-label="fx_author_e的 Reel" href="/fx_author_e/reels/" role="link"><span dir="auto">fx_author_e</span></a>
+          <a href="/fx_author_e/locations/1000000003/" role="link"><span dir="auto"><span>示意地點</span></span></a>
+          <div aria-disabled="false" role="button"><div dir="auto"><span>示意作用中短片說明，第一則合成內容。</span><span aria-hidden="true">… 更多</span></div></div>
+        </div>
+      </div>
+      <div id="fx-reel-active-row" style="display: flex; flex-direction: column">
+        <span><div data-visualcompletion="ignore-dynamic"><div role="button"><div><span><svg aria-label="讚" role="img"><title>讚</title></svg></span></div></div></div></span>
+        <div role="button"><span dir="auto"><span>1.2萬</span></span></div>
+        <div aria-expanded="false" aria-haspopup="menu" role="button"><div><svg aria-label="留言" role="img"><title>留言</title></svg></div></div>
+        <div role="button"><span dir="auto"><span>345</span></span></div>
+        <div role="button"><svg aria-label="轉發" role="img"><title>轉發</title></svg></div>
+        <div role="button"><span dir="auto"><span>67</span></span></div>
+        <div role="button" id="fx-reel-active-share"><svg aria-label="分享" role="img"><title>分享</title></svg><div role="none"></div></div>
+        <div id="fx-reel-active-save"><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
+        <div aria-expanded="false" aria-haspopup="dialog" role="button"><div><svg aria-label="更多" role="img"><title>更多</title></svg></div></div>
+        <a href="/fx_author_e/audio/1000000004/" role="link"><img alt="" src="about:blank"></a>
+      </div>
+    </div>
+
+    <div id="fx-reel-ad" data-virtualized="false">
+      <div>
+        <div><video></video></div>
+        <div>
+          <a href="/fx_ad_brand/" role="link"><span dir="auto">fx_ad_brand</span></a>
+          <span dir="auto">贊助</span>
+          <a href="https://shop.example/reel-landing" role="link"><span dir="auto">瞭解詳情</span></a>
+        </div>
+      </div>
+      <div id="fx-reel-ad-row" style="display: flex; flex-direction: column">
+        <span><div role="button"><svg aria-label="讚" role="img"><title>讚</title></svg></div></span>
+        <div aria-haspopup="menu" role="button"><svg aria-label="留言" role="img"><title>留言</title></svg></div>
+        <div role="button"><svg aria-label="分享" role="img"><title>分享</title></svg></div>
+        <div><div aria-disabled="false" role="button"><div role="button"><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div>
+        <div aria-haspopup="dialog" role="button"><svg aria-label="更多" role="img"><title>更多</title></svg></div>
+      </div>
+    </div>
+
+    <div id="fx-reel-next" data-virtualized="false">
+      <div>
+        <a href="/reels/FXREEL0002/" role="link" tabindex="-1"><div><video></video></div></a>
+        <div>
+          <a aria-label="fx_author_f的 Reel" href="/fx_author_f/reels/" role="link"><span dir="auto">fx_author_f</span></a>
+          <div aria-disabled="false" role="button"><div dir="auto"><span>示意下一則短片說明</span></div></div>
+        </div>
+      </div>
+      <div id="fx-reel-next-row" style="display: flex; flex-direction: column">
+        <span><div data-visualcompletion="ignore-dynamic"><div role="button"><div><span><svg aria-label="讚" role="img"><title>讚</title></svg></span></div></div></div></span>
+        <div role="button"><span dir="auto"><span>99</span></span></div>
+        <div aria-expanded="false" aria-haspopup="menu" role="button"><div><svg aria-label="留言" role="img"><title>留言</title></svg></div></div>
+        <div role="button"><svg aria-label="轉發" role="img"><title>轉發</title></svg></div>
+        <div role="button" id="fx-reel-next-share"><svg aria-label="分享" role="img"><title>分享</title></svg><div role="none"></div></div>
+        <div id="fx-reel-next-save"><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
+        <div aria-expanded="false" aria-haspopup="dialog" role="button"><div><svg aria-label="更多" role="img"><title>更多</title></svg></div></div>
+      </div>
+    </div>
+  </div>
+</main>

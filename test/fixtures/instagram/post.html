@@ -1,0 +1,94 @@
+<!--
+  Instagram 單篇貼文頁（pathname '/fx_author_c/p/FXPOST0001/'）的最小 DOM。手
+  寫、匿名。層級比照 2026-11-01 zh-tw 實測：
+  - 沒有 article；互動列是「同時含讚與儲存 svg 的 section」，往上兩層
+    （fx-post-info）是資訊欄，也就是本篇的容器。媒體欄是資訊欄的兄弟節點。
+  - 資訊欄內：標頭（作者、追蹤）、caption（作者連結＋時間＋全文）、一則
+    留言、互動列 section、日期連結、留言輸入 section（只有表情符號，無讚）。
+  - fx-post-more 是頁面下方「更多貼文」干擾區：一排 /<user>/p/<code>/ 縮圖連
+    結，不得被當成本篇。
+-->
+<nav>
+  <a href="/" role="link"><span dir="auto">首頁</span></a>
+  <a href="/explore/" role="link"><span dir="auto">探索</span></a>
+  <a href="/reels/" role="link"><span dir="auto">Reels</span></a>
+</nav>
+<main role="main">
+  <div>
+    <div id="fx-post-wrapper">
+      <div id="fx-post-media">
+        <div role="presentation"><ul><li><img alt="" src="about:blank"></li><li><img alt="" src="about:blank"></li></ul></div>
+        <button aria-label="下一步" type="button"></button>
+      </div>
+      <div id="fx-post-info">
+        <div>
+          <div>
+            <span role="link" tabindex="0"><img alt="" src="about:blank"></span>
+            <span dir="auto"><span><span><div><a href="/fx_author_c/" role="link"><div><div><span dir="auto">fx_author_c</span></div></div></a></div></span></span></span>
+            <div><svg aria-label="已驗證" role="img"><title>已驗證</title></svg></div>
+          </div>
+          <div><div role="button">追蹤</div></div>
+          <div aria-expanded="false" aria-haspopup="dialog" role="button">
+            <svg aria-label="更多選項" role="img"><title>更多選項</title></svg>
+          </div>
+        </div>
+        <hr>
+        <div>
+          <div id="fx-post-caption">
+            <div><span><div><a href="/fx_author_c/" role="link"><img alt="" src="about:blank"></a></div></span></div>
+            <div>
+              <span dir="auto">
+                <div><div><span><span><div><a href="/fx_author_c/" role="link"><div><div><span dir="auto">fx_author_c</span></div></div></a></div></span></span>&nbsp;<span><time datetime="2026-10-23T03:30:05.000Z" title="2026年10月23日">1週</time></span></div></div>
+                <span>示意單篇內文第一行，介紹這間合成的房子。<br><br>示意單篇內文第二行，交通與生活機能。<br>示意單篇內文第三行，結尾。<br><a href="/explore/tags/%E7%A4%BA%E6%84%8F/" role="link">#示意</a></span>
+              </span>
+            </div>
+          </div>
+          <div id="fx-post-comment">
+            <div><a href="/fx_commenter/" role="link"><img alt="" src="about:blank"></a></div>
+            <div>
+              <a href="/fx_commenter/" role="link"><span dir="auto">fx_commenter</span></a>
+              <span dir="auto">示意留言：好漂亮</span>
+              <div role="button"><svg aria-label="讚" role="img"><title>讚</title></svg></div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <section id="fx-post-row">
+            <div id="fx-post-left">
+              <span><div data-visualcompletion="ignore-dynamic"><div role="button"><div><span><svg aria-label="讚" role="img"><title>讚</title></svg></span></div></div></div></span>
+              <span role="button">12</span>
+              <span><div role="button"><div><svg aria-label="回應" role="img"><title>回應</title></svg></div></div></span>
+              <div role="button"><svg aria-label="轉發" role="img"><title>轉發</title></svg><div role="none"></div></div>
+              <div role="button" id="fx-post-share"><svg aria-label="分享" role="img"><title>分享</title></svg><div role="none"></div></div>
+            </div>
+            <div id="fx-post-right" data-visualcompletion="ignore-dynamic">
+              <div><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
+            </div>
+          </section>
+          <div>
+            <div dir="auto"><a href="/fx_author_c/p/FXPOST0001/" role="link"><span dir="auto"><time datetime="2026-10-23T03:30:02.000Z" title="2026年10月23日">10月23日</time></span></a></div>
+          </div>
+        </div>
+        <div>
+          <section>
+            <div>
+              <form method="POST">
+                <div aria-expanded="false" aria-haspopup="dialog" role="button"><svg aria-label="表情符號" role="img"><title>表情符號</title></svg></div>
+                <textarea aria-label="留言⋯⋯" placeholder="留言⋯⋯"></textarea>
+              </form>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+    <div id="fx-post-more">
+      <hr>
+      <div dir="auto">更多 <a href="/fx_author_c/" role="link">fx_author_c</a> 的貼文</div>
+      <div>
+        <a href="/fx_author_c/p/FXMORE0001/" role="link"><div><img alt="" src="about:blank"><svg aria-label="輪播廣告" role="img"><title>輪播廣告</title></svg></div></a>
+        <a href="/fx_author_c/p/FXMORE0002/" role="link"><div><img alt="" src="about:blank"></div></a>
+        <a href="/fx_author_c/reel/FXMORE0003/" role="link"><div><video></video></div></a>
+      </div>
+    </div>
+  </div>
+</main>
