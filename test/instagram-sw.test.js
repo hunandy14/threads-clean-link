@@ -121,7 +121,8 @@ test('A2-2 cleanedNotice：Instagram 的 original 與 removedParams（{key,value
   const e = sw.history()[0];
   assert.ok(e, '前置：必須寫入');
   assert.equal(e.original, IG_ORIGINAL);
-  assert.deepEqual(e.removedParams, [
+  // removedParams 在 vm 沙箱內建立，跨 realm 的原型不同，先 JSON 複製成本 realm 物件再深比對。
+  assert.deepEqual(JSON.parse(JSON.stringify(e.removedParams)), [
     { key: 'igsh', value: 'xyz' },
     { key: 'utm_source', value: 'a' },
   ]);
@@ -344,18 +345,59 @@ test('A3-2 下行：雲端的 Instagram 項目被接受並落地（url 原樣、
   assert.equal(e.author, 'From Phone');
 });
 
-test('A3-3 下行合併：本機 /p/X/ 與雲端 /reel/X/ 是同一張卡（postKey 相同）', async () => {
+// 下行合併的 url 規則：本機卡 at 晚於雲端最後一筆 seen 事件時留本機 url，否則
+// 用雲端 url；original 取雲端值，seen 取兩邊聯集。兩個方向各釘一例。
+const IG_CLOUD_ORIGINAL = IG_REEL + '?igsh=cloud';
+
+async function mergeIgDown(localAt, cloudAt) {
   const TCLSync = loadSync();
-  const env = createSyncEnv({ signedIn: true, history: [igEntry({ id: 'loc-ig', url: IG_P, postKey: postKeyOf(IG_P), dirty: false, serverUpdatedAt: T0 - 500_000 })] });
-  env.server.seed([{ id: 'loc-ig', original: IG_REEL, cleaned: IG_REEL, receivedAt: T0 - 200_000, seen: [{ at: T0 - 200_000 }] }]);
+  const env = createSyncEnv({
+    signedIn: true,
+    history: [
+      igEntry({
+        id: 'loc-ig',
+        url: IG_P,
+        postKey: postKeyOf(IG_P),
+        original: IG_P + '?igsh=local',
+        at: localAt,
+        receivedAt: localAt,
+        seen: [{ at: localAt, kind: 'icon' }],
+        dirty: false,
+        serverUpdatedAt: T0 - 900_000,
+      }),
+    ],
+  });
+  env.server.seed([
+    { id: 'loc-ig', original: IG_CLOUD_ORIGINAL, cleaned: IG_REEL, receivedAt: cloudAt, seen: [{ at: cloudAt, source: 'share' }] },
+  ]);
   const engine = TCLSync.create(env.deps);
   await engine.syncNow();
   await syncSettle();
+  return env.storage.history().filter((x) => x.deletedAt == null);
+}
 
-  const list = env.storage.history().filter((x) => x.deletedAt == null);
+function assertMergedCard(list, localAt, cloudAt) {
   assert.equal(list.length, 1, '同一個 shortcode 不得分裂成兩張卡');
   assert.equal(list[0].postKey, 'instagram:Db44wsMgVBI');
-  assert.notEqual(list[0].serverUpdatedAt, T0 - 500_000, '雲端那一版必須真的套用到本機卡（不是原封未動）');
+  assert.equal(list[0].original, IG_CLOUD_ORIGINAL, 'original 取雲端值');
+  const ats = list[0].seen.map((x) => x.at).sort((x, y) => x - y);
+  assert.deepEqual(ats, [localAt, cloudAt].sort((x, y) => x - y), 'seen 取兩邊聯集');
+}
+
+test('A3-3a 下行合併：本機 at 晚於雲端最後事件 → 留本機 url（/p/），original 取雲端、seen 聯集', async () => {
+  const localAt = T0 - 60_000;
+  const cloudAt = T0 - 200_000;
+  const list = await mergeIgDown(localAt, cloudAt);
+  assertMergedCard(list, localAt, cloudAt);
+  assert.equal(list[0].url, IG_P, '本機較新，url 留本機');
+});
+
+test('A3-3b 下行合併：本機 at 早於雲端最後事件 → 用雲端 url（/reel/），original 取雲端、seen 聯集', async () => {
+  const localAt = T0 - 500_000;
+  const cloudAt = T0 - 200_000;
+  const list = await mergeIgDown(localAt, cloudAt);
+  assertMergedCard(list, localAt, cloudAt);
+  assert.equal(list[0].url, IG_REEL, '雲端較新，url 用雲端');
 });
 
 // ---- marks 不得送 instagram ----
