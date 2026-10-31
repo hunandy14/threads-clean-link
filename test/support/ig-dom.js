@@ -760,8 +760,27 @@ class MiniElement extends MiniNode {
   }
   focus() {}
   blur() {}
+  // 帶 data-fx-top 的元素回傳 top＝該值、高度＝data-fx-height(預設 900)的
+  // rect，供 reels 作用中判斷的測試 stub 版面；其餘元素照舊回傳全 0。
   getBoundingClientRect() {
-    return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+    const top = this.getAttribute('data-fx-top');
+    if (top === null) {
+      return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+    }
+    const t = Number(top);
+    const hAttr = this.getAttribute('data-fx-height');
+    const h = hAttr === null ? 900 : Number(hAttr);
+    return { x: 0, y: t, width: 400, height: h, top: t, left: 0, right: 400, bottom: t + h };
+  }
+  // <video> 的播放狀態:可直接指派 paused；未指派時帶 data-fx-playing 屬性
+  // 視為播放中(paused 為 false)，否則 true。非 video 元素為 undefined。
+  get paused() {
+    if (this._fxPaused !== undefined) return this._fxPaused;
+    if (this.localName !== 'video') return undefined;
+    return !this.hasAttribute('data-fx-playing');
+  }
+  set paused(value) {
+    this._fxPaused = !!value;
   }
   getClientRects() {
     return [];
@@ -1126,6 +1145,7 @@ function createSiteEnv(options) {
   const windowListeners = createListenerTable();
   const sandbox = {
     location,
+    innerHeight: settings.innerHeight === undefined ? 900 : settings.innerHeight,
     navigator: {
       language: 'zh-TW',
       clipboard: {

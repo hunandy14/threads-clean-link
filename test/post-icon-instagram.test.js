@@ -9,10 +9,11 @@
 //     post-icon 載進 sandbox，在 fixture 頁面上跑完整注入、點擊與退場。
 //
 // fixture（test/fixtures/instagram/*.html）手寫、匿名，層級比照 2026-11-01
-// zh-tw 實測。Reels 作用中項目的 permalink 節點依 2026-11 真機證據為
-// a[href="/reel/<code>/<數字媒體 id>/"]（也可能沒有尾段 id），網址列則是
-// /reels/<code>/；兩邊以 code 比對，「只在 permalink 與網址列同一則的那則放
-// 按鈕」，複製的是去掉尾段 id 的 /reel/<code>/。
+// zh-tw 實測。Reels 牆上的項目沒有指向本則的錨點（真機證據：reels 無
+// permalink 錨點；/reels/audio/<id>/ 是配樂縮圖連結），permalink 取網址列
+// /reels/<code>/ 的 code 組成 /reel/<code>/；作用中那則靠位置判斷（rect 涵蓋
+// 視窗中線，rect 全 0 時退回正在播放的 video），fixture 以 data-fx-top 屬性
+// stub 版面。
 //
 // 整合層的環境預設開啟 Trusted Types 強制模式：對 innerHTML 指派一般字串會
 // 丟 TypeError（Instagram 的 CSP 就是如此），所以按鈕的 svg 必須用
@@ -42,7 +43,7 @@ const REELS_CANONICAL = ORIGIN + '/reel/FXREEL0001/';
 
 const FEED_CTX = { pageType: 'feed', pathname: FEED_PATH, origin: ORIGIN };
 const POST_CTX = { pageType: 'post', pathname: POST_PATH, origin: ORIGIN };
-const REELS_CTX = { pageType: 'reels', pathname: REELS_PATH, origin: ORIGIN };
+const REELS_CTX = { pageType: 'reels', pathname: REELS_PATH, origin: ORIGIN, innerHeight: 900 };
 
 const FEED_CAPTION = '示意動態內文第一段，這是一則合成的貼文說明，用來驗證摘要擷取。';
 const POST_LINES = [
@@ -278,7 +279,7 @@ function reelsContainerOf(ig, doc, rowId) {
   return Array.from(ig.findContainers(doc, REELS_CTX)).find((c) => c.contains(row)) || null;
 }
 
-test('C2 reels：每個容器只含一則 reel；只有 permalink 等於網址列的那一則有 permalink', () => {
+test('C2 reels：只回傳作用中那一則（rect 涵蓋視窗中線），permalink 取網址列的 code', () => {
   const ig = instagram();
   const doc = fixtureDoc('reels.html');
   const containers = Array.from(ig.findContainers(doc, REELS_CTX));
@@ -289,10 +290,38 @@ test('C2 reels：每個容器只含一則 reel；只有 permalink 等於網址�
   assert.ok(active, '作用中那一則要在容器清單裡');
   assert.equal(ig.canonicalUrl(ig.permalinkOf(active, REELS_CTX), ORIGIN), REELS_CANONICAL);
 
+  assert.equal(containers.length, 1, '只有作用中那一則');
   ['fx-reel-prev-row', 'fx-reel-ad-row', 'fx-reel-next-row'].forEach((rowId) => {
-    const c = reelsContainerOf(ig, doc, rowId);
-    if (c) assert.equal(ig.permalinkOf(c, REELS_CTX), null, rowId + ' 不是作用中，不得有 permalink');
+    assert.equal(reelsContainerOf(ig, doc, rowId), null, rowId + ' 不是作用中');
   });
+});
+
+test('C2 reels：所有 rect 高度為 0（沒有版面）時，退回 video.paused === false 的那一則', () => {
+  const ig = instagram();
+  const doc = fixtureDoc('reels.html');
+  doc.querySelectorAll('[data-fx-top]').forEach((n) => n.removeAttribute('data-fx-top'));
+  doc.getElementById('fx-reel-active').querySelector('video').paused = true;
+  doc.getElementById('fx-reel-next').querySelector('video').paused = false;
+  const containers = Array.from(ig.findContainers(doc, REELS_CTX));
+  assert.deepEqual(containers.map((c) => c.id), ['fx-reel-next']);
+});
+
+test('C2 reels：pathname 有 code 但判不出作用中（無版面、無播放中）時不回傳容器', () => {
+  const ig = instagram();
+  const doc = fixtureDoc('reels.html');
+  doc.querySelectorAll('[data-fx-top]').forEach((n) => n.removeAttribute('data-fx-top'));
+  doc.querySelectorAll('video').forEach((v) => {
+    v.paused = true;
+  });
+  assert.deepEqual(Array.from(ig.findContainers(doc, REELS_CTX)), []);
+});
+
+test('C2 reels：/reels/audio/<id>/ 不是 reel code，不回傳容器、沒有 permalink', () => {
+  const ig = instagram();
+  const doc = fixtureDoc('reels.html');
+  const ctx = { pageType: 'reels', pathname: '/reels/audio/1000000102/', origin: ORIGIN, innerHeight: 900 };
+  assert.deepEqual(Array.from(ig.findContainers(doc, ctx)), []);
+  assert.equal(ig.permalinkOf(doc.getElementById('fx-reel-active'), ctx), null);
 });
 
 test('C2 reels：互動列是直排欄，插入點在分享與儲存之間；作者連結形狀 /<user>/reels/', () => {
@@ -403,6 +432,8 @@ test('C2 整合 reels：捲到下一則（網址列改變）後按鈕跟著移�
   assert.ok(iconIn(env, 'fx-reel-active'), '前提：作用中那一則有按鈕');
 
   env.setPathname(REELS_NEXT_PATH);
+  env.byId('fx-reel-active').setAttribute('data-fx-top', '-968');
+  env.byId('fx-reel-next').setAttribute('data-fx-top', '0');
   env.poke();
   await settle();
 
@@ -414,7 +445,23 @@ test('C2 整合 reels：捲到下一則（網址列改變）後按鈕跟著移�
   assert.equal(ids[at + 1], 'fx-reel-next-save');
 
   await clickIcon(env, iconIn(env, 'fx-reel-next'));
-  assert.deepEqual(env.clipboardWrites, [ORIGIN + '/reel/FXREEL0002/'], '沒有尾段 id 的 /reel/<code>/ 也要命中');
+  assert.deepEqual(env.clipboardWrites, [ORIGIN + '/reel/FXREEL0002/'], '複製網址列 code 組成的 /reel/<code>/');
+});
+
+test('C2 整合 reels：網址列是 /reels/audio/<id>/ 時不放按鈕', async () => {
+  const env = await loadPage('reels.html', '/reels/audio/1000000102/');
+  assert.equal(env.icons().length, 0);
+});
+
+test('C2 整合 reels：pathname 有 code 但判不出作用中那則時不放按鈕', async () => {
+  const env = createSiteEnv({ origin: ORIGIN, pathname: REELS_PATH, html: readFixture('reels.html') });
+  env.document.querySelectorAll('[data-fx-top]').forEach((n) => n.removeAttribute('data-fx-top'));
+  env.document.querySelectorAll('video').forEach((v) => {
+    v.paused = true;
+  });
+  env.loadPostIcon();
+  await settle();
+  assert.equal(env.icons().length, 0);
 });
 
 test('C2 標籤備援：svg 沒有 aria-label、只有英文 <title> 時照樣認出互動列', async () => {
