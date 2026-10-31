@@ -494,7 +494,8 @@
   // ============================================================
   // 站點設定:DOM 注入層(守衛內)不寫死任何站點的版面知識，一律透過目前站
   // 點的設定物件讀取。設定物件全是純函式，不讀全域 document／location，網
-  // 址資訊從 ctx = { pageType, pathname, origin } 取得。每份設定提供:
+  // 址資訊從 ctx = { pageType, pathname, origin } 取得(ctx.innerHeight 為選
+  // 填的視窗高度，Instagram reels 判斷作用中項目用)。每份設定提供:
   //   id                       → 'threads' | 'instagram'
   //   matches(hostname)        → boolean，此站點是否負責這個主機名稱
   //   pageType(pathname)       → 頁型字串；回傳 null 表示這一頁不放按鈕
@@ -602,9 +603,9 @@
   var IG_CANONICAL_PATH_RE = /^\/(?:[^/]+\/)?((?:p|reel|reels|tv)\/[^/]+\/?)$/;
   // reels 牆上的錨點形狀「/reel/<code>/<數字媒體 id>/」:canonical 去掉尾段 id。
   var IG_REEL_MEDIA_ID_PATH_RE = /^\/(?:[^/]+\/)?(reel\/[^/]+\/)\d+\/?$/;
-  // 從 /reel/<code>/、/reel/<code>/<id>/、/reels/<code>/(可帶使用者前綴)取出
-  // code。
-  var IG_REEL_CODE_RE = /^\/(?:[^/]+\/)?reels?\/([^/]+)\/(?:\d+\/?)?$/;
+  // reels 牆網址列「/reels/<code>/」中的 code。第二段為 audio 的
+  // 「/reels/audio/<id>/」是配樂頁，不是 code，由 igReelCodeFromPath 排除。
+  var IG_REEL_CODE_RE = /^\/reels\/([^/]+)\/$/;
   // Node.DOCUMENT_POSITION_FOLLOWING
   var DOCUMENT_POSITION_FOLLOWING = 4;
 
@@ -756,30 +757,40 @@
     return items;
   }
 
-  // 路徑(去 query／hash)中的 reel code，不是 reel 路徑回傳 null。
-  function igReelCode(value) {
-    if (typeof value !== 'string' || !value) return null;
-    try {
-      var match = IG_REEL_CODE_RE.exec(new URL(value, 'http://tcl-path-placeholder.invalid').pathname);
-      return match ? match[1] : null;
-    } catch (e) {
-      return null;
-    }
+  // 網址列 pathname 中的 reel code；不是「/reels/<code>/」或第二段為 audio
+  // 時回傳 null。
+  function igReelCodeFromPath(pathname) {
+    var match = typeof pathname === 'string' ? IG_REEL_CODE_RE.exec(pathname) : null;
+    return match && match[1] !== 'audio' ? match[1] : null;
   }
 
-  // reel 的 permalink:項目內 a[href^="/reel/"] 且 code 與網址列(/reels/<code>/
-  // 或 /reel/<code>/)相同者。只有作用中那則一致，其餘回傳 null。錨點形狀依
-  // 2026-11 真機實測為 /reel/<code>/<數字媒體 id>/，也接受沒有尾段 id 的
-  // /reel/<code>/。
-  function igReelPermalink(item, ctx) {
-    if (!ctx) return null;
-    var target = igReelCode(ctx.pathname);
-    if (!target) return null;
-    var anchors = item.querySelectorAll('a');
-    for (var i = 0; i < anchors.length; i++) {
-      var href = anchors[i].getAttribute('href');
-      if (typeof href !== 'string' || href.indexOf('/reel/') !== 0) continue;
-      if (igReelCode(href) === target) return href;
+  // reels 頁型的 permalink:網址列的 code 組成「/reel/<code>/」。reels 牆上
+  // 的項目沒有指向本則的錨點(2026-11 真機實測，/reels/audio/<id>/ 是配樂
+  // 縮圖連結)，permalink 只能取網址列。
+  function igReelPermalinkFromPath(ctx) {
+    var code = ctx ? igReelCodeFromPath(ctx.pathname) : null;
+    if (!code) return null;
+    return (typeof ctx.origin === 'string' ? ctx.origin : '') + '/reel/' + code + '/';
+  }
+
+  // 作用中那則 reel:項目沒有屬性標記，以位置判斷——getBoundingClientRect
+  // 涵蓋視窗垂直中線(win.innerHeight / 2)者。所有項目 rect 高度皆為 0(沒
+  // 有版面)時，退回 video.paused === false(正在播放)的那則。都找不到回傳
+  // null。
+  function igReelActiveItem(items, win) {
+    var mid = win && typeof win.innerHeight === 'number' ? win.innerHeight / 2 : null;
+    var hasLayout = false;
+    var i;
+    for (i = 0; i < items.length; i++) {
+      var rect = typeof items[i].getBoundingClientRect === 'function' ? items[i].getBoundingClientRect() : null;
+      if (!rect || !(rect.height > 0)) continue;
+      hasLayout = true;
+      if (mid !== null && rect.top <= mid && rect.top + rect.height > mid) return items[i];
+    }
+    if (hasLayout) return null;
+    for (i = 0; i < items.length; i++) {
+      var video = items[i].querySelector('video');
+      if (video && video.paused === false) return items[i];
     }
     return null;
   }
@@ -791,8 +802,8 @@
       return typeof hostname === 'string' && /(^|\.)instagram\.com$/i.test(hostname);
     },
     pageType: igPageType,
-    // feed 與 reels 只回傳有 permalink 的容器:feed 的廣告沒有時間連結，
-    // reels 只有作用中那則的 permalink 與網址列一致。
+    // feed 只回傳有 permalink 的容器(廣告沒有時間連結)；reels 只回傳作用
+    // 中那一則(見 igReelActiveItem)，網址列沒有 code 時不回傳。
     findContainers: function (doc, ctx) {
       var type = ctx ? ctx.pageType : null;
       var out = [];
@@ -814,17 +825,16 @@
         return [];
       }
       if (type === 'reels') {
-        var items = igReelItems(doc);
-        for (i = 0; i < items.length; i++) {
-          if (igReelPermalink(items[i], ctx)) out.push(items[i]);
-        }
+        if (!igReelCodeFromPath(ctx.pathname)) return out;
+        var active = igReelActiveItem(igReelItems(doc), { innerHeight: ctx.innerHeight });
+        if (active) out.push(active);
       }
       return out;
     },
     permalinkOf: function (container, ctx) {
       var type = ctx ? ctx.pageType : null;
       if (type === 'feed') return igFeedPermalink(container);
-      if (type === 'reels') return igReelPermalink(container, ctx);
+      if (type === 'reels') return igReelPermalinkFromPath(ctx);
       if (type === 'post' && typeof ctx.pathname === 'string') {
         return (typeof ctx.origin === 'string' ? ctx.origin : '') + igStripUserPrefix(ctx.pathname);
       }
@@ -1004,7 +1014,8 @@
       // 供其他 content script 複用的 API。
       var site = pickSite(currentHostname());
 
-      // 交給站點設定的網址資訊，每次呼叫當下依 location 重新組出。
+      // 交給站點設定的網址資訊(與 reels 判斷作用中項目用的視窗高度)，每次
+      // 呼叫當下重新組出。
       function currentCtx() {
         var pathname = currentPathname();
         var loc = root.location;
@@ -1012,6 +1023,7 @@
           pageType: site ? site.pageType(pathname) : null,
           pathname: pathname,
           origin: loc && typeof loc.origin === 'string' ? loc.origin : '',
+          innerHeight: typeof root.innerHeight === 'number' ? root.innerHeight : undefined,
         };
       }
 

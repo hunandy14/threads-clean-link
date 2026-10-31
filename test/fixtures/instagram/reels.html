@@ -4,15 +4,19 @@
   （/<user>/reels/ 形狀）與說明，旁邊是直排的互動欄（讚、計數、留言、計數、
   轉發、計數、分享、儲存、更多、配樂縮圖）。
   - fx-reel-prev：作用中之前的一則，沒有 DOM permalink。
-  - fx-reel-active：作用中那一則，帶 a[href="/reel/FXREEL0001/<數字媒體 id>/"]，
-    code 與網址列一致（真機證據：reels permalink 形狀）。
+  - fx-reel-active：作用中那一則。項目內沒有指向本則的錨點（真機證據：
+    reels 無 permalink 錨點），permalink 取網址列的 code；作用中與否靠位置
+    判斷，data-fx-top 讓測試替身的 getBoundingClientRect 回傳 top（高 900、
+    視窗高 900，涵蓋中線 450 的那則即作用中），其餘項目為 968 的倍數。
+    video 帶 data-fx-playing 表示播放中（rect 全 0 時的退路）。
+  - 每則按鈕欄最後都有 /reels/audio/<id>/ 配樂縮圖連結，不是 permalink。
   - fx-reel-ad：廣告，沒有 permalink。
-  - fx-reel-next：下一則，permalink 是 /reel/FXREEL0002/（沒有尾段 id），與網址列不同，
+  - fx-reel-next：下一則，位置在視窗外，
     捲動到它之前都不算作用中。
 -->
 <main role="main">
   <div id="fx-reels-wall">
-    <div id="fx-reel-prev" data-virtualized="false">
+    <div id="fx-reel-prev" data-virtualized="false" data-fx-top="-968">
       <div>
         <div><video></video></div>
         <div>
@@ -31,12 +35,13 @@
         <div id="fx-reel-prev-save"><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
         <div aria-expanded="false" aria-haspopup="dialog" role="button"><div><svg aria-label="更多" role="img"><title>更多</title></svg></div></div>
         <a href="/fx_author_d/audio/1000000002/" role="link"><img alt="" src="about:blank"></a>
+        <a href="/reels/audio/1000000101/" role="link"><img alt="" src="about:blank"></a>
       </div>
     </div>
 
-    <div id="fx-reel-active" data-virtualized="false">
+    <div id="fx-reel-active" data-virtualized="false" data-fx-top="0">
       <div>
-        <a href="/reel/FXREEL0001/27857656860525429/" role="link" tabindex="-1"><div><video></video></div></a>
+        <div><video data-fx-playing=""></video></div>
         <div>
           <a aria-label="fx_author_e的 Reel" href="/fx_author_e/reels/" role="link"><span role="link"><img alt="" src="about:blank"></span></a>
           <a aria-label="fx_author_e的 Reel" href="/fx_author_e/reels/" role="link"><span dir="auto">fx_author_e</span></a>
@@ -55,10 +60,11 @@
         <div id="fx-reel-active-save"><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
         <div aria-expanded="false" aria-haspopup="dialog" role="button"><div><svg aria-label="更多" role="img"><title>更多</title></svg></div></div>
         <a href="/fx_author_e/audio/1000000004/" role="link"><img alt="" src="about:blank"></a>
+        <a href="/reels/audio/1000000102/" role="link"><img alt="" src="about:blank"></a>
       </div>
     </div>
 
-    <div id="fx-reel-ad" data-virtualized="false">
+    <div id="fx-reel-ad" data-virtualized="false" data-fx-top="968">
       <div>
         <div><video></video></div>
         <div>
@@ -73,12 +79,13 @@
         <div role="button"><svg aria-label="分享" role="img"><title>分享</title></svg></div>
         <div><div aria-disabled="false" role="button"><div role="button"><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div>
         <div aria-haspopup="dialog" role="button"><svg aria-label="更多" role="img"><title>更多</title></svg></div>
+        <a href="/reels/audio/1000000103/" role="link"><img alt="" src="about:blank"></a>
       </div>
     </div>
 
-    <div id="fx-reel-next" data-virtualized="false">
+    <div id="fx-reel-next" data-virtualized="false" data-fx-top="1936">
       <div>
-        <a href="/reel/FXREEL0002/" role="link" tabindex="-1"><div><video></video></div></a>
+        <div><video></video></div>
         <div>
           <a aria-label="fx_author_f的 Reel" href="/fx_author_f/reels/" role="link"><span dir="auto">fx_author_f</span></a>
           <div aria-disabled="false" role="button"><div dir="auto"><span>示意下一則短片說明</span></div></div>
@@ -92,6 +99,7 @@
         <div role="button" id="fx-reel-next-share"><svg aria-label="分享" role="img"><title>分享</title></svg><div role="none"></div></div>
         <div id="fx-reel-next-save"><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
         <div aria-expanded="false" aria-haspopup="dialog" role="button"><div><svg aria-label="更多" role="img"><title>更多</title></svg></div></div>
+        <a href="/reels/audio/1000000104/" role="link"><img alt="" src="about:blank"></a>
       </div>
     </div>
   </div>
