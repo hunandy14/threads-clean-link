@@ -4,11 +4,10 @@
   （/<user>/reels/ 形狀）與說明，旁邊是直排的互動欄（讚、計數、留言、計數、
   轉發、計數、分享、儲存、更多、配樂縮圖）。
   - fx-reel-prev：作用中之前的一則，沒有 DOM permalink。
-  - fx-reel-active：作用中那一則，帶 a[href="/reels/FXREEL0001/"]，與網址列一
-    致。（實測快照沒錄到作用中項目的 permalink 節點，形狀為假設，見測試檔
-    註解。）
+  - fx-reel-active：作用中那一則，帶 a[href="/reel/FXREEL0001/<數字媒體 id>/"]，
+    code 與網址列一致（真機證據：reels permalink 形狀）。
   - fx-reel-ad：廣告，沒有 permalink。
-  - fx-reel-next：下一則，permalink 是 /reels/FXREEL0002/，與網址列不同，
+  - fx-reel-next：下一則，permalink 是 /reel/FXREEL0002/（沒有尾段 id），與網址列不同，
     捲動到它之前都不算作用中。
 -->
 <main role="main">
@@ -37,7 +36,7 @@
 
     <div id="fx-reel-active" data-virtualized="false">
       <div>
-        <a href="/reels/FXREEL0001/" role="link" tabindex="-1"><div><video></video></div></a>
+        <a href="/reel/FXREEL0001/27857656860525429/" role="link" tabindex="-1"><div><video></video></div></a>
         <div>
           <a aria-label="fx_author_e的 Reel" href="/fx_author_e/reels/" role="link"><span role="link"><img alt="" src="about:blank"></span></a>
           <a aria-label="fx_author_e的 Reel" href="/fx_author_e/reels/" role="link"><span dir="auto">fx_author_e</span></a>
@@ -79,7 +78,7 @@
 
     <div id="fx-reel-next" data-virtualized="false">
       <div>
-        <a href="/reels/FXREEL0002/" role="link" tabindex="-1"><div><video></video></div></a>
+        <a href="/reel/FXREEL0002/" role="link" tabindex="-1"><div><video></video></div></a>
         <div>
           <a aria-label="fx_author_f的 Reel" href="/fx_author_f/reels/" role="link"><span dir="auto">fx_author_f</span></a>
           <div aria-disabled="false" role="button"><div dir="auto"><span>示意下一則短片說明</span></div></div>
