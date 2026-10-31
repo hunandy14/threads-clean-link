@@ -1,0 +1,128 @@
+<!--
+  Instagram 首頁動態（pathname '/'）的最小 DOM。手寫、匿名：帳號、貼文 code、
+  內文皆為合成值。層級與屬性比照 2026-11-01 zh-tw 實測：
+  - 貼文容器是 main 內的 article；permalink 是 time 外層 a 的 href。
+  - 互動列是 article 內的 section：第一個子節點是左組（讚／留言／轉發／分享，
+    各帶計數），第二個是右組（儲存）。
+  - 作者是 section 之前第一個 /<user>/ 形狀的 a[role=link]；內文在 section
+    之後，截斷時尾端掛一顆「更多」按鈕。
+  fx-feed-ad 是廣告：沒有 time，媒體連結卻長得像 /p/，不得被當成 permalink。
+-->
+<nav>
+  <a href="/" role="link"><span dir="auto">首頁</span></a>
+  <a href="/explore/" role="link"><span dir="auto">探索</span></a>
+  <a href="/reels/" role="link"><span dir="auto">Reels</span></a>
+  <a href="/direct/inbox/" role="link"><span dir="auto">訊息</span></a>
+  <a href="/fx_viewer/" role="link"><span dir="auto">個人檔案</span></a>
+</nav>
+<main role="main">
+  <div>
+    <article id="fx-feed-normal">
+      <div>
+        <div>
+          <span role="link" tabindex="0"><img alt="" src="about:blank"></span>
+        </div>
+        <div>
+          <span dir="auto"><span><a href="/fx_author_a/" role="link"><span dir="auto">fx_author_a</span></a></span></span>
+          <div><svg aria-label="已驗證" role="img"><title>已驗證</title></svg></div>
+          <span dir="auto">•</span>
+          <a href="/p/FXFEED0001/" role="link"><span dir="auto"><time datetime="2026-10-30T16:10:34.000Z" title="2026年10月31日">1天</time></span></a>
+          <a href="/fx_author_a/audio/1000000001/" role="link"><span>示意配樂 • 示意演出者</span></a>
+        </div>
+        <div aria-expanded="false" aria-haspopup="dialog" role="button">
+          <svg aria-label="更多選項" role="img"><title>更多選項</title></svg>
+        </div>
+      </div>
+      <div>
+        <a href="/fx_author_a/FXFEED0001/" role="link"><div><video></video></div></a>
+        <div aria-label="Video player" role="group">
+          <div role="button"><svg aria-label="已靜音" role="img"><title>已靜音</title></svg></div>
+        </div>
+      </div>
+      <div>
+        <section id="fx-feed-normal-row">
+          <div id="fx-feed-normal-left" style="display: flex; flex-direction: row">
+            <span><div data-visualcompletion="ignore-dynamic"><div role="button"><div><span><svg aria-label="讚" role="img"><title>讚</title></svg></span></div></div></div></span>
+            <span role="button">1,234</span>
+            <span><div role="button"><div><svg aria-label="回應" role="img"><title>回應</title></svg></div></div></span>
+            <span role="button">56</span>
+            <div role="button"><svg aria-label="轉發" role="img"><title>轉發</title></svg><div role="none"></div></div>
+            <span role="button">7</span>
+            <div role="button" id="fx-feed-normal-share"><svg aria-label="分享" role="img"><title>分享</title></svg><div role="none"></div></div>
+          </div>
+          <div id="fx-feed-normal-right" data-visualcompletion="ignore-dynamic">
+            <div><div aria-disabled="false" role="button"><div role="button"><div><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div></div>
+          </div>
+        </section>
+        <div>
+          <div><span><span><div><a href="/fx_author_a/" role="link"><div><div><span dir="auto">fx_author_a</span></div></div></a></div></span></span></div>
+          <span dir="auto">
+            <div><span dir="auto">示意動態內文第一段，這是一則合成的貼文說明，用來驗證摘要擷取。</span></div>
+            <span>… <div aria-disabled="false" role="button"><span dir="auto">更多</span></div></span>
+          </span>
+        </div>
+        <div><div role="button"><span dir="auto">查看全部 12 則留言</span></div></div>
+      </div>
+    </article>
+
+    <article id="fx-feed-ad">
+      <div>
+        <div>
+          <span dir="auto"><a href="/fx_ad_brand/" role="link"><span dir="auto">fx_ad_brand</span></a></span>
+          <span dir="auto">贊助</span>
+        </div>
+        <div aria-expanded="false" aria-haspopup="dialog" role="button">
+          <svg aria-label="更多選項" role="img"><title>更多選項</title></svg>
+        </div>
+      </div>
+      <div>
+        <a href="/fx_ad_brand/p/FXADCODE01/" role="link"><div><img alt="" src="about:blank"></div></a>
+        <a href="https://shop.example/landing" role="link"><span dir="auto">立即購買</span></a>
+      </div>
+      <div>
+        <section id="fx-feed-ad-row">
+          <div id="fx-feed-ad-left">
+            <span><div role="button"><svg aria-label="讚" role="img"><title>讚</title></svg></div></span>
+            <span><div role="button"><svg aria-label="回應" role="img"><title>回應</title></svg></div></span>
+            <div role="button"><svg aria-label="分享" role="img"><title>分享</title></svg></div>
+          </div>
+          <div>
+            <div><div aria-disabled="false" role="button"><div role="button"><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div>
+          </div>
+        </section>
+        <div><span dir="auto">示意廣告文案，這段文字不該被任何按鈕帶走。</span></div>
+      </div>
+    </article>
+
+    <article id="fx-feed-reel">
+      <div>
+        <div>
+          <span dir="auto"><a href="/fx_author_b/" role="link"><span dir="auto">fx_author_b</span></a></span>
+          <span dir="auto">•</span>
+          <a href="/fx_author_b/reel/FXFEEDREEL1/?utm_source=ig_web" role="link"><span dir="auto"><time datetime="2026-10-29T08:00:00.000Z" title="2026年10月29日">2天</time></span></a>
+        </div>
+      </div>
+      <div>
+        <div><video></video></div>
+      </div>
+      <div>
+        <section id="fx-feed-reel-row">
+          <div id="fx-feed-reel-left">
+            <span><div role="button"><svg aria-label="讚" role="img"><title>讚</title></svg></div></span>
+            <span role="button">88</span>
+            <span><div role="button"><svg aria-label="回應" role="img"><title>回應</title></svg></div></span>
+            <div role="button"><svg aria-label="轉發" role="img"><title>轉發</title></svg></div>
+            <div role="button" id="fx-feed-reel-share"><svg aria-label="分享" role="img"><title>分享</title></svg></div>
+          </div>
+          <div>
+            <div><div aria-disabled="false" role="button"><div role="button"><svg aria-label="儲存" role="img"><title>儲存</title></svg></div></div></div>
+          </div>
+        </section>
+        <div>
+          <div><a href="/fx_author_b/" role="link"><span dir="auto">fx_author_b</span></a></div>
+          <span dir="auto"><div><span dir="auto">示意短片說明文字，第二篇合成內容。</span></div></span>
+        </div>
+      </div>
+    </article>
+  </div>
+</main>
