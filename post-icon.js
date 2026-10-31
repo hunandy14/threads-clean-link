@@ -1,5 +1,7 @@
-// post-icon.js — 在 Threads 貼文互動列(讚/回覆/轉發/分享那一排)注入一顆
-// 「複製連結」icon，點擊後把貼文的乾淨網址(去 query/hash)寫入剪貼簿。
+// post-icon.js — 在 Threads／Instagram 貼文互動列(讚/回覆/轉發/分享那一排)
+// 注入一顆「複製連結」icon，點擊後把貼文的乾淨網址(去 query/hash)寫入剪貼
+// 簿。各站點的版面差異收在站點設定物件(THREADS_SITE／INSTAGRAM_SITE)，
+// DOM 注入層依 location.hostname 挑選。
 // ISOLATED world content script，比照 bridge.js 的 ES5 IIFE 風格。
 //
 // 純函式 pickPermalink / buildPostUrl / hasExistingIcon / readActionLabel /
@@ -505,6 +507,8 @@
   //   canonicalUrl(href, origin) → 寫進剪貼簿的乾淨網址，非法回傳 null
   //   observeRoot(document)    → MutationObserver 觀察的根節點
   //   containerOf(icon, container) → 點擊當下按鈕所屬的貼文容器
+  //   resetOnNavigate          → (選填)true 時 pathname 一變就先收掉本實例
+  //                              的按鈕再依新頁型重掃
   // ============================================================
 
   // Threads:所有頁型共用同一套容器(div[data-pressable-container])與互動列
@@ -557,8 +561,348 @@
     },
   };
 
+
+  // ---- Instagram ----
+  //
+  // 三種頁型各有不同的容器與互動列版面(zh-tw 介面實測；英文標籤為推測，
+  // 讀標籤時 aria-label 優先、svg > title 備援，見 readActionLabel):
+  //   feed  首頁 '/':容器為 main article，互動列為容器內第一個含「讚」的
+  //         section，按鈕接在左組(讚/回應/轉發/分享)最後。
+  //   post  單篇 /p/<code>/、/reel/<code>/(可帶使用者前綴):沒有 article，
+  //         容器為「同時含讚與儲存的 section」往上兩層，permalink 取網址列。
+  //   reels /reels/ 開頭:只在作用中那則放按鈕，互動列為直排，按鈕插在分
+  //         享與儲存之間，permalink 取網址列。
+  var IG_LABELS = {
+    like: ['讚', 'Like'],
+    comment: ['回應', '留言', 'Comment'],
+    repost: ['轉發', 'Repost'],
+    share: ['分享', 'Share'],
+    save: ['儲存', 'Save'],
+    more: ['更多選項', 'More options'],
+  };
+
+  var IG_POST_PATH_RE = /^\/(?:[^/]+\/)?(p|reel)\/[^/]+\/$/;
+  // 個人頁連結 '/<username>/'；第一段是站內功能頁的不算作者。
+  var IG_PROFILE_HREF_RE = /^\/([^/]+)\/$/;
+  var IG_REELS_PROFILE_HREF_RE = /^\/([^/]+)\/reels\/$/;
+  var IG_RESERVED_SEGMENTS = ['explore', 'reels', 'direct', 'accounts', 'stories'];
+  // canonicalUrl 認得的貼文路徑:可帶使用者前綴的 p／reel／reels／tv。
+  var IG_CANONICAL_PATH_RE = /^\/(?:[^/]+\/)?((?:p|reel|reels|tv)\/[^/]+\/?)$/;
+  // Node.DOCUMENT_POSITION_FOLLOWING
+  var DOCUMENT_POSITION_FOLLOWING = 4;
+
+  // Instagram 頁型；不放按鈕的頁面回傳 null。
+  function igPageType(pathname) {
+    if (typeof pathname !== 'string') return null;
+    if (pathname === '/') return 'feed';
+    if (pathname.indexOf('/reels/') === 0) return 'reels';
+    if (IG_POST_PATH_RE.test(pathname)) return 'post';
+    return null;
+  }
+
+  function igCurrentLocation() {
+    return root.location || null;
+  }
+
+  function igCurrentPageType() {
+    var loc = igCurrentLocation();
+    return igPageType(loc && typeof loc.pathname === 'string' ? loc.pathname : null);
+  }
+
+  // svg 的標籤是否屬於 IG_LABELS[key]。
+  function igSvgIs(svg, key) {
+    var label = readActionLabel(svg);
+    return label !== null && IG_LABELS[key].indexOf(label) !== -1;
+  }
+
+  // scope 內第一個標籤屬於 IG_LABELS[key] 的 svg，找不到回傳 null。
+  function igFindSvg(scope, key) {
+    if (!scope || typeof scope.querySelectorAll !== 'function') return null;
+    var svgs = scope.querySelectorAll('svg');
+    for (var i = 0; i < svgs.length; i++) {
+      if (igSvgIs(svgs[i], key)) return svgs[i];
+    }
+    return null;
+  }
+
+  // node 是否為 ancestor 本身或其後代(只走 parentNode，不依賴 contains)。
+  function igIsWithin(node, ancestor) {
+    var cursor = node;
+    while (cursor) {
+      if (cursor === ancestor) return true;
+      cursor = cursor.parentNode;
+    }
+    return false;
+  }
+
+  // b 在文件序上是否位於 a 之後(不含 a 的後代)。環境不支援
+  // compareDocumentPosition 時一律回傳 true，不做前後過濾。
+  function igFollows(a, b) {
+    if (!a || typeof a.compareDocumentPosition !== 'function') return true;
+    if (igIsWithin(b, a)) return false;
+    return (a.compareDocumentPosition(b) & DOCUMENT_POSITION_FOLLOWING) !== 0;
+  }
+
+  // 從 svg 往上找第一個同時含讚與儲存的祖先，即整組互動按鈕的外框
+  // (feed／post 為 section，reels 為直排的按鈕欄)。
+  function igActionGroupOf(likeSvg) {
+    var cursor = likeSvg ? likeSvg.parentNode : null;
+    while (cursor && cursor.nodeType !== 9) {
+      if (igFindSvg(cursor, 'save')) return cursor;
+      cursor = cursor.parentNode;
+    }
+    return null;
+  }
+
+  // scope 內所有 section 中第一個含讚 svg 者；requireSave 為 true 時還要同
+  // 時含儲存 svg。
+  function igFindSection(scope, requireSave) {
+    var sections = scope.querySelectorAll('section');
+    for (var i = 0; i < sections.length; i++) {
+      if (!igFindSvg(sections[i], 'like')) continue;
+      if (requireSave && !igFindSvg(sections[i], 'save')) continue;
+      return sections[i];
+    }
+    return null;
+  }
+
+  // 取節點文字:<br> 轉成換行，略過 [role="button"] 子孫(「更多」展開鈕)。
+  function igTextOf(el) {
+    var out = '';
+    var children = el.childNodes || [];
+    for (var i = 0; i < children.length; i++) {
+      var child = children[i];
+      if (child.nodeType === 3) {
+        out += typeof child.nodeValue === 'string' ? child.nodeValue : child.textContent || '';
+      } else if (child.nodeType === 1) {
+        var tag = String(child.nodeName || '').toUpperCase();
+        if (tag === 'BR') out += '\n';
+        else if (child.getAttribute && child.getAttribute('role') === 'button') continue;
+        else out += igTextOf(child);
+      }
+    }
+    return out;
+  }
+
+  // 候選節點中文字最長者的文字(去前後空白)，全部為空回傳 undefined。
+  function igLongestText(nodes) {
+    var best = '';
+    for (var i = 0; i < nodes.length; i++) {
+      var text = igTextOf(nodes[i]).trim();
+      if (text.length > best.length) best = text;
+    }
+    return best ? best.slice(0, EXCERPT_MAX) : undefined;
+  }
+
+  // 作者 username:容器內第一個 a[role="link"] 且 href 符合 pattern、第一
+  // 段不是站內功能頁者；before 有值時只看文件序在它之前的連結。
+  function igFindUsername(container, pattern, before) {
+    var anchors = container.querySelectorAll('a');
+    for (var i = 0; i < anchors.length; i++) {
+      var anchor = anchors[i];
+      if (anchor.getAttribute('role') !== 'link') continue;
+      if (before && !igFollows(anchor, before)) continue;
+      var match = pattern.exec(anchor.getAttribute('href') || '');
+      if (!match) continue;
+      if (IG_RESERVED_SEGMENTS.indexOf(match[1]) !== -1) continue;
+      return match[1];
+    }
+    return null;
+  }
+
+  // feed 貼文的 permalink:發文時間 <time> 外層連結，href 須含 /p/ 或
+  // /reel/。廣告沒有時間連結，回傳 null。
+  function igFeedPermalink(article) {
+    var time = article.querySelector('time');
+    var anchor = time && time.closest ? time.closest('a') : null;
+    var href = anchor ? anchor.getAttribute('href') : null;
+    if (typeof href !== 'string') return null;
+    return href.indexOf('/p/') !== -1 || href.indexOf('/reel/') !== -1 ? href : null;
+  }
+
+  // post／reels 的 permalink:網址列的 origin + pathname，去掉使用者前綴。
+  function igLocationPermalink() {
+    var loc = igCurrentLocation();
+    if (!loc || typeof loc.pathname !== 'string') return null;
+    var path = loc.pathname.replace(/^\/[^/]+\/((?:p|reel)\/)/, '/$1');
+    return (typeof loc.origin === 'string' ? loc.origin : '') + path;
+  }
+
+  // reels 頁面上的每一則:從按鈕欄往上找第一個含 <video> 的祖先。
+  function igReelItems(doc) {
+    var items = [];
+    var mains = doc.querySelectorAll('main');
+    for (var m = 0; m < mains.length; m++) {
+      var svgs = mains[m].querySelectorAll('svg');
+      for (var s = 0; s < svgs.length; s++) {
+        if (!igSvgIs(svgs[s], 'like')) continue;
+        var group = igActionGroupOf(svgs[s]);
+        var cursor = group ? group.parentNode : null;
+        while (cursor && cursor.nodeType !== 9 && !cursor.querySelector('video')) cursor = cursor.parentNode;
+        if (cursor && cursor.nodeType !== 9 && items.indexOf(cursor) === -1) items.push(cursor);
+      }
+    }
+    return items;
+  }
+
+  // 多則 reels 同時掛在 DOM 上時，取垂直中心最接近視窗中心的那則；量不
+  // 到版面時取第一則。
+  function igPickActiveReel(items) {
+    if (items.length <= 1) return items;
+    var viewportMid = typeof root.innerHeight === 'number' ? root.innerHeight / 2 : null;
+    if (viewportMid === null || typeof items[0].getBoundingClientRect !== 'function') return [items[0]];
+    var best = items[0];
+    var bestDistance = Infinity;
+    for (var i = 0; i < items.length; i++) {
+      var rect = items[i].getBoundingClientRect();
+      var distance = Math.abs(rect.top + rect.height / 2 - viewportMid);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = items[i];
+      }
+    }
+    return [best];
+  }
+
+  var INSTAGRAM_SITE = {
+    name: 'instagram',
+    matches: function (hostname) {
+      return typeof hostname === 'string' && /(^|\.)instagram\.com$/i.test(hostname);
+    },
+    pageType: igPageType,
+    findContainers: function (doc) {
+      var type = igCurrentPageType();
+      if (type === 'feed') {
+        var articles = doc.querySelectorAll('main article');
+        var out = [];
+        for (var i = 0; i < articles.length; i++) {
+          if (igFeedPermalink(articles[i])) out.push(articles[i]);
+        }
+        return out;
+      }
+      if (type === 'post') {
+        var mains = doc.querySelectorAll('main');
+        for (var m = 0; m < mains.length; m++) {
+          var section = igFindSection(mains[m], true);
+          var container = section && section.parentNode ? section.parentNode.parentNode : null;
+          if (container) return [container];
+        }
+        return [];
+      }
+      if (type === 'reels') return igPickActiveReel(igReelItems(doc));
+      return [];
+    },
+    permalinkOf: function (container) {
+      var type = igCurrentPageType();
+      if (type === 'feed') return igFeedPermalink(container);
+      if (type === 'post' || type === 'reels') return igLocationPermalink();
+      return null;
+    },
+    findActionRow: function (container) {
+      var type = igCurrentPageType();
+      if (type === 'feed') return igFindSection(container, false);
+      if (type === 'post') return igFindSection(container, true);
+      if (type === 'reels') return igActionGroupOf(igFindSvg(container, 'like'));
+      return null;
+    },
+    // feed／post:section 的第一個子節點是左組(讚/回應/轉發/分享)，按鈕
+    // 接在左組最後，右組(儲存)不動。reels:按鈕欄每顆按鈕各占一格子節
+    // 點，插在含分享的那一格之後(即儲存之前)。
+    insertionPoint: function (row) {
+      var children = row.children || [];
+      if (String(row.nodeName || '').toUpperCase() === 'SECTION') {
+        return children[0] ? { parent: children[0], before: null } : null;
+      }
+      for (var i = 0; i < children.length; i++) {
+        if (igFindSvg(children[i], 'share')) return { parent: row, before: children[i + 1] || null };
+      }
+      return null;
+    },
+    // username 同時作為 author 與 handle(不帶 '@')。
+    author: function (container) {
+      var type = igCurrentPageType();
+      var username = null;
+      if (type === 'reels') {
+        username =
+          igFindUsername(container, IG_REELS_PROFILE_HREF_RE, null) ||
+          igFindUsername(container, IG_PROFILE_HREF_RE, null);
+      } else if (type === 'feed' || type === 'post') {
+        username = igFindUsername(container, IG_PROFILE_HREF_RE, igFindSection(container, type === 'post'));
+      }
+      return username ? { author: username, handle: username } : {};
+    },
+    // feed:互動列之後最長的 span[dir="auto"]。post:內文 span 外層還包著
+    // 作者名與時間，改取容器內不含 <time> 的最長 span。reels:按鈕欄以外
+    // 最長的 [dir="auto"]。三者都排除 <a> 內的節點(作者名、標籤連結)。
+    excerpt: function (container) {
+      try {
+        var type = igCurrentPageType();
+        var candidates = [];
+        var nodes;
+        var i;
+        if (type === 'feed') {
+          var section = igFindSection(container, false);
+          if (!section) return undefined;
+          nodes = container.querySelectorAll('span');
+          for (i = 0; i < nodes.length; i++) {
+            if (nodes[i].getAttribute('dir') !== 'auto') continue;
+            if (nodes[i].closest && nodes[i].closest('a')) continue;
+            if (isInsideContainerButton(nodes[i], container)) continue;
+            if (!igFollows(section, nodes[i])) continue;
+            candidates.push(nodes[i]);
+          }
+        } else if (type === 'post') {
+          nodes = container.querySelectorAll('span');
+          for (i = 0; i < nodes.length; i++) {
+            if (nodes[i].querySelector('time')) continue;
+            if (nodes[i].closest && nodes[i].closest('a')) continue;
+            if (isInsideContainerButton(nodes[i], container)) continue;
+            candidates.push(nodes[i]);
+          }
+        } else if (type === 'reels') {
+          var group = igActionGroupOf(igFindSvg(container, 'like'));
+          nodes = container.querySelectorAll('[dir="auto"]');
+          for (i = 0; i < nodes.length; i++) {
+            if (nodes[i].closest && nodes[i].closest('a')) continue;
+            if (group && igIsWithin(nodes[i], group)) continue;
+            candidates.push(nodes[i]);
+          }
+        }
+        return igLongestText(candidates);
+      } catch (e) {
+        return undefined;
+      }
+    },
+    // 「/<user>/p/<code>/」收斂成「/p/<code>/」，去 query 與 hash；主機名
+    // 稱(含 www)與尾斜線照原樣。不同源或不是 p／reel／reels／tv 路徑回傳
+    // null。
+    canonicalUrl: function (href, origin) {
+      if (typeof href !== 'string') return null;
+      try {
+        var url = new URL(href, origin);
+        if (url.origin !== new URL(origin).origin) return null;
+        var match = IG_CANONICAL_PATH_RE.exec(url.pathname);
+        if (!match) return null;
+        return url.origin + '/' + match[1];
+      } catch (e) {
+        return null;
+      }
+    },
+    // 只觀察 main；main 尚未渲染時先觀察 body，之後掃描時再換到 main。
+    observeRoot: function (doc) {
+      return doc.querySelector('main') || doc.body || doc.documentElement;
+    },
+    // 容器沒有可往上找的特徵屬性，沿用注入當下記下的容器。
+    containerOf: function (icon, ownerContainer) {
+      return ownerContainer && igIsWithin(icon, ownerContainer) ? ownerContainer : null;
+    },
+    // SPA 換頁(pathname 變動)時先收掉本實例的按鈕再重掃，reels 換到下一
+    // 則時按鈕跟著移過去。
+    resetOnNavigate: true,
+  };
+
   // 依序比對的站點清單。
-  var SITES = [THREADS_SITE];
+  var SITES = [THREADS_SITE, INSTAGRAM_SITE];
 
   // 依主機名稱挑站點設定，沒有站點負責時回傳 null(此時不啟動注入)。
   function pickSite(hostname) {
@@ -590,6 +934,8 @@
     resolvePostCopyEnabled: resolvePostCopyEnabled,
     findContainerByCleanUrl: findContainerByCleanUrl,
     isExtensionContextLost: isExtensionContextLost,
+    // 站點設定與挑選邏輯，供測試直接呼叫。
+    __sites: { threads: THREADS_SITE, instagram: INSTAGRAM_SITE, pick: pickSite },
   };
 
   // ============================================================
@@ -775,23 +1121,43 @@
       // applyIconTitle)；但實際觸發 hover 原生 tooltip 的是外層 div 的
       // title 屬性，不是這顆 svg <title>——svg 設了 pointer-events:none
       // (見 injectStyle 的 SVG_WRAP_CLASS 規則)，游標永遠不會落在 svg
-      // 上，svg 內 <title> 因此不會觸發瀏覽器原生 tooltip。<title> 留空
-      // 字串，內容由 applyIconTitle() 用 textContent 動態填入語言字典
-      // 值，innerHTML 本身仍只含靜態常數。
-      var LINK_SVG =
-        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
-        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<title></title>' +
-        '<path d="M9 17H7A5 5 0 0 1 7 7h2"/>' +
-        '<path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
-        '<path d="M8 12h8"/>' +
-        '</svg>';
-      var CHECK_SVG =
-        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
-        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<title></title>' +
-        '<path d="M20 6 9 17l-5-5"/>' +
-        '</svg>';
+      // 上，svg 內 <title> 因此不會觸發瀏覽器原生 tooltip。<title> 內容由
+      // applyIconTitle() 用 textContent 動態填入語言字典值。
+      //
+      // 圖示以 createElementNS 逐節點建立，不經 innerHTML:Instagram 強制
+      // Trusted Types，對 innerHTML 指派字串會被擋下。
+      var SVG_NS = 'http://www.w3.org/2000/svg';
+      var LINK_PATHS = ['M9 17H7A5 5 0 0 1 7 7h2', 'M15 7h2a5 5 0 1 1 0 10h-2', 'M8 12h8'];
+      var CHECK_PATHS = ['M20 6 9 17l-5-5'];
+      var ICON_SVG_ATTRS = {
+        viewBox: '0 0 24 24',
+        width: '20',
+        height: '20',
+        fill: 'none',
+        stroke: 'currentColor',
+        'stroke-width': '1.5',
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+        'aria-hidden': 'true',
+      };
+
+      // 把 wrap 的內容換成一顆由 paths 組成的圖示 svg。document 不支援
+      // createElementNS 時(非瀏覽器的精簡 DOM)只清空、不畫圖示。
+      function renderIconSvg(wrap, paths) {
+        wrap.textContent = '';
+        if (typeof document.createElementNS !== 'function') return;
+        var svg = document.createElementNS(SVG_NS, 'svg');
+        for (var name in ICON_SVG_ATTRS) {
+          if (Object.prototype.hasOwnProperty.call(ICON_SVG_ATTRS, name)) svg.setAttribute(name, ICON_SVG_ATTRS[name]);
+        }
+        svg.appendChild(document.createElementNS(SVG_NS, 'title'));
+        for (var i = 0; i < paths.length; i++) {
+          var path = document.createElementNS(SVG_NS, 'path');
+          path.setAttribute('d', paths[i]);
+          svg.appendChild(path);
+        }
+        wrap.appendChild(svg);
+      }
 
       // 目前使用的語言，載入時由 chrome.storage.sync 的 langPref 解析；
       // storage.onChanged 觸發時即時更新既有 icon 的文案。
@@ -986,15 +1352,15 @@
 
         var iconWrap = document.createElement('span');
         iconWrap.className = SVG_WRAP_CLASS;
-        iconWrap.innerHTML = LINK_SVG;
+        renderIconSvg(iconWrap, LINK_PATHS);
         el.appendChild(iconWrap);
 
         // 把目前語言的 iconTooltip 文字填進 SVG 內建的 <title> 子元素
         // (textContent，不是 innerHTML)。這顆 <title> 不會觸發瀏覽器原
         // 生 tooltip(見上方 el.title 一帶的說明)，純粹是仿照原生互動列
-        // 按鈕結構保留的無障礙語意。iconWrap.innerHTML 每次换圖示
-        // (LINK_SVG/CHECK_SVG 互換)都要重新呼叫一次，因為 <title> 節點
-        // 會跟著整個 innerHTML 一起被換掉。
+        // 按鈕結構保留的無障礙語意。renderIconSvg 每次換圖示(LINK_PATHS／
+        // CHECK_PATHS 互換)都要重新呼叫一次，因為 <title> 節點會跟著整顆
+        // svg 一起被換掉。
         function applyIconTitle() {
           var titleEl = iconWrap.querySelector('title');
           if (titleEl) titleEl.textContent = t('iconTooltip');
@@ -1026,14 +1392,14 @@
         // 即時刷新內容，只有這顆自繪氣泡能保證「點擊當下」立刻給使用者
         // 回饋。
         function showCopiedFeedback() {
-          iconWrap.innerHTML = CHECK_SVG;
+          renderIconSvg(iconWrap, CHECK_PATHS);
           applyIconTitle();
           tooltip.textContent = t('iconCopied');
           tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
           clearFeedbackTimers();
           resetTimer = setTimeout(function () {
             resetTimer = null;
-            iconWrap.innerHTML = LINK_SVG;
+            renderIconSvg(iconWrap, LINK_PATHS);
             applyIconTitle();
             tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
             // 移除 TOOLTIP_VISIBLE_CLASS 只是觸發淡出(opacity transition
@@ -1056,7 +1422,7 @@
         // 過。
         function revertCopiedFeedback() {
           clearFeedbackTimers();
-          iconWrap.innerHTML = LINK_SVG;
+          renderIconSvg(iconWrap, LINK_PATHS);
           applyIconTitle();
           tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
           tooltip.textContent = t('iconTooltip');
@@ -1335,7 +1701,13 @@
         if (!postCopyEnabled) return;
         try {
           injectStyle();
-          if (site.pageType(currentPathname()) === null) return;
+          var pathname = currentPathname();
+          if (site.resetOnNavigate && lastScanPathname !== null && pathname !== lastScanPathname) {
+            removeOwnIcons();
+          }
+          lastScanPathname = pathname;
+          retargetObserver();
+          if (site.pageType(pathname) === null) return;
           var containers = site.findContainers(document);
           for (var i = 0; i < containers.length; i++) {
             injectIntoContainer(containers[i]);
@@ -1403,11 +1775,16 @@
         return 'en';
       }
 
-      // ---- 動態 feed:Threads feed 是虛擬化的，貼文捲出畫面 DOM 即卸載，
-      // 捲回來又是全新節點。用 MutationObserver 監聽整個 body，debounce
-      // 後重掃全頁補注入；冪等靠 hasExistingIcon。SPA 路由切換也靠同一個
-      // observer 覆蓋。----
+      // ---- 動態 feed:Threads／Instagram 的 feed 都是虛擬化的，貼文捲出畫
+      // 面 DOM 即卸載，捲回來又是全新節點。用 MutationObserver 監聽站點的
+      // 觀察根節點(site.observeRoot:Threads 為 body，Instagram 為 main)，
+      // debounce 後重掃全頁補注入；冪等靠 hasExistingIcon。SPA 路由切換也
+      // 靠同一個 observer 覆蓋。----
       var scanScheduled = false;
+      // 目前 observer 觀察中的根節點(見 retargetObserver)。
+      var observedTarget = null;
+      // 上一輪掃描時的 pathname，供 site.resetOnNavigate 判斷換頁。
+      var lastScanPathname = null;
       // 排下但尚未觸發的 debounce 掃描，退場時 clearTimeout。
       var scanTimer = null;
       function scheduleScan() {
@@ -1431,9 +1808,21 @@
           observer.observe(target, { childList: true, subtree: true });
           // 留住參照，退場時要 disconnect(見 retireOrphanInstance)。
           observerRef = observer;
+          observedTarget = target;
         } catch (e) {
           console.warn('[threads-clean-link] 啟動 MutationObserver 失敗', e);
         }
+      }
+
+      // 站點的觀察根節點換了(例如 Instagram 的 main 晚於啟動才渲染)時，
+      // 讓同一個 observer 改觀察新的根節點。
+      function retargetObserver() {
+        if (!observerRef) return;
+        var target = site.observeRoot(document);
+        if (!target || target === observedTarget) return;
+        observerRef.disconnect();
+        observerRef.observe(target, { childList: true, subtree: true });
+        observedTarget = target;
       }
 
       // ---- chrome.storage.onChanged:即時更新頁面上既有 icon 的語言 ----
