@@ -264,6 +264,11 @@
       // 的說法(scamTagLabel「LINE 群組引導」)，清單本身則一律叫警示名單。
       opScamGuardName: 'LINE 群組引導警示',
       opScamGuardDesc: '偵測引導加入 LINE 群組的串文，並在貼文上標記',
+      // 選項頁設定卡的 Instagram 支援開關 #instagramEnabled 與其兩則提示。
+      opInstagramName: 'Instagram 支援',
+      opInstagramDesc: '在 Instagram 貼文互動列顯示複製原始連結按鈕，需授權讀取 instagram.com',
+      opInstagramPermDenied: '未取得 Instagram 權限，功能未開啟',
+      opInstagramReloadHint: '已開啟的 Instagram 分頁請重新整理',
       // 設定卡內指向警示名單分頁的同頁錨點(a#scamManageLink[href="#flags"])。
       // 純文字，不含箭頭——箭頭改由後面接的 Lucide arrow-right inline SVG 呈現。
       opScamManageLink: '管理警示名單',
@@ -497,6 +502,10 @@
         'This account has posted threads that funnel readers to LINE. It is on your local warning list.',
       opScamGuardName: 'LINE group funnel warnings',
       opScamGuardDesc: 'Detects threads that steer people into LINE groups and tags the post.',
+      opInstagramName: 'Instagram support',
+      opInstagramDesc: 'Shows a copy-original-link button on Instagram post action bars. Requires access to instagram.com.',
+      opInstagramPermDenied: 'Instagram access was not granted. The feature stays off.',
+      opInstagramReloadHint: 'Reload any open Instagram tabs to apply.',
       opScamManageLink: 'Manage warning list',
 
       opScamListTitle: 'Warning list',

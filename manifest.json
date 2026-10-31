@@ -15,7 +15,8 @@
   "optional_permissions": ["identity"],
   "optional_host_permissions": [
     "https://api.metalinkclearer.workers.dev/*",
-    "https://api-staging.metalinkclearer.workers.dev/*"
+    "https://api-staging.metalinkclearer.workers.dev/*",
+    "https://*.instagram.com/*"
   ],
   "background": {
     "service_worker": "background.js"
