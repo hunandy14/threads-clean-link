@@ -474,6 +474,55 @@
     return urlKey(parsed);
   }
 
+  // ---- 貼文媒體種類(mediaKindOf) ----
+
+  // 鏡射手機端 repo 的 src/lib/media-kind.ts 的 mediaKindOf，網域集合同其
+  // shared/platform-rules.ts(FB 家族＝facebook.com／fb.watch，facebook.com
+  // 專屬形狀另以 isFacebookComHostname 判定，IG＝instagram.com)。純函式，只
+  // 看網址不連網，回傳 'video'、'photo' 或 null;只認網址形狀明確的情況，FB
+  // 的 /posts/、permalink.php、/share/ 等看不出媒體種類一律 null，Threads 與
+  // 其他網域也是 null。顯示層據此在歷史卡片掛媒體徽章，結果不入庫。
+  var MEDIA_FACEBOOK_VIDEOS = /\/videos\/[0-9]+\/?$/;
+  var MEDIA_FACEBOOK_REEL = /^\/reel\/[0-9]+\/?$/;
+  var MEDIA_FACEBOOK_PHOTOS = /\/photos\/[^/]+\/[0-9]+\/?$/;
+  var MEDIA_FACEBOOK_PHOTO_PAGES = /^\/photo(?:\.php)?\/?$/;
+  var MEDIA_FACEBOOK_WATCH_PAGES = /^\/watch\/?$/;
+  var MEDIA_INSTAGRAM_VIDEO = /^\/(?:reel|reels|tv)\/[A-Za-z0-9_-]+\/?$/;
+  // Instagram /p/<shortcode>（含輪播）一律標為相片，與手機端規則一致。
+  var MEDIA_INSTAGRAM_PHOTO = /^\/p\/[A-Za-z0-9_-]+\/?$/;
+
+  function mediaKindOf(url) {
+    var parsed;
+    try {
+      parsed = new URL(url);
+    } catch (e) {
+      return null;
+    }
+    var hostname = parsed.hostname;
+    var path = parsed.pathname;
+    var hasParam = function (key) {
+      return !!parsed.searchParams.get(key);
+    };
+
+    if (hostnameEndsWith(hostname, 'facebook.com')) {
+      if (MEDIA_FACEBOOK_VIDEOS.test(path) || MEDIA_FACEBOOK_REEL.test(path)) return 'video';
+      if (MEDIA_FACEBOOK_WATCH_PAGES.test(path) && hasParam('v')) return 'video';
+      if (MEDIA_FACEBOOK_PHOTO_PAGES.test(path) && hasParam('fbid')) return 'photo';
+      if (MEDIA_FACEBOOK_PHOTOS.test(path)) return 'photo';
+      return null;
+    }
+    if (hostnameEndsWith(hostname, 'fb.watch')) {
+      // fb.watch 是影片短連結：任何非空路徑都是影片
+      return path.replace(/\//g, '') ? 'video' : null;
+    }
+    if (hostnameEndsWith(hostname, 'instagram.com')) {
+      if (MEDIA_INSTAGRAM_VIDEO.test(path)) return 'video';
+      if (MEDIA_INSTAGRAM_PHOTO.test(path)) return 'photo';
+      return null;
+    }
+    return null;
+  }
+
   // ---- 雲端同步:storage 形狀與雙向映射(docs/cloud-sync.md 4.2/4.3) ----
 
   // 同步後端的三個 API base，全專案唯一的定義處：sync.js 的 apiBase 白名單、
@@ -3041,6 +3090,7 @@
     isAcceptableHistoryUrl: isAcceptableHistoryUrl,
     extractPostId: extractPostId,
     postKeyOf: postKeyOf,
+    mediaKindOf: mediaKindOf,
     KIND_LIST: KIND_LIST,
     NOTICE_KIND_LIST: NOTICE_KIND_LIST,
     LIMITS: LIMITS,
