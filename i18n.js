@@ -88,6 +88,9 @@
       opKindStrip: '剪除參數',
       opKindMenu: '右鍵還原',
       opKindIcon: '貼文按鈕',
+      // 紀錄卡片的媒體徽章(見 TCLCore.mediaKindOf),文案同手機端 media-kind-copy.ts。
+      hisMediaVideo: '影片',
+      hisMediaPhoto: '相片',
       opPerPageA: '每頁',
       opPerPageB: '筆',
       opEmpty: '沒有符合條件的紀錄',
@@ -381,6 +384,8 @@
       opKindStrip: 'Stripped',
       opKindMenu: 'Context menu',
       opKindIcon: 'Post button',
+      hisMediaVideo: 'Video',
+      hisMediaPhoto: 'Photo',
       opPerPageA: 'Per page',
       opPerPageB: '',
       opEmpty: 'No matching entries',

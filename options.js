@@ -2916,6 +2916,10 @@
           ? 'Facebook'
           : null;
       var siteBadge = siteName && h('span', { class: 'entry-badge entry-site-badge', text: siteName });
+      // 媒體徽章:網址形狀看得出影片或相片時，在站點徽章後多掛一顆(判定見
+      // TCLCore.mediaKindOf);看不出來就不掛。
+      var mediaKey = { video: 'hisMediaVideo', photo: 'hisMediaPhoto' }[TCLCore.mediaKindOf(e.url)];
+      var mediaBadge = mediaKey && h('span', { class: 'entry-badge entry-media-badge', text: tt(mediaKey) });
 
       var body = [];
       if (hasCardPreview(e)) {
@@ -2975,7 +2979,7 @@
           openEntryDetail(e);
         },
       };
-      var header = h('div', { class: 'entry-header' }, h('div', { class: 'entry-meta' }, badge, siteBadge, headTime));
+      var header = h('div', { class: 'entry-header' }, h('div', { class: 'entry-meta' }, badge, siteBadge, mediaBadge, headTime));
       var quickWrap = h('div', { class: 'entry-quick' }, quickCopyBtn, quickOpenBtn);
       return h('div', cardProps, header, ...body, quickWrap);
     }
