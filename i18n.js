@@ -88,7 +88,7 @@
       opKindStrip: '剪除參數',
       opKindMenu: '右鍵還原',
       opKindIcon: '貼文按鈕',
-      // 紀錄卡片的媒體徽章(見 TCLCore.mediaKindOf),文案同手機端 media-kind-copy.ts。
+      // 紀錄卡片的媒體徽章(見 TCLCore.mediaKindOf)，文案同手機端 media-kind-copy.ts。
       hisMediaVideo: '影片',
       hisMediaPhoto: '相片',
       opPerPageA: '每頁',

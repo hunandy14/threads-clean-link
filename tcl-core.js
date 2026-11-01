@@ -461,7 +461,7 @@
   var MEDIA_FACEBOOK_PHOTO_PAGES = /^\/photo(?:\.php)?\/?$/;
   var MEDIA_FACEBOOK_WATCH_PAGES = /^\/watch\/?$/;
   var MEDIA_INSTAGRAM_VIDEO = /^\/(?:reel|reels|tv)\/[A-Za-z0-9_-]+\/?$/;
-  // Instagram /p/<shortcode>(含輪播)標為相片：與手機端同步的拍板結果。
+  // Instagram /p/<shortcode>（含輪播）一律標為相片，與手機端規則一致。
   var MEDIA_INSTAGRAM_PHOTO = /^\/p\/[A-Za-z0-9_-]+\/?$/;
 
   function mediaKindOf(url) {
