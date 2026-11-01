@@ -311,7 +311,7 @@
   }
 
   // 是否為可收進歷史的 Facebook 網址(不要求抽得出貼文 id)。條件:字串、長度
-  // 不超過 FACEBOOK_URL_MAX、不含控制字元或 bidi 控制字元、可被 URL 解析、
+  // 不超過 FACEBOOK_URL_MAX、不含控制字元、bidi 控制字元或空白類字元、可被 URL 解析、
   // scheme 為 https 或 http、host 為 facebook.com／fb.watch 或其子網域、不帶
   // userinfo 與非預設 port。只做判定，不改寫網址也不剝參數。同步下行、讀取與
   // 匯入關卡據此收下 normalizePostUrl 認不得的 Facebook 項目;本機寫入端仍走
@@ -319,6 +319,9 @@
   function isDisplayableFacebookUrl(url) {
     if (typeof url !== 'string' || url.length === 0 || url.length > FACEBOOK_URL_MAX) return false;
     if (stripControlChars(url) !== url) return false;
+    // 空白類字元(含 stripControlChars 保留的 tab／換行)一律不收:URL 解析會
+    // 默默剝掉它們，判定通過的網址與實際存下的字串就不一致。
+    if (/\s/.test(url)) return false;
     var parsed;
     try {
       parsed = new URL(url);
