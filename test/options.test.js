@@ -524,15 +524,15 @@ test('sanitizeEntries:seen[] 逐筆 sanitize，偽造/損毀的記錄丟棄、�
 
 // ---- 純函式:hasCardPreview ----
 //
-// 與手機版 history-card.tsx 的 hasPreview 邏輯對齊(author 或 excerpt 任一
-// 存在即算有預覽，單獨 handle 不算);紀錄卡片渲染(帶/不帶預覽兩形狀)靠
+// author、handle、excerpt 任一存在即算有預覽(Instagram 入庫 author===handle
+// 時只剩 handle，單獨 handle 也要算);紀錄卡片渲染(帶/不帶預覽兩形狀)靠
 // 這個判定式決定要畫作者列+excerpt，還是降級成網址列。
-test('hasCardPreview:author 或 excerpt 任一存在即為 true;皆缺席或僅有 handle 時為 false', () => {
+test('hasCardPreview:author、handle 或 excerpt 任一存在即為 true;皆缺席時為 false', () => {
   assert.equal(options.hasCardPreview({ author: 'Dafu' }), true);
   assert.equal(options.hasCardPreview({ excerpt: 'hello' }), true);
   assert.equal(options.hasCardPreview({ author: 'Dafu', excerpt: 'hello' }), true);
   assert.equal(options.hasCardPreview({}), false);
-  assert.equal(options.hasCardPreview({ handle: '@onlyhandle' }), false, '單獨 handle 不算有預覽，對齊手機版邏輯');
+  assert.equal(options.hasCardPreview({ handle: '@onlyhandle' }), true, '單獨 handle 也算有預覽(Instagram 入庫只剩 handle)');
   assert.equal(options.hasCardPreview({ author: '' }), false, '空字串視同缺席');
 });
 
