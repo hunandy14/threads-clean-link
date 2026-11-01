@@ -7,7 +7,7 @@
 // ============================================================
 // 【站點設定介面（實作者照做）】
 // require('post-icon.js') 與 window.TCLPostIcon 都要帶：
-//   __sites: { threads: SiteConfig, instagram: SiteConfig }
+//   __sites: { threads: SiteConfig, instagram: SiteConfig, facebook: SiteConfig }
 //   __selectSite(hostname: string) → SiteConfig | null
 //     threads.com／threads.net（含 www）→ __sites.threads；instagram.com 及
 //     其子網域 → __sites.instagram；其他（含 instagram.com.evil.io 這種尾綴
@@ -15,7 +15,7 @@
 //
 // SiteConfig（純函式，不讀全域 document／location；需要網址資訊一律從
 // ctx 拿，ctx = { pageType, pathname, origin }）：
-//   id: 'threads' | 'instagram'
+//   id: 'threads' | 'instagram' | 'facebook'
 //   matches(hostname) → boolean
 //   pageType(pathname) → string | null
 //     threads 一律回 'default'；instagram 回 'feed'／'post'／'reels'，其他
@@ -100,9 +100,10 @@ const THREADS_PAGE =
 // 站點選擇
 // ============================================================
 
-test('C1 站點設定：__sites.threads 與 __sites.instagram 都存在，且帶齊十個介面函式', () => {
+// C1-40 核准翻轉：站點清單加入 facebook（Facebook 細節見 test/post-icon-facebook.test.js）。
+test('C1 站點設定：__sites.threads、__sites.instagram 與 __sites.facebook 都存在，且帶齊十個介面函式', () => {
   const all = sites();
-  ['threads', 'instagram'].forEach((id) => {
+  ['threads', 'instagram', 'facebook'].forEach((id) => {
     const site = all[id];
     assert.ok(site && typeof site === 'object', `__sites.${id} 應存在`);
     assert.equal(site.id, id, `__sites.${id}.id 應為 '${id}'`);

@@ -256,19 +256,19 @@ const EXPECTED_IG_SCRIPT = {
 
 test('B3:IG_SCRIPT 常數照規格，js 順序等於 manifest ISOLATED 組的前三支', () => {
   const bg = loadBackground();
-  const igScript = plain(bg.evaluate('IG_SCRIPT'));
+  const igScript = plain(bg.evaluate('siteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))'));
   assert.deepEqual(igScript, EXPECTED_IG_SCRIPT);
   assert.deepEqual(igScript.js, isolatedIdleGroup().js.slice(0, 3), 'js 需對齊 manifest ISOLATED 組的前三支');
 });
 
 test('B3:IG_REINJECT_FILES 等於 IG_SCRIPT.js', () => {
   const bg = loadBackground();
-  assert.deepEqual(plain(bg.evaluate('IG_REINJECT_FILES')), plain(bg.evaluate('IG_SCRIPT.js')));
+  assert.deepEqual(plain(bg.evaluate('OPTIONAL_SITE_FILES')), plain(bg.evaluate('siteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon")).js')));
 });
 
 test('B3 對帳:有權限＋開關開 → 未註冊就註冊一次，內容等於 IG_SCRIPT', async () => {
   const bg = loadBackground({ granted: true, enabled: true });
-  await bg.evaluate('reconcileInstagramScript()');
+  await bg.evaluate('reconcileSiteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))');
   await settle();
   assert.ok(
     bg.calls.contains.some((d) => hasIgOrigin(d)),
@@ -281,7 +281,7 @@ test('B3 對帳:有權限＋開關開 → 未註冊就註冊一次，內容等�
 
 test('B3 對帳:有權限＋開關開，但 ID 已註冊 → 不重複註冊', async () => {
   const bg = loadBackground({ granted: true, enabled: true, registered: true });
-  await bg.evaluate('reconcileInstagramScript()');
+  await bg.evaluate('reconcileSiteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))');
   await settle();
   assert.ok(
     bg.calls.getRegistered.some((f) => f && Array.isArray(f.ids) && f.ids.includes(IG_SCRIPT_ID)),
@@ -293,7 +293,7 @@ test('B3 對帳:有權限＋開關開，但 ID 已註冊 → 不重複註冊', a
 
 test('B3 對帳:有權限＋開關關 → 已註冊就撤銷', async () => {
   const bg = loadBackground({ granted: true, enabled: false, registered: true });
-  await bg.evaluate('reconcileInstagramScript()');
+  await bg.evaluate('reconcileSiteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))');
   await settle();
   assert.equal(bg.calls.register.length, 0);
   assert.equal(bg.calls.unregister.length, 1);
@@ -302,7 +302,7 @@ test('B3 對帳:有權限＋開關關 → 已註冊就撤銷', async () => {
 
 test('B3 對帳:沒權限＋開關開 → 已註冊就撤銷', async () => {
   const bg = loadBackground({ granted: false, enabled: true, registered: true });
-  await bg.evaluate('reconcileInstagramScript()');
+  await bg.evaluate('reconcileSiteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))');
   await settle();
   assert.equal(bg.calls.register.length, 0);
   assert.equal(bg.calls.unregister.length, 1);
@@ -311,7 +311,7 @@ test('B3 對帳:沒權限＋開關開 → 已註冊就撤銷', async () => {
 
 test('B3 對帳:沒權限＋開關關(未註冊) → 註冊與撤銷都不呼叫', async () => {
   const bg = loadBackground({ granted: false, enabled: false });
-  await bg.evaluate('reconcileInstagramScript()');
+  await bg.evaluate('reconcileSiteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))');
   await settle();
   assert.equal(bg.calls.register.length, 0);
   assert.equal(bg.calls.unregister.length, 0, '本來就沒註冊，不需撤銷');
@@ -319,7 +319,7 @@ test('B3 對帳:沒權限＋開關關(未註冊) → 註冊與撤銷都不呼叫
 
 test('B3 對帳:開關缺值時視同關(預設 false)', async () => {
   const bg = loadBackground({ granted: true, registered: true });
-  await bg.evaluate('reconcileInstagramScript()');
+  await bg.evaluate('reconcileSiteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))');
   await settle();
   assert.equal(bg.calls.register.length, 0);
   assert.equal(bg.calls.unregister.length, 1);
@@ -327,7 +327,7 @@ test('B3 對帳:開關缺值時視同關(預設 false)', async () => {
 
 test('B3 對帳:registerContentScripts 拋錯只 console.warn，不外拋', async () => {
   const bg = loadBackground({ granted: true, enabled: true, registerThrows: true });
-  await assert.doesNotReject(Promise.resolve(bg.evaluate('reconcileInstagramScript()')));
+  await assert.doesNotReject(Promise.resolve(bg.evaluate('reconcileSiteScript(OPTIONAL_SITES.find((s) => s.scriptId === "ig-post-icon"))')));
   await settle();
   assert.equal(bg.calls.register.length, 1);
   assert.ok(bg.warns.length >= 1, '失敗應以 console.warn 記錄');

@@ -494,11 +494,13 @@
   // ============================================================
   // 站點設定:DOM 注入層(守衛內)不寫死任何站點的版面知識，一律透過目前站
   // 點的設定物件讀取。設定物件全是純函式，不讀全域 document／location，網
-  // 址資訊從 ctx = { pageType, pathname, origin } 取得(ctx.innerHeight 為選
-  // 填的視窗高度，Instagram reels 判斷作用中項目用)。每份設定提供:
-  //   id                       → 'threads' | 'instagram'
+  // 址資訊從 ctx = { pageType, pathname, search, origin } 取得(search 為
+  // 網址列的 query 字串；ctx.innerHeight 為選填的視窗高度，reels／reel 判斷
+  // 作用中項目用)。每份設定提供:
+  //   id                       → 'threads' | 'instagram' | 'facebook'
   //   matches(hostname)        → boolean，此站點是否負責這個主機名稱
-  //   pageType(pathname)       → 頁型字串；回傳 null 表示這一頁不放按鈕
+  //   pageType(pathname, search) → 頁型字串；回傳 null 表示這一頁不放按鈕
+  //                              (search 選填，不需要的站點忽略它)
   //   findContainers(root, ctx)   → 貼文容器陣列(root 為 document 或元素)
   //   permalinkOf(container, ctx) → 貼文永久連結 href(相對或絕對)，找不到
   //                                 回傳 null
@@ -513,6 +515,17 @@
   //   containerOf(icon, container) → 點擊當下按鈕所屬的貼文容器
   //   resetOnNavigate          → (選填)true 時 pathname 一變就先收掉本實例
   //                              的按鈕再依新頁型重掃
+  //   resetOnSearchChange      → (選填)與 resetOnNavigate 並用，true 時
+  //                              search 變動也視為換頁
+  //   iconSize                 → (選填)圖示 svg 邊長(px)，外框為邊長＋16
+  //   iconStroke               → (選填)圖示線條粗細(viewBox 單位)，未設定
+  //                              沿用 svg 屬性的 1.5
+  //   pageIconSize             → (選填){ <頁型>: { icon, box } }，該頁型的
+  //                              svg 邊長與外框邊長(px)，優先於 iconSize
+  //   themeVars                → (選填){ hover, bubbleBackground,
+  //                              bubbleText }:hover 圓底、回饋氣泡與 toast
+  //                              的顏色改讀這些頁面 CSS 變數，變數不存在時
+  //                              用預設的 prefers-color-scheme 配色
   // ============================================================
 
   // Threads:所有頁型共用同一套容器(div[data-pressable-container])與互動列
@@ -818,6 +831,12 @@
       return typeof hostname === 'string' && /(^|\.)instagram\.com$/i.test(hostname);
     },
     pageType: igPageType,
+    // 互動列原生圖示是 24px svg、外框 40px(各邊 8px padding)，按鈕照同一
+    // 尺寸(見 injectStyle 的 iconSize 規則)。
+    iconSize: 24,
+    // 原生回應／分享圖示的線條是 stroke-width 2(viewBox 24)，按鈕照同一粗
+    // 細(見 injectStyle 的 iconStroke 規則)。
+    iconStroke: 2,
     // feed 只回傳有 permalink 的容器(廣告沒有時間連結)；reels 只回傳作用
     // 中那一則(見 igReelActiveItem)，網址列沒有 code 時不回傳。
     findContainers: function (doc, ctx) {
@@ -961,8 +980,433 @@
     resetOnNavigate: true,
   };
 
+  // ---- Facebook ----
+  //
+  // 只支援桌面版 www，三種頁型的 permalink 一律取網址列(動態牆的時間戳
+  // 連結是佔位 href，拿不到 permalink，不放按鈕)。標籤是整句且中英混雜，
+  // 不比對單字，改用 data-ad-rendering-role 與版面結構定位(zh-Hant 介面
+  // 實測):
+  //   post  單篇 /<user>/posts/<id>、/permalink.php|story.php?story_fbid=:
+  //         貼文以 [role="dialog"] 疊在完整動態牆上，容器限定 dialog 內的
+  //         [aria-posinset]。互動列為 like_button 往上第一個含 share_button
+  //         的祖先，按鈕插在分享欄之後、心情 [role="toolbar"] 之前。
+  //   reel  /reel/<數字 id>:只在作用中那則放按鈕，容器為功能表按鈕所在的
+  //         直排按鈕欄往上第一個含 <video> 的祖先，按鈕插在功能表之前。
+  //   photo /photo/?fbid=<id>、/photo.php?fbid=<id>:互動列、作者與留言都在
+  //         [role="complementary"]，互動列找法同 post。
+  var FB_LABELS = {
+    // reel 按鈕欄最後一顆的 aria-label 開頭；比對前綴，找不到就不放按鈕。
+    menu: ['功能表', 'Menu', 'More options', 'More'],
+  };
+
+  var FB_POST_PATH_RE = /^\/[^/]+\/posts\/[^/]+\/?$/;
+  var FB_STORY_PATH_RE = /^\/(?:permalink|story)\.php$/;
+  var FB_REEL_PATH_RE = /^\/reel\/(\d+)\/?$/;
+  var FB_PHOTO_PATH_RE = /^\/(?:photo\/?|photo\.php)$/;
+  // 作者個人頁連結「/<username>」(可帶尾斜線)；profile.php、社團成員頁等
+  // 其他形狀不給 handle。
+  var FB_HANDLE_PATH_RE = /^\/([A-Za-z0-9._]+)\/?$/;
+  var FB_RESERVED_SEGMENTS = [
+    'groups', 'reel', 'reels', 'watch', 'photo', 'hashtag', 'pages', 'events', 'marketplace',
+    'friends', 'share', 'stories', 'search', 'gaming', 'login', 'help', 'settings', 'notifications',
+  ];
+  var FB_LIKE_SELECTOR = '[data-ad-rendering-role="like_button"]';
+  var FB_SHARE_SELECTOR = '[data-ad-rendering-role="share_button"]';
+  // 零寬字元與 BOM:作者名後面常夾著它們再接驗證徽章。
+  var FB_INVISIBLE_RE = /[​-‍⁠﻿]/g;
+  // fbTextOf 內部用的區塊分界記號，最後換成換行。
+  var FB_BLOCK_MARK = '\u0000';
+
+  // 網址 query 字串(開頭的 '?' 可省)中某個參數的值，沒有或解析失敗回傳
+  // null。
+  function fbSearchParam(search, key) {
+    if (typeof search !== 'string' || !search) return null;
+    try {
+      var query = search.charAt(0) === '?' ? search : '?' + search;
+      var value = new URL(query, 'https://www.facebook.com/').searchParams.get(key);
+      return value ? value : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Facebook 頁型；不放按鈕的頁面回傳 null。search 為網址列的 query 字串
+  // (選填)，permalink.php／story.php 與相片頁靠它判斷。
+  function fbPageType(pathname, search) {
+    if (typeof pathname !== 'string') return null;
+    if (FB_POST_PATH_RE.test(pathname)) return 'post';
+    if (FB_STORY_PATH_RE.test(pathname) && fbSearchParam(search, 'story_fbid')) return 'post';
+    if (FB_REEL_PATH_RE.test(pathname)) return 'reel';
+    if (FB_PHOTO_PATH_RE.test(pathname) && fbSearchParam(search, 'fbid')) return 'photo';
+    return null;
+  }
+
+  // 由路徑與 query 組出貼文的相對 permalink:posts 路徑原樣；
+  // permalink.php／story.php 只留 story_fbid 與 id;reel 收斂成
+  // 「/reel/<id>」；相片頁收斂成「/photo/?fbid=<id>」。不是貼文網址回傳
+  // null。
+  function fbPermalinkFromParts(pathname, search) {
+    if (typeof pathname !== 'string') return null;
+    if (FB_POST_PATH_RE.test(pathname)) return pathname;
+    var reel = FB_REEL_PATH_RE.exec(pathname);
+    if (reel) return '/reel/' + reel[1];
+    if (FB_STORY_PATH_RE.test(pathname)) {
+      var story = fbSearchParam(search, 'story_fbid');
+      if (!story) return null;
+      var owner = fbSearchParam(search, 'id');
+      return (
+        pathname +
+        '?story_fbid=' +
+        encodeURIComponent(story) +
+        (owner ? '&id=' + encodeURIComponent(owner) : '')
+      );
+    }
+    if (FB_PHOTO_PATH_RE.test(pathname)) {
+      var fbid = fbSearchParam(search, 'fbid');
+      return fbid ? '/photo/?fbid=' + encodeURIComponent(fbid) : null;
+    }
+    return null;
+  }
+
+  // 元素的 getBoundingClientRect 寬高是否都大於 0。
+  function fbHasArea(el) {
+    var rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+    return !!rect && rect.width > 0 && rect.height > 0;
+  }
+
+  // 容器內的讚／分享互動列:每個 like_button 往上(不超出容器)第一個含
+  // share_button 的祖先。頁面上另有寬高為 0 的重複列，只取 rect 寬高皆大
+  // 於 0 的第一列；沒有這樣的列回傳 null。
+  function fbStoryRow(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') return null;
+    var likes = container.querySelectorAll(FB_LIKE_SELECTOR);
+    var rows = [];
+    for (var i = 0; i < likes.length; i++) {
+      var cursor = likes[i].parentNode;
+      while (cursor && cursor.nodeType === 1) {
+        if (cursor.querySelector(FB_SHARE_SELECTOR)) {
+          if (rows.indexOf(cursor) === -1) rows.push(cursor);
+          break;
+        }
+        if (cursor === container) break;
+        cursor = cursor.parentNode;
+      }
+    }
+    for (var j = 0; j < rows.length; j++) {
+      if (fbHasArea(rows[j])) return rows[j];
+    }
+    return null;
+  }
+
+  // aria-label 是否以 FB_LABELS[key] 任一項開頭。
+  function fbLabelStartsWith(el, key) {
+    var label = el && el.getAttribute ? el.getAttribute('aria-label') : null;
+    if (typeof label !== 'string') return false;
+    var list = FB_LABELS[key];
+    for (var i = 0; i < list.length; i++) {
+      if (label.indexOf(list[i]) === 0) return true;
+    }
+    return false;
+  }
+
+  // scope 內所有功能表按鈕(role="button" 且 aria-label 以功能表開頭)。
+  function fbMenuButtons(scope) {
+    var out = [];
+    if (!scope || typeof scope.querySelectorAll !== 'function') return out;
+    var buttons = scope.querySelectorAll('[role="button"][aria-label]');
+    for (var i = 0; i < buttons.length; i++) {
+      if (fbLabelStartsWith(buttons[i], 'menu')) out.push(buttons[i]);
+    }
+    return out;
+  }
+
+  // 功能表按鈕所在的直排按鈕欄:往上第一個還含有其他 role="button" 的祖
+  // 先。
+  function fbMenuColumnOf(menu) {
+    var cursor = menu ? menu.parentNode : null;
+    while (cursor && cursor.nodeType === 1) {
+      if (cursor.querySelectorAll('[role="button"]').length > 1) return cursor;
+      cursor = cursor.parentNode;
+    }
+    return null;
+  }
+
+  // reel 容器內的直排按鈕欄，找不到回傳 null。
+  function fbReelColumn(container) {
+    var menus = fbMenuButtons(container);
+    return menus.length ? fbMenuColumnOf(menus[0]) : null;
+  }
+
+  // reel 頁面主要區塊([role="main"])內的每一則(依文件序、不重複):按鈕
+  // 欄往上第一個含 <video> 的祖先。只看主要區塊，頂端導覽列的功能表按鈕
+  // 不算。
+  function fbReelItems(doc) {
+    var items = [];
+    var mains = doc.querySelectorAll('[role="main"]');
+    for (var m = 0; m < mains.length; m++) {
+      var menus = fbMenuButtons(mains[m]);
+      for (var i = 0; i < menus.length; i++) {
+        var item = igReelItemOf(fbMenuColumnOf(menus[i]));
+        if (item && igIsWithin(item, mains[m]) && items.indexOf(item) === -1) items.push(item);
+      }
+    }
+    return items;
+  }
+
+  // 依頁型取作者連結:post 為 profile_name 內第一個 <a>(第二個是打卡地
+  // 點)；reel 為 h2 內指向 reels 分頁的 <a>;photo 為側欄 h2 內第一個
+  // <a>。找不到回傳 null。
+  function fbAuthorAnchor(container, type) {
+    if (!container || typeof container.querySelector !== 'function') return null;
+    if (type === 'post') return container.querySelector('[data-ad-rendering-role="profile_name"] a');
+    if (type === 'reel') return container.querySelector('h2 a[href*="sk=reels_tab"]');
+    if (type === 'photo') return container.querySelector('h2 a');
+    return null;
+  }
+
+  // 節點的可見文字:略過 svg(驗證徽章的 <title>)、aria-hidden 子樹與
+  // [role="button"] 子孫，去掉零寬字元，空白收斂成一格並去頭尾。
+  function fbVisibleText(el) {
+    function walk(node) {
+      var out = '';
+      var children = node.childNodes || [];
+      for (var i = 0; i < children.length; i++) {
+        var child = children[i];
+        if (child.nodeType === 3) {
+          out += typeof child.nodeValue === 'string' ? child.nodeValue : child.textContent || '';
+        } else if (child.nodeType === 1) {
+          if (String(child.nodeName || '').toUpperCase() === 'SVG') continue;
+          if (child.getAttribute('aria-hidden') === 'true') continue;
+          if (child.getAttribute('role') === 'button') continue;
+          out += walk(child);
+        }
+      }
+      return out;
+    }
+    return walk(el).replace(FB_INVISIBLE_RE, '').replace(/\s+/g, ' ').trim();
+  }
+
+  // 作者連結 href 的 username:只有「/<username>」形狀(facebook.com)才
+  // 給，profile.php、社團成員頁與站內功能頁回傳 null。
+  function fbHandleFromHref(href, origin) {
+    if (typeof href !== 'string' || !href) return null;
+    try {
+      var url = new URL(href, typeof origin === 'string' && origin ? origin : 'https://www.facebook.com');
+      if (!/(^|\.)facebook\.com$/i.test(url.hostname)) return null;
+      var match = FB_HANDLE_PATH_RE.exec(url.pathname);
+      if (!match) return null;
+      if (/\.php$/i.test(match[1])) return null;
+      if (FB_RESERVED_SEGMENTS.indexOf(match[1].toLowerCase()) !== -1) return null;
+      return match[1];
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // 內文文字:<br> 轉成換行，區塊元素(div、p)前後斷行；略過
+  // [role="button"] 子孫(「查看更多」)、aria-hidden 子樹、svg，以及
+  // href 只有 query 或 hash 的佔位連結(時間戳的亂碼字元)。文字節點內的空
+  // 白收斂成一格；區塊分界切出的每段去頭尾空白，空段捨棄。
+  function fbTextOf(el) {
+    function walk(node) {
+      var out = '';
+      var children = node.childNodes || [];
+      for (var i = 0; i < children.length; i++) {
+        var child = children[i];
+        if (child.nodeType === 3) {
+          var text = typeof child.nodeValue === 'string' ? child.nodeValue : child.textContent || '';
+          out += text.replace(/[ \t\r\n]+/g, ' ');
+        } else if (child.nodeType === 1) {
+          var tag = String(child.nodeName || '').toUpperCase();
+          if (tag === 'BR') {
+            out += '\n';
+            continue;
+          }
+          if (tag === 'SVG') continue;
+          if (child.getAttribute('role') === 'button') continue;
+          if (child.getAttribute('aria-hidden') === 'true') continue;
+          if (tag === 'A' && /^[?#]/.test(child.getAttribute('href') || '')) continue;
+          if (tag === 'DIV' || tag === 'P') out += FB_BLOCK_MARK + walk(child) + FB_BLOCK_MARK;
+          else out += walk(child);
+        }
+      }
+      return out;
+    }
+    var parts = walk(el).split(FB_BLOCK_MARK);
+    var lines = [];
+    for (var p = 0; p < parts.length; p++) {
+      var line = parts[p].trim();
+      if (line) lines.push(line);
+    }
+    return lines.join('\n').replace(FB_INVISIBLE_RE, '').trim();
+  }
+
+  // reel／photo 的說明文字:容器內最長的 span／div[dir="auto"]，只取作者連
+  // 結之後(找得到作者時)、互動列(或按鈕欄)之前且不在其內的節點；排除
+  // <a> 內的節點、包住作者連結的節點與文字等於作者名者。全部為空回傳
+  // undefined。
+  function fbCaptionOf(container, type) {
+    var anchor = fbAuthorAnchor(container, type);
+    var authorName = anchor ? fbVisibleText(anchor) : '';
+    var row = type === 'reel' ? fbReelColumn(container) : fbStoryRow(container);
+    var nodes = container.querySelectorAll('span[dir="auto"], div[dir="auto"]');
+    var best = '';
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (node.closest && node.closest('a')) continue;
+      if (anchor && (igIsWithin(anchor, node) || !igFollows(anchor, node))) continue;
+      if (row && (igIsWithin(node, row) || igFollows(row, node))) continue;
+      var text = fbTextOf(node);
+      if (authorName && text === authorName) continue;
+      if (text.length > best.length) best = text;
+    }
+    return best ? best.slice(0, EXCERPT_MAX) : undefined;
+  }
+
+  var FACEBOOK_SITE = {
+    id: 'facebook',
+    labels: FB_LABELS,
+    // 只負責桌面版 facebook.com 與 www.facebook.com;m.、mbasic. 等其他子
+    // 網域不支援。
+    matches: function (hostname) {
+      return typeof hostname === 'string' && /^(?:www\.)?facebook\.com$/i.test(hostname);
+    },
+    pageType: fbPageType,
+    // post:dialog 內第一個含 like_button 的 [aria-posinset](背景動態牆
+    // 的貼文不算)。reel:作用中那一則(見 igReelActiveItem)。photo:第一
+    // 個含互動列的 [role="complementary"]。
+    findContainers: function (doc, ctx) {
+      var type = ctx ? ctx.pageType : null;
+      var i;
+      if (type === 'post') {
+        var posts = doc.querySelectorAll('[role="dialog"] [aria-posinset]');
+        for (i = 0; i < posts.length; i++) {
+          if (posts[i].querySelector(FB_LIKE_SELECTOR)) return [posts[i]];
+        }
+        return [];
+      }
+      if (type === 'reel') {
+        var active = igReelActiveItem(fbReelItems(doc), { innerHeight: ctx.innerHeight });
+        return active ? [active] : [];
+      }
+      if (type === 'photo') {
+        var asides = doc.querySelectorAll('[role="complementary"]');
+        for (i = 0; i < asides.length; i++) {
+          if (fbStoryRow(asides[i])) return [asides[i]];
+        }
+      }
+      return [];
+    },
+    // 一律取網址列(見 fbPermalinkFromParts)，回傳相對路徑。
+    permalinkOf: function (container, ctx) {
+      if (!ctx || !ctx.pageType) return null;
+      return fbPermalinkFromParts(ctx.pathname, ctx.search);
+    },
+    findActionRow: function (container, ctx) {
+      var type = ctx ? ctx.pageType : null;
+      if (type === 'post' || type === 'photo') return fbStoryRow(container);
+      if (type === 'reel') return fbReelColumn(container);
+      return null;
+    },
+    // 含 share_button 的互動列:插在分享欄之後、心情 [role="toolbar"] 那
+    // 格之前，沒有 toolbar 時接在最後。reel 按鈕欄:插在功能表那格之前，
+    // 找不到功能表回傳 null。
+    insertionPoint: function (row) {
+      var children = row.children || [];
+      var i;
+      if (row.querySelector(FB_SHARE_SELECTOR)) {
+        var shareIndex = -1;
+        for (i = 0; i < children.length; i++) {
+          if (children[i].querySelector(FB_SHARE_SELECTOR)) {
+            shareIndex = i;
+            break;
+          }
+        }
+        if (shareIndex === -1) return null;
+        for (i = shareIndex + 1; i < children.length; i++) {
+          var cell = children[i];
+          if (cell.getAttribute('role') === 'toolbar' || cell.querySelector('[role="toolbar"]')) {
+            return { parent: row, before: cell };
+          }
+        }
+        return { parent: row, before: null };
+      }
+      var menus = fbMenuButtons(row);
+      if (!menus.length) return null;
+      for (i = 0; i < children.length; i++) {
+        if (igIsWithin(menus[0], children[i])) return { parent: row, before: children[i] };
+      }
+      return null;
+    },
+    // author 為作者連結的可見文字；handle 只在連結是「/<username>」形狀時
+    // 給(見 fbHandleFromHref)。
+    author: function (container, ctx) {
+      var anchor = fbAuthorAnchor(container, ctx ? ctx.pageType : null);
+      if (!anchor) return {};
+      var info = {};
+      var name = fbVisibleText(anchor);
+      if (name) info.author = name;
+      var handle = fbHandleFromHref(anchor.getAttribute('href'), ctx ? ctx.origin : '');
+      if (handle) info.handle = handle;
+      return info;
+    },
+    // post:[data-ad-preview="message"] 的文字。reel／photo:見
+    // fbCaptionOf。
+    excerpt: function (container, ctx) {
+      try {
+        var type = ctx ? ctx.pageType : null;
+        if (type === 'post') {
+          var message = container.querySelector('[data-ad-preview="message"]');
+          var text = message ? fbTextOf(message) : '';
+          return text ? text.slice(0, EXCERPT_MAX) : undefined;
+        }
+        if (type === 'reel' || type === 'photo') return fbCaptionOf(container, type);
+        return undefined;
+      } catch (e) {
+        return undefined;
+      }
+    },
+    // 同源且為支援的貼文網址時，回傳 origin＋fbPermalinkFromParts 的結果
+    // (不帶 hash，query 只留識別參數)；其他回傳 null。
+    canonicalUrl: function (href, origin) {
+      if (typeof href !== 'string') return null;
+      try {
+        var url = new URL(href, origin);
+        if (url.origin !== new URL(origin).origin) return null;
+        var permalink = fbPermalinkFromParts(url.pathname, url.search);
+        return permalink ? url.origin + permalink : null;
+      } catch (e) {
+        return null;
+      }
+    },
+    // 單篇貼文的 dialog 掛在 body 底下，觀察整個 body。
+    observeRoot: function (doc) {
+      return doc.body || doc.documentElement;
+    },
+    // 容器沒有可往上找的穩定特徵(reel 項目無屬性)，沿用注入當下記下的容
+    // 器。
+    containerOf: function (icon, ownerContainer) {
+      return ownerContainer && igIsWithin(icon, ownerContainer) ? ownerContainer : null;
+    },
+    // pathname 或 search 一變就先收掉本實例的按鈕再重掃:reel 捲到下一則、
+    // 相片頁換下一張(只換 fbid)時按鈕跟著移過去。
+    resetOnNavigate: true,
+    resetOnSearchChange: true,
+    // reel 直向按鈕欄:原生圖示 24px、每格 48px 寬，按鈕外框填滿欄寬，圖示
+    // 與原生落在同一條中心線上。post／photo 沿用預設 20px 圖示。
+    pageIconSize: { reel: { icon: 24, box: 48 } },
+    // 主題由 html 與局部容器上的 __fb-light-mode／__fb-dark-mode class 決
+    // 定(淺色頁面中的 reel 播放區是深色區塊)，以下變數依最近的主題容器
+    // 解析，顏色因此跟著按鈕所在區塊的主題走。
+    themeVars: {
+      hover: '--hover-overlay',
+      bubbleBackground: '--comment-background',
+      bubbleText: '--primary-text',
+    },
+  };
+
   // 依序比對的站點清單。
-  var SITES = [THREADS_SITE, INSTAGRAM_SITE];
+  var SITES = [THREADS_SITE, INSTAGRAM_SITE, FACEBOOK_SITE];
 
   // 依主機名稱挑站點設定，沒有站點負責時回傳 null(此時不啟動注入)。
   function pickSite(hostname) {
@@ -995,7 +1439,7 @@
     findContainerByCleanUrl: findContainerByCleanUrl,
     isExtensionContextLost: isExtensionContextLost,
     // 站點設定與挑選邏輯，供測試直接呼叫。
-    __sites: { threads: THREADS_SITE, instagram: INSTAGRAM_SITE },
+    __sites: { threads: THREADS_SITE, instagram: INSTAGRAM_SITE, facebook: FACEBOOK_SITE },
     __selectSite: pickSite,
   };
 
@@ -1025,6 +1469,12 @@
         return loc && typeof loc.pathname === 'string' && loc.pathname ? loc.pathname : '/';
       }
 
+      // 目前頁面的 query 字串(含開頭 '?')；缺席時為空字串。
+      function currentSearch() {
+        var loc = root.location;
+        return loc && typeof loc.search === 'string' ? loc.search : '';
+      }
+
       // 本頁的站點設定(見 pickSite)。為 null 時不啟動注入，只保留 toast 等
       // 供其他 content script 複用的 API。
       var site = pickSite(currentHostname());
@@ -1033,10 +1483,12 @@
       // 呼叫當下重新組出。
       function currentCtx() {
         var pathname = currentPathname();
+        var search = currentSearch();
         var loc = root.location;
         return {
-          pageType: site ? site.pageType(pathname) : null,
+          pageType: site ? site.pageType(pathname, search) : null,
           pathname: pathname,
+          search: search,
           origin: loc && typeof loc.origin === 'string' ? loc.origin : '',
           innerHeight: typeof root.innerHeight === 'number' ? root.innerHeight : undefined,
         };
@@ -1065,6 +1517,9 @@
       // 下「這個容器注入過了」，不會再補回來)。
       // 值只用時間戳與亂數(英數與連字號)，可以安全地放進屬性選擇器。
       var OWNER_ATTR = 'data-tcl-owner';
+      // 頁型標記:站點設定 pageIconSize 有列出的頁型才標在按鈕上，供
+      // injectStyle 的頁型尺寸規則選取。
+      var PAGE_ATTR = 'data-tcl-page';
       var INSTANCE_ID = 'tcl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 
       // 本實例是否已經退場(判活發現自己是孤兒，或被新實例交棒)。退場後掃
@@ -1188,7 +1643,8 @@
         detachStorageListeners();
       }
 
-      // 鏈結(link)圖示與勾勾(check)圖示：20px、stroke=currentColor、
+      // 鏈結(link)圖示與勾勾(check)圖示：預設 20px(站點設定 iconSize 可覆
+      // 寫)、stroke=currentColor、
       // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。內建一個空的
       // <title> 子元素:原生互動列每顆 svg 內都有 <title> 子元素(改版後那
       // 也是唯一的標籤來源)，仿照同一結構保留無障礙語意(見 createIconElement 的
@@ -1323,6 +1779,28 @@
       api.extractPostInfo = extractPostInfo;
 
       // ---- 樣式注入:hover 圓底高亮 + 點擊回饋氣泡，標 id 防重複注入 ----
+      // 站點設定 themeVars 有該項時回傳 var(<變數>, fallback)，否則原樣回傳
+      // fallback。
+      function themeColor(key, fallback) {
+        var vars = site && site.themeVars;
+        return vars && vars[key] ? 'var(' + vars[key] + ', ' + fallback + ')' : fallback;
+      }
+
+      // 站點設定 pageIconSize 的頁型尺寸規則，以按鈕上的 PAGE_ATTR 選取。
+      function pageIconSizeRules() {
+        var sizes = site && site.pageIconSize;
+        if (!sizes) return '';
+        var out = '';
+        for (var type in sizes) {
+          if (!Object.prototype.hasOwnProperty.call(sizes, type)) continue;
+          var sel = '.' + ICON_CLASS + '[' + PAGE_ATTR + '="' + type + '"]';
+          out +=
+            sel + '{width:' + sizes[type].box + 'px;height:' + sizes[type].box + 'px;}' +
+            sel + ' .' + SVG_WRAP_CLASS + ' svg{width:' + sizes[type].icon + 'px;height:' + sizes[type].icon + 'px;}';
+        }
+        return out;
+      }
+
       function injectStyle() {
         if (document.getElementById(STYLE_ID)) return;
         var style = document.createElement('style');
@@ -1336,8 +1814,8 @@
           // rgb(30,30,30)、瞬間出現(無 transition)，這裡照抄精確值與行
           // 為。淺色主題同樣為實測值 rgb(245,245,245)(CDP 模擬
           // prefers-color-scheme 實測)。
-          '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:rgb(30,30,30);}}',
-          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:rgb(245, 245, 245);}}',
+          '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:' + themeColor('hover', 'rgb(30,30,30)') + ';}}',
+          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:' + themeColor('hover', 'rgb(245, 245, 245)') + ';}}',
           // svg 設 pointer-events:none 讓滑鼠事件穿透到外層可互動的 div
           // (click/keydown 都綁在 el，見 createIconElement)，副作用是游
           // 標永遠不會落在 svg 上，svg 內 <title> 的原生 tooltip 因此永
@@ -1352,10 +1830,21 @@
           // 示，COPIED_RESET_MS 後自動移除。
           '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{position:absolute;top:calc(100% + 6px);left:50%;',
           'transform:translateX(-50%);padding:4px 8px;border-radius:6px;font-size:12px;line-height:1.4;',
-          'white-space:nowrap;background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
+          'white-space:nowrap;background:' + themeColor('bubbleBackground', '#1c1c1c') + ';color:' + themeColor('bubbleText', '#fff') + ';opacity:0;pointer-events:none;',
           'transition:opacity .12s ease;z-index:1000;}',
-          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{background:#e5e5e5;color:#050505;}}',
+          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{background:' + themeColor('bubbleBackground', '#e5e5e5') + ';color:' + themeColor('bubbleText', '#050505') + ';}}',
           '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '.' + TOOLTIP_VISIBLE_CLASS + '{opacity:1;}',
+          // 站點設定 iconSize:圖示 svg 改成該邊長，外框維持各邊 8px 留白；未
+          // 設定的站點沿用上面的 20px 圖示／36px 外框。
+          site && site.iconSize
+            ? '.' + ICON_CLASS + '{width:' + (site.iconSize + 16) + 'px;height:' + (site.iconSize + 16) + 'px;}' +
+              '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + ' svg{width:' + site.iconSize + 'px;height:' + site.iconSize + 'px;}'
+            : '',
+          // 站點設定 iconStroke:覆寫圖示 svg 的線條粗細。
+          site && site.iconStroke
+            ? '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + ' svg{stroke-width:' + site.iconStroke + ';}'
+            : '',
+          pageIconSizeRules(),
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
@@ -1378,9 +1867,9 @@
           '#' + TOAST_ID + '{position:fixed;left:50%;bottom:24px;',
           'transform:translateX(-50%) translateY(8px);padding:8px 16px;border-radius:8px;',
           'font-size:13px;line-height:1.4;max-width:min(80vw,420px);text-align:center;',
-          'background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
+          'background:' + themeColor('bubbleBackground', '#1c1c1c') + ';color:' + themeColor('bubbleText', '#fff') + ';opacity:0;pointer-events:none;',
           'transition:opacity .15s ease,transform .15s ease;z-index:2147483647;}',
-          '@media (prefers-color-scheme: light){#' + TOAST_ID + '{background:#e5e5e5;color:#050505;}}',
+          '@media (prefers-color-scheme: light){#' + TOAST_ID + '{background:' + themeColor('bubbleBackground', '#e5e5e5') + ';color:' + themeColor('bubbleText', '#050505') + ';}}',
           '#' + TOAST_ID + '.' + TOAST_VISIBLE_CLASS + '{opacity:1;transform:translateX(-50%) translateY(0);}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
@@ -1763,6 +2252,7 @@
         if (!insertion) return;
 
         var icon = createIconElement(container);
+        if (site.pageIconSize && site.pageIconSize[ctx.pageType]) icon.setAttribute(PAGE_ATTR, ctx.pageType);
         applyNativeColor(icon, row);
         insertion.parent.insertBefore(icon, insertion.before);
 
@@ -1793,11 +2283,11 @@
         if (!postCopyEnabled) return;
         try {
           injectStyle();
-          var pathname = currentPathname();
-          if (site.resetOnNavigate && lastScanPathname !== null && pathname !== lastScanPathname) {
+          var navKey = currentPathname() + (site.resetOnSearchChange ? currentSearch() : '');
+          if (site.resetOnNavigate && lastScanPathname !== null && navKey !== lastScanPathname) {
             removeOwnIcons();
           }
-          lastScanPathname = pathname;
+          lastScanPathname = navKey;
           retargetObserver();
           var ctx = currentCtx();
           if (ctx.pageType === null) return;
@@ -1876,7 +2366,8 @@
       var scanScheduled = false;
       // 目前 observer 觀察中的根節點(見 retargetObserver)。
       var observedTarget = null;
-      // 上一輪掃描時的 pathname，供 site.resetOnNavigate 判斷換頁。
+      // 上一輪掃描時的 pathname(site.resetOnSearchChange 時再接上 search)，
+      // 供 site.resetOnNavigate 判斷換頁。
       var lastScanPathname = null;
       // 排下但尚未觸發的 debounce 掃描，退場時 clearTimeout。
       var scanTimer = null;

@@ -1,6 +1,6 @@
 // background.js — service worker 的進入點與接線。本體只負責：載入其餘 SW
-// 腳本、onInstalled（右鍵選單、既開分頁重注入、紀錄遷移、舊鍵清理）、Instagram
-// 選用腳本的動態註冊對帳、右鍵選單與語言切換、訊息寄件者判準、雲端同步引擎接線與 alarm、runtime.onMessage
+// 腳本、onInstalled（右鍵選單、既開分頁重注入、紀錄遷移、舊鍵清理）、選用站點
+// (Instagram、Facebook)腳本的動態註冊對帳、右鍵選單與語言切換、訊息寄件者判準、雲端同步引擎接線與 alarm、runtime.onMessage
 // 路由表、右鍵路徑的點擊流程，以及剪貼簿寫入與系統通知。
 //
 // 各功能的本體分散在以下 classic script，全部由本檔頂端依序 importScripts：
@@ -86,10 +86,10 @@ chrome.runtime.onInstalled.addListener(() => {
   migrateHistoryMerge();
   migrateHistorySchema();
   removeLegacyGuardKeys();
-  // 動態註冊的 Instagram 腳本在更新時會被 Chrome 清掉，這裡依權限與開關補
-  // 回，接著對既開的 Instagram 分頁重注入(兩支內部都已接住錯誤)。
-  reconcileInstagramScript();
-  reinjectIntoInstagramTabs();
+  // 動態註冊的選用站點腳本在更新時會被 Chrome 清掉，這裡逐站依權限與開關
+  // 補回，接著對各站既開的分頁重注入(兩支內部都已接住錯誤)。
+  reconcileAllSiteScripts();
+  reinjectIntoAllSiteTabs();
 });
 
 // 舊版的兩把自清守衛鍵(D19／D41 舊語意)。清空水位線已由 D50 廢除，這兩把
@@ -193,40 +193,62 @@ async function reinjectIntoOpenTabs() {
 }
 
 // ------------------------------------------------------------
-// Instagram 支援(選用 host 權限 + 動態註冊 content script)
+// 選用站點支援(Instagram、Facebook;選用 host 權限 + 動態註冊 content script)
 // ------------------------------------------------------------
 //
-// 【權限模型】instagram.com 只列在 manifest 的 optional_host_permissions，
-// 不進 host_permissions 也不進 content_scripts.matches:使用者沒開設定頁的
-// 「Instagram 支援」開關前，擴充功能對 instagram.com 沒有任何存取。權限由
-// options 頁在開關的 change handler(使用者手勢)內 permissions.request 取得，
-// service worker 不求權限。
+// 【權限模型】各站網域只列在 manifest 的 optional_host_permissions，不進
+// host_permissions 也不進 content_scripts.matches:使用者沒開設定頁該站的
+// 「支援」開關前，擴充功能對該站沒有任何存取。權限由 options 頁在開關的
+// change handler(使用者手勢)內 permissions.request 取得，service worker
+// 不求權限。
 //
-// 【對帳】腳本是否註冊只看兩個條件同時成立:instagram 的 host 權限已授予，
-// 且 storage.local 的 instagramEnabled 為 true。reconcileInstagramScript 依
-// 這兩個條件把 scripting 的動態註冊狀態拉到一致，冪等;各觸發點(安裝／更新、
-// 瀏覽器啟動、權限增加、開關變動)都只呼叫它，不各自判斷。更新擴充功能時
-// Chrome 會清掉動態註冊的腳本，onInstalled 的那次對帳負責補回。
+// 【對帳】某站腳本是否註冊只看兩個條件同時成立:該站的 host 權限已授予，
+// 且 storage.local 的該站開關(site.key)為 true。reconcileSiteScript 依這兩個
+// 條件把 scripting 的動態註冊狀態拉到一致，冪等;各觸發點(安裝／更新、瀏覽
+// 器啟動、權限增加、開關變動)都只呼叫它，不各自判斷。更新擴充功能時 Chrome
+// 會清掉動態註冊的腳本，onInstalled 的那次對帳負責補回。各站分開對帳、分開
+// 排隊，一站失敗不影響另一站。
 //
 // 【腳本組成】只注入 post-icon(互動列的複製原始連結按鈕)與它依賴的 i18n、
-// tcl-core。bridge／clipboard-guard／scam-guard 都是 threads 專屬，不上 IG。
-const IG_SCRIPT = {
-  id: 'ig-post-icon',
-  matches: ['https://*.instagram.com/*'],
-  js: ['i18n.js', 'tcl-core.js', 'post-icon.js'],
-  runAt: 'document_idle',
-  world: 'ISOLATED',
-  allFrames: false,
-  persistAcrossSessions: true,
-};
-const IG_ENABLED_KEY = 'instagramEnabled';
+// tcl-core。bridge／clipboard-guard／scam-guard 都是 threads 專屬，不上這些站。
+//
+// 表欄位:key 為 storage.local 的開關鍵;scriptId 為動態註冊的腳本 id;
+// matches 同時是註冊範圍、權限查詢的 origins 與重注入的 tabs.query 樣式;
+// hostSuffix 為重注入時分頁網址的網域白名單(主網域與其子網域)。
+const OPTIONAL_SITES = [
+  {
+    key: 'instagramEnabled',
+    scriptId: 'ig-post-icon',
+    matches: ['https://*.instagram.com/*'],
+    hostSuffix: 'instagram.com',
+  },
+  {
+    key: 'facebookEnabled',
+    scriptId: 'fb-post-icon',
+    matches: ['https://*.facebook.com/*'],
+    hostSuffix: 'facebook.com',
+  },
+];
 
-// 更新後對既開 Instagram 分頁的重注入檔案，與 IG_SCRIPT.js 相同、順序相同。
-const IG_REINJECT_FILES = ['i18n.js', 'tcl-core.js', 'post-icon.js'];
+// 各站共用的注入檔案，註冊與更新後重注入都用這份、順序相同。
+const OPTIONAL_SITE_FILES = ['i18n.js', 'tcl-core.js', 'post-icon.js'];
 
-// 對齊 `https://*.instagram.com/*`:主網域本身與任何子網域都算，形近網域
-// (evilinstagram.com)與把 instagram.com 放在子網域位置的網域都不算。
-function isInstagramPageUrl(url) {
+// 某站的動態註冊內容。
+function siteScript(site) {
+  return {
+    id: site.scriptId,
+    matches: site.matches.slice(),
+    js: OPTIONAL_SITE_FILES.slice(),
+    runAt: 'document_idle',
+    world: 'ISOLATED',
+    allFrames: false,
+    persistAcrossSessions: true,
+  };
+}
+
+// 對齊 `https://*.<hostSuffix>/*`:主網域本身與任何子網域都算，形近網域
+// (evilinstagram.com)與把主網域放在子網域位置的網域都不算。
+function isSitePageUrl(site, url) {
   if (typeof url !== 'string') return false;
   let parsed;
   try {
@@ -236,140 +258,158 @@ function isInstagramPageUrl(url) {
   }
   if (parsed.protocol !== 'https:') return false;
   const host = parsed.hostname.toLowerCase();
-  return host === 'instagram.com' || host.endsWith('.instagram.com');
+  return host === site.hostSuffix || host.endsWith('.' + site.hostSuffix);
 }
 
 // 對帳與重注入需要的 API。測試沙箱與舊環境可能缺其中任何一支，缺一支就整
 // 段不做(也不發 permissions.contains)。
-function instagramApisAvailable() {
-  return Boolean(
-    chrome.permissions &&
-      typeof chrome.permissions.contains === 'function' &&
-      chrome.scripting &&
-      typeof chrome.scripting.registerContentScripts === 'function' &&
-      typeof chrome.scripting.unregisterContentScripts === 'function' &&
-      typeof chrome.scripting.getRegisteredContentScripts === 'function' &&
-      chrome.storage &&
-      chrome.storage.local &&
-      typeof chrome.storage.local.get === 'function'
+function optionalSiteApisAvailable() {
+  return (
+    typeof chrome.permissions?.contains === 'function' &&
+    typeof chrome.scripting?.registerContentScripts === 'function' &&
+    typeof chrome.scripting?.unregisterContentScripts === 'function' &&
+    typeof chrome.scripting?.getRegisteredContentScripts === 'function' &&
+    typeof chrome.storage?.local?.get === 'function'
   );
 }
 
-// 權限已授予且開關為 true 才回 true。呼叫端負責接住拋錯。
-async function instagramWanted() {
-  const granted = await chrome.permissions.contains({ origins: IG_SCRIPT.matches });
+// 該站權限已授予且開關為 true 才回 true。呼叫端負責接住拋錯。
+async function siteWanted(site) {
+  const granted = await chrome.permissions.contains({ origins: site.matches });
   if (granted !== true) return false;
-  const stored = await chrome.storage.local.get({ [IG_ENABLED_KEY]: false });
-  return Boolean(stored) && stored[IG_ENABLED_KEY] === true;
+  const stored = await chrome.storage.local.get({ [site.key]: false });
+  return Boolean(stored) && stored[site.key] === true;
 }
 
-async function isInstagramScriptRegistered() {
-  const registered = await chrome.scripting.getRegisteredContentScripts({ ids: [IG_SCRIPT.id] });
+async function isSiteScriptRegistered(site) {
+  const registered = await chrome.scripting.getRegisteredContentScripts({ ids: [site.scriptId] });
   return Array.isArray(registered) && registered.length > 0;
 }
 
-// 對帳與取消註冊串在同一條佇列:onAdded 與 storage.onChanged 可能幾乎同時
-// 到，兩次對帳若交錯執行，會在都查到未註冊後各註冊一次而撞重複 id。
-let igScriptChain = Promise.resolve();
+// 同一站的對帳與取消註冊串在同一條佇列:onAdded 與 storage.onChanged 可能
+// 幾乎同時到，兩次對帳若交錯執行，會在都查到未註冊後各註冊一次而撞重複
+// id。佇列按站分開，一站的工作卡住或失敗不會延後另一站。
+const siteScriptChains = new Map();
 
-function enqueueInstagramTask(task) {
-  igScriptChain = igScriptChain.then(task, task);
-  return igScriptChain;
+function enqueueSiteTask(site, task) {
+  const chain = (siteScriptChains.get(site.key) || Promise.resolve()).then(task, task);
+  siteScriptChains.set(site.key, chain);
+  return chain;
 }
 
-function reconcileInstagramScript() {
-  return enqueueInstagramTask(async () => {
-    if (!instagramApisAvailable()) return;
+function reconcileSiteScript(site) {
+  return enqueueSiteTask(site, async () => {
+    if (!optionalSiteApisAvailable()) return;
     try {
-      const wanted = await instagramWanted();
-      const isRegistered = await isInstagramScriptRegistered();
+      const wanted = await siteWanted(site);
+      const isRegistered = await isSiteScriptRegistered(site);
       if (wanted && !isRegistered) {
-        await chrome.scripting.registerContentScripts([IG_SCRIPT]);
+        await chrome.scripting.registerContentScripts([siteScript(site)]);
       } else if (!wanted && isRegistered) {
-        await chrome.scripting.unregisterContentScripts({ ids: [IG_SCRIPT.id] });
+        await chrome.scripting.unregisterContentScripts({ ids: [site.scriptId] });
       }
     } catch (err) {
-      console.warn('[threads-clean-link] Instagram 腳本對帳失敗', err);
+      console.warn('[threads-clean-link] ' + site.scriptId + ' 腳本對帳失敗', err);
     }
   });
 }
 
-// 權限被撤銷(使用者在擴充功能管理頁移除網站存取，或設定頁關閉開關):取消
-// 註冊並把開關寫回 false，讓設定頁的開關與實際權限一致。
-function handleInstagramPermissionRemoved() {
-  return enqueueInstagramTask(async () => {
+function reconcileAllSiteScripts() {
+  OPTIONAL_SITES.forEach((site) => {
+    reconcileSiteScript(site);
+  });
+}
+
+// 某站權限被撤銷(使用者在擴充功能管理頁移除網站存取，或設定頁關閉開關):
+// 取消註冊並把該站開關寫回 false，讓設定頁的開關與實際權限一致。
+function handleSitePermissionRemoved(site) {
+  return enqueueSiteTask(site, async () => {
     try {
-      if (chrome.storage && chrome.storage.local && typeof chrome.storage.local.set === 'function') {
-        await chrome.storage.local.set({ [IG_ENABLED_KEY]: false });
+      if (typeof chrome.storage?.local?.set === 'function') {
+        await chrome.storage.local.set({ [site.key]: false });
       }
-      if (instagramApisAvailable() && (await isInstagramScriptRegistered())) {
-        await chrome.scripting.unregisterContentScripts({ ids: [IG_SCRIPT.id] });
+      if (optionalSiteApisAvailable() && (await isSiteScriptRegistered(site))) {
+        await chrome.scripting.unregisterContentScripts({ ids: [site.scriptId] });
       }
     } catch (err) {
-      console.warn('[threads-clean-link] Instagram 權限撤銷的善後失敗', err);
+      console.warn('[threads-clean-link] ' + site.scriptId + ' 權限撤銷的善後失敗', err);
     }
   });
 }
 
-function touchesInstagram(permissions) {
-  const origins = permissions && Array.isArray(permissions.origins) ? permissions.origins : [];
-  return origins.some((origin) => IG_SCRIPT.matches.indexOf(origin) !== -1);
+// 權限事件涉及的站點(origins 含該站 matches 任一項)。
+function sitesTouchedBy(permissions) {
+  const origins = Array.isArray(permissions?.origins) ? permissions.origins : [];
+  return OPTIONAL_SITES.filter((site) => origins.some((origin) => site.matches.indexOf(origin) !== -1));
 }
 
-// 更新後對既開 Instagram 分頁重注入，理由同上方 threads 的自癒重注入。與
-// threads 那次分開查詢:只有權限已授予且開關為 true 時才查、才注入，未授權
-// 時連 tabs.query 都不發。
-async function reinjectIntoInstagramTabs() {
-  if (!instagramApisAvailable()) return;
-  if (!chrome.tabs || typeof chrome.tabs.query !== 'function') return;
-  if (typeof chrome.scripting.executeScript !== 'function') return;
+// 更新後對某站既開分頁重注入，理由同上方 threads 的自癒重注入。每站與
+// threads 那次分開查詢:只有該站權限已授予且開關為 true 時才查、才注入，
+// 未授權時連 tabs.query 都不發。
+async function reinjectIntoSiteTabs(site) {
+  if (!optionalSiteApisAvailable()) return;
+  if (typeof chrome.tabs?.query !== 'function') return;
+  if (typeof chrome.scripting?.executeScript !== 'function') return;
 
   let tabs;
   try {
-    if (!(await instagramWanted())) return;
-    tabs = await chrome.tabs.query({ url: IG_SCRIPT.matches });
+    if (!(await siteWanted(site))) return;
+    tabs = await chrome.tabs.query({ url: site.matches });
   } catch (err) {
-    console.warn('[threads-clean-link] 查詢既開 Instagram 分頁失敗，略過重注入', err);
+    console.warn('[threads-clean-link] 查詢既開 ' + site.hostSuffix + ' 分頁失敗，略過重注入', err);
     return;
   }
 
   const targets = (tabs || []).filter(
-    (tab) => tab && tab.id !== undefined && tab.id !== chrome.tabs.TAB_ID_NONE && isInstagramPageUrl(tab.url)
+    (tab) => tab && tab.id !== undefined && tab.id !== chrome.tabs.TAB_ID_NONE && isSitePageUrl(site, tab.url)
   );
   await Promise.all(
     targets.map(async (tab) => {
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          files: IG_REINJECT_FILES,
+          files: OPTIONAL_SITE_FILES,
           world: 'ISOLATED',
         });
       } catch (err) {
-        console.warn('[threads-clean-link] Instagram 分頁重注入失敗(分頁 id:' + tab.id + ')', err);
+        console.warn('[threads-clean-link] ' + site.hostSuffix + ' 分頁重注入失敗(分頁 id:' + tab.id + ')', err);
       }
     })
   );
 }
 
+function reinjectIntoAllSiteTabs() {
+  OPTIONAL_SITES.forEach((site) => {
+    reinjectIntoSiteTabs(site);
+  });
+}
+
 // onStartup 與 permissions 事件在測試沙箱與部分環境不存在，掛之前先確認。
 if (typeof chrome.runtime.onStartup?.addListener === 'function') {
   chrome.runtime.onStartup.addListener(() => {
-    reconcileInstagramScript();
+    reconcileAllSiteScripts();
   });
 }
 if (typeof chrome.permissions?.onAdded?.addListener === 'function') {
   chrome.permissions.onAdded.addListener((permissions) => {
-    if (touchesInstagram(permissions)) reconcileInstagramScript();
+    sitesTouchedBy(permissions).forEach((site) => {
+      reconcileSiteScript(site);
+    });
   });
 }
 if (typeof chrome.permissions?.onRemoved?.addListener === 'function') {
   chrome.permissions.onRemoved.addListener((permissions) => {
-    if (touchesInstagram(permissions)) handleInstagramPermissionRemoved();
+    sitesTouchedBy(permissions).forEach((site) => {
+      handleSitePermissionRemoved(site);
+    });
   });
 }
 if (typeof chrome.storage?.onChanged?.addListener === 'function') {
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes && Object.hasOwn(changes, IG_ENABLED_KEY)) reconcileInstagramScript();
+    if (areaName !== 'local' || !changes) return;
+    OPTIONAL_SITES.forEach((site) => {
+      if (Object.hasOwn(changes, site.key)) reconcileSiteScript(site);
+    });
   });
 }
 
