@@ -270,6 +270,49 @@ test('C2 post：互動列與插入點同 feed；作者是資訊欄第一個 hand
   });
 });
 
+// post.html 去掉 caption 內文與留言：資訊欄只剩標頭與 caption 標頭的作者
+// 名（外層 span 不在 <a> 內、不含 <time>），模擬沒有 caption 的貼文。
+function postWithoutCaptionDoc() {
+  // 逐行過濾：caption 內文那行整行移除；留言區從 fx-post-comment 開頭到
+  // 同縮排的結束標籤整段移除。
+  const lines = readFixture('post.html').split(/\r?\n/);
+  const kept = [];
+  let commentIndent = null;
+  for (const line of lines) {
+    if (commentIndent !== null) {
+      if (line === commentIndent + '</div>') commentIndent = null;
+      continue;
+    }
+    const m = /^(\s*)<div id="fx-post-comment">/.exec(line);
+    if (m) {
+      commentIndent = m[1];
+      continue;
+    }
+    if (line.includes('<span>示意單篇內文第一行')) continue;
+    kept.push(line);
+  }
+  const html = kept.join('\n');
+  assert.ok(!html.includes('示意單篇內文'), '合成頁面不應留有 caption 內文');
+  assert.ok(!html.includes('示意留言'), '合成頁面不應留有留言');
+  return createDocument(html);
+}
+
+test('C2 post：沒有 caption、容器內只有作者名 span 時，內文為 undefined，不把作者名當內文', () => {
+  const ig = instagram();
+  const doc = postWithoutCaptionDoc();
+  const info = doc.getElementById('fx-post-info');
+  assert.deepEqual(ig.author(info, POST_CTX), { author: 'fx_author_c', handle: 'fx_author_c' });
+  assert.equal(ig.excerpt(info, POST_CTX), undefined);
+});
+
+test('C2 post：有 caption 時內文取 caption，不是作者名', () => {
+  const ig = instagram();
+  const info = fixtureDoc('post.html').getElementById('fx-post-info');
+  const excerpt = ig.excerpt(info, POST_CTX);
+  assert.notEqual(excerpt, 'fx_author_c');
+  assert.ok(excerpt.startsWith(POST_LINES[0]), '內文應以 caption 第一行開頭：' + excerpt);
+});
+
 // ============================================================
 // 純函式層：reels
 // ============================================================
