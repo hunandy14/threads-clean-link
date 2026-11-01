@@ -167,10 +167,12 @@ test('D1-08 isAcceptableHistoryUrl：偽冒網域、javascript:、空字串、�
   }
 });
 
-test('D1-09 回歸：normalizePostUrl 不放寬，F3／F7／F8／F9 仍為 null（只放寬下行與顯示層）', () => {
-  for (const url of [F3_GROUP, F7_SHARE_P, F8_M, F9_WATCH]) {
+test('D1-09 回歸：normalizePostUrl 不放寬，F3／F7／F9 仍為 null（只放寬下行與顯示層）', () => {
+  for (const url of [F3_GROUP, F7_SHARE_P, F9_WATCH]) {
     assert.equal(C.normalizePostUrl(url), null, url);
   }
+  // E-3 翻轉：原斷言 F8_M（m. 貼文）為 null，現在統一成 www.facebook.com
+  assert.equal(C.normalizePostUrl(F8_M), `https://www.facebook.com/fx_user_a/posts/${ID}`);
 });
 
 // ============================================================================
@@ -202,19 +204,20 @@ function cloudItem(id, cleaned, at, over = {}) {
 const DOWNLINK_CASES = [
   ['D1-10', 'F3 社團 permalink', F3_GROUP],
   ['D1-11', 'F7 /share/p', F7_SHARE_P],
-  ['D1-12', 'F8 m. 子網域', F8_M],
+  // E-3 翻轉：下行先過 normalizePostUrl，m.／web. 落地 url 改為 www 版本（path／query 不動），postKey 不變
+  ['D1-12', 'F8 m. 子網域', F8_M, F8_M.replace('m.facebook', 'www.facebook')],
   ['D1-13', 'F9 fb.watch', F9_WATCH],
-  ['D1-14', 'http scheme 的 F8 web.', F8_WEB.replace('https:', 'http:')],
+  ['D1-14', 'http scheme 的 F8 web.', F8_WEB.replace('https:', 'http:'), F8_WEB.replace('web.facebook', 'www.facebook')],
 ];
 
-for (const [no, label, cleaned] of DOWNLINK_CASES) {
+for (const [no, label, cleaned, landed = cleaned] of DOWNLINK_CASES) {
   test(`${no} 下行：${label} 的雲端項目落地進歷史，url 原樣、postKey 等於 postKeyOf(cleaned)、kind 為 share`, async () => {
     const id = `srv-${no}`;
     const env = await runSync([], [cloudItem(id, cleaned, T0 - 200_000, { author: 'From Phone' })]);
     const e = env.storage.history().find((x) => x.id === id);
     assert.ok(e, `下行的 ${label} 項目必須落地`);
-    assert.equal(e.url, cleaned, 'url 原樣（不改 host、不改 scheme）');
-    assert.equal(e.postKey ?? null, C.postKeyOf(cleaned) ?? null, 'postKey 等於 postKeyOf(cleaned)');
+    assert.equal(e.url, landed, 'url 原樣（不改 host、不改 scheme），E-3 例外：m.／web. 改寫為 https://www.facebook.com');
+    assert.equal(e.postKey ?? null, C.postKeyOf(landed) ?? null, 'postKey 等於 postKeyOf(cleaned)');
     assert.equal(e.kind, 'share');
     assert.equal(e.author, 'From Phone');
   });
@@ -349,7 +352,8 @@ test('D1-32 mergeImportedEntries：匯入 F3／F7／F8／F9 條目全數保留�
   assert.equal(result.added, 4);
   assert.deepEqual(
     result.merged.map((e) => e.url),
-    [F3_GROUP, F7_SHARE_V, F8_MBASIC, F9_WATCH]
+    // E-3 翻轉：F8_MBASIC 改寫為 www 版本
+    [F3_GROUP, F7_SHARE_V, F8_MBASIC.replace('mbasic.facebook', 'www.facebook'), F9_WATCH]
   );
 });
 
