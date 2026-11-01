@@ -1,0 +1,2340 @@
+<!--
+  Facebook 單篇貼文頁（pathname /fx_user_a/posts/pfbid0FX…）的 DOM。由 2026-11-01 zh-Hant 實測 dump
+  以程式裁剪、匿名化：class／style 全數移除，svg 內部與圖片來源清空，帳號名、數字 id、pfbid、
+  人名、內文、留言一律換成假值，留言只留一則。其餘層級原樣保留。
+  - #fx-feed-layer：dialog 底下的背景動態，只留一則 [aria-posinset] 貼文（#fx-feed-post），
+    它不在 [role=dialog] 內，不得被選為容器。
+  - #fx-dialog-layer：疊在上面的 [role=dialog]（#fx-dialog），內含本篇 #fx-post（[aria-posinset]）。
+  - 互動列 #fx-post-row：子節點依序為讚欄（含心情）#fx-post-like-col、分享欄 #fx-post-share-col、
+    toolbar 外層 #fx-post-toolbar-cell。按鈕插在分享欄之後、toolbar 之前。
+  - #fx-post-ghost-row：0x0 的重複列（無 data-fx-top，getBoundingClientRect 全 0），放在真列之前。
+  - data-fx-top／data-fx-height 讓測試替身回傳非零 rect；style 的 flex 模擬計算樣式。
+  - 作者 #fx-post-author（/fx_user_a?…），profile_name 內第二個 a 是打卡地點 #fx-post-place。
+  - 內文 #fx-post-message：第一行含 <br>，最後一行帶「查看更多」role=button。
+-->
+<div id="fx-feed-layer">
+<div role="main">
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<span>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-labelledby="fx-r17 fx-r18 fx-r19 fx-r20 fx-r21 fx-r22 fx-r23 fx-r24 fx-r25 fx-r26 fx-r27 fx-r28 fx-r29" aria-posinset="1" id="fx-feed-post">
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<span>
+<a aria-label="示意標籤" href="/stories/100000000000006/fx_user_g/?view_single=false&amp;__cft__[0]=AZfx&amp;__tn__=%3C%3C%2CP-R" role="link" tabindex="0">
+<div>
+<svg aria-label="示意標籤" data-visualcompletion="ignore-dynamic" role="img">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</a>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span dir="ltr">
+<div data-ad-rendering-role="profile_name">
+<h4 id="fx-r17">
+<span>
+<span>
+<span>
+<span>
+<span>
+<div>
+<a href="https://www.facebook.com/fx_user_b?__cft__[0]=AZfx&amp;__tn__=-UC%2CP-R" role="link" tabindex="0">
+<b>
+<span>示意背景作者</span>
+</b>
+</a>
+</div>
+</span>
+</span>
+</span>
+</span>
+<span> <span>
+<span>
+<svg role="img">
+</svg>
+</span>
+</span>
+</span>
+<span>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+<span>
+<div role="button" tabindex="0">
+<span>追蹤</span>
+</div>
+</span>
+</span>
+</span>
+</h4>
+</div>
+</span>
+</div>
+<div>
+<span dir="ltr">
+<div id="fx-r30">
+<span id="fx-r18">
+<span>
+<span>
+<span>
+<div aria-hidden="true" id="fx-r31">18小時前</div>
+<a aria-labelledby="fx-r31" href="?__cft__[0]=AZfx&amp;__tn__=%2CO%2CP-R#?ahk" role="link" tabindex="0">
+<span>
+<span>
+<span>S͏</span>
+<span>n͏</span>
+<span>d͏</span>
+<span>s͏</span>
+<span>p͏</span>
+<span>r͏</span>
+<span>e͏</span>
+<span>o͏</span>
+<span>t͏</span>
+<span>o͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>小͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>9͏</span>
+<span>2͏</span>
+<span>5͏</span>
+<span>i͏</span>
+<span>9͏</span>
+<span>i͏</span>
+<span>f͏</span>
+<span>1͏</span>
+<span>7͏</span>
+<span>時͏</span>
+<span> ͏</span>
+<span>4͏</span>
+<span>u͏</span>
+<span>0͏</span>
+<span>t͏</span>
+<span>8͏</span>
+<span>m͏</span>
+<span>0͏</span>
+<span>4͏</span>
+<span>3͏</span>
+<span>l͏</span>
+<span>u͏</span>
+<span>g͏</span>
+<span>2͏</span>
+<span>m͏</span>
+<span>1͏</span>
+<span>a͏</span>
+<span>f͏</span>
+<span>a͏</span>
+<span>8͏</span>
+<span>t͏</span>
+<span>2͏</span>
+<span>7͏</span>
+<span>m͏</span>
+<span>h͏</span>
+<span>7͏</span>
+<span>3͏</span>
+<span>0͏</span>
+<span>u͏</span>
+<span>4͏</span>
+<span>3͏</span>
+<span>f͏</span>
+<span>g͏</span>
+<span>c͏</span>
+<span>t͏</span>
+</span>
+</span>
+</a>
+</span>
+</span>
+</span>
+</span>
+<span>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</span>
+<span id="fx-r19">
+<span>
+<span>
+<span>
+<svg role="img">
+</svg>
+</span>
+</span>
+</span>
+</span>
+</div>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div aria-expanded="false" aria-haspopup="menu" aria-label="對示意背景作者的這則貼文採取的動作" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<a aria-label="示意人名2的貼文" href="" role="link" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div dir="auto">
+<div data-ad-rendering-role="story_message" id="fx-r20">
+<div data-ad-comet-preview="message" data-ad-preview="message">
+<div>
+<div>
+<span dir="auto">
+<div>
+<div>
+<div dir="auto">示意文字28</div>
+<div dir="auto">示意文字29<div role="button" tabindex="0">查看更多</div>
+</div>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="fx-r21">
+<div>
+<a href="https://www.facebook.com/photo/?fbid=100000000000007&amp;set=a.100000000000008&amp;__cft__[0]=AZfx&amp;__tn__=EH-R" role="link" tabindex="0">
+<span id="fx-r21" aria-hidden="false">示意文字30</span>
+<div>
+<div>
+<div>
+<div>
+<img alt="" src="about:blank">
+</div>
+</div>
+</div>
+</div>
+<div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</div>
+<div>
+<div>
+<a href="?__cft__[0]=AZfx&amp;__tn__=%2CmH-R#?gaa" role="link" tabindex="0">
+<div>
+<div>
+<div>
+<div data-ad-rendering-role="meta">
+<span dir="auto">
+<span>示意文字31</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<span dir="auto">
+<span>
+<span data-ad-rendering-role="title">
+<span dir="auto">示意文字32</span>
+</span>
+</span>
+</span>
+</div>
+<div>
+<span dir="auto">
+<span>
+<span data-ad-rendering-role="description">示意文字33</span>
+</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<object>
+<a href="?__cft__[0]=AZfx&amp;__tn__=%2CmH-R#?afe" role="link" tabindex="0">
+<div role="none">
+<div>
+<div role="none">
+<span dir="auto">
+<span>
+<span>
+<span>
+<span>S͏</span>
+<span>n͏</span>
+<span>d͏</span>
+<span>s͏</span>
+<span>p͏</span>
+<span>r͏</span>
+<span>e͏</span>
+<span>o͏</span>
+<span>t͏</span>
+<span>o͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>M͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>r͏</span>
+<span>2͏</span>
+<span>5͏</span>
+<span>i͏</span>
+<span>9͏</span>
+<span>i͏</span>
+<span>r͏</span>
+<span>1͏</span>
+<span>7͏</span>
+<span>e͏</span>
+<span>n͏</span>
+<span>4͏</span>
+<span>u͏</span>
+<span>0͏</span>
+<span>t͏</span>
+<span>8͏</span>
+<span>m͏</span>
+<span>0͏</span>
+<span>L͏</span>
+<span>3͏</span>
+<span>l͏</span>
+<span>u͏</span>
+<span>g͏</span>
+<span>2͏</span>
+<span>m͏</span>
+<span>e͏</span>
+<span>a͏</span>
+<span>f͏</span>
+<span>a͏</span>
+<span>a͏</span>
+<span>t͏</span>
+<span>2͏</span>
+<span>7͏</span>
+<span>m͏</span>
+<span>h͏</span>
+<span>7͏</span>
+<span>3͏</span>
+<span>0͏</span>
+<span>u͏</span>
+<span>4͏</span>
+<span>3͏</span>
+<span>o͏</span>
+<span> ͏</span>
+<span>c͏</span>
+<span>t͏</span>
+</span>
+</span>
+</span>
+</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</a>
+</object>
+</div>
+</div>
+</div>
+</a>
+</div>
+</div>
+</div>
+<span id="fx-r22">分享的貼文</span>
+</div>
+<div>
+<div data-visualcompletion="ignore-dynamic">
+<div>
+<div>
+<div>
+<div>
+<div id="fx-feed-row" style="display: flex; flex-direction: row" data-fx-top="1200" data-fx-height="44">
+<div data-fx-top="1200" data-fx-height="44">
+<div aria-label="對示意背景作者的貼文表示讚" role="button" tabindex="0" data-fx-top="1200" data-fx-height="44">
+<div data-fx-top="1200" data-fx-height="44">
+<div data-fx-top="1200" data-fx-height="44">
+<span data-fx-top="1200" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="1200" data-fx-height="44">
+</i>
+</span>
+<div data-ad-rendering-role="like_button" data-fx-top="1200" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="1200" data-fx-height="44">
+<span dir="auto" data-fx-top="1200" data-fx-height="44">2,320</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="1200" data-fx-height="44">
+</div>
+</div>
+<div aria-label="對示意背景作者的貼文傳達心情" role="button" tabindex="0" data-fx-top="1200" data-fx-height="44">
+<svg aria-hidden="true" data-fx-top="1200" data-fx-height="44">
+</svg>
+<div role="none" data-visualcompletion="ignore" data-fx-top="1200" data-fx-height="44">
+</div>
+</div>
+</div>
+<div data-fx-top="1200" data-fx-height="44">
+<div aria-label="Comment on 示意背景作者's post, 697 comments" role="button" tabindex="0" data-fx-top="1200" data-fx-height="44">
+<div data-fx-top="1200" data-fx-height="44">
+<div data-fx-top="1200" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="1200" data-fx-height="44">
+</i>
+<div data-ad-rendering-role="comment_button" data-fx-top="1200" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="1200" data-fx-height="44">
+<span dir="auto" data-fx-top="1200" data-fx-height="44">697</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="1200" data-fx-height="44">
+</div>
+</div>
+</div>
+<div data-fx-top="1200" data-fx-height="44">
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="分享示意背景作者的貼文" role="button" tabindex="0" data-fx-top="1200" data-fx-height="44">
+<div data-fx-top="1200" data-fx-height="44">
+<div data-fx-top="1200" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="1200" data-fx-height="44">
+</i>
+<div data-ad-rendering-role="share_button" data-fx-top="1200" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="1200" data-fx-height="44">
+<span dir="auto" data-fx-top="1200" data-fx-height="44">49</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="1200" data-fx-height="44">
+</div>
+</div>
+</div>
+<div data-fx-top="1200" data-fx-height="44">
+<span aria-label="看看誰對這個傳達了心情" role="toolbar" data-fx-top="1200" data-fx-height="44">
+<span id="fx-r27" data-fx-top="1200" data-fx-height="44">
+<span data-fx-top="1200" data-fx-height="44">
+<span data-fx-top="1200" data-fx-height="44">
+<span data-fx-top="1200" data-fx-height="44">
+<div aria-label="讚：1,740人" role="button" tabindex="0" data-fx-top="1200" data-fx-height="44">
+<img role="presentation" src="about:blank" data-fx-top="1200" data-fx-height="44">
+</div>
+</span>
+</span>
+</span>
+<span data-fx-top="1200" data-fx-height="44">
+<span data-fx-top="1200" data-fx-height="44">
+<span data-fx-top="1200" data-fx-height="44">
+<div aria-label="哈：559人" role="button" tabindex="0" data-fx-top="1200" data-fx-height="44">
+<img role="presentation" src="about:blank" data-fx-top="1200" data-fx-height="44">
+</div>
+</span>
+</span>
+</span>
+</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="fx-dialog-layer">
+<div role="dialog" id="fx-dialog">
+<div tabindex="-1">
+<div>
+<div>
+<div aria-labelledby="fx-r1" role="dialog">
+<div>
+<div aria-hidden="false">
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<h2 dir="auto">
+<span dir="auto" id="fx-r1">示意文字1</span>
+</h2>
+</div>
+<div>
+<div>
+<div aria-label="關閉" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+</div>
+<hr>
+</div>
+<div>
+<div>
+<div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-labelledby="fx-r2 fx-r3 fx-r4 fx-r5 fx-r6 fx-r7 fx-r8 fx-r9 fx-r10 fx-r11 fx-r12 fx-r13 fx-r14" aria-posinset="1" id="fx-post">
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<span>
+<a aria-label="示意作者甲" href="https://www.facebook.com/fx_user_a?__cft__[0]=AZfx&amp;__tn__=%3C%3C%2CP-R" role="link" tabindex="0">
+<div>
+<svg aria-label="示意作者甲" data-visualcompletion="ignore-dynamic" role="img">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</a>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span dir="ltr">
+<div data-ad-rendering-role="profile_name">
+<h3 id="fx-r2">
+<span>
+<span>
+<span>
+<span>
+<span>
+<div>
+<a href="https://www.facebook.com/fx_user_a?__cft__[0]=AZfx&amp;__tn__=-UC%2CP-R" role="link" tabindex="0" id="fx-post-author">
+<b>
+<span>示意作者甲</span>
+</b>
+</a>
+<span> 在 <a href="https://www.facebook.com/pages/fx_place/100000000000901?__cft__[0]=AZfx" role="link" tabindex="0" id="fx-post-place">
+<span>示意地點</span>
+</a>
+</span>
+</div>
+</span>
+</span>
+</span>
+</span>
+<span> <span>
+<span>
+<svg role="img">
+</svg>
+</span>
+</span>
+</span>
+</span>
+</h3>
+</div>
+</span>
+</div>
+<div>
+<span dir="ltr">
+<div id="fx-r15">
+<span id="fx-r3">
+<span>
+<span>
+<span>
+<div aria-hidden="true" id="fx-r16">1 天前</div>
+<a aria-labelledby="fx-r16" href="?__cft__[0]=AZfx&amp;__tn__=%2CO%2CP-R#?hkb" role="link" tabindex="0">
+<span>
+<span>
+<span>S͏</span>
+<span>n͏</span>
+<span>d͏</span>
+<span>s͏</span>
+<span>p͏</span>
+<span>r͏</span>
+<span>e͏</span>
+<span>o͏</span>
+<span>t͏</span>
+<span>o͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>2͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>9͏</span>
+<span>2͏</span>
+<span>5͏</span>
+<span>i͏</span>
+<span>9͏</span>
+<span>i͏</span>
+<span>2͏</span>
+<span>1͏</span>
+<span>7͏</span>
+<span>0͏</span>
+<span>午͏</span>
+<span>4͏</span>
+<span>u͏</span>
+<span>0͏</span>
+<span>t͏</span>
+<span>8͏</span>
+<span>m͏</span>
+<span>0͏</span>
+<span>昨͏</span>
+<span>3͏</span>
+<span>l͏</span>
+<span>u͏</span>
+<span>g͏</span>
+<span>2͏</span>
+<span>m͏</span>
+<span>天͏</span>
+<span>a͏</span>
+<span>f͏</span>
+<span>a͏</span>
+<span>下͏</span>
+<span>t͏</span>
+<span>2͏</span>
+<span>7͏</span>
+<span>m͏</span>
+<span>h͏</span>
+<span>7͏</span>
+<span>3͏</span>
+<span>0͏</span>
+<span>u͏</span>
+<span>4͏</span>
+<span>3͏</span>
+<span>:͏</span>
+<span>1͏</span>
+<span>c͏</span>
+<span>t͏</span>
+</span>
+</span>
+</a>
+</span>
+</span>
+</span>
+</span>
+<span>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</span>
+<span id="fx-r4">
+<span>
+<span>
+<span>
+<svg role="img">
+</svg>
+</span>
+</span>
+</span>
+</span>
+</div>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div aria-expanded="false" aria-haspopup="menu" aria-label="對示意作者甲的這則貼文採取的動作" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div dir="auto">
+<div data-ad-rendering-role="story_message" id="fx-r5">
+<div data-ad-comet-preview="message" data-ad-preview="message" id="fx-post-message">
+<div>
+<div>
+<span dir="auto">
+<div>
+<div>
+<div dir="auto">示意單篇內文第1行。<br>示意單篇內文第1行之二。</div>
+<div dir="auto">示意單篇內文第2行。</div>
+<div dir="auto">⠀</div>
+<div dir="auto">示意單篇內文第3行。</div>
+<div dir="auto">示意單篇內文第4行。</div>
+<div dir="auto">示意單篇內文第5行。</div>
+<div dir="auto">⠀</div>
+<div dir="auto">示意單篇內文第6行。</div>
+<div dir="auto">示意單篇內文第7行。</div>
+<div dir="auto">示意單篇內文第8行。</div>
+<div dir="auto">示意單篇內文第9行。</div>
+<div dir="auto">示意單篇內文第10行。</div>
+<div dir="auto">⠀</div>
+<div dir="auto">示意單篇內文第11行。</div>
+<div dir="auto">示意單篇內文第12行。</div>
+<div dir="auto">示意單篇內文第13行。</div>
+<div dir="auto">示意單篇內文第14行。</div>
+<div dir="auto">示意單篇內文第15行。</div>
+<div dir="auto">⠀</div>
+<div dir="auto">示意單篇內文第16行。</div>
+<div dir="auto">⠀</div>
+<div dir="auto">示意單篇內文第17行。</div>
+<div dir="auto">示意單篇內文第18行。</div>
+<div dir="auto">示意單篇內文第19行。<div role="button" tabindex="0">查看更多</div>
+</div>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="fx-r6">
+<div>
+<div>
+<span id="fx-r6" aria-hidden="false">示意文字21</span>
+<div>
+<div>
+<div>
+<a aria-label="示意標籤" href="https://www.facebook.com/photo/?fbid=100000000000001&amp;set=pcb.100000000000002&amp;__cft__[0]=AZfx&amp;__tn__=*b0H-R" role="link" tabindex="0">
+<div>
+<div>
+<div>
+<img alt="" src="about:blank">
+</div>
+</div>
+<div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</div>
+<div>
+<a aria-label="示意標籤" href="https://www.facebook.com/photo/?fbid=100000000000003&amp;set=pcb.100000000000002&amp;__cft__[0]=AZfx&amp;__tn__=*b1H-R" role="link" tabindex="0">
+<div>
+<div>
+<div>
+<img alt="" src="about:blank">
+</div>
+</div>
+<div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</div>
+<div>
+<a aria-label="示意標籤" href="https://www.facebook.com/photo/?fbid=100000000000004&amp;set=pcb.100000000000002&amp;__cft__[0]=AZfx&amp;__tn__=*b2H-R" role="link" tabindex="0">
+<div>
+<div>
+<div>
+<img alt="" src="about:blank">
+</div>
+</div>
+<div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<a href="?__cft__[0]=AZfx&amp;__tn__=%2CmH-R#?bjd" role="link" tabindex="0">
+<div>
+<div>
+<div>
+<div data-ad-rendering-role="meta">
+<span dir="auto">
+<span>示意文字22</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<span dir="auto">
+<span>
+<span data-ad-rendering-role="title">
+<span dir="auto">示意文字23</span>
+</span>
+</span>
+</span>
+</div>
+<div>
+<span dir="auto">
+<span>
+<span data-ad-rendering-role="description">示意文字24</span>
+</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<object>
+<a href="?__cft__[0]=AZfx&amp;__tn__=%2CmH-R#?jca" role="link" tabindex="0">
+<div role="none">
+<div>
+<div role="none">
+<span dir="auto">
+<span>
+<span>
+<span>
+<span>S͏</span>
+<span>n͏</span>
+<span>d͏</span>
+<span>s͏</span>
+<span>p͏</span>
+<span>r͏</span>
+<span>e͏</span>
+<span>o͏</span>
+<span>t͏</span>
+<span>o͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>M͏</span>
+<span>0͏</span>
+<span>g͏</span>
+<span>r͏</span>
+<span>2͏</span>
+<span>5͏</span>
+<span>i͏</span>
+<span>9͏</span>
+<span>i͏</span>
+<span>r͏</span>
+<span>1͏</span>
+<span>7͏</span>
+<span>e͏</span>
+<span>n͏</span>
+<span>4͏</span>
+<span>u͏</span>
+<span>0͏</span>
+<span>t͏</span>
+<span>8͏</span>
+<span>m͏</span>
+<span>0͏</span>
+<span>L͏</span>
+<span>3͏</span>
+<span>l͏</span>
+<span>u͏</span>
+<span>g͏</span>
+<span>2͏</span>
+<span>m͏</span>
+<span>e͏</span>
+<span>a͏</span>
+<span>f͏</span>
+<span>a͏</span>
+<span>a͏</span>
+<span>t͏</span>
+<span>2͏</span>
+<span>7͏</span>
+<span>m͏</span>
+<span>h͏</span>
+<span>7͏</span>
+<span>3͏</span>
+<span>0͏</span>
+<span>u͏</span>
+<span>4͏</span>
+<span>3͏</span>
+<span>o͏</span>
+<span> ͏</span>
+<span>c͏</span>
+<span>t͏</span>
+</span>
+</span>
+</span>
+</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</a>
+</object>
+</div>
+</div>
+</div>
+</a>
+</div>
+</div>
+</div>
+<span id="fx-r7">分享的貼文</span>
+</div>
+<div>
+<div data-visualcompletion="ignore-dynamic">
+<div>
+<div>
+<div>
+<div>
+<div id="fx-post-ghost-row" style="display: flex; flex-direction: row">
+<div id="fx-post-ghost-like-col">
+<div aria-label="對示意作者甲的貼文表示讚" role="button" tabindex="0">
+<div>
+<div>
+<span>
+<i data-visualcompletion="css-img">
+</i>
+</span>
+<div data-ad-rendering-role="like_button">
+</div>
+</div>
+<div>
+<span dir="auto">3.8 萬</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+<div aria-label="對示意作者甲的貼文傳達心情" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div id="fx-post-ghost-share-col">
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="分享示意作者甲的貼文" role="button" tabindex="0">
+<div>
+<div>
+<i data-visualcompletion="css-img">
+</i>
+<div data-ad-rendering-role="share_button">
+</div>
+</div>
+<div>
+<span dir="auto">1,039</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div id="fx-post-ghost-toolbar-cell">
+<span aria-label="看看誰對這個傳達了心情" role="toolbar">
+<span>
+<span>
+<span>
+<span>
+<div aria-label="讚：3.6 萬人" role="button" tabindex="0">
+<img role="presentation" src="about:blank">
+</div>
+</span>
+</span>
+</span>
+</span>
+</span>
+</div>
+</div>
+<div id="fx-post-row" style="display: flex; flex-direction: row" data-fx-top="560" data-fx-height="44">
+<div id="fx-post-like-col" data-fx-top="560" data-fx-height="44">
+<div aria-label="對示意作者甲的貼文表示讚" role="button" tabindex="0" data-fx-top="560" data-fx-height="44">
+<div data-fx-top="560" data-fx-height="44">
+<div data-fx-top="560" data-fx-height="44">
+<span data-fx-top="560" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="560" data-fx-height="44">
+</i>
+</span>
+<div data-ad-rendering-role="like_button" data-fx-top="560" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="560" data-fx-height="44">
+<span dir="auto" data-fx-top="560" data-fx-height="44">3.8 萬</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="560" data-fx-height="44">
+</div>
+</div>
+<div aria-label="對示意作者甲的貼文傳達心情" role="button" tabindex="0" data-fx-top="560" data-fx-height="44">
+<svg aria-hidden="true" data-fx-top="560" data-fx-height="44">
+</svg>
+<div role="none" data-visualcompletion="ignore" data-fx-top="560" data-fx-height="44">
+</div>
+</div>
+</div>
+<div id="fx-post-share-col" data-fx-top="560" data-fx-height="44">
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="分享示意作者甲的貼文" role="button" tabindex="0" data-fx-top="560" data-fx-height="44">
+<div data-fx-top="560" data-fx-height="44">
+<div data-fx-top="560" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="560" data-fx-height="44">
+</i>
+<div data-ad-rendering-role="share_button" data-fx-top="560" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="560" data-fx-height="44">
+<span dir="auto" data-fx-top="560" data-fx-height="44">1,039</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="560" data-fx-height="44">
+</div>
+</div>
+</div>
+<div id="fx-post-toolbar-cell" data-fx-top="560" data-fx-height="44">
+<span aria-label="看看誰對這個傳達了心情" role="toolbar" data-fx-top="560" data-fx-height="44">
+<span id="fx-r12" data-fx-top="560" data-fx-height="44">
+<span data-fx-top="560" data-fx-height="44">
+<span data-fx-top="560" data-fx-height="44">
+<span data-fx-top="560" data-fx-height="44">
+<div aria-label="讚：3.6 萬人" role="button" tabindex="0" data-fx-top="560" data-fx-height="44">
+<img role="presentation" src="about:blank" data-fx-top="560" data-fx-height="44">
+</div>
+</span>
+</span>
+</span>
+</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span dir="auto">示意文字25</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div aria-expanded="false" aria-haspopup="menu" role="button" tabindex="0">
+<span dir="auto">最相關<div>
+<span>﻿</span>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="示意人名1的留言23小時前" role="article" tabindex="-1">
+<div>
+<span>
+<span>
+<a aria-hidden="true" href="https://www.facebook.com/fx_user_f?comment_id=fxcomment&amp;__cft__[0]=AZfx&amp;__tn__=fx" role="link" tabindex="-1">
+<div>
+<svg aria-hidden="true" data-visualcompletion="ignore-dynamic" role="none">
+</svg>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<span>
+<span>
+<a aria-hidden="false" href="https://www.facebook.com/fx_user_f?comment_id=fxcomment&amp;__cft__[0]=AZfx&amp;__tn__=fx" role="link" tabindex="0">
+<span>
+<span dir="auto">示意人名1</span>
+</span>
+</a>
+</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<span>
+<div>
+<span>
+<div>
+<div tabindex="0">
+<span>
+<svg role="img">
+</svg>
+</span>
+</div>
+</div>
+</span>
+</div>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</div>
+<div>
+<div>
+<span>
+<a aria-label="示意標籤" href="https://www.facebook.com/fx_user_a/posts/pfbid0FXAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA?comment_id=100000000000005&amp;__cft__[0]=AZfx&amp;__tn__=fx" role="link" tabindex="0">
+<span dir="auto">23小時</span>
+</a>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<span dir="auto">
+<div>
+<div dir="auto">示意文字26<span>
+<img alt="" src="about:blank">
+</span>
+</div>
+<div dir="auto">示意文字27<span>
+<img alt="" src="about:blank">
+</span>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div aria-hidden="false">
+<div>
+<span>
+<div aria-expanded="false" aria-haspopup="menu" aria-label="隱藏或檢舉此留言" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span>
+<div>
+<span>
+<div>
+<div aria-label="讚" role="button" tabindex="0">
+<div>
+<span>
+</span>
+<svg role="img">
+</svg>
+</div>
+</div>
+</div>
+<div aria-label="傳達心情" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</span>
+</div>
+<div>
+<span>
+<div aria-label="示意標籤" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+</div>
+</span>
+</div>
+<div>
+<div>
+<div>
+<span>
+<div aria-label="99個心情；查看誰對此傳達了心情" role="button" tabindex="0">
+<div>
+<div>
+<span>
+<img role="presentation" src="about:blank">
+</span>
+</div>
+<span>99</span>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看4則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看1則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看1則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+<div>
+</div>
+<div>
+<div>
+</div>
+</div>
+</div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+<div>
+</div>
+<div>
+<div>
+</div>
+</div>
+</div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+<div>
+</div>
+<div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+<div aria-hidden="true">
+<blockquote>
+<span dir="auto">
+<span>Facebook</span>
+</span>
+</blockquote>
+<div aria-hidden="true" role="button" tabindex="-1">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+</div>
+</div>
+<div data-visualcompletion="ignore">
+</div>
+<div data-visualcompletion="ignore">
+<div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div data-visualcompletion="ignore-late-mutation">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>

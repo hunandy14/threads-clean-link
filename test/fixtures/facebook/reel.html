@@ -1,0 +1,644 @@
+<!--
+  Facebook Reel 頁（pathname /reel/100000000000006）的 DOM。由 2026-11-01 zh-Hant 實測 dump 以程式
+  裁剪、匿名化（class／style 移除、svg 內部與圖片來源清空、帳號名／數字 id／人名／說明換假值）。
+  - 內部捲動容器有兩個項目：#fx-reel-active（作用中：video 帶 data-fx-playing，rect 280–742 涵蓋
+    視窗中線 450）與 #fx-reel-next（下一支，rect 從 1192 起，非作用中）。項目＝video 與「功能表」
+    按鈕的最低共同祖先（無屬性 div），不寫死層數。
+  - 直向互動欄 #fx-reel-*-col 子節點依序：讚（含傳達心情）、留言、分享 #fx-reel-*-share-cell、
+    功能表 #fx-reel-*-menu-cell。按鈕插在功能表之前。
+  - 只有作用中項目有作者連結 #fx-reel-author（h2 a，href 為 /profile.php?id=…&sk=reels_tab）。
+  - 說明 #fx-reel-caption（span[dir=auto]）內帶「查看更多」role=button。
+-->
+<div role="main" id="fx-reel-main">
+<div>
+<div>
+<div>
+<div id="fx-reel-active" data-fx-top="280" data-fx-height="462">
+<div data-visualcompletion="ignore-dynamic">
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<video data-fx-top="280" data-fx-height="462" data-fx-playing="">
+</video>
+<div>
+<div aria-label="Video player" role="group" data-visualcompletion="ignore">
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+<div role="presentation">
+</div>
+<div>
+<div>
+<div>
+<span>
+<div aria-label="取消靜音" role="button" tabindex="0">
+<i data-visualcompletion="css-img" aria-label="取消靜音" role="img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<span>
+<div aria-label="搜尋 Reel" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+<div>
+<div>
+</div>
+<div>
+<div>
+</div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<a aria-label="查看擁有者個人檔案" href="/profile.php?id=100000000000009&amp;sk=reels_tab&amp;__cft__[0]=AZfx&amp;__tn__=fx" role="link" tabindex="0">
+<div>
+<svg aria-label="大頭貼照" data-visualcompletion="ignore-dynamic" role="img">
+</svg>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</div>
+<div>
+<div>
+<div>
+<span dir="ltr">
+<div>
+<div>
+<h2>
+<span>
+<span>
+<span>
+<span>
+<span>
+<a aria-label="示意作者乙，查看擁有者個人檔案" href="/profile.php?id=100000000000009&amp;sk=reels_tab&amp;__cft__[0]=AZfx&amp;__tn__=fx" role="link" tabindex="0" id="fx-reel-author">示意作者乙</a>
+</span>
+</span>
+<span>
+<span>
+</span>
+</span>
+</span>
+</span>
+</span>
+</h2>
+</div>
+<div>
+<span>
+<span>
+<div>
+<div>
+<span>
+<span aria-label="分享對象：所有人" role="button" tabindex="0">
+<img alt="" src="about:blank">
+</span>
+</span>
+</div>
+</div>
+</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</div>
+<div>
+<span>
+<span>
+<div aria-label="追蹤示意作者乙" role="button" tabindex="0">追蹤</div>
+</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span dir="auto" id="fx-reel-caption">
+<div>示意短片說明，這是一則合成的 Reel 說明文字。<div role="button" tabindex="0">查看更多</div>
+</div>
+</span>
+</div>
+<div>
+<span dir="auto">
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div aria-hidden="true">
+<div aria-label="上一個項目" role="button" tabindex="-1">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+</div>
+</div>
+</div>
+<div aria-hidden="true">
+<div aria-label="下一個項目" role="button" tabindex="-1">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="Change Position" role="slider" tabindex="0">
+<div>
+<div data-visualcompletion="ignore">
+</div>
+<div data-visualcompletion="ignore">
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div data-visualcompletion="ignore-late-mutation">
+<div>
+<div id="fx-reel-active-col" style="display: flex; flex-direction: column">
+<div>
+<div>
+<div>
+<div aria-label="讚, 1,626 reactions" role="button" tabindex="0">
+<div>
+<div>
+<div>
+<div>
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+</div>
+</div>
+<div>
+<div>
+<span dir="auto">
+<span>1,626</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div>
+<div aria-label="傳達心情" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<span>
+<div aria-expanded="false" aria-label="Comment, 231 comments" role="button" tabindex="0">
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+<div>
+<div>
+<span dir="auto">
+<span>231</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+<div id="fx-reel-active-share-cell">
+<span>
+<div aria-label="分享，167次分享" role="button" tabindex="0">
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+<div>
+<div>
+<span dir="auto">
+<span>167</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+<div id="fx-reel-active-menu-cell">
+<span>
+<div>
+<div aria-expanded="true" aria-haspopup="menu" aria-label="功能表" role="button" tabindex="0" id="fx-reel-active-menu">
+<div>
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div id="fx-reel-next" data-fx-top="1192" data-fx-height="462">
+<div data-visualcompletion="ignore-dynamic">
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<video data-fx-top="1192" data-fx-height="462">
+</video>
+<div>
+<div aria-label="Video player" role="group" data-visualcompletion="ignore">
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+<div role="presentation">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div data-visualcompletion="ignore-late-mutation">
+<div>
+<div id="fx-reel-next-col" style="display: flex; flex-direction: column">
+<div>
+<div>
+<div>
+<div aria-label="讚, 6.8 萬 reactions" role="button" tabindex="-1">
+<div>
+<div>
+<div>
+<div>
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+</div>
+</div>
+<div>
+<div>
+<span dir="auto">
+<span>6.8 萬</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div>
+<div aria-label="傳達心情" role="button" tabindex="-1">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<span>
+<div aria-expanded="false" aria-label="Comment, 5,483 comments" role="button" tabindex="-1">
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+<div>
+<div>
+<span dir="auto">
+<span>5,483</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+<div id="fx-reel-next-share-cell">
+<span>
+<div aria-label="分享，1,969次分享" role="button" tabindex="-1">
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+<div>
+<div>
+<span dir="auto">
+<span>1,969</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+<div id="fx-reel-next-menu-cell">
+<span>
+<div>
+<div aria-expanded="true" aria-haspopup="menu" aria-label="功能表" role="button" tabindex="-1" id="fx-reel-next-menu">
+<div>
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<img alt="" aria-hidden="true" src="about:blank">
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<img alt="" aria-hidden="true" src="about:blank">
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<img alt="" aria-hidden="true" src="about:blank">
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<img alt="" aria-hidden="true" src="about:blank">
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+<div>
+<div aria-label="載入中……" role="status" data-visualcompletion="loading-state" tabindex="-1">
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div aria-label="前一張卡片" role="button" tabindex="-1">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div>
+<div aria-label="下一張卡片" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+</div>
