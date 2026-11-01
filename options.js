@@ -2905,10 +2905,15 @@
       var headTime = h('span', { class: 'entry-time', text: relTime(e.at), 'data-at': String(e.at) });
       timeNodes.push({ node: headTime, at: e.at });
       var badge = h('span', { class: 'entry-badge', text: tt(KINDS[e.kind].key) });
-      // 站點徽章:Instagram 貼文在 kind 徽章旁多掛一顆純文字「Instagram」。站
-      // 名是專有名詞，各語系同字，不走 i18n;Threads 是預設站點，不掛。
-      var siteBadge =
-        TCLCore.isInstagramPostUrl(e.url) && h('span', { class: 'entry-badge entry-site-badge', text: 'Instagram' });
+      // 站點徽章:Instagram／Facebook 貼文在 kind 徽章旁多掛一顆純文字站名
+      // (「Instagram」或「Facebook」，一筆至多符合一站)。站名是專有名詞，各語
+      // 系同字，不走 i18n;Threads 是預設站點，不掛。
+      var siteName = TCLCore.isInstagramPostUrl(e.url)
+        ? 'Instagram'
+        : TCLCore.isFacebookPostUrl(e.url)
+          ? 'Facebook'
+          : null;
+      var siteBadge = siteName && h('span', { class: 'entry-badge entry-site-badge', text: siteName });
 
       var body = [];
       if (hasCardPreview(e)) {

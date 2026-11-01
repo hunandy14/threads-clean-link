@@ -64,6 +64,28 @@
   // 碼，只有 Instagram 伺服器能對應到哪一篇)，整條網址不認。比對不分大小寫。
   var INSTAGRAM_RESERVED_SEGMENTS = ['share', 'explore', 'reels', 'stories', 'accounts', 'direct'];
 
+  // Facebook 貼文網址的粗切:scheme 為 http 或 https，authority 不含路徑/
+  // query/hash 分隔字元，整串不含空白。
+  //   group 1 = authority(host 判定見 FACEBOOK_HOSTS)
+  //   group 2 = 路徑(缺席為 undefined，視為 '/')
+  //   group 3 = query(不含 '?'，缺席為 undefined)
+  //   group 4 = hash(含 '#'，缺席為 undefined)
+  var FACEBOOK_URL_PATTERN = /^https?:\/\/([^\/?#\s]+)(\/[^?#\s]*)?(?:\?([^#\s]*))?(#\S*)?$/i;
+
+  // 接受的 Facebook host(比對不分大小寫)。其他子網域(m.、mobile.、
+  // business. 等)與 fb.watch、fb.com 一律不認。
+  var FACEBOOK_HOSTS = ['facebook.com', 'www.facebook.com'];
+
+  // Facebook 網址整串的長度上限，與 original 欄位上限一致。
+  var FACEBOOK_URL_MAX = 2048;
+
+  // Facebook 追蹤參數，鏡射手機 App 的清理規則:只剝這些鍵與所有 utm_*，
+  // 鍵名比對不分大小寫，其餘參數原樣保留。
+  var FACEBOOK_TRACKING_PARAMS = [
+    'fbclid', 'mibextid', 'rdid', 'share_url', 'sfnsn', 'wtsid', 'refid', 'ref',
+    'refsrc', '__tn__', '__xts__', 'notif_t', 'notif_id', 'paipv', 'extid', 'comment_tracking'
+  ];
+
   // 控制字元剝除範圍。剝:C0(U+0000-001F,**保留 tab U+0009 與 newline
   // U+000A**)、C1(U+007F-009F)、bidi 控制字元(U+061C 阿拉伯字母標記、
   // U+200E/200F LRM/RLM、U+202A-202E 嵌入/覆寫、U+2066-2069 隔離)。**不剝**
@@ -183,12 +205,17 @@
   //   - Threads:STRICT_POST_URL_PATTERN(無尾斜線、無 query/hash)。
   //   - Instagram:https、無 query、無 hash、無使用者前綴的貼文網址;尾斜線
   //     可有可無(正規化結果保留原樣，兩種都是乾淨網址)。
+  //   - Facebook:已是 normalizeFacebookPostUrl 的輸出(https、host 小寫、
+  //     不含追蹤參數);非追蹤參數與 hash 可存在。
   function isCleanPostUrl(url) {
     if (typeof url !== 'string') return false;
     if (STRICT_POST_URL_PATTERN.test(url)) return true;
     if (url.length > INSTAGRAM_URL_MAX) return false;
     var match = INSTAGRAM_POST_URL_PATTERN.exec(url);
-    return match !== null && match[2] === undefined && match[4] === undefined && url.slice(0, 8).toLowerCase() === 'https://';
+    if (match !== null && match[2] === undefined && match[4] === undefined && url.slice(0, 8).toLowerCase() === 'https://') {
+      return true;
+    }
+    return normalizeFacebookPostUrl(url) === url;
   }
 
   // Threads 專用的容尾正規化:通過白名單就回傳正規化後的乾淨網址(去
@@ -215,17 +242,72 @@
     return 'https://' + match[1].toLowerCase() + '/' + match[3];
   }
 
+  // 查詢參數鍵名是否為 Facebook 追蹤參數(FACEBOOK_TRACKING_PARAMS 或 utm_*
+  // 開頭)。rawKey 是 query 段未解碼的鍵名，解碼失敗時以原字串比對。
+  function isFacebookTrackingKey(rawKey) {
+    var key;
+    try {
+      key = decodeURIComponent(rawKey.replace(/\+/g, ' '));
+    } catch (e) {
+      key = rawKey;
+    }
+    key = key.toLowerCase();
+    return key.slice(0, 4) === 'utm_' || FACEBOOK_TRACKING_PARAMS.indexOf(key) !== -1;
+  }
+
+  // Facebook 的容尾正規化，鏡射手機 App 的清理規則:scheme 統一 https、host
+  // 轉小寫，query 只剝追蹤參數(見 isFacebookTrackingKey)，其餘參數依原順序
+  // 逐字保留，參數全被剝光時連 '?' 一併去掉;路徑、尾斜線與 hash 原樣保留。
+  // host 不在 FACEBOOK_HOSTS、超過 FACEBOOK_URL_MAX、或剝完的網址抽不出
+  // facebookId(與 postKeyOf 同一套貼文辨識規則)一律回 null;含控制字元或
+  // bidi 控制字元(見 CONTROL_CHARS_RE)的網址整串不認。
+  function normalizeFacebookPostUrl(url) {
+    if (typeof url !== 'string' || url.length > FACEBOOK_URL_MAX) return null;
+    if (stripControlChars(url) !== url) return null;
+    var match = FACEBOOK_URL_PATTERN.exec(url);
+    if (!match) return null;
+    var host = match[1].toLowerCase();
+    if (FACEBOOK_HOSTS.indexOf(host) === -1) return null;
+    var path = match[2] === undefined ? '/' : match[2];
+    var kept = [];
+    if (match[3]) {
+      var segments = match[3].split('&');
+      for (var i = 0; i < segments.length; i++) {
+        var segment = segments[i];
+        // 空片段（`&&`、結尾 `&`）直接略過。
+        if (segment === '') continue;
+        var eq = segment.indexOf('=');
+        if (!isFacebookTrackingKey(eq === -1 ? segment : segment.slice(0, eq))) kept.push(segment);
+      }
+    }
+    var cleaned = 'https://' + host + path + (kept.length > 0 ? '?' + kept.join('&') : '') + (match[4] || '');
+    var parsed;
+    try {
+      parsed = new URL(cleaned);
+    } catch (e) {
+      return null;
+    }
+    return facebookId(parsed) ? cleaned : null;
+  }
+
   // 容尾正規化:通過白名單就回傳正規化後的乾淨網址，否則 null。讀取/匯入時
   // 的形狀驗證與去重鍵都吃這個回傳值。認得的站點:Threads(見
-  // normalizeThreadsPostUrl)與 Instagram(見 normalizeInstagramPostUrl)。
+  // normalizeThreadsPostUrl)、Instagram(見 normalizeInstagramPostUrl)與
+  // Facebook(見 normalizeFacebookPostUrl)。
   function normalizePostUrl(url) {
-    return normalizeThreadsPostUrl(url) || normalizeInstagramPostUrl(url);
+    return normalizeThreadsPostUrl(url) || normalizeInstagramPostUrl(url) || normalizeFacebookPostUrl(url);
   }
 
   // 是否為 Instagram 貼文網址(容尾判定，接受正規化前的形狀)。顯示層據此決
   // 定卡片要不要掛站點徽章。
   function isInstagramPostUrl(url) {
     return normalizeInstagramPostUrl(url) !== null;
+  }
+
+  // 是否為 Facebook 貼文網址(容尾判定，接受正規化前的形狀)。顯示層據此決
+  // 定卡片要不要掛站點徽章。
+  function isFacebookPostUrl(url) {
+    return normalizeFacebookPostUrl(url) !== null;
   }
 
   // 抽出貼文識別碼(`/post/` 之後那一段)，抽不出回傳 null。
@@ -241,7 +323,7 @@
   // 也不要讓寬鬆匹配把兩篇不同貼文算成同一篇。分享短碼(/share/XXXX)本來就
   // 抽不出 ID——短碼只有 Meta 伺服器能對應，本機無從得知它指向哪一篇。
   //
-  // 【只認 Threads】Instagram 貼文網址一律回 null:本函式的唯一讀者是詐騙
+  // 【只認 Threads】Instagram 與 Facebook 貼文網址一律回 null:本函式的唯一讀者是詐騙
   // 名單證據的貼文代碼顯示，證據只來自 Threads;跨站點的合併鍵由 postKeyOf
   // 負責(instagram:<shortcode>)。
   function extractPostId(url) {
@@ -2882,6 +2964,8 @@
     normalizePostUrl: normalizePostUrl,
     normalizeThreadsPostUrl: normalizeThreadsPostUrl,
     isInstagramPostUrl: isInstagramPostUrl,
+    normalizeFacebookPostUrl: normalizeFacebookPostUrl,
+    isFacebookPostUrl: isFacebookPostUrl,
     extractPostId: extractPostId,
     postKeyOf: postKeyOf,
     KIND_LIST: KIND_LIST,
