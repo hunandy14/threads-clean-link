@@ -42,6 +42,10 @@ const EXPECTED_SCHEMA = [
     key: 'scamGuardEnabled', area: 'local', def: true, pages: ['options'],
     label: { options: ['opScamGuardName', 'opScamGuardDesc'] }, view: 'scamBar',
   },
+  {
+    key: 'instagramEnabled', area: 'local', def: false, pages: ['options'],
+    label: { options: ['opInstagramName', 'opInstagramDesc'] },
+  },
 ];
 
 function schema() {
@@ -57,7 +61,7 @@ function syncDefaultsFor(page) {
 
 // ---- SS1:schema 形狀與預設值推導 ----
 
-test('SS1:TCLCore.SETTINGS_SCHEMA 四筆，key／area／def／pages／label／view 照規格', () => {
+test('SS1:TCLCore.SETTINGS_SCHEMA 五筆，key／area／def／pages／label／view 照規格', () => {
   assert.deepEqual(schema(), EXPECTED_SCHEMA);
   schema().forEach((s) => {
     Object.values(s.label).flat().forEach((k) => {
@@ -117,8 +121,9 @@ test('SS1:options init 依 schema 的 area 讀值，缺值或非布林退回 def
 
 test('SS1:options 綁定 pages 含 options 的每一顆，change 寫進 schema 指定的 area', async () => {
   const mine = schema().filter((s) => s.pages.includes('options'));
-  assert.equal(mine.length, 4, 'options 頁四顆全收');
-  for (const s of mine) {
+  assert.equal(mine.length, 5, 'options 頁五顆全收');
+  // instagramEnabled 走專用流程(求權限)，契約見 instagram-optional-host.test.js。
+  for (const s of mine.filter((x) => x.key !== 'instagramEnabled')) {
     const ctx = makeOptionsCtx({}, {});
     await ctx.controller.init();
     await settle();

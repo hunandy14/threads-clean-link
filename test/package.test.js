@@ -86,12 +86,13 @@ test('manifest:key 欄位存在，且推導出的擴充 ID 等於商店版 ID', 
   assert.equal(mod.extensionIdFromManifest(), mod.EXPECTED_EXTENSION_ID);
 });
 
-test('manifest:選用權限恰為 identity 與兩個後端 host', () => {
+test('manifest:選用權限恰為 identity、兩個後端 host 與 Instagram', () => {
   const manifest = JSON.parse(read('manifest.json'));
   assert.deepEqual(manifest.optional_permissions, ['identity']);
   assert.deepEqual(manifest.optional_host_permissions, [
     'https://api.metalinkclearer.workers.dev/*',
     'https://api-staging.metalinkclearer.workers.dev/*',
+    'https://*.instagram.com/*',
   ]);
 });
 

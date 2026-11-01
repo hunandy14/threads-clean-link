@@ -94,7 +94,8 @@ async function getSettings() {
 }
 
 // 處理 cleanedNotice:不信任呼叫端傳入的 cleanUrl，一律用錨定的
-// POST_URL_PATTERN 重新驗證整串內容，不符合就靜默忽略、不寫入
+// TCLCore.isCleanPostUrl 重新驗證整串內容(Threads 與 Instagram 的乾淨貼文
+// 網址皆可)，不符合就靜默忽略、不寫入
 // 任何紀錄;紀錄只用驗證通過的字串，不夾帶原文的任何其餘部分。
 // kind 同屬頁面可控輸入，白名單驗證(自動路徑只可能是 share/strip/icon)，
 // 非法即整則忽略——guard 與 background 同版本出貨，沒有相容性負擔，
@@ -107,7 +108,8 @@ async function getSettings() {
 // share 路徑會命中 handleResolveShareMessage 解析短碼時剛寫入的快取(零額外
 // fetch);strip/icon 這兩條 kind 不像 share 那樣本來就會 fetch 貼文頁，快取
 // 未命中時才真的補一次 fetch(見 fetchOgFieldsForLocalKind，含節流/逾時/失敗
-// 回退)。剪貼簿/複製體感完全不受影響，那是 content script 端早就完成的事，
+// 回退)。Instagram 網址在 fetchOgFieldsForLocalKind 的 host 白名單就被擋下，
+// 直接以無 og 欄位落盤，不對 Instagram 發任何請求。剪貼簿/複製體感完全不受影響，那是 content script 端早就完成的事，
 // 這裡只是延後「記錄」這個步驟——刻意不做「先落盤、og 到了再補寫」:紀錄是永
 // 久合併的，二次寫入必然命中同一張卡，mergeHistoryEntry 會多長一筆假的 seen
 // 事件(同一次複製動作被算成兩次解析)，污染時間軸。寧可讓記錄晚最多 2.5 秒落

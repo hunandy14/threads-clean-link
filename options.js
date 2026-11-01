@@ -14,9 +14,15 @@
   var TCLCore =
     typeof module !== 'undefined' && module.exports ? require('./tcl-core.js') : root.TCLCore;
 
-  // 取 pages 含 'options' 的開關，細節見 TCLCore.SETTINGS_SCHEMA。
+  // Instagram 支援開關:選用 host 權限要在 change 的使用者手勢內請求，讀值、
+  // 綁定與 onChanged 都走專用流程(bindInstagram／syncInstagramToggle)，不進
+  // 下面的通用 SETTINGS。
+  var INSTAGRAM_KEY = 'instagramEnabled';
+  var INSTAGRAM_PERMISSIONS = { origins: ['https://*.instagram.com/*'] };
+
+  // 取 pages 含 'options' 的通用開關，細節見 TCLCore.SETTINGS_SCHEMA。
   var SETTINGS = TCLCore.SETTINGS_SCHEMA.filter(function (s) {
-    return s.pages.indexOf('options') !== -1;
+    return s.pages.indexOf('options') !== -1 && s.key !== INSTAGRAM_KEY;
   });
   function settingDefaults(area) {
     return Object.fromEntries(
@@ -335,12 +341,15 @@
     return { merged: TCLCore.capHistory(merged), added: added, skipped: skipped };
   }
 
-  // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊
-  // (author 或 excerpt 任一存在即算有預覽);純邏輯獨立成函式方便直接測，
-  // 也供 buildEntryCard 判斷要渲染預覽區塊還是降級網址列。
+  // 帶預覽卡的判定式:author、handle、excerpt 任一為非空字串即算有預覽;
+  // 純邏輯獨立成函式方便直接測，也供 buildEntryCard 判斷要渲染預覽區塊還是
+  // 降級網址列。與手機版 history-card.tsx 的 hasPreview 差在多認 handle
+  // (手機版只認 author/excerpt，待同步):Instagram 頁面只有 username，
+  // author===handle 時入庫端丟棄重複的 author，只剩 handle。
   function hasCardPreview(entry) {
     return (
       (typeof entry.author === 'string' && entry.author !== '') ||
+      (typeof entry.handle === 'string' && entry.handle !== '') ||
       (typeof entry.excerpt === 'string' && entry.excerpt !== '')
     );
   }
@@ -2789,7 +2798,11 @@
       // TLD(com/net)一併捕獲並如實顯示:網址本來就可能來自 threads.net
       // (POST_URL_PATTERN 同時允許 com 與 net)，不可硬寫死 'threads.com/'。
       var handleMatch = /^https:\/\/(?:www\.)?threads\.(com|net)\/(@[^/]+)\/(.*)$/.exec(url);
-      if (!handleMatch) return h('div', { class: className, text: url });
+      if (!handleMatch) {
+        // 非 Threads 網址(Instagram 等)沒有帳號段可強調，顯示去掉 scheme 與網域
+        // 的路徑(如 reel/Db44wsMgVBI/)，與詳細視窗「淨化後連結」的顯示值一致。
+        return h('div', { class: className, text: formatDisplayUrl(url) });
+      }
       var handleEl = h('b', { text: handleMatch[2] });
       return h('div', { class: className }, 'threads.' + handleMatch[1] + '/', handleEl, '/' + handleMatch[3]);
     }
@@ -2864,7 +2877,8 @@
 
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
     // 相對時間)→ hasCardPreview 為真時顯示作者列(author 粗體 + @handle
-    // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址。
+    // 灰階，author 或 handle 任一存在即顯示，缺的那一項不渲染)+ excerpt
+    // (兩行截斷);否則降級顯示網址。
     // 無縮圖(刻意，og:image 會過期)。互動照手機版的「選中態」:
     // hover/press 時邊框轉主色、右上浮出複製/分享兩顆快捷 icon，web 用
     // :hover 與 :focus-within 模擬(見 options.html 的 .entry-card 註解);
@@ -2876,6 +2890,10 @@
       var headTime = h('span', { class: 'entry-time', text: relTime(e.at), 'data-at': String(e.at) });
       timeNodes.push({ node: headTime, at: e.at });
       var badge = h('span', { class: 'entry-badge', text: tt(KINDS[e.kind].key) });
+      // 站點徽章:Instagram 貼文在 kind 徽章旁多掛一顆純文字「Instagram」。站
+      // 名是專有名詞，各語系同字，不走 i18n;Threads 是預設站點，不掛。
+      var siteBadge =
+        TCLCore.isInstagramPostUrl(e.url) && h('span', { class: 'entry-badge entry-site-badge', text: 'Instagram' });
 
       var body = [];
       if (hasCardPreview(e)) {
@@ -2935,7 +2953,7 @@
           openEntryDetail(e);
         },
       };
-      var header = h('div', { class: 'entry-header' }, h('div', { class: 'entry-meta' }, badge, headTime));
+      var header = h('div', { class: 'entry-header' }, h('div', { class: 'entry-meta' }, badge, siteBadge, headTime));
       var quickWrap = h('div', { class: 'entry-quick' }, quickCopyBtn, quickOpenBtn);
       return h('div', cardProps, header, ...body, quickWrap);
     }
@@ -3285,6 +3303,11 @@
         if (el) el.checked = settingValue(next(s.key), s.def);
         if (s.view) names.push(s.view);
       });
+      // 背景在權限被撤銷時會寫回 false;寫 true 只發生在授權成功之後。
+      if (area === 'local' && has(INSTAGRAM_KEY)) {
+        var igEl = byId(INSTAGRAM_KEY);
+        if (igEl) igEl.checked = next(INSTAGRAM_KEY) === true;
+      }
 
       Object.keys(changes).forEach(function (key) {
         if (Object.hasOwn(keyViews, key)) names.push.apply(names, keyViews[key]);
@@ -3470,6 +3493,89 @@
       });
     }
 
+    // ---- Instagram 支援開關 ----
+
+    function instagramPermissionDenied(el) {
+      el.checked = false;
+      toast(tt('opInstagramPermDenied'));
+    }
+
+    // 打開:permissions.request 必須在 change handler 的同步段呼叫，中間不能
+    // 先 await 任何東西，否則 Chrome 判定已離開使用者手勢而直接拒絕。授權成功
+    // 才寫 storage(背景收到 onChanged 後註冊腳本);拒絕、拋錯或沒有注入
+    // permissions 一律退回關閉。已開的分頁要重新整理才會載入新註冊的腳本。
+    function enableInstagram(el) {
+      var pending;
+      try {
+        if (!permissionsApi || typeof permissionsApi.request !== 'function') {
+          instagramPermissionDenied(el);
+          return;
+        }
+        pending = permissionsApi.request(INSTAGRAM_PERMISSIONS);
+      } catch (e) {
+        instagramPermissionDenied(el);
+        return;
+      }
+      Promise.resolve(pending).then(function (granted) {
+        if (granted !== true) {
+          instagramPermissionDenied(el);
+          return;
+        }
+        localStore.set({ [INSTAGRAM_KEY]: true });
+        toast(tt('opInstagramReloadHint'));
+      }, function () {
+        instagramPermissionDenied(el);
+      });
+    }
+
+    // 關閉:先寫 false(背景隨即撤銷註冊)，再交還權限。
+    function disableInstagram() {
+      localStore.set({ [INSTAGRAM_KEY]: false });
+      if (!permissionsApi || typeof permissionsApi.remove !== 'function') return;
+      try {
+        Promise.resolve(permissionsApi.remove(INSTAGRAM_PERMISSIONS)).catch(function () {});
+      } catch (e) {
+        // 交還失敗不影響開關狀態:storage 已是 false，背景不會註冊腳本。
+      }
+    }
+
+    function bindInstagram() {
+      on(INSTAGRAM_KEY, 'change', function (event) {
+        var el = event && event.target ? event.target : byId(INSTAGRAM_KEY);
+        if (!el) return;
+        if (el.checked) enableInstagram(el);
+        else disableInstagram();
+      });
+    }
+
+    // 初始狀態:storage 為 true 且權限確實已授予才顯示打開。storage 為 true
+    // 但權限不在(例如使用者在擴充功能管理頁撤銷了網站存取)時顯示關，並把
+    // storage 寫回 false 讓兩邊一致;兩邊本來就一致時不寫。
+    function syncInstagramToggle(stored) {
+      var el = byId(INSTAGRAM_KEY);
+      if (el) el.checked = false;
+      if (stored !== true) return Promise.resolve();
+      var check;
+      try {
+        check = permissionsApi && typeof permissionsApi.contains === 'function'
+          ? permissionsApi.contains(INSTAGRAM_PERMISSIONS)
+          : false;
+      } catch (e) {
+        check = false;
+      }
+      return Promise.resolve(check).then(function (granted) {
+        return granted === true;
+      }, function () {
+        return false;
+      }).then(function (granted) {
+        if (granted) {
+          if (el) el.checked = true;
+          return;
+        }
+        localStore.set({ [INSTAGRAM_KEY]: false });
+      });
+    }
+
     // ---- 分頁列(總覽／貼文／標記) ----
 
     // 分頁狀態的唯一權威是 location.hash:#overview／#posts／#flags，缺席或
@@ -3545,7 +3651,7 @@
       var keys = Object.assign({ langPref: null, themePref: 'auto' }, OPTIONS_DEFAULT_SETTINGS);
       var readSync = Promise.resolve(syncStorage.get(keys));
       var localKeys = Object.assign(
-        { [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null, [SCAM_BLOCKLIST_KEY]: null },
+        { [HISTORY_KEY]: [], [SYNC_ACCOUNT_KEY]: null, [SCAM_BLOCKLIST_KEY]: null, [INSTAGRAM_KEY]: false },
         settingDefaults('local')
       );
       var readLocal = Promise.resolve(localStore.get(localKeys));
@@ -3568,6 +3674,7 @@
 
         applyTheme();
         bindSettings();
+        bindInstagram();
         bindTopbar();
         bindToolbar();
         bindDetailDialog();
@@ -3583,10 +3690,11 @@
         // 才 resolve，讓呼叫端 await controller.init() 後畫面已是最終狀態，
         // 不需另外猜測時序;runtime 未注入或 background 沒回應時
         // fetchSyncState 立即 resolve(見該函式)，不會拖慢 init()。
-        return fetchSyncState().then(function (state) {
+        var syncLoaded = fetchSyncState().then(function (state) {
           syncState = state;
           render(['account']);
         });
+        return Promise.all([syncLoaded, syncInstagramToggle(localData[INSTAGRAM_KEY])]);
       });
     }
 

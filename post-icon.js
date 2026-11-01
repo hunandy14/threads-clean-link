@@ -1,5 +1,7 @@
-// post-icon.js — 在 Threads 貼文互動列(讚/回覆/轉發/分享那一排)注入一顆
-// 「複製連結」icon，點擊後把貼文的乾淨網址(去 query/hash)寫入剪貼簿。
+// post-icon.js — 在 Threads／Instagram 貼文互動列(讚/回覆/轉發/分享那一排)
+// 注入一顆「複製連結」icon，點擊後把貼文的乾淨網址(去 query/hash)寫入剪貼
+// 簿。各站點的版面差異收在站點設定物件(THREADS_SITE／INSTAGRAM_SITE)，
+// DOM 注入層依 location.hostname 挑選。
 // ISOLATED world content script，比照 bridge.js 的 ES5 IIFE 風格。
 //
 // 純函式 pickPermalink / buildPostUrl / hasExistingIcon / readActionLabel /
@@ -308,6 +310,669 @@
   }
 
   // ============================================================
+  // Threads 站點的 DOM 讀取(只讀傳入的節點，不碰 document 全域，Node 測試
+  // 可直接餵假節點)
+  // ============================================================
+
+  // ---- 從貼文容器 DOM 擷取 author/handle/excerpt，在複製 icon 成功
+  // 寫入剪貼簿後呼叫(見 notifyBackgroundCleaned)，附進 cleanedNotice
+  // 訊息讓 background 記錄進淨化紀錄。bridge.js 的 share/strip 路徑
+  // 透過 root.TCLPostIcon.findContainerByCleanUrl 找到容器後，也是
+  // 呼叫這兩個函式取得同一組欄位。三者皆為選填，擷取不到就整欄不寫
+  // 進回傳物件(background 端的欄位驗證只處理型別為 string 的值)。
+  // RELATIVE_TIME_RE／COUNT_LIKE_RE／classifyExcerptCandidate 定義在
+  // 檔案頂部的純函式區，供 Node 測試直接載入，這裡只呼叫。----
+
+  // 與 tcl-core.js 的長度上限對齊；這裡預先截斷一次，background 端
+  // 仍會再做一次防禦性截斷，兩處各自獨立不互相依賴。
+  var EXCERPT_MAX = 2000;
+
+  // 複製一份節點、移除所有 [role="button"] 子孫(內文常見的「查看翻
+  // 譯」按鈕就是這種結構，混在內文 span 尾端)後再取 textContent，把
+  // 這類互動按鈕的文字從內文中過濾掉。用 cloneNode 而非直接改動原節
+  // 點，不影響頁面實際顯示。
+  function cleanElementText(el) {
+    var clone = el.cloneNode(true);
+    var buttons = clone.querySelectorAll ? clone.querySelectorAll('[role="button"]') : [];
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].parentNode) buttons[i].parentNode.removeChild(buttons[i]);
+    }
+    return (clone.textContent || '').trim();
+  }
+
+  // ---- 擷取作者顯示名／帳號代稱:取容器內第一個「屬於本容器本身」
+  // (巢狀引用貼文防護，同 filterOwnContainerHrefs 的判斷)、且 href
+  // 不含 /post/ 的 a[href^="/@"](排除時間戳記那顆會連到貼文本身permalink
+  // 的 /@user/post/ID 連結)。實機探勘 3 種情境(feed／單篇貼文頁／引
+  // 用貼文)皆只看到 handle 本身，沒有另外呈現的「顯示名稱」節點，故
+  // author 與 handle 目前實測內容相同;handle 額外補上 '@' 前綴(取自
+  // href)，author 用可見文字(不含 '@')。若擷取不到就整欄不回傳。----
+  function extractAuthorHandle(container) {
+    var result = {};
+    try {
+      var anchors = container.querySelectorAll('a[href^="/@"]');
+      for (var i = 0; i < anchors.length; i++) {
+        var anchor = anchors[i];
+        var href = anchor.getAttribute('href') || '';
+        if (href.indexOf('/post/') !== -1) continue;
+        var ownContainer = anchor.closest
+          ? anchor.closest('div[data-pressable-container]') === container
+          : true;
+        if (!ownContainer) continue;
+        var text = cleanElementText(anchor);
+        if (text) {
+          result.author = text;
+          result.handle = href.charAt(0) === '/' ? href.slice(1) : href;
+        }
+        break;
+      }
+    } catch (e) {
+      // 擷取失敗不影響其餘欄位，整欄略過即可(協定允許欄位缺席)。
+    }
+    return result;
+  }
+
+  // ---- 候選節點是否落在「容器內部」的 [role="button"] 裡。互動列
+  // 的計數(讚／回覆／轉發)與影片貼文的配樂標示列，都是整塊包在
+  // [role="button"] 內、與內文 span 同層並列，唯一可靠的切分就是這
+  // 條祖先鏈。從候選的 parentNode 起往上找最近的按鈕(候選自己是不
+  // 是按鈕不在判斷範圍內)，再確認那顆按鈕是容器的真後代:容器節點
+  // 自己帶 role="button"、或容器被外層的可點擊包裝夾住時都不算，否
+  // 則整篇內文會被當成互動元素丟光。----
+  function isInsideContainerButton(el, container) {
+    var parent = el.parentNode;
+    if (!parent || !parent.closest) return false;
+    var button = parent.closest('[role="button"]');
+    if (!button) return false;
+    var cursor = button.parentNode;
+    while (cursor) {
+      if (cursor === container) return true;
+      cursor = cursor.parentNode;
+    }
+    return false;
+  }
+
+  // ---- 擷取貼文內文摘要:依文件序掃過容器內所有 [dir="auto"] span，
+  // 只收「屬於本容器本身」(排除巢狀引用貼文自己的內文)、「不在任何
+  // <a> 內」(作者名／時間戳記／引用卡片標題都是整串包在 <a> 裡，內
+  // 文本身不是)、「不在容器內的 [role="button"] 內」(互動列與配樂標
+  // 示列)的候選，交給純函式 classifyExcerptCandidate 決定
+  // push／skip／stop(規則見該函式註解)。多段內文(部分貼文每行是獨
+  // 立 span 而非同一個 span 內用 \n 分隔)用 '\n' 接起來。擷取不到任
+  // 何內容回傳 undefined，由呼叫端決定要不要放進訊息。----
+  function extractExcerpt(container) {
+    try {
+      var spans = container.querySelectorAll('[dir="auto"]');
+      var parts = [];
+      for (var i = 0; i < spans.length; i++) {
+        var el = spans[i];
+        if (el.closest && el.closest('div[data-pressable-container]') !== container) continue;
+        if (el.closest && el.closest('a')) continue;
+        // 互動列位於內文之後，已經收到內文時把它當成內文區段結束的
+        // 標記而中止；還沒收到任何內文時只跳過這個候選，讓排在後面
+        // 的真正內文仍有機會被收(內文前也可能先出現按鈕)。
+        if (isInsideContainerButton(el, container)) {
+          if (parts.length) break;
+          continue;
+        }
+        var text = cleanElementText(el);
+        var action = classifyExcerptCandidate(text, parts.length > 0);
+        if (action === 'stop') break;
+        if (action === 'skip') continue;
+        parts.push(text);
+      }
+      if (!parts.length) return undefined;
+      return parts.join('\n').slice(0, EXCERPT_MAX);
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  // ---- 找互動列候選:容器內每個 div，直屬子元素 >=4 個，每個子元素內
+  // 都有 [role="button"] 包著 svg（按鈕 wrapper）。svg 不再要求帶
+  // aria-label——Threads 2026-09 改版後標籤只剩 svg > title，多綁這個
+  // 屬性會讓所有候選落空。純結構判斷，不再額外查
+  // getComputedStyle(display:flex)——這個掃描是熱路
+  // 徑(MutationObserver 每次 debounce 後對全頁貼文重跑一輪)，
+  // getComputedStyle 會強制觸發同步版面計算，犯不著多付這筆效能。
+  //
+  // 注意:結構條件不保證唯一——例如影片貼文會多一條「追蹤/更多/已靜
+  // 音/排序/附加影音內容」的播放器工具列，結構上也符合，但那不是讚/
+  // 回覆/轉發/分享的互動列。所以這裡收集「全部」候選，交給
+  // pickActionRowIndex 消歧，不在第一個符合結構的候選就短路回傳。----
+  function collectActionRowCandidates(container) {
+    var candidates = container.querySelectorAll('div');
+    var rows = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var row = candidates[i];
+      var children = row.children;
+      if (!children || children.length < 4) continue;
+
+      var allMatch = true;
+      for (var j = 0; j < children.length; j++) {
+        var hit = children[j].querySelector
+          ? children[j].querySelector('[role="button"] svg')
+          : null;
+        if (!hit) {
+          allMatch = false;
+          break;
+        }
+      }
+      if (!allMatch) continue;
+
+      // 巢狀容器防護:候選 row 最近的貼文容器祖先必須就是目前掃描的
+      // container 本身，否則代表這顆 row 其實屬於巢狀在裡面的引用/
+      // 回覆貼文，不該被外層容器搶走。
+      if (row.closest && row.closest('div[data-pressable-container]') !== container) continue;
+
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  // ---- 從候選列中挑出真正的互動列:只有 1 個候選直接用；多個候選先
+  // 用 readActionLabel 讀出每顆按鈕 svg 的標籤(先 aria-label，缺席讀
+  // svg title)，再交給 pickActionRowIndex(見純函式區)用白名單消歧，
+  // 白名單全不中則退回文件序最後一個候選。----
+  function findActionRow(container) {
+    var rows = collectActionRowCandidates(container);
+    if (rows.length === 0) return null;
+
+    var labelsList = rows.map(function (row) {
+      var labels = [];
+      for (var j = 0; j < row.children.length; j++) {
+        var svg = row.children[j].querySelector('[role="button"] svg');
+        labels.push(readActionLabel(svg));
+      }
+      return labels;
+    });
+
+    var idx = pickActionRowIndex(labelsList);
+    return idx === null ? null : rows[idx];
+  }
+
+  // ============================================================
+  // 站點設定:DOM 注入層(守衛內)不寫死任何站點的版面知識，一律透過目前站
+  // 點的設定物件讀取。設定物件全是純函式，不讀全域 document／location，網
+  // 址資訊從 ctx = { pageType, pathname, origin } 取得(ctx.innerHeight 為選
+  // 填的視窗高度，Instagram reels 判斷作用中項目用)。每份設定提供:
+  //   id                       → 'threads' | 'instagram'
+  //   matches(hostname)        → boolean，此站點是否負責這個主機名稱
+  //   pageType(pathname)       → 頁型字串；回傳 null 表示這一頁不放按鈕
+  //   findContainers(root, ctx)   → 貼文容器陣列(root 為 document 或元素)
+  //   permalinkOf(container, ctx) → 貼文永久連結 href(相對或絕對)，找不到
+  //                                 回傳 null
+  //   findActionRow(container, ctx) → 互動列節點，找不到回傳 null
+  //   insertionPoint(row, ctx) → { parent, before }:按鈕以
+  //                              parent.insertBefore(icon, before) 插入；
+  //                              插不進去回傳 null
+  //   author(container, ctx)   → { author?, handle? }，擷取不到的欄位不放
+  //   excerpt(container, ctx)  → 內文摘要字串，擷取不到回傳 undefined
+  //   canonicalUrl(href, origin) → 寫進剪貼簿的乾淨網址，非法回傳 null
+  //   observeRoot(document)    → MutationObserver 觀察的根節點
+  //   containerOf(icon, container) → 點擊當下按鈕所屬的貼文容器
+  //   resetOnNavigate          → (選填)true 時 pathname 一變就先收掉本實例
+  //                              的按鈕再依新頁型重掃
+  // ============================================================
+
+  // Threads:所有頁型共用同一套容器(div[data-pressable-container])與互動列
+  // 辨識，pageType 一律回傳 'default'。
+  var THREADS_CONTAINER_SELECTOR = 'div[data-pressable-container]';
+
+  var THREADS_SITE = {
+    id: 'threads',
+    matches: function (hostname) {
+      return typeof hostname === 'string' && /(^|\.)threads\.(com|net)$/i.test(hostname);
+    },
+    pageType: function () {
+      return 'default';
+    },
+    findContainers: function (doc) {
+      return doc.querySelectorAll(THREADS_CONTAINER_SELECTOR);
+    },
+    // 巢狀容器防護:引用/回覆貼文會巢狀在本容器內，它自己的
+    // a[href*="/post/"] 也會被 querySelectorAll 掃到，若不過濾，引用貼文
+    // 可能誤取到被引文的 permalink。比照 collectActionRowCandidates 的同款
+    // 判斷:錨點最近的貼文容器祖先必須就是目前這個 container 本身才算數。
+    permalinkOf: function (container) {
+      var anchors = container.querySelectorAll('a[href*="/post/"]');
+      var candidates = [];
+      for (var i = 0; i < anchors.length; i++) {
+        var anchor = anchors[i];
+        var ownContainer = anchor.closest
+          ? anchor.closest(THREADS_CONTAINER_SELECTOR) === container
+          : true;
+        candidates.push({ href: anchor.getAttribute('href'), ownContainer: ownContainer });
+      }
+      return pickPermalink(filterOwnContainerHrefs(candidates));
+    },
+    findActionRow: function (container) {
+      return findActionRow(container);
+    },
+    // 按鈕接在互動列最後一顆原生按鈕之後。
+    insertionPoint: function (row) {
+      var lastWrapper = row.children[row.children.length - 1];
+      if (!lastWrapper) return null;
+      return { parent: row, before: lastWrapper.nextSibling };
+    },
+    author: function (container) {
+      return extractAuthorHandle(container);
+    },
+    excerpt: function (container) {
+      return extractExcerpt(container);
+    },
+    canonicalUrl: function (href, origin) {
+      return buildPostUrl(href, origin);
+    },
+    observeRoot: function (doc) {
+      return doc.body || doc.documentElement;
+    },
+    // 點擊當下從按鈕往上找容器，不沿用注入時記下的節點。
+    containerOf: function (icon) {
+      return icon.closest ? icon.closest(THREADS_CONTAINER_SELECTOR) : null;
+    },
+  };
+
+
+  // ---- Instagram ----
+  //
+  // 三種頁型各有不同的容器與互動列版面(zh-tw 介面實測；英文標籤為推測、
+  // 尚待真機驗證，讀標籤時 aria-label 優先、svg > title 備援，見
+  // readActionLabel):
+  //   feed  首頁 '/':容器為 main article，互動列為容器內第一個含「讚」的
+  //         section，按鈕接在左組(讚/回應/轉發/分享)最後。
+  //   post  單篇 /p/<code>/、/reel/<code>/(可帶使用者前綴):沒有 article，
+  //         容器為「同時含讚與儲存的 section」往上兩層，permalink 取網址列。
+  //   reels /reels/ 開頭:只在作用中那則放按鈕，互動列為直排，按鈕插在分
+  //         享與儲存之間，permalink 取網址列。
+  var IG_LABELS = {
+    like: ['讚', 'Like'],
+    comment: ['回應', '留言', 'Comment'],
+    repost: ['轉發', 'Repost'],
+    share: ['分享', 'Share'],
+    save: ['儲存', 'Save'],
+    more: ['更多選項', 'More options'],
+  };
+
+  var IG_POST_PATH_RE = /^\/(?:[^/]+\/)?(p|reel)\/[^/]+\/$/;
+  // 個人頁連結 '/<username>/'；第一段是站內功能頁的不算作者。
+  var IG_PROFILE_HREF_RE = /^\/([^/]+)\/$/;
+  var IG_REELS_PROFILE_HREF_RE = /^\/([^/]+)\/reels\/$/;
+  var IG_RESERVED_SEGMENTS = ['explore', 'reels', 'direct', 'accounts', 'stories'];
+  // canonicalUrl 認得的貼文路徑:可帶使用者前綴的 p／reel／reels／tv。
+  var IG_CANONICAL_PATH_RE = /^\/(?:[^/]+\/)?((?:p|reel|reels|tv)\/[^/]+\/?)$/;
+  // reels 牆上的錨點形狀「/reel/<code>/<數字媒體 id>/」:canonical 去掉尾段 id。
+  var IG_REEL_MEDIA_ID_PATH_RE = /^\/(?:[^/]+\/)?(reel\/[^/]+\/)\d+\/?$/;
+  // reels 牆網址列「/reels/<code>/」中的 code。第二段為 audio 的
+  // 「/reels/audio/<id>/」是配樂頁，不是 code，由 igReelCodeFromPath 排除。
+  var IG_REEL_CODE_RE = /^\/reels\/([^/]+)\/$/;
+  // Node.DOCUMENT_POSITION_FOLLOWING
+  var DOCUMENT_POSITION_FOLLOWING = 4;
+
+  // Instagram 頁型；不放按鈕的頁面回傳 null。
+  function igPageType(pathname) {
+    if (typeof pathname !== 'string') return null;
+    if (pathname === '/') return 'feed';
+    if (pathname.indexOf('/reels/') === 0) return 'reels';
+    if (IG_POST_PATH_RE.test(pathname)) return 'post';
+    return null;
+  }
+
+  // svg 的標籤是否屬於 IG_LABELS[key]。
+  function igSvgIs(svg, key) {
+    var label = readActionLabel(svg);
+    return label !== null && IG_LABELS[key].indexOf(label) !== -1;
+  }
+
+  // scope 內第一個標籤屬於 IG_LABELS[key] 的 svg，找不到回傳 null。
+  function igFindSvg(scope, key) {
+    if (!scope || typeof scope.querySelectorAll !== 'function') return null;
+    var svgs = scope.querySelectorAll('svg');
+    for (var i = 0; i < svgs.length; i++) {
+      if (igSvgIs(svgs[i], key)) return svgs[i];
+    }
+    return null;
+  }
+
+  // node 是否為 ancestor 本身或其後代(只走 parentNode，不依賴 contains)。
+  function igIsWithin(node, ancestor) {
+    var cursor = node;
+    while (cursor) {
+      if (cursor === ancestor) return true;
+      cursor = cursor.parentNode;
+    }
+    return false;
+  }
+
+  // b 在文件序上是否位於 a 之後(不含 a 的後代)。環境不支援
+  // compareDocumentPosition 時一律回傳 true，不做前後過濾。
+  function igFollows(a, b) {
+    if (!a || typeof a.compareDocumentPosition !== 'function') return true;
+    if (igIsWithin(b, a)) return false;
+    return (a.compareDocumentPosition(b) & DOCUMENT_POSITION_FOLLOWING) !== 0;
+  }
+
+  // 從 svg 往上找第一個同時含讚與儲存的祖先，即整組互動按鈕的外框
+  // (feed／post 為 section，reels 為直排的按鈕欄)。
+  function igActionGroupOf(likeSvg) {
+    var cursor = likeSvg ? likeSvg.parentNode : null;
+    while (cursor && cursor.nodeType !== 9) {
+      if (igFindSvg(cursor, 'save')) return cursor;
+      cursor = cursor.parentNode;
+    }
+    return null;
+  }
+
+  // scope 內所有 section 中第一個含讚 svg 者；requireSave 為 true 時還要同
+  // 時含儲存 svg。
+  function igFindSection(scope, requireSave) {
+    var sections = scope.querySelectorAll('section');
+    for (var i = 0; i < sections.length; i++) {
+      if (!igFindSvg(sections[i], 'like')) continue;
+      if (requireSave && !igFindSvg(sections[i], 'save')) continue;
+      return sections[i];
+    }
+    return null;
+  }
+
+  // 取節點文字:<br> 轉成換行，略過 [role="button"] 子孫(「更多」展開鈕)。
+  function igTextOf(el) {
+    var out = '';
+    var children = el.childNodes || [];
+    for (var i = 0; i < children.length; i++) {
+      var child = children[i];
+      if (child.nodeType === 3) {
+        out += typeof child.nodeValue === 'string' ? child.nodeValue : child.textContent || '';
+      } else if (child.nodeType === 1) {
+        var tag = String(child.nodeName || '').toUpperCase();
+        if (tag === 'BR') out += '\n';
+        else if (child.getAttribute && child.getAttribute('role') === 'button') continue;
+        else out += igTextOf(child);
+      }
+    }
+    return out;
+  }
+
+  // 候選節點中文字最長者的文字(去前後空白)，全部為空回傳 undefined。
+  function igLongestText(nodes) {
+    var best = '';
+    for (var i = 0; i < nodes.length; i++) {
+      var text = igTextOf(nodes[i]).trim();
+      if (text.length > best.length) best = text;
+    }
+    return best ? best.slice(0, EXCERPT_MAX) : undefined;
+  }
+
+  // 依頁型取作者 username:reels 先找 /<user>/reels/ 形狀的連結，再退回
+  // /<user>/;feed／post 只看互動列 section 之前的 /<user>/ 連結。其他頁
+  // 型或找不到時回傳 null。
+  function igAuthorUsername(container, type) {
+    if (type === 'reels') {
+      return (
+        igFindUsername(container, IG_REELS_PROFILE_HREF_RE, null) ||
+        igFindUsername(container, IG_PROFILE_HREF_RE, null)
+      );
+    }
+    if (type === 'feed' || type === 'post') {
+      return igFindUsername(container, IG_PROFILE_HREF_RE, igFindSection(container, type === 'post'));
+    }
+    return null;
+  }
+
+  // 作者 username:容器內第一個 a[role="link"] 且 href 符合 pattern、第一
+  // 段不是站內功能頁者；before 有值時只看文件序在它之前的連結。
+  function igFindUsername(container, pattern, before) {
+    var anchors = container.querySelectorAll('a');
+    for (var i = 0; i < anchors.length; i++) {
+      var anchor = anchors[i];
+      if (anchor.getAttribute('role') !== 'link') continue;
+      if (before && !igFollows(anchor, before)) continue;
+      var match = pattern.exec(anchor.getAttribute('href') || '');
+      if (!match) continue;
+      if (IG_RESERVED_SEGMENTS.indexOf(match[1]) !== -1) continue;
+      return match[1];
+    }
+    return null;
+  }
+
+  // feed 貼文的 permalink:發文時間 <time> 外層連結，href 須含 /p/ 或
+  // /reel/。廣告沒有時間連結，回傳 null。
+  function igFeedPermalink(article) {
+    var time = article.querySelector('time');
+    var anchor = time && time.closest ? time.closest('a') : null;
+    var href = anchor ? anchor.getAttribute('href') : null;
+    if (typeof href !== 'string') return null;
+    return href.indexOf('/p/') !== -1 || href.indexOf('/reel/') !== -1 ? href : null;
+  }
+
+  // 路徑去掉使用者前綴:「/<user>/p/<code>/」、「/<user>/reel/<code>/」收
+  // 斂成「/p/<code>/」、「/reel/<code>/」，其餘原樣。
+  function igStripUserPrefix(pathname) {
+    return pathname.replace(/^\/[^/]+\/((?:p|reel)\/)/, '/$1');
+  }
+
+  // 從按鈕欄往上找第一個含 <video> 的祖先，即一則 reel 的外框。
+  function igReelItemOf(group) {
+    var cursor = group ? group.parentNode : null;
+    while (cursor && cursor.nodeType === 1 && !cursor.querySelector('video')) cursor = cursor.parentNode;
+    return cursor && cursor.nodeType === 1 ? cursor : null;
+  }
+
+  // reels 頁面上的每一則(依文件序、不重複)。
+  function igReelItems(doc) {
+    var items = [];
+    var mains = doc.querySelectorAll('main');
+    for (var m = 0; m < mains.length; m++) {
+      var svgs = mains[m].querySelectorAll('svg');
+      for (var s = 0; s < svgs.length; s++) {
+        if (!igSvgIs(svgs[s], 'like')) continue;
+        var item = igReelItemOf(igActionGroupOf(svgs[s]));
+        if (item && items.indexOf(item) === -1) items.push(item);
+      }
+    }
+    return items;
+  }
+
+  // 網址列 pathname 中的 reel code；不是「/reels/<code>/」或第二段為 audio
+  // 時回傳 null。
+  function igReelCodeFromPath(pathname) {
+    var match = typeof pathname === 'string' ? IG_REEL_CODE_RE.exec(pathname) : null;
+    return match && match[1] !== 'audio' ? match[1] : null;
+  }
+
+  // reels 頁型的 permalink:網址列的 code 組成「/reel/<code>/」。reels 牆上
+  // 的項目沒有指向本則的錨點(2026-11 真機實測，/reels/audio/<id>/ 是配樂
+  // 縮圖連結)，permalink 只能取網址列。
+  function igReelPermalinkFromPath(ctx) {
+    var code = ctx ? igReelCodeFromPath(ctx.pathname) : null;
+    if (!code) return null;
+    return (typeof ctx.origin === 'string' ? ctx.origin : '') + '/reel/' + code + '/';
+  }
+
+  // 作用中那則 reel:項目沒有屬性標記，以位置判斷——getBoundingClientRect
+  // 涵蓋視窗垂直中線(win.innerHeight / 2)者。所有項目 rect 高度皆為 0(沒
+  // 有版面)時，退回 video.paused === false(正在播放)的那則。都找不到回傳
+  // null。
+  function igReelActiveItem(items, win) {
+    var mid = win && typeof win.innerHeight === 'number' ? win.innerHeight / 2 : null;
+    var hasLayout = false;
+    var i;
+    for (i = 0; i < items.length; i++) {
+      var rect = typeof items[i].getBoundingClientRect === 'function' ? items[i].getBoundingClientRect() : null;
+      if (!rect || !(rect.height > 0)) continue;
+      hasLayout = true;
+      if (mid !== null && rect.top <= mid && rect.top + rect.height > mid) return items[i];
+    }
+    if (hasLayout) return null;
+    for (i = 0; i < items.length; i++) {
+      var video = items[i].querySelector('video');
+      if (video && video.paused === false) return items[i];
+    }
+    return null;
+  }
+
+  var INSTAGRAM_SITE = {
+    id: 'instagram',
+    labels: IG_LABELS,
+    matches: function (hostname) {
+      return typeof hostname === 'string' && /(^|\.)instagram\.com$/i.test(hostname);
+    },
+    pageType: igPageType,
+    // feed 只回傳有 permalink 的容器(廣告沒有時間連結)；reels 只回傳作用
+    // 中那一則(見 igReelActiveItem)，網址列沒有 code 時不回傳。
+    findContainers: function (doc, ctx) {
+      var type = ctx ? ctx.pageType : null;
+      var out = [];
+      var i;
+      if (type === 'feed') {
+        var articles = doc.querySelectorAll('main article');
+        for (i = 0; i < articles.length; i++) {
+          if (igFeedPermalink(articles[i])) out.push(articles[i]);
+        }
+        return out;
+      }
+      if (type === 'post') {
+        var mains = doc.querySelectorAll('main');
+        for (var m = 0; m < mains.length; m++) {
+          var section = igFindSection(mains[m], true);
+          var container = section && section.parentNode ? section.parentNode.parentNode : null;
+          if (container) return [container];
+        }
+        return [];
+      }
+      if (type === 'reels') {
+        if (!igReelCodeFromPath(ctx.pathname)) return out;
+        var active = igReelActiveItem(igReelItems(doc), { innerHeight: ctx.innerHeight });
+        if (active) out.push(active);
+      }
+      return out;
+    },
+    permalinkOf: function (container, ctx) {
+      var type = ctx ? ctx.pageType : null;
+      if (type === 'feed') return igFeedPermalink(container);
+      if (type === 'reels') return igReelPermalinkFromPath(ctx);
+      if (type === 'post' && typeof ctx.pathname === 'string') {
+        return (typeof ctx.origin === 'string' ? ctx.origin : '') + igStripUserPrefix(ctx.pathname);
+      }
+      return null;
+    },
+    findActionRow: function (container, ctx) {
+      var type = ctx ? ctx.pageType : null;
+      if (type === 'feed') return igFindSection(container, false);
+      if (type === 'post') return igFindSection(container, true);
+      if (type === 'reels') return igActionGroupOf(igFindSvg(container, 'like'));
+      return null;
+    },
+    // feed／post:section 的第一個子節點是左組(讚/回應/轉發/分享)，按鈕
+    // 接在左組最後，右組(儲存)不動。reels:按鈕欄每顆按鈕各占一格子節
+    // 點，插在含分享的那一格之後(即儲存之前)。
+    insertionPoint: function (row) {
+      var children = row.children || [];
+      if (String(row.nodeName || '').toUpperCase() === 'SECTION') {
+        return children[0] ? { parent: children[0], before: null } : null;
+      }
+      for (var i = 0; i < children.length; i++) {
+        if (igFindSvg(children[i], 'share')) return { parent: row, before: children[i + 1] || null };
+      }
+      return null;
+    },
+    // username 同時作為 author 與 handle(不帶 '@')。
+    author: function (container, ctx) {
+      var username = igAuthorUsername(container, ctx ? ctx.pageType : null);
+      return username ? { author: username, handle: username } : {};
+    },
+    // feed:互動列之後最長的 span[dir="auto"]。post:內文 span 外層還包著
+    // 作者名與時間，改取容器內不含 <time> 的最長 span，並排除互動列
+    // section 內的節點(讚數)與文字等於作者 username 的 span(caption 標頭
+    // 包住作者連結的外層 span);caption 只有作者名、沒有內文時回傳
+    // undefined。reels:按鈕欄以外最長的 [dir="auto"]。三者都排除 <a> 內
+    // 的節點(作者名、標籤連結)。
+    excerpt: function (container, ctx) {
+      try {
+        var type = ctx ? ctx.pageType : null;
+        var candidates = [];
+        var nodes;
+        var i;
+        if (type === 'feed') {
+          var section = igFindSection(container, false);
+          if (!section) return undefined;
+          nodes = container.querySelectorAll('span');
+          for (i = 0; i < nodes.length; i++) {
+            if (nodes[i].getAttribute('dir') !== 'auto') continue;
+            if (nodes[i].closest && nodes[i].closest('a')) continue;
+            if (isInsideContainerButton(nodes[i], container)) continue;
+            if (!igFollows(section, nodes[i])) continue;
+            candidates.push(nodes[i]);
+          }
+        } else if (type === 'post') {
+          var username = igAuthorUsername(container, type);
+          var row = igFindSection(container, true);
+          nodes = container.querySelectorAll('span');
+          for (i = 0; i < nodes.length; i++) {
+            if (nodes[i].querySelector('time')) continue;
+            if (row && igIsWithin(nodes[i], row)) continue;
+            if (username && igTextOf(nodes[i]).trim() === username) continue;
+            if (nodes[i].closest && nodes[i].closest('a')) continue;
+            if (isInsideContainerButton(nodes[i], container)) continue;
+            candidates.push(nodes[i]);
+          }
+        } else if (type === 'reels') {
+          var group = igActionGroupOf(igFindSvg(container, 'like'));
+          nodes = container.querySelectorAll('[dir="auto"]');
+          for (i = 0; i < nodes.length; i++) {
+            if (nodes[i].closest && nodes[i].closest('a')) continue;
+            if (group && igIsWithin(nodes[i], group)) continue;
+            candidates.push(nodes[i]);
+          }
+        }
+        return igLongestText(candidates);
+      } catch (e) {
+        return undefined;
+      }
+    },
+    // 「/<user>/p/<code>/」收斂成「/p/<code>/」，去 query 與 hash；主機名
+    // 稱(含 www)與尾斜線照原樣；「/reel/<code>/<數字媒體 id>/」去掉尾段 id。
+    // 不同源或不是 p／reel／reels／tv 路徑回傳
+    // null。
+    canonicalUrl: function (href, origin) {
+      if (typeof href !== 'string') return null;
+      try {
+        var url = new URL(href, origin);
+        if (url.origin !== new URL(origin).origin) return null;
+        var match = IG_CANONICAL_PATH_RE.exec(url.pathname) || IG_REEL_MEDIA_ID_PATH_RE.exec(url.pathname);
+        if (!match) return null;
+        return url.origin + '/' + match[1];
+      } catch (e) {
+        return null;
+      }
+    },
+    // 只觀察 main；main 尚未渲染時先觀察 body，之後掃描時再換到 main。假
+    // 設 Instagram SPA 換頁時保留同一個 main(待真機驗證)；main 被整個換
+    // 掉時由 observeTargets 另掛的外殼觀察接手。
+    observeRoot: function (doc) {
+      return doc.querySelector('main') || doc.body || doc.documentElement;
+    },
+    // 容器沒有可往上找的特徵屬性，沿用注入當下記下的容器。
+    containerOf: function (icon, ownerContainer) {
+      return ownerContainer && igIsWithin(icon, ownerContainer) ? ownerContainer : null;
+    },
+    // SPA 換頁(pathname 變動)時先收掉本實例的按鈕再重掃，reels 換到下一
+    // 則時按鈕跟著移過去。
+    resetOnNavigate: true,
+  };
+
+  // 依序比對的站點清單。
+  var SITES = [THREADS_SITE, INSTAGRAM_SITE];
+
+  // 依主機名稱挑站點設定，沒有站點負責時回傳 null(此時不啟動注入)。
+  function pickSite(hostname) {
+    for (var i = 0; i < SITES.length; i++) {
+      if (SITES[i].matches(hostname)) return SITES[i];
+    }
+    return null;
+  }
+
+  // ============================================================
   // 模組匯出(宣告在 DOM 守衛「外」，因為裡面全是純函式，Node 測試環境也
   // 用得到)。DOM 守衛內若定義了需要碰 document 的 API(findContainerByCleanUrl
   // 已經自帶守衛，屬例外；extractPostInfo／showResolveFailureToast 這類
@@ -329,6 +994,9 @@
     resolvePostCopyEnabled: resolvePostCopyEnabled,
     findContainerByCleanUrl: findContainerByCleanUrl,
     isExtensionContextLost: isExtensionContextLost,
+    // 站點設定與挑選邏輯，供測試直接呼叫。
+    __sites: { threads: THREADS_SITE, instagram: INSTAGRAM_SITE },
+    __selectSite: pickSite,
   };
 
   // ============================================================
@@ -338,6 +1006,42 @@
   // ============================================================
   if (typeof document !== 'undefined') {
     (function () {
+      // 目前頁面的主機名稱。location.hostname 缺席時(只帶 origin 的精簡
+      // location)由 origin 推出；兩者都取不到回傳空字串。
+      function currentHostname() {
+        var loc = root.location;
+        if (!loc) return '';
+        if (typeof loc.hostname === 'string' && loc.hostname) return loc.hostname;
+        try {
+          return new URL(loc.origin).hostname;
+        } catch (e) {
+          return '';
+        }
+      }
+
+      // 目前頁面的路徑；缺席時視為首頁 '/'。
+      function currentPathname() {
+        var loc = root.location;
+        return loc && typeof loc.pathname === 'string' && loc.pathname ? loc.pathname : '/';
+      }
+
+      // 本頁的站點設定(見 pickSite)。為 null 時不啟動注入，只保留 toast 等
+      // 供其他 content script 複用的 API。
+      var site = pickSite(currentHostname());
+
+      // 交給站點設定的網址資訊(與 reels 判斷作用中項目用的視窗高度)，每次
+      // 呼叫當下重新組出。
+      function currentCtx() {
+        var pathname = currentPathname();
+        var loc = root.location;
+        return {
+          pageType: site ? site.pageType(pathname) : null,
+          pathname: pathname,
+          origin: loc && typeof loc.origin === 'string' ? loc.origin : '',
+          innerHeight: typeof root.innerHeight === 'number' ? root.innerHeight : undefined,
+        };
+      }
+
       var ICON_CLASS = 'tcl-copy-icon';
       var STYLE_ID = 'tcl-post-icon-style';
       var TOOLTIP_CLASS = 'tcl-copy-icon-tooltip';
@@ -491,23 +1195,58 @@
       // applyIconTitle)；但實際觸發 hover 原生 tooltip 的是外層 div 的
       // title 屬性，不是這顆 svg <title>——svg 設了 pointer-events:none
       // (見 injectStyle 的 SVG_WRAP_CLASS 規則)，游標永遠不會落在 svg
-      // 上，svg 內 <title> 因此不會觸發瀏覽器原生 tooltip。<title> 留空
-      // 字串，內容由 applyIconTitle() 用 textContent 動態填入語言字典
-      // 值，innerHTML 本身仍只含靜態常數。
-      var LINK_SVG =
-        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
-        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<title></title>' +
-        '<path d="M9 17H7A5 5 0 0 1 7 7h2"/>' +
-        '<path d="M15 7h2a5 5 0 1 1 0 10h-2"/>' +
-        '<path d="M8 12h8"/>' +
-        '</svg>';
-      var CHECK_SVG =
-        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ' +
-        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<title></title>' +
-        '<path d="M20 6 9 17l-5-5"/>' +
-        '</svg>';
+      // 上，svg 內 <title> 因此不會觸發瀏覽器原生 tooltip。<title> 內容由
+      // applyIconTitle() 用 textContent 動態填入語言字典值。
+      //
+      // 圖示以 createElementNS 逐節點建立，不經 innerHTML:Instagram 強制
+      // Trusted Types，對 innerHTML 指派字串會被擋下。
+      var SVG_NS = 'http://www.w3.org/2000/svg';
+      var LINK_PATHS = ['M9 17H7A5 5 0 0 1 7 7h2', 'M15 7h2a5 5 0 1 1 0 10h-2', 'M8 12h8'];
+      var CHECK_PATHS = ['M20 6 9 17l-5-5'];
+      var ICON_SVG_ATTRS = {
+        viewBox: '0 0 24 24',
+        width: '20',
+        height: '20',
+        fill: 'none',
+        stroke: 'currentColor',
+        'stroke-width': '1.5',
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+        'aria-hidden': 'true',
+      };
+
+      // 把 wrap 的內容換成一顆由 paths 組成的圖示 svg。document 不支援
+      // createElementNS 時(精簡 DOM)退回 innerHTML，標記只含上面的靜態常數。
+      function iconSvgMarkup(paths) {
+        var attrs = '';
+        for (var name in ICON_SVG_ATTRS) {
+          if (Object.prototype.hasOwnProperty.call(ICON_SVG_ATTRS, name)) {
+            attrs += ' ' + name + '="' + ICON_SVG_ATTRS[name] + '"';
+          }
+        }
+        var body = '<title></title>';
+        for (var i = 0; i < paths.length; i++) body += '<path d="' + paths[i] + '"/>';
+        return '<svg' + attrs + '>' + body + '</svg>';
+      }
+
+      function renderIconSvg(wrap, paths) {
+        if (typeof document.createElementNS !== 'function') {
+          wrap.innerHTML = iconSvgMarkup(paths);
+          return;
+        }
+        wrap.textContent = '';
+        var svg = document.createElementNS(SVG_NS, 'svg');
+        for (var name in ICON_SVG_ATTRS) {
+          if (Object.prototype.hasOwnProperty.call(ICON_SVG_ATTRS, name)) svg.setAttribute(name, ICON_SVG_ATTRS[name]);
+        }
+        svg.appendChild(document.createElementNS(SVG_NS, 'title'));
+        for (var i = 0; i < paths.length; i++) {
+          var path = document.createElementNS(SVG_NS, 'path');
+          path.setAttribute('d', paths[i]);
+          svg.appendChild(path);
+        }
+        wrap.appendChild(svg);
+      }
 
       // 目前使用的語言，載入時由 chrome.storage.sync 的 langPref 解析；
       // storage.onChanged 觸發時即時更新既有 icon 的文案。
@@ -565,128 +1304,16 @@
         return fallback[currentLocale] || fallback.en || 'favContextLost';
       }
 
-      // ---- 從貼文容器 DOM 擷取 author/handle/excerpt，在複製 icon 成功
-      // 寫入剪貼簿後呼叫(見 notifyBackgroundCleaned)，附進 cleanedNotice
-      // 訊息讓 background 記錄進淨化紀錄。bridge.js 的 share/strip 路徑
-      // 透過 root.TCLPostIcon.findContainerByCleanUrl 找到容器後，也是
-      // 呼叫這兩個函式取得同一組欄位。三者皆為選填，擷取不到就整欄不寫
-      // 進回傳物件(background 端的欄位驗證只處理型別為 string 的值)。
-      // RELATIVE_TIME_RE／COUNT_LIKE_RE／classifyExcerptCandidate 定義在
-      // 檔案頂部的純函式區，供 Node 測試直接載入，這裡只呼叫。----
-
-      // 與 tcl-core.js 的長度上限對齊；這裡預先截斷一次，background 端
-      // 仍會再做一次防禦性截斷，兩處各自獨立不互相依賴。
-      var EXCERPT_MAX = 2000;
-
-      // 複製一份節點、移除所有 [role="button"] 子孫(內文常見的「查看翻
-      // 譯」按鈕就是這種結構，混在內文 span 尾端)後再取 textContent，把
-      // 這類互動按鈕的文字從內文中過濾掉。用 cloneNode 而非直接改動原節
-      // 點，不影響頁面實際顯示。
-      function cleanElementText(el) {
-        var clone = el.cloneNode(true);
-        var buttons = clone.querySelectorAll ? clone.querySelectorAll('[role="button"]') : [];
-        for (var i = 0; i < buttons.length; i++) {
-          if (buttons[i].parentNode) buttons[i].parentNode.removeChild(buttons[i]);
-        }
-        return (clone.textContent || '').trim();
-      }
-
-      // ---- 擷取作者顯示名／帳號代稱:取容器內第一個「屬於本容器本身」
-      // (巢狀引用貼文防護，同 filterOwnContainerHrefs 的判斷)、且 href
-      // 不含 /post/ 的 a[href^="/@"](排除時間戳記那顆會連到貼文本身permalink
-      // 的 /@user/post/ID 連結)。實機探勘 3 種情境(feed／單篇貼文頁／引
-      // 用貼文)皆只看到 handle 本身，沒有另外呈現的「顯示名稱」節點，故
-      // author 與 handle 目前實測內容相同;handle 額外補上 '@' 前綴(取自
-      // href)，author 用可見文字(不含 '@')。若擷取不到就整欄不回傳。----
-      function extractAuthorHandle(container) {
-        var result = {};
-        try {
-          var anchors = container.querySelectorAll('a[href^="/@"]');
-          for (var i = 0; i < anchors.length; i++) {
-            var anchor = anchors[i];
-            var href = anchor.getAttribute('href') || '';
-            if (href.indexOf('/post/') !== -1) continue;
-            var ownContainer = anchor.closest
-              ? anchor.closest('div[data-pressable-container]') === container
-              : true;
-            if (!ownContainer) continue;
-            var text = cleanElementText(anchor);
-            if (text) {
-              result.author = text;
-              result.handle = href.charAt(0) === '/' ? href.slice(1) : href;
-            }
-            break;
-          }
-        } catch (e) {
-          // 擷取失敗不影響其餘欄位，整欄略過即可(協定允許欄位缺席)。
-        }
-        return result;
-      }
-
-      // ---- 候選節點是否落在「容器內部」的 [role="button"] 裡。互動列
-      // 的計數(讚／回覆／轉發)與影片貼文的配樂標示列，都是整塊包在
-      // [role="button"] 內、與內文 span 同層並列，唯一可靠的切分就是這
-      // 條祖先鏈。從候選的 parentNode 起往上找最近的按鈕(候選自己是不
-      // 是按鈕不在判斷範圍內)，再確認那顆按鈕是容器的真後代:容器節點
-      // 自己帶 role="button"、或容器被外層的可點擊包裝夾住時都不算，否
-      // 則整篇內文會被當成互動元素丟光。----
-      function isInsideContainerButton(el, container) {
-        var parent = el.parentNode;
-        if (!parent || !parent.closest) return false;
-        var button = parent.closest('[role="button"]');
-        if (!button) return false;
-        var cursor = button.parentNode;
-        while (cursor) {
-          if (cursor === container) return true;
-          cursor = cursor.parentNode;
-        }
-        return false;
-      }
-
-      // ---- 擷取貼文內文摘要:依文件序掃過容器內所有 [dir="auto"] span，
-      // 只收「屬於本容器本身」(排除巢狀引用貼文自己的內文)、「不在任何
-      // <a> 內」(作者名／時間戳記／引用卡片標題都是整串包在 <a> 裡，內
-      // 文本身不是)、「不在容器內的 [role="button"] 內」(互動列與配樂標
-      // 示列)的候選，交給純函式 classifyExcerptCandidate 決定
-      // push／skip／stop(規則見該函式註解)。多段內文(部分貼文每行是獨
-      // 立 span 而非同一個 span 內用 \n 分隔)用 '\n' 接起來。擷取不到任
-      // 何內容回傳 undefined，由呼叫端決定要不要放進訊息。----
-      function extractExcerpt(container) {
-        try {
-          var spans = container.querySelectorAll('[dir="auto"]');
-          var parts = [];
-          for (var i = 0; i < spans.length; i++) {
-            var el = spans[i];
-            if (el.closest && el.closest('div[data-pressable-container]') !== container) continue;
-            if (el.closest && el.closest('a')) continue;
-            // 互動列位於內文之後，已經收到內文時把它當成內文區段結束的
-            // 標記而中止；還沒收到任何內文時只跳過這個候選，讓排在後面
-            // 的真正內文仍有機會被收(內文前也可能先出現按鈕)。
-            if (isInsideContainerButton(el, container)) {
-              if (parts.length) break;
-              continue;
-            }
-            var text = cleanElementText(el);
-            var action = classifyExcerptCandidate(text, parts.length > 0);
-            if (action === 'stop') break;
-            if (action === 'skip') continue;
-            parts.push(text);
-          }
-          if (!parts.length) return undefined;
-          return parts.join('\n').slice(0, EXCERPT_MAX);
-        } catch (e) {
-          return undefined;
-        }
-      }
-
       // ---- 合併 extractAuthorHandle／extractExcerpt 成單一呼叫，回傳可
       // 以直接展開進 cleanedNotice payload 的物件(只含實際擷取到的欄
       // 位)。複製 icon 自己的 notifyBackgroundCleaned 與 bridge.js(經
       // root.TCLPostIcon.extractPostInfo)共用同一份邏輯，避免兩處各自組
       // 一次「author/handle/excerpt 挑非 undefined 欄位」的判斷。----
       function extractPostInfo(container) {
-        var info = extractAuthorHandle(container) || {};
-        var excerpt = extractExcerpt(container);
+        if (!site) return {};
+        var ctx = currentCtx();
+        var info = site.author(container, ctx) || {};
+        var excerpt = site.excerpt(container, ctx);
         var result = {};
         if (info.author !== undefined) result.author = info.author;
         if (info.handle !== undefined) result.handle = info.handle;
@@ -796,7 +1423,9 @@
       api.showResolveFailureToast = showResolveFailureToast;
 
       // ---- 單顆 icon 元素:圖示、tooltip、點擊/鍵盤複製邏輯 ----
-      function createIconElement() {
+      // ownerContainer:注入當下的貼文容器，交給 site.containerOf 決定點擊時
+      // 是否沿用。
+      function createIconElement(ownerContainer) {
         var el = document.createElement('div');
         el.className = ICON_CLASS;
         el.setAttribute('role', 'button');
@@ -813,15 +1442,15 @@
 
         var iconWrap = document.createElement('span');
         iconWrap.className = SVG_WRAP_CLASS;
-        iconWrap.innerHTML = LINK_SVG;
+        renderIconSvg(iconWrap, LINK_PATHS);
         el.appendChild(iconWrap);
 
         // 把目前語言的 iconTooltip 文字填進 SVG 內建的 <title> 子元素
         // (textContent，不是 innerHTML)。這顆 <title> 不會觸發瀏覽器原
         // 生 tooltip(見上方 el.title 一帶的說明)，純粹是仿照原生互動列
-        // 按鈕結構保留的無障礙語意。iconWrap.innerHTML 每次换圖示
-        // (LINK_SVG/CHECK_SVG 互換)都要重新呼叫一次，因為 <title> 節點
-        // 會跟著整個 innerHTML 一起被換掉。
+        // 按鈕結構保留的無障礙語意。renderIconSvg 每次換圖示(LINK_PATHS／
+        // CHECK_PATHS 互換)都要重新呼叫一次，因為 <title> 節點會跟著整顆
+        // svg 一起被換掉。
         function applyIconTitle() {
           var titleEl = iconWrap.querySelector('title');
           if (titleEl) titleEl.textContent = t('iconTooltip');
@@ -853,14 +1482,14 @@
         // 即時刷新內容，只有這顆自繪氣泡能保證「點擊當下」立刻給使用者
         // 回饋。
         function showCopiedFeedback() {
-          iconWrap.innerHTML = CHECK_SVG;
+          renderIconSvg(iconWrap, CHECK_PATHS);
           applyIconTitle();
           tooltip.textContent = t('iconCopied');
           tooltip.classList.add(TOOLTIP_VISIBLE_CLASS);
           clearFeedbackTimers();
           resetTimer = setTimeout(function () {
             resetTimer = null;
-            iconWrap.innerHTML = LINK_SVG;
+            renderIconSvg(iconWrap, LINK_PATHS);
             applyIconTitle();
             tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
             // 移除 TOOLTIP_VISIBLE_CLASS 只是觸發淡出(opacity transition
@@ -883,7 +1512,7 @@
         // 過。
         function revertCopiedFeedback() {
           clearFeedbackTimers();
-          iconWrap.innerHTML = LINK_SVG;
+          renderIconSvg(iconWrap, LINK_PATHS);
           applyIconTitle();
           tooltip.classList.remove(TOOLTIP_VISIBLE_CLASS);
           tooltip.textContent = t('iconTooltip');
@@ -927,35 +1556,20 @@
             return;
           }
 
-          var container = el.closest ? el.closest('div[data-pressable-container]') : null;
+          var container = site.containerOf(el, ownerContainer);
           if (!container) {
             console.warn('[threads-clean-link] 找不到貼文容器，略過複製');
             return;
           }
 
-          // 巢狀容器防護:引用/回覆貼文會巢狀在本容器內，它自己的
-          // a[href*="/post/"] 也會被 querySelectorAll 掃到，若不過濾，
-          // 引用貼文可能誤取到被引文的 permalink。比照
-          // collectActionRowCandidates 的同款判斷:錨點最近的貼文容器
-          // 祖先必須就是目前這個 container 本身才算數。
-          var anchors = container.querySelectorAll('a[href*="/post/"]');
-          var candidates = [];
-          for (var i = 0; i < anchors.length; i++) {
-            var anchor = anchors[i];
-            var ownContainer = anchor.closest
-              ? anchor.closest('div[data-pressable-container]') === container
-              : true;
-            candidates.push({ href: anchor.getAttribute('href'), ownContainer: ownContainer });
-          }
-          var hrefs = filterOwnContainerHrefs(candidates);
-
-          var permalink = pickPermalink(hrefs);
+          var ctx = currentCtx();
+          var permalink = site.permalinkOf(container, ctx);
           if (!permalink) {
             console.warn('[threads-clean-link] 找不到貼文永久連結，略過複製');
             return;
           }
 
-          var url = buildPostUrl(permalink, root.location.origin);
+          var url = site.canonicalUrl(permalink, root.location.origin);
           if (!url) {
             console.warn('[threads-clean-link] 組不出合法的貼文網址，略過複製');
             return;
@@ -1065,69 +1679,6 @@
         return el;
       }
 
-      // ---- 找互動列候選:容器內每個 div，直屬子元素 >=4 個，每個子元素內
-      // 都有 [role="button"] 包著 svg（按鈕 wrapper）。svg 不再要求帶
-      // aria-label——Threads 2026-09 改版後標籤只剩 svg > title，多綁這個
-      // 屬性會讓所有候選落空。純結構判斷，不再額外查
-      // getComputedStyle(display:flex)——這個掃描是熱路
-      // 徑(MutationObserver 每次 debounce 後對全頁貼文重跑一輪)，
-      // getComputedStyle 會強制觸發同步版面計算，犯不著多付這筆效能。
-      //
-      // 注意:結構條件不保證唯一——例如影片貼文會多一條「追蹤/更多/已靜
-      // 音/排序/附加影音內容」的播放器工具列，結構上也符合，但那不是讚/
-      // 回覆/轉發/分享的互動列。所以這裡收集「全部」候選，交給
-      // pickActionRowIndex 消歧，不在第一個符合結構的候選就短路回傳。----
-      function collectActionRowCandidates(container) {
-        var candidates = container.querySelectorAll('div');
-        var rows = [];
-        for (var i = 0; i < candidates.length; i++) {
-          var row = candidates[i];
-          var children = row.children;
-          if (!children || children.length < 4) continue;
-
-          var allMatch = true;
-          for (var j = 0; j < children.length; j++) {
-            var hit = children[j].querySelector
-              ? children[j].querySelector('[role="button"] svg')
-              : null;
-            if (!hit) {
-              allMatch = false;
-              break;
-            }
-          }
-          if (!allMatch) continue;
-
-          // 巢狀容器防護:候選 row 最近的貼文容器祖先必須就是目前掃描的
-          // container 本身，否則代表這顆 row 其實屬於巢狀在裡面的引用/
-          // 回覆貼文，不該被外層容器搶走。
-          if (row.closest && row.closest('div[data-pressable-container]') !== container) continue;
-
-          rows.push(row);
-        }
-        return rows;
-      }
-
-      // ---- 從候選列中挑出真正的互動列:只有 1 個候選直接用；多個候選先
-      // 用 readActionLabel 讀出每顆按鈕 svg 的標籤(先 aria-label，缺席讀
-      // svg title)，再交給 pickActionRowIndex(見純函式區)用白名單消歧，
-      // 白名單全不中則退回文件序最後一個候選。----
-      function findActionRow(container) {
-        var rows = collectActionRowCandidates(container);
-        if (rows.length === 0) return null;
-
-        var labelsList = rows.map(function (row) {
-          var labels = [];
-          for (var j = 0; j < row.children.length; j++) {
-            var svg = row.children[j].querySelector('[role="button"] svg');
-            labels.push(readActionLabel(svg));
-          }
-          return labels;
-        });
-
-        var idx = pickActionRowIndex(labelsList);
-        return idx === null ? null : rows[idx];
-      }
-
       // ---- 從同一列的原生按鈕取色，套到我們的 icon 上(currentColor 會自動
       // 跟上)。原生按鈕的實際顏色由 Threads 自己的樣式表決定，不同主題、
       // 不同版面都可能有些微差異，直接取樣比我們自己猜一組色票準確，也不
@@ -1182,7 +1733,8 @@
           return;
         }
 
-        var row = findActionRow(container);
+        var ctx = currentCtx();
+        var row = site.findActionRow(container, ctx);
         if (!row) {
           var failCount = (scanFailCounts.get(container) || 0) + 1;
           scanFailCounts.set(container, failCount);
@@ -1207,12 +1759,12 @@
           return;
         }
 
-        var lastWrapper = row.children[row.children.length - 1];
-        if (!lastWrapper) return;
+        var insertion = site.insertionPoint(row, ctx);
+        if (!insertion) return;
 
-        var icon = createIconElement();
+        var icon = createIconElement(container);
         applyNativeColor(icon, row);
-        row.insertBefore(icon, lastWrapper.nextSibling);
+        insertion.parent.insertBefore(icon, insertion.before);
 
         scanFailCounts.delete(container);
         scanFailFirstAt.delete(container);
@@ -1241,7 +1793,15 @@
         if (!postCopyEnabled) return;
         try {
           injectStyle();
-          var containers = document.querySelectorAll('div[data-pressable-container]');
+          var pathname = currentPathname();
+          if (site.resetOnNavigate && lastScanPathname !== null && pathname !== lastScanPathname) {
+            removeOwnIcons();
+          }
+          lastScanPathname = pathname;
+          retargetObserver();
+          var ctx = currentCtx();
+          if (ctx.pageType === null) return;
+          var containers = site.findContainers(document, ctx);
           for (var i = 0; i < containers.length; i++) {
             injectIntoContainer(containers[i]);
           }
@@ -1308,11 +1868,16 @@
         return 'en';
       }
 
-      // ---- 動態 feed:Threads feed 是虛擬化的，貼文捲出畫面 DOM 即卸載，
-      // 捲回來又是全新節點。用 MutationObserver 監聽整個 body，debounce
-      // 後重掃全頁補注入；冪等靠 hasExistingIcon。SPA 路由切換也靠同一個
-      // observer 覆蓋。----
+      // ---- 動態 feed:Threads／Instagram 的 feed 都是虛擬化的，貼文捲出畫
+      // 面 DOM 即卸載，捲回來又是全新節點。用 MutationObserver 監聽站點的
+      // 觀察根節點(site.observeRoot:Threads 為 body，Instagram 為 main)，
+      // debounce 後重掃全頁補注入；冪等靠 hasExistingIcon。SPA 路由切換也
+      // 靠同一個 observer 覆蓋。----
       var scanScheduled = false;
+      // 目前 observer 觀察中的根節點(見 retargetObserver)。
+      var observedTarget = null;
+      // 上一輪掃描時的 pathname，供 site.resetOnNavigate 判斷換頁。
+      var lastScanPathname = null;
       // 排下但尚未觸發的 debounce 掃描，退場時 clearTimeout。
       var scanTimer = null;
       function scheduleScan() {
@@ -1328,17 +1893,46 @@
 
       function startObserver() {
         try {
-          var target = document.body || document.documentElement;
+          var target = site.observeRoot(document);
           if (!target) return;
           var observer = new MutationObserver(function () {
             scheduleScan();
           });
-          observer.observe(target, { childList: true, subtree: true });
+          observeTargets(observer, target);
           // 留住參照，退場時要 disconnect(見 retireOrphanInstance)。
           observerRef = observer;
+          observedTarget = target;
         } catch (e) {
           console.warn('[threads-clean-link] 啟動 MutationObserver 失敗', e);
         }
+      }
+
+      // 站點的觀察根節點換了(例如 Instagram 的 main 晚於啟動才渲染)時，
+      // 讓同一個 observer 改觀察新的根節點。
+      function retargetObserver() {
+        if (!observerRef) return;
+        var target = site.observeRoot(document);
+        if (!target || target === observedTarget) return;
+        observerRef.disconnect();
+        observeTargets(observerRef, target);
+        observedTarget = target;
+      }
+
+      // 讓 observer 觀察 target(childList＋subtree)。target 不是 body 時，
+      // 同一個 observer 另外以 childList(不開 subtree)觀察 body 與 target
+      // 的父節點:target 整個被換掉時，舊 target 的 subtree 觀察收不到任何
+      // 紀錄，改由這兩處的子節點變動觸發掃描，retargetObserver 再換到新
+      // target。外殼觀察先掛、target 最後掛，disconnect 一次全部拆掉。
+      function observeTargets(observer, target) {
+        var body = document.body;
+        if (body && target !== body) {
+          observer.observe(body, { childList: true });
+          var parent = target.parentNode;
+          if (parent && parent !== body && parent.nodeType === 1) {
+            observer.observe(parent, { childList: true });
+          }
+        }
+        observer.observe(target, { childList: true, subtree: true });
       }
 
       // ---- chrome.storage.onChanged:即時更新頁面上既有 icon 的語言 ----
@@ -1529,7 +2123,9 @@
         watchPostCopyEnabledChanges();
       }
 
-      if (contextLost()) {
+      if (!site) {
+        // 不負責的站點:不掃描、不建 observer、不註冊任何監聽。
+      } else if (contextLost()) {
         retireAtLoad();
       } else if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init, listenerOptions());
