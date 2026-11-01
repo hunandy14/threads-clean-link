@@ -822,6 +822,9 @@
       return typeof hostname === 'string' && /(^|\.)instagram\.com$/i.test(hostname);
     },
     pageType: igPageType,
+    // 互動列原生圖示是 24px svg、外框 40px(各邊 8px padding)，按鈕照同一
+    // 尺寸(見 injectStyle 的 iconSize 規則)。
+    iconSize: 24,
     // feed 只回傳有 permalink 的容器(廣告沒有時間連結)；reels 只回傳作用
     // 中那一則(見 igReelActiveItem)，網址列沒有 code 時不回傳。
     findContainers: function (doc, ctx) {
@@ -1614,7 +1617,8 @@
         detachStorageListeners();
       }
 
-      // 鏈結(link)圖示與勾勾(check)圖示：20px、stroke=currentColor、
+      // 鏈結(link)圖示與勾勾(check)圖示：預設 20px(站點設定 iconSize 可覆
+      // 寫)、stroke=currentColor、
       // fill=none，顏色繼承原生按鈕的灰(不自己指定顏色)。內建一個空的
       // <title> 子元素:原生互動列每顆 svg 內都有 <title> 子元素(改版後那
       // 也是唯一的標籤來源)，仿照同一結構保留無障礙語意(見 createIconElement 的
@@ -1782,6 +1786,12 @@
           'transition:opacity .12s ease;z-index:1000;}',
           '@media (prefers-color-scheme: light){.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{background:#e5e5e5;color:#050505;}}',
           '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '.' + TOOLTIP_VISIBLE_CLASS + '{opacity:1;}',
+          // 站點設定 iconSize:圖示 svg 改成該邊長，外框維持各邊 8px 留白；未
+          // 設定的站點沿用上面的 20px 圖示／36px 外框。
+          site && site.iconSize
+            ? '.' + ICON_CLASS + '{width:' + (site.iconSize + 16) + 'px;height:' + (site.iconSize + 16) + 'px;}' +
+              '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + ' svg{width:' + site.iconSize + 'px;height:' + site.iconSize + 'px;}'
+            : '',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
