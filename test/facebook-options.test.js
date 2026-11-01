@@ -111,13 +111,15 @@ test('A4-1 sanitizeEntries：Facebook 各頁型條目收下，original 與 remov
   assert.ok(out.find((e) => e.url === FB_PHOTO), '相片頁的 ?fbid=&set= 原樣保留');
 });
 
-test('A4-2 sanitizeEntries：不支援的 Facebook 網址（m. 子網域、share 短碼、個人頁）照舊整筆丟棄', () => {
-  const out = options.sanitizeEntries([
-    entry({ url: `https://m.facebook.com/fx_user_a/posts/${ID}` }),
-    entry({ url: 'https://www.facebook.com/share/p/AbC123fake/' }),
-    entry({ url: 'https://www.facebook.com/fx_user_a' }),
-  ]);
-  assert.equal(out.length, 0);
+// 車道 D（D-4 A4-2）：下行項目一律顯示，可顯示的 Facebook 網址在讀取端保留、url 原樣。
+test('A4-2 sanitizeEntries：無法正規化但可顯示的 Facebook 網址（m. 子網域、share 短碼、個人頁）整筆保留、url 原樣', () => {
+  const urls = [
+    `https://m.facebook.com/fx_user_a/posts/${ID}`,
+    'https://www.facebook.com/share/p/AbCdEfGh12/',
+    'https://www.facebook.com/fx_user_a',
+  ];
+  const out = options.sanitizeEntries(urls.map((url, i) => entry({ url, at: 90000 - i })));
+  assert.deepEqual(out.map((e) => e.url).sort(), urls.slice().sort());
 });
 
 // ---- 站別徽章 ----
