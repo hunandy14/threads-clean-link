@@ -64,12 +64,12 @@
   // 碼，只有 Instagram 伺服器能對應到哪一篇)，整條網址不認。比對不分大小寫。
   var INSTAGRAM_RESERVED_SEGMENTS = ['share', 'explore', 'reels', 'stories', 'accounts', 'direct'];
 
-  // Facebook 貼文網址的粗切:scheme 為 http 或 https,authority 不含路徑/
+  // Facebook 貼文網址的粗切:scheme 為 http 或 https，authority 不含路徑/
   // query/hash 分隔字元，整串不含空白。
   //   group 1 = authority(host 判定見 FACEBOOK_HOSTS)
-  //   group 2 = 路徑(缺席為 undefined,視為 '/')
-  //   group 3 = query(不含 '?',缺席為 undefined)
-  //   group 4 = hash(含 '#',缺席為 undefined)
+  //   group 2 = 路徑(缺席為 undefined，視為 '/')
+  //   group 3 = query(不含 '?'，缺席為 undefined)
+  //   group 4 = hash(含 '#'，缺席為 undefined)
   var FACEBOOK_URL_PATTERN = /^https?:\/\/([^\/?#\s]+)(\/[^?#\s]*)?(?:\?([^#\s]*))?(#\S*)?$/i;
 
   // 接受的 Facebook host(比對不分大小寫)。其他子網域(m.、mobile.、
@@ -79,7 +79,7 @@
   // Facebook 網址整串的長度上限，與 original 欄位上限一致。
   var FACEBOOK_URL_MAX = 2048;
 
-  // Facebook 追蹤參數，鏡射手機 App 的清理規則:只剝這些鍵與所有 utm_*,
+  // Facebook 追蹤參數，鏡射手機 App 的清理規則:只剝這些鍵與所有 utm_*，
   // 鍵名比對不分大小寫，其餘參數原樣保留。
   var FACEBOOK_TRACKING_PARAMS = [
     'fbclid', 'mibextid', 'rdid', 'share_url', 'sfnsn', 'wtsid', 'refid', 'ref',
@@ -255,9 +255,11 @@
   // 轉小寫，query 只剝追蹤參數(見 isFacebookTrackingKey)，其餘參數依原順序
   // 逐字保留，參數全被剝光時連 '?' 一併去掉;路徑、尾斜線與 hash 原樣保留。
   // host 不在 FACEBOOK_HOSTS、超過 FACEBOOK_URL_MAX、或剝完的網址抽不出
-  // facebookId(與 postKeyOf 同一套貼文辨識規則)一律回 null。
+  // facebookId(與 postKeyOf 同一套貼文辨識規則)一律回 null;含控制字元或
+  // bidi 控制字元(見 CONTROL_CHARS_RE)的網址整串不認。
   function normalizeFacebookPostUrl(url) {
     if (typeof url !== 'string' || url.length > FACEBOOK_URL_MAX) return null;
+    if (stripControlChars(url) !== url) return null;
     var match = FACEBOOK_URL_PATTERN.exec(url);
     if (!match) return null;
     var host = match[1].toLowerCase();
@@ -268,6 +270,7 @@
       var segments = match[3].split('&');
       for (var i = 0; i < segments.length; i++) {
         var segment = segments[i];
+        // 空片段（`&&`、結尾 `&`）直接略過。
         if (segment === '') continue;
         var eq = segment.indexOf('=');
         if (!isFacebookTrackingKey(eq === -1 ? segment : segment.slice(0, eq))) kept.push(segment);

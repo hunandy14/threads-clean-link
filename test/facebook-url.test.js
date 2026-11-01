@@ -168,6 +168,22 @@ test('A1-2-25 normalizeFacebookPostUrl：Threads 與 Instagram 網址不歸它�
   assert.equal(C.normalizeFacebookPostUrl(IG_CLEAN), null);
 });
 
+test('A1-2-26 normalizeFacebookPostUrl：路徑、query、hash 任一處含控制字元或 bidi 控制字元，回 null 且不算乾淨', () => {
+  const NUL = String.fromCharCode(0);
+  const RLO = String.fromCharCode(0x202e);
+  const cases = [
+    ['NUL 在路徑', FB + '/' + USER + '/posts/' + ID + NUL],
+    ['NUL 在 hash', FB + '/' + USER + '/posts/' + ID + '#a' + NUL],
+    ['RLO 在 query', FB + '/permalink.php?story_fbid=' + ID + '&x=' + RLO + 'gpj'],
+    ['RLO 在 hash', FB + '/reel/' + ID + '#' + RLO + 'gpj'],
+  ];
+  for (const [label, url] of cases) {
+    assert.equal(C.normalizeFacebookPostUrl(url), null, label);
+    assert.equal(C.normalizePostUrl(url), null, label);
+    assert.equal(C.isCleanPostUrl(url), false, label);
+  }
+});
+
 // ---- A1-3 規則的性質 ----
 
 test('A1-3-1 正規化是冪等的：normalize(normalize(x)) === normalize(x)', () => {
