@@ -517,6 +517,13 @@
   //                              的按鈕再依新頁型重掃
   //   resetOnSearchChange      → (選填)與 resetOnNavigate 並用，true 時
   //                              search 變動也視為換頁
+  //   iconSize                 → (選填)圖示 svg 邊長(px)，外框為邊長＋16
+  //   pageIconSize             → (選填){ <頁型>: { icon, box } }，該頁型的
+  //                              svg 邊長與外框邊長(px)，優先於 iconSize
+  //   themeVars                → (選填){ hover, bubbleBackground,
+  //                              bubbleText }:hover 圓底、回饋氣泡與 toast
+  //                              的顏色改讀這些頁面 CSS 變數，變數不存在時
+  //                              用預設的 prefers-color-scheme 配色
   // ============================================================
 
   // Threads:所有頁型共用同一套容器(div[data-pressable-container])與互動列
@@ -1380,6 +1387,17 @@
     // 相片頁換下一張(只換 fbid)時按鈕跟著移過去。
     resetOnNavigate: true,
     resetOnSearchChange: true,
+    // reel 直向按鈕欄:原生圖示 24px、每格 48px 寬，按鈕外框填滿欄寬，圖示
+    // 與原生落在同一條中心線上。post／photo 沿用預設 20px 圖示。
+    pageIconSize: { reel: { icon: 24, box: 48 } },
+    // 主題由 html 與局部容器上的 __fb-light-mode／__fb-dark-mode class 決
+    // 定(淺色頁面中的 reel 播放區是深色區塊)，以下變數依最近的主題容器
+    // 解析，顏色因此跟著按鈕所在區塊的主題走。
+    themeVars: {
+      hover: '--hover-overlay',
+      bubbleBackground: '--comment-background',
+      bubbleText: '--primary-text',
+    },
   };
 
   // 依序比對的站點清單。
@@ -1494,6 +1512,9 @@
       // 下「這個容器注入過了」，不會再補回來)。
       // 值只用時間戳與亂數(英數與連字號)，可以安全地放進屬性選擇器。
       var OWNER_ATTR = 'data-tcl-owner';
+      // 頁型標記:站點設定 pageIconSize 有列出的頁型才標在按鈕上，供
+      // injectStyle 的頁型尺寸規則選取。
+      var PAGE_ATTR = 'data-tcl-page';
       var INSTANCE_ID = 'tcl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 
       // 本實例是否已經退場(判活發現自己是孤兒，或被新實例交棒)。退場後掃
@@ -1753,6 +1774,28 @@
       api.extractPostInfo = extractPostInfo;
 
       // ---- 樣式注入:hover 圓底高亮 + 點擊回饋氣泡，標 id 防重複注入 ----
+      // 站點設定 themeVars 有該項時回傳 var(<變數>, fallback)，否則原樣回傳
+      // fallback。
+      function themeColor(key, fallback) {
+        var vars = site && site.themeVars;
+        return vars && vars[key] ? 'var(' + vars[key] + ', ' + fallback + ')' : fallback;
+      }
+
+      // 站點設定 pageIconSize 的頁型尺寸規則，以按鈕上的 PAGE_ATTR 選取。
+      function pageIconSizeRules() {
+        var sizes = site && site.pageIconSize;
+        if (!sizes) return '';
+        var out = '';
+        for (var type in sizes) {
+          if (!Object.prototype.hasOwnProperty.call(sizes, type)) continue;
+          var sel = '.' + ICON_CLASS + '[' + PAGE_ATTR + '="' + type + '"]';
+          out +=
+            sel + '{width:' + sizes[type].box + 'px;height:' + sizes[type].box + 'px;}' +
+            sel + ' .' + SVG_WRAP_CLASS + ' svg{width:' + sizes[type].icon + 'px;height:' + sizes[type].icon + 'px;}';
+        }
+        return out;
+      }
+
       function injectStyle() {
         if (document.getElementById(STYLE_ID)) return;
         var style = document.createElement('style');
@@ -1766,8 +1809,8 @@
           // rgb(30,30,30)、瞬間出現(無 transition)，這裡照抄精確值與行
           // 為。淺色主題同樣為實測值 rgb(245,245,245)(CDP 模擬
           // prefers-color-scheme 實測)。
-          '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:rgb(30,30,30);}}',
-          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:rgb(245, 245, 245);}}',
+          '@media (prefers-color-scheme: dark){.' + ICON_CLASS + ':hover{background-color:' + themeColor('hover', 'rgb(30,30,30)') + ';}}',
+          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ':hover{background-color:' + themeColor('hover', 'rgb(245, 245, 245)') + ';}}',
           // svg 設 pointer-events:none 讓滑鼠事件穿透到外層可互動的 div
           // (click/keydown 都綁在 el，見 createIconElement)，副作用是游
           // 標永遠不會落在 svg 上，svg 內 <title> 的原生 tooltip 因此永
@@ -1782,9 +1825,9 @@
           // 示，COPIED_RESET_MS 後自動移除。
           '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{position:absolute;top:calc(100% + 6px);left:50%;',
           'transform:translateX(-50%);padding:4px 8px;border-radius:6px;font-size:12px;line-height:1.4;',
-          'white-space:nowrap;background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
+          'white-space:nowrap;background:' + themeColor('bubbleBackground', '#1c1c1c') + ';color:' + themeColor('bubbleText', '#fff') + ';opacity:0;pointer-events:none;',
           'transition:opacity .12s ease;z-index:1000;}',
-          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{background:#e5e5e5;color:#050505;}}',
+          '@media (prefers-color-scheme: light){.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '{background:' + themeColor('bubbleBackground', '#e5e5e5') + ';color:' + themeColor('bubbleText', '#050505') + ';}}',
           '.' + ICON_CLASS + ' .' + TOOLTIP_CLASS + '.' + TOOLTIP_VISIBLE_CLASS + '{opacity:1;}',
           // 站點設定 iconSize:圖示 svg 改成該邊長，外框維持各邊 8px 留白；未
           // 設定的站點沿用上面的 20px 圖示／36px 外框。
@@ -1792,6 +1835,7 @@
             ? '.' + ICON_CLASS + '{width:' + (site.iconSize + 16) + 'px;height:' + (site.iconSize + 16) + 'px;}' +
               '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + ' svg{width:' + site.iconSize + 'px;height:' + site.iconSize + 'px;}'
             : '',
+          pageIconSizeRules(),
         ].join('');
         (document.head || document.documentElement).appendChild(style);
       }
@@ -1814,9 +1858,9 @@
           '#' + TOAST_ID + '{position:fixed;left:50%;bottom:24px;',
           'transform:translateX(-50%) translateY(8px);padding:8px 16px;border-radius:8px;',
           'font-size:13px;line-height:1.4;max-width:min(80vw,420px);text-align:center;',
-          'background:#1c1c1c;color:#fff;opacity:0;pointer-events:none;',
+          'background:' + themeColor('bubbleBackground', '#1c1c1c') + ';color:' + themeColor('bubbleText', '#fff') + ';opacity:0;pointer-events:none;',
           'transition:opacity .15s ease,transform .15s ease;z-index:2147483647;}',
-          '@media (prefers-color-scheme: light){#' + TOAST_ID + '{background:#e5e5e5;color:#050505;}}',
+          '@media (prefers-color-scheme: light){#' + TOAST_ID + '{background:' + themeColor('bubbleBackground', '#e5e5e5') + ';color:' + themeColor('bubbleText', '#050505') + ';}}',
           '#' + TOAST_ID + '.' + TOAST_VISIBLE_CLASS + '{opacity:1;transform:translateX(-50%) translateY(0);}',
         ].join('');
         (document.head || document.documentElement).appendChild(style);
@@ -2199,6 +2243,7 @@
         if (!insertion) return;
 
         var icon = createIconElement(container);
+        if (site.pageIconSize && site.pageIconSize[ctx.pageType]) icon.setAttribute(PAGE_ATTR, ctx.pageType);
         applyNativeColor(icon, row);
         insertion.parent.insertBefore(icon, insertion.before);
 
