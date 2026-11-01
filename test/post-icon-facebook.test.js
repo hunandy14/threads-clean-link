@@ -284,7 +284,7 @@ test('C1-15 post：容器內只剩 0x0 重複列時找不到互動列', () => {
   const doc = fbDocument('post-dialog.html');
   const row = doc.getElementById('fx-post-row');
   row.parentNode.removeChild(row);
-  assert.equal(fb.findActionRow(doc.getElementById('fx-post'), POST_CTX), null);
+  assert.equal(fb.findActionRow(doc.getElementById('fx-post'), POST_CTX) === null, true, '只剩 0x0 重複列時應回 null');
 });
 
 test('C1-16 post：toolbar 不存在時插在列尾（append）', () => {
