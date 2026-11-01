@@ -269,6 +269,10 @@
       opInstagramDesc: '在 Instagram 貼文互動列顯示複製原始連結按鈕，需授權讀取 instagram.com',
       opInstagramPermDenied: '未取得 Instagram 權限，功能未開啟',
       opInstagramReloadHint: '已開啟的 Instagram 分頁請重新整理',
+      opFacebookName: 'Facebook 支援',
+      opFacebookDesc: '在 Facebook 單篇貼文、Reels 與相片頁顯示複製原始連結按鈕，需授權讀取 facebook.com',
+      opFacebookPermDenied: '未取得 Facebook 權限，功能未開啟',
+      opFacebookReloadHint: '已開啟的 Facebook 分頁請重新整理',
       // 設定卡內指向警示名單分頁的同頁錨點(a#scamManageLink[href="#flags"])。
       // 純文字，不含箭頭——箭頭改由後面接的 Lucide arrow-right inline SVG 呈現。
       opScamManageLink: '管理警示名單',
@@ -506,6 +510,10 @@
       opInstagramDesc: 'Shows a copy-original-link button on Instagram post action bars. Requires access to instagram.com.',
       opInstagramPermDenied: 'Instagram access was not granted. The feature stays off.',
       opInstagramReloadHint: 'Reload any open Instagram tabs to apply.',
+      opFacebookName: 'Facebook support',
+      opFacebookDesc: 'Shows a copy-original-link button on Facebook single posts, Reels, and photo pages. Requires access to facebook.com.',
+      opFacebookPermDenied: 'Facebook access was not granted. The feature stays off.',
+      opFacebookReloadHint: 'Reload any open Facebook tabs to apply.',
       opScamManageLink: 'Manage warning list',
 
       opScamListTitle: 'Warning list',

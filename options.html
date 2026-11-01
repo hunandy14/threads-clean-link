@@ -265,15 +265,23 @@
             </span>
             <input type="checkbox" id="scamGuardEnabled" class="switch" />
           </label>
-          <!-- Instagram 支援開關。instagram.com 是選用 host 權限，打開時才在同一
-               個使用者手勢內請求;值存 chrome.storage.local，綁定走 options.js
-               的 bindInstagram 專用流程，不走通用 bindSettings。 -->
+          <!-- 選用站點支援開關(Instagram、Facebook)。各站網域都是選用 host 權
+               限，打開時才在同一個使用者手勢內請求;值存 chrome.storage.local，
+               綁定走 options.js 的 bindOptionalSites 專用流程，不走通用
+               bindSettings。 -->
           <label class="setting-row" for="instagramEnabled">
             <span class="txt">
               <span class="name" data-i18n="opInstagramName">Instagram 支援</span>
               <div class="desc" data-i18n="opInstagramDesc">在 Instagram 貼文互動列顯示複製原始連結按鈕，需授權讀取 instagram.com</div>
             </span>
             <input type="checkbox" id="instagramEnabled" class="switch" />
+          </label>
+          <label class="setting-row" for="facebookEnabled">
+            <span class="txt">
+              <span class="name" data-i18n="opFacebookName">Facebook 支援</span>
+              <div class="desc" data-i18n="opFacebookDesc">在 Facebook 單篇貼文、Reels 與相片頁顯示複製原始連結按鈕，需授權讀取 facebook.com</div>
+            </span>
+            <input type="checkbox" id="facebookEnabled" class="switch" />
           </label>
         </div>
       </div>
