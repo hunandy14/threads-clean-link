@@ -341,12 +341,15 @@
     return { merged: TCLCore.capHistory(merged), added: added, skipped: skipped };
   }
 
-  // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊
-  // (author 或 excerpt 任一存在即算有預覽);純邏輯獨立成函式方便直接測，
-  // 也供 buildEntryCard 判斷要渲染預覽區塊還是降級網址列。
+  // 帶預覽卡的判定式:author、handle、excerpt 任一為非空字串即算有預覽;
+  // 純邏輯獨立成函式方便直接測，也供 buildEntryCard 判斷要渲染預覽區塊還是
+  // 降級網址列。與手機版 history-card.tsx 的 hasPreview 差在多認 handle
+  // (手機版只認 author/excerpt，待同步):Instagram 頁面只有 username，
+  // author===handle 時入庫端丟棄重複的 author，只剩 handle。
   function hasCardPreview(entry) {
     return (
       (typeof entry.author === 'string' && entry.author !== '') ||
+      (typeof entry.handle === 'string' && entry.handle !== '') ||
       (typeof entry.excerpt === 'string' && entry.excerpt !== '')
     );
   }
