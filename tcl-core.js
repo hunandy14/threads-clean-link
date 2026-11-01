@@ -66,24 +66,33 @@
 
   // Facebook 貼文網址的粗切:scheme 為 http 或 https，authority 不含路徑/
   // query/hash 分隔字元，整串不含空白。
-  //   group 1 = authority(host 判定見 FACEBOOK_HOSTS)
+  //   group 1 = authority(只收 FACEBOOK_HOSTS 列出的 host)
   //   group 2 = 路徑(缺席為 undefined，視為 '/')
   //   group 3 = query(不含 '?'，缺席為 undefined)
   //   group 4 = hash(含 '#'，缺席為 undefined)
   var FACEBOOK_URL_PATTERN = /^https?:\/\/([^\/?#\s]+)(\/[^?#\s]*)?(?:\?([^#\s]*))?(#\S*)?$/i;
 
-  // 接受的 Facebook host(比對不分大小寫)。其他子網域(m.、mobile.、
-  // business. 等)與 fb.watch、fb.com 一律不認。
-  var FACEBOOK_HOSTS = ['facebook.com', 'www.facebook.com'];
+  // 接受的 Facebook 主站 host(比對不分大小寫)，鏡射手機 App 的網域統一規則:
+  // 這些 host 正規化後一律輸出為 FACEBOOK_CANONICAL_HOST。其他子網域(l.、
+  // business.、developers. 等)與 fb.watch、fb.me 一律不認。
+  var FACEBOOK_HOSTS = [
+    'fb.com', 'www.fb.com', 'facebook.com', 'www.facebook.com',
+    'm.facebook.com', 'mbasic.facebook.com', 'web.facebook.com', 'mobile.facebook.com'
+  ];
+
+  // Facebook 正規化輸出的 host。
+  var FACEBOOK_CANONICAL_HOST = 'www.facebook.com';
 
   // Facebook 網址整串的長度上限，與 original 欄位上限一致。
   var FACEBOOK_URL_MAX = 2048;
 
   // Facebook 追蹤參數，鏡射手機 App 的清理規則:只剝這些鍵與所有 utm_*，
-  // 鍵名比對不分大小寫，其餘參數原樣保留。
+  // 鍵名比對不分大小寫、忽略結尾的 [數字] 索引(見 isFacebookTrackingKey)，
+  // 其餘參數原樣保留。
   var FACEBOOK_TRACKING_PARAMS = [
     'fbclid', 'mibextid', 'rdid', 'share_url', 'sfnsn', 'wtsid', 'refid', 'ref',
-    'refsrc', '__tn__', '__xts__', 'notif_t', 'notif_id', 'paipv', 'extid', 'comment_tracking'
+    'refsrc', '__tn__', '__xts__', 'notif_t', 'notif_id', 'paipv', 'extid', 'comment_tracking',
+    '__cft__'
   ];
 
   // 控制字元剝除範圍。剝:C0(U+0000-001F,**保留 tab U+0009 與 newline
@@ -242,8 +251,25 @@
     return 'https://' + match[1].toLowerCase() + '/' + match[3];
   }
 
+  // 去掉鍵名結尾連續的 [數字] 索引(如 __cft__[0]、__xts__[0][1] → 去掉後為
+  // __cft__、__xts__)，結果與正則 /(?:\[\d+\])+$/ 取代為空字串相同。由尾端往
+  // 前逐段掃描，時間與鍵長成線性;同一正則交給 String.replace 在
+  // '0]['.repeat(n) 這類輸入上是平方時間。
+  function stripTrailingIndexes(key) {
+    var end = key.length;
+    while (end > 0 && key.charAt(end - 1) === ']') {
+      var i = end - 2;
+      while (i >= 0 && key.charAt(i) >= '0' && key.charAt(i) <= '9') i--;
+      if (i < 0 || i === end - 2 || key.charAt(i) !== '[') break;
+      end = i;
+    }
+    return key.slice(0, end);
+  }
+
   // 查詢參數鍵名是否為 Facebook 追蹤參數(FACEBOOK_TRACKING_PARAMS 或 utm_*
-  // 開頭)。rawKey 是 query 段未解碼的鍵名，解碼失敗時以原字串比對。
+  // 開頭)。rawKey 是 query 段未解碼的鍵名，解碼失敗時以原字串比對。解碼後先
+  // 以 stripTrailingIndexes 去掉結尾的 [數字] 索引再轉小寫查清單;去掉索引後
+  // 不在清單的鍵(如 a[0])不算追蹤參數。
   function isFacebookTrackingKey(rawKey) {
     var key;
     try {
@@ -251,13 +277,14 @@
     } catch (e) {
       key = rawKey;
     }
-    key = key.toLowerCase();
+    key = stripTrailingIndexes(key).toLowerCase();
     return key.slice(0, 4) === 'utm_' || FACEBOOK_TRACKING_PARAMS.indexOf(key) !== -1;
   }
 
   // Facebook 的容尾正規化，鏡射手機 App 的清理規則:scheme 統一 https、host
-  // 轉小寫，query 只剝追蹤參數(見 isFacebookTrackingKey)，其餘參數依原順序
-  // 逐字保留，參數全被剝光時連 '?' 一併去掉;路徑、尾斜線與 hash 原樣保留。
+  // 統一為 FACEBOOK_CANONICAL_HOST，query 只剝追蹤參數(見
+  // isFacebookTrackingKey)，其餘參數依原順序逐字保留，參數全被剝光時連 '?'
+  // 一併去掉;路徑、尾斜線與 hash 原樣保留。
   // host 不在 FACEBOOK_HOSTS、超過 FACEBOOK_URL_MAX、或剝完的網址抽不出
   // facebookId(與 postKeyOf 同一套貼文辨識規則)一律回 null;含控制字元或
   // bidi 控制字元(見 CONTROL_CHARS_RE)的網址整串不認。
@@ -280,7 +307,7 @@
         if (!isFacebookTrackingKey(eq === -1 ? segment : segment.slice(0, eq))) kept.push(segment);
       }
     }
-    var cleaned = 'https://' + host + path + (kept.length > 0 ? '?' + kept.join('&') : '') + (match[4] || '');
+    var cleaned = 'https://' + FACEBOOK_CANONICAL_HOST + path + (kept.length > 0 ? '?' + kept.join('&') : '') + (match[4] || '');
     var parsed;
     try {
       parsed = new URL(cleaned);
