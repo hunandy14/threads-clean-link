@@ -990,7 +990,7 @@
   var FB_PHOTO_PATH_RE = /^\/(?:photo\/?|photo\.php)$/;
   // 作者個人頁連結「/<username>」(可帶尾斜線)；profile.php、社團成員頁等
   // 其他形狀不給 handle。
-  var FB_HANDLE_PATH_RE = /^\/([A-Za-z0-9.]+)\/?$/;
+  var FB_HANDLE_PATH_RE = /^\/([A-Za-z0-9._]+)\/?$/;
   var FB_RESERVED_SEGMENTS = [
     'groups', 'reel', 'reels', 'watch', 'photo', 'hashtag', 'pages', 'events', 'marketplace',
     'friends', 'share', 'stories', 'search', 'gaming', 'login', 'help', 'settings', 'notifications',
@@ -1060,9 +1060,8 @@
   }
 
   // 容器內的讚／分享互動列:每個 like_button 往上(不超出容器)第一個含
-  // share_button 的祖先。頁面上另有寬高為 0 的重複列，有任一列具備版面時
-  // 只取具備版面者；全部沒有版面(未排版的環境)時取第一列。找不到回傳
-  // null。
+  // share_button 的祖先。頁面上另有寬高為 0 的重複列，只取 rect 寬高皆大
+  // 於 0 的第一列；沒有這樣的列回傳 null。
   function fbStoryRow(container) {
     if (!container || typeof container.querySelectorAll !== 'function') return null;
     var likes = container.querySelectorAll(FB_LIKE_SELECTOR);
@@ -1081,7 +1080,7 @@
     for (var j = 0; j < rows.length; j++) {
       if (fbHasArea(rows[j])) return rows[j];
     }
-    return rows[0] || null;
+    return null;
   }
 
   // aria-label 是否以 FB_LABELS[key] 任一項開頭。
