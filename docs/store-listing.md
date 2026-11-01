@@ -130,7 +130,10 @@ This extension's single purpose is to convert Threads (threads.com/threads.net) 
 
 表單通常要求英文作答;下面每項先給送審用英文，再附繁中對照方便內部核對意思是否有跑掉。五個 `permissions` 加 host permissions，對應 `manifest.json` 目前的宣告:`contextMenus`、`scripting`、`notifications`、`activeTab`、`storage`、`https://*.threads.com/*`、`https://*.threads.net/*`。
 
-「雲端同步」功能上線後，`manifest.json` 另於 `optional_permissions`／`optional_host_permissions` 宣告三項選用權限:`identity`、`https://api.metalinkclearer.workers.dev/*`、`https://api-staging.metalinkclearer.workers.dev/*`。這三項**安裝當下不會要求**，只在使用者於「紀錄與設定」頁主動點擊「使用 Google 帳號登入」的那一刻才會跳出授權提示;理由見下方對應小節。
+`manifest.json` 另於 `optional_permissions`／`optional_host_permissions` 宣告五項選用權限，全部**安裝當下不會要求**，理由見下方對應小節:
+
+- 雲端同步三項:`identity`、`https://api.metalinkclearer.workers.dev/*`、`https://api-staging.metalinkclearer.workers.dev/*`，只在使用者於「紀錄與設定」頁主動點擊「使用 Google 帳號登入」的那一刻才會跳出授權提示。
+- 站點支援兩項:`https://*.instagram.com/*`、`https://*.facebook.com/*`，只在使用者於「紀錄與設定」頁打開對應的「Instagram 支援」／「Facebook 支援」開關時才會跳出授權提示。
 
 ### contextMenus
 
@@ -256,6 +259,18 @@ Optional host permission, off by default and never requested at install time. It
 **繁中對照:**
 ```
 選用 host permission，安裝當下不會要求，只有使用者在「紀錄與設定」頁打開「Instagram 支援」開關時才會請求。授權後，擴充功能在 instagram.com 註冊一支 content script，只讀取頁面 DOM，在每篇貼文的互動列加上「複製原始連結」按鈕——與本擴充功能在 Threads 上已有的按鈕相同。這支腳本不對 Instagram 或任何地方發出網路請求，不讀取私訊、cookie 或帳號資料，也不把任何內容送出頁面。關閉開關即取消註冊腳本並交還權限。使用者若從未打開，instagram.com 永遠不會被存取。
+```
+
+### Host permissions(選用):`https://*.facebook.com/*`
+
+**English:**
+```
+Optional host permission, off by default and never requested at install time. It is requested only when the user turns on the "Facebook support" switch on the History & Settings page. Once granted, the extension registers a content script on facebook.com that reads the page DOM to add a "copy original link" button to the action bar of a single post, a Reel, or a photo page — the same button the extension already shows on Threads. The link is taken from the page's own address bar. The script makes no network requests to Facebook or anywhere else, does not read messages, cookies or account data, and sends nothing off the page. Turning the switch off unregisters the script and gives the permission back. If the user never turns it on, facebook.com is never accessed.
+```
+
+**繁中對照:**
+```
+選用 host permission，安裝當下不會要求，只有使用者在「紀錄與設定」頁打開「Facebook 支援」開關時才會請求。授權後，擴充功能在 facebook.com 註冊一支 content script，只讀取頁面 DOM，在單篇貼文、Reels 與相片頁的互動列加上「複製原始連結」按鈕——與本擴充功能在 Threads 上已有的按鈕相同。連結取自頁面本身的網址列。這支腳本不對 Facebook 或任何地方發出網路請求，不讀取私訊、cookie 或帳號資料，也不把任何內容送出頁面。關閉開關即取消註冊腳本並交還權限。使用者若從未打開，facebook.com 永遠不會被存取。
 ```
 
 ---

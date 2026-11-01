@@ -67,7 +67,7 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         });
       },
-      // Instagram 開關關閉時交還 instagram.com 的選用權限。
+      // 選用站點開關(Instagram、Facebook)關閉時交還該站的選用權限。
       remove: function (descriptor) {
         return new Promise(function (resolve) {
           try {

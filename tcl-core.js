@@ -163,13 +163,17 @@
       key: 'scamGuardEnabled', area: 'local', def: true, pages: ['options'],
       label: { options: ['opScamGuardName', 'opScamGuardDesc'] }, view: 'scamBar',
     },
-    // Instagram 支援。值為 true 只代表使用者想開，實際生效還要 instagram.com
-    // 的選用 host 權限已授予(background.js 的 reconcileInstagramScript 兩者
-    // 都看)。options 頁不走通用的讀值／綁定流程，改由專用流程在同一個使用者
-    // 手勢內求權限(見 options.js 的 bindInstagram)。
+    // 選用站點支援(Instagram、Facebook)。值為 true 只代表使用者想開，實際
+    // 生效還要該站的選用 host 權限已授予(background.js 的 OPTIONAL_SITES 對帳
+    // 兩者都看)。options 頁不走通用的讀值／綁定流程，改由專用流程在同一個使
+    // 用者手勢內求權限(見 options.js 的 bindOptionalSites)。
     {
       key: 'instagramEnabled', area: 'local', def: false, pages: ['options'],
       label: { options: ['opInstagramName', 'opInstagramDesc'] },
+    },
+    {
+      key: 'facebookEnabled', area: 'local', def: false, pages: ['options'],
+      label: { options: ['opFacebookName', 'opFacebookDesc'] },
     },
   ];
 
