@@ -1,0 +1,1073 @@
+<!--
+  Facebook 相片頁（pathname /photo/?fbid=100000000000005）的 DOM。由 2026-11-01 zh-Hant 實測 dump
+  以程式裁剪、匿名化（class／style 移除、svg 內部與圖片來源清空、帳號名／數字 id／pfbid／人名／說明／
+  留言換假值，留言只留兩則）。完整頁、非 dialog：[role=main] 只有檢視器，互動列、作者、說明、留言
+  都在 [role=complementary]（#fx-photo-aside）。
+  - 互動列 #fx-photo-row 同單篇：讚欄 #fx-photo-like-col、分享欄 #fx-photo-share-col、
+    toolbar 外層 #fx-photo-toolbar-cell。
+  - 作者 #fx-photo-author（h2 a，href 為 /profile.php?id=…）。
+  - 說明 #fx-photo-caption（span[dir=auto]，含 <br>）。作者列下方的時間戳 span[dir=auto] 帶一串
+    混淆字元（每字後接 U+034F），字串長度比說明長；留言 [role=article] 的內文也刻意比說明長。
+-->
+<div id="fx-photo-page">
+<div role="main">
+<div>
+<div tabindex="-1">
+<div>
+<div>
+<div aria-hidden="true">
+</div>
+<div data-visualcompletion="ignore-dynamic">
+<div aria-label="上一張相片" role="button" tabindex="0">
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div data-visualcompletion="ignore-dynamic">
+<div aria-label="下一張相片" role="button" tabindex="0">
+<div>
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<img data-visualcompletion="media-vc-image" alt="" src="about:blank">
+<div data-visualcompletion="ignore">
+<div role="presentation">
+</div>
+<div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<span>
+<a aria-label="關閉檢視工具並返回動態消息" href="/?__tn__=*F" role="link" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</span>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div aria-label="示意標籤" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div>
+<div aria-label="示意標籤" role="button" tabindex="-1">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div>
+<span>
+<div aria-label="示意標籤" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div role="complementary" id="fx-photo-aside">
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<span>
+<a aria-label="示意作者丙" href="https://www.facebook.com/profile.php?id=100000000000010&amp;__tn__=%3C%3C*F" role="link" tabindex="0">
+<div>
+<svg aria-label="示意作者丙" data-visualcompletion="ignore-dynamic" role="img">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</a>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span dir="auto">
+<div>
+<h2>
+<span>
+<span>
+<span>
+<div>
+<a href="https://www.facebook.com/profile.php?id=100000000000010&amp;__tn__=-UC*F" role="link" tabindex="0" id="fx-photo-author">示意作者丙</a>
+</div>
+</span>
+</span>
+</span>
+</h2>
+</div>
+</span>
+</div>
+<div>
+<span dir="auto">
+<div>
+<span>
+<span>
+<span>
+<div aria-hidden="true" id="fx-r32">6天前，查看貼文</div>
+<a aria-labelledby="fx-r32" href="?__tn__=%2CO*F#?dae" role="link" tabindex="0">
+<span>
+<span>
+<span>t͏</span>
+<span>o͏</span>
+<span>S͏</span>
+<span>e͏</span>
+<span>n͏</span>
+<span>d͏</span>
+<span>r͏</span>
+<span>o͏</span>
+<span>p͏</span>
+<span>s͏</span>
+<span>5͏</span>
+<span>7͏</span>
+<span>t͏</span>
+<span>1͏</span>
+<span>g͏</span>
+<span>6͏</span>
+<span>日͏</span>
+<span>4͏</span>
+<span>g͏</span>
+<span>7͏</span>
+<span>9͏</span>
+<span>2͏</span>
+<span>0͏</span>
+<span>3͏</span>
+<span>5͏</span>
+<span>f͏</span>
+<span>5͏</span>
+<span>m͏</span>
+<span>2͏</span>
+<span>c͏</span>
+<span>g͏</span>
+<span>u͏</span>
+<span>7͏</span>
+<span>c͏</span>
+<span>i͏</span>
+<span>3͏</span>
+<span>m͏</span>
+<span>g͏</span>
+<span>1͏</span>
+<span>g͏</span>
+<span>u͏</span>
+<span>3͏</span>
+<span>u͏</span>
+<span>月͏</span>
+<span>7͏</span>
+<span>1͏</span>
+<span>9͏</span>
+<span>8͏</span>
+<span>下͏</span>
+<span>7͏</span>
+<span>0͏</span>
+<span>7͏</span>
+<span>c͏</span>
+<span>6͏</span>
+<span>午͏</span>
+<span>1͏</span>
+<span>:͏</span>
+<span>1͏</span>
+<span>c͏</span>
+<span>f͏</span>
+</span>
+</span>
+</a>
+</span>
+</span>
+</span>
+<span>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</span>
+<span>
+<span>
+<span>
+<svg role="img">
+</svg>
+</span>
+</span>
+</span>
+</div>
+</span>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div aria-expanded="false" aria-haspopup="menu" aria-label="可對此貼文採取的動作" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<span dir="auto" id="fx-photo-caption">示意相片說明第一行，描述這張合成的照片。<br>示意相片說明第二行。</span>
+</div>
+</div>
+<div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div id="fx-photo-row" style="display: flex; flex-direction: row" data-fx-top="190" data-fx-height="44">
+<div id="fx-photo-like-col" data-fx-top="190" data-fx-height="44">
+<div aria-label="對示意作者丙的貼文表示讚" role="button" tabindex="0" data-fx-top="190" data-fx-height="44">
+<div data-fx-top="190" data-fx-height="44">
+<div data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="190" data-fx-height="44">
+</i>
+</span>
+<div data-ad-rendering-role="like_button" data-fx-top="190" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="190" data-fx-height="44">
+<span dir="auto" data-fx-top="190" data-fx-height="44">7,282</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="190" data-fx-height="44">
+</div>
+</div>
+<div aria-label="對示意作者丙的貼文傳達心情" role="button" tabindex="0" data-fx-top="190" data-fx-height="44">
+<svg aria-hidden="true" data-fx-top="190" data-fx-height="44">
+</svg>
+<div role="none" data-visualcompletion="ignore" data-fx-top="190" data-fx-height="44">
+</div>
+</div>
+</div>
+<div data-fx-top="190" data-fx-height="44">
+<div aria-label="Comment on 示意作者丙's post, 363 comments" role="button" tabindex="0" data-fx-top="190" data-fx-height="44">
+<div data-fx-top="190" data-fx-height="44">
+<div data-fx-top="190" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="190" data-fx-height="44">
+</i>
+<div data-ad-rendering-role="comment_button" data-fx-top="190" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="190" data-fx-height="44">
+<span dir="auto" data-fx-top="190" data-fx-height="44">363</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="190" data-fx-height="44">
+</div>
+</div>
+</div>
+<div id="fx-photo-share-col" data-fx-top="190" data-fx-height="44">
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="分享示意作者丙的貼文" role="button" tabindex="0" data-fx-top="190" data-fx-height="44">
+<div data-fx-top="190" data-fx-height="44">
+<div data-fx-top="190" data-fx-height="44">
+<i data-visualcompletion="css-img" data-fx-top="190" data-fx-height="44">
+</i>
+<div data-ad-rendering-role="share_button" data-fx-top="190" data-fx-height="44">
+</div>
+</div>
+<div data-fx-top="190" data-fx-height="44">
+<span dir="auto" data-fx-top="190" data-fx-height="44">123</span>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore" data-fx-top="190" data-fx-height="44">
+</div>
+</div>
+</div>
+<div id="fx-photo-toolbar-cell" data-fx-top="190" data-fx-height="44">
+<span aria-label="看看誰對這個傳達了心情" role="toolbar" data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<div aria-label="讚：5,607人" role="button" tabindex="0" data-fx-top="190" data-fx-height="44">
+<img role="presentation" src="about:blank" data-fx-top="190" data-fx-height="44">
+</div>
+</span>
+</span>
+</span>
+<span data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<div aria-label="哇：855人" role="button" tabindex="0" data-fx-top="190" data-fx-height="44">
+<img role="presentation" src="about:blank" data-fx-top="190" data-fx-height="44">
+</div>
+</span>
+</span>
+</span>
+<span data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<span data-fx-top="190" data-fx-height="44">
+<div aria-label="大心：736人" role="button" tabindex="0" data-fx-top="190" data-fx-height="44">
+<img role="presentation" src="about:blank" data-fx-top="190" data-fx-height="44">
+</div>
+</span>
+</span>
+</span>
+</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div aria-expanded="false" aria-haspopup="menu" role="button" tabindex="0">
+<span dir="auto">最相關<div>
+<span>﻿</span>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+<h2 dir="auto">留言</h2>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="示意人名3的留言4天前" role="article" tabindex="-1" id="fx-photo-comment-1">
+<div>
+<span>
+<span>
+<a aria-hidden="true" href="https://www.facebook.com/fx_user_h?comment_id=fxcomment&amp;__tn__=R*F" role="link" tabindex="-1">
+<div>
+<svg aria-hidden="true" data-visualcompletion="ignore-dynamic" role="none">
+</svg>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<span>
+<span>
+<a aria-hidden="false" href="https://www.facebook.com/fx_user_h?comment_id=fxcomment&amp;__tn__=R*F" role="link" tabindex="0">
+<span>
+<span dir="auto">示意人名3</span>
+</span>
+</a>
+</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</div>
+<div>
+<div>
+<span>
+<a aria-label="示意標籤" href="https://www.facebook.com/permalink.php?story_fbid=fx&amp;id=100000000000010&amp;comment_id=100000000000011&amp;__tn__=R*F" role="link" tabindex="0">
+<span dir="auto">4天</span>
+</a>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<img src="about:blank">
+</div>
+<div>
+<span dir="auto">示意留言內容第1則，這段文字刻意寫得比相片說明還要長很多很多，用來確認摘要不會誤取留言。</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<span dir="auto">
+<div>
+<div dir="auto">示意留言內容第1則，這段文字刻意寫得比相片說明還要長很多很多，用來確認摘要不會誤取留言。</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div aria-hidden="false">
+<div>
+<span>
+<div aria-expanded="false" aria-haspopup="menu" aria-label="隱藏或檢舉此留言" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span>
+<div>
+<span>
+<div>
+<div aria-label="讚" role="button" tabindex="0">
+<div>
+<span>
+</span>
+<svg role="img">
+</svg>
+</div>
+</div>
+</div>
+<div aria-label="傳達心情" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</span>
+</div>
+<div>
+<span>
+<div aria-label="示意標籤" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+</div>
+</span>
+</div>
+<div>
+<li>
+<div>
+<div role="button" tabindex="0">回覆</div>
+</div>
+</li>
+</div>
+<div>
+<li>
+<div>
+<div role="button" tabindex="0">示意文字39</div>
+</div>
+</li>
+</div>
+<div>
+<div>
+<div>
+<span>
+<div aria-label="6個心情；查看誰對此傳達了心情" role="button" tabindex="0">
+<div>
+<div>
+<span>
+<img role="presentation" src="about:blank">
+</span>
+</div>
+<span>6</span>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看1則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div aria-label="示意人名4的留言4天前" role="article" tabindex="-1" id="fx-photo-comment-2">
+<div>
+<span>
+<span>
+<a aria-hidden="true" href="https://www.facebook.com/profile.php?id=100000000000012&amp;comment_id=fxcomment&amp;__tn__=R*F" role="link" tabindex="-1">
+<div>
+<svg aria-hidden="true" data-visualcompletion="ignore-dynamic" role="none">
+</svg>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</a>
+</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<span>
+<span>
+<a aria-hidden="false" href="https://www.facebook.com/profile.php?id=100000000000012&amp;comment_id=fxcomment&amp;__tn__=R*F" role="link" tabindex="0">
+<span>
+<span dir="auto">示意人名4</span>
+</span>
+</a>
+</span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</div>
+<div>
+<div>
+<span>
+<a aria-label="示意標籤" href="https://www.facebook.com/permalink.php?story_fbid=fx&amp;id=100000000000010&amp;comment_id=100000000000013&amp;__tn__=R*F" role="link" tabindex="0">
+<span dir="auto">4天</span>
+</a>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span>
+<span> </span>
+<span aria-hidden="true"> · </span>
+</span>
+</div>
+<div>
+<div>
+<div>
+<img src="about:blank">
+</div>
+<div>
+<span dir="auto">示意留言內容第2則，這段文字刻意寫得比相片說明還要長很多很多，用來確認摘要不會誤取留言。</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<span dir="auto">
+<div>
+<div dir="auto">示意留言內容第2則，這段文字刻意寫得比相片說明還要長很多很多，用來確認摘要不會誤取留言。</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div aria-hidden="false">
+<div>
+<span>
+<div aria-expanded="false" aria-haspopup="menu" aria-label="隱藏或檢舉此留言" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<span>
+<div>
+<span>
+<div>
+<div aria-label="讚" role="button" tabindex="0">
+<div>
+<span>
+</span>
+<svg role="img">
+</svg>
+</div>
+</div>
+</div>
+<div aria-label="傳達心情" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</span>
+</div>
+<div>
+<span>
+<div aria-label="示意標籤" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+</div>
+</span>
+</div>
+<div>
+<li>
+<div>
+<div role="button" tabindex="0">回覆</div>
+</div>
+</li>
+</div>
+<div>
+<li>
+<div>
+<div role="button" tabindex="0">示意文字42</div>
+</div>
+</li>
+</div>
+<div>
+<div>
+<div>
+<span>
+<div aria-label="7個心情；查看誰對此傳達了心情" role="button" tabindex="0">
+<div>
+<div>
+<span>
+<img role="presentation" src="about:blank">
+</span>
+</div>
+<span>7</span>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看2則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看1則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看1則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看1則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<svg aria-hidden="true">
+</svg>
+</span>
+<span>
+<span dir="auto">查看1則回覆</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+</div>
+<div role="button" tabindex="0">
+<span>
+<span dir="auto">查看更多留言</span>
+</span>
+</div>
+</div>
+</div>
+<div>
+<span dir="auto">6/221</span>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div>
+<div role="table">
+<div>
+<div>
+<div>
+<div>
+<div aria-label="示意標籤" role="button" tabindex="0">
+<div>
+<svg aria-hidden="true" data-visualcompletion="ignore-dynamic" role="none">
+</svg>
+<div data-visualcompletion="ignore">
+<div>
+<div>
+<svg aria-hidden="true">
+</svg>
+</div>
+</div>
+</div>
+</div>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</div>
+<div>
+<form role="presentation">
+<div>
+<div>
+<div data-visualcompletion="ignore">
+<div>
+<div>
+<div>
+<div role="textbox" tabindex="0" aria-label="示意標籤">
+<p dir="auto">
+<br>
+</p>
+</div>
+<div aria-hidden="true">
+<div>示意文字43</div>
+</div>
+</div>
+</div>
+<div data-visualcompletion="ignore">
+</div>
+<div data-visualcompletion="ignore">
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div id="fx-r33">
+<ul>
+<li>
+<span>
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="示意標籤" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</li>
+<li>
+<span>
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="示意標籤" role="button" tabindex="0">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</li>
+<li>
+<span>
+<div aria-label="示意標籤" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+<input>
+</li>
+<li>
+<span>
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="示意標籤" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</li>
+<li>
+<span>
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="示意標籤" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</li>
+<li>
+<span>
+<div aria-expanded="false" aria-haspopup="dialog" aria-label="示意標籤" role="button" tabindex="0">
+<i data-visualcompletion="css-img">
+</i>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</li>
+</ul>
+</div>
+</div>
+<div>
+<div>
+<div>
+<div id="fx-r34">
+<span>
+<div aria-label="示意標籤" role="button" tabindex="-1">
+<svg aria-hidden="true">
+</svg>
+<div role="none" data-visualcompletion="ignore">
+</div>
+</div>
+</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</form>
+<div>
+</div>
+<div>
+</div>
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div data-visualcompletion="ignore">
+</div>
+<div data-visualcompletion="ignore">
+<div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
