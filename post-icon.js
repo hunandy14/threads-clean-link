@@ -518,6 +518,8 @@
   //   resetOnSearchChange      → (選填)與 resetOnNavigate 並用，true 時
   //                              search 變動也視為換頁
   //   iconSize                 → (選填)圖示 svg 邊長(px)，外框為邊長＋16
+  //   iconStroke               → (選填)圖示線條粗細(viewBox 單位)，未設定
+  //                              沿用 svg 屬性的 1.5
   //   pageIconSize             → (選填){ <頁型>: { icon, box } }，該頁型的
   //                              svg 邊長與外框邊長(px)，優先於 iconSize
   //   themeVars                → (選填){ hover, bubbleBackground,
@@ -832,6 +834,9 @@
     // 互動列原生圖示是 24px svg、外框 40px(各邊 8px padding)，按鈕照同一
     // 尺寸(見 injectStyle 的 iconSize 規則)。
     iconSize: 24,
+    // 原生回應／分享圖示的線條是 stroke-width 2(viewBox 24)，按鈕照同一粗
+    // 細(見 injectStyle 的 iconStroke 規則)。
+    iconStroke: 2,
     // feed 只回傳有 permalink 的容器(廣告沒有時間連結)；reels 只回傳作用
     // 中那一則(見 igReelActiveItem)，網址列沒有 code 時不回傳。
     findContainers: function (doc, ctx) {
@@ -1834,6 +1839,10 @@
           site && site.iconSize
             ? '.' + ICON_CLASS + '{width:' + (site.iconSize + 16) + 'px;height:' + (site.iconSize + 16) + 'px;}' +
               '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + ' svg{width:' + site.iconSize + 'px;height:' + site.iconSize + 'px;}'
+            : '',
+          // 站點設定 iconStroke:覆寫圖示 svg 的線條粗細。
+          site && site.iconStroke
+            ? '.' + ICON_CLASS + ' .' + SVG_WRAP_CLASS + ' svg{stroke-width:' + site.iconStroke + ';}'
             : '',
           pageIconSizeRules(),
         ].join('');
