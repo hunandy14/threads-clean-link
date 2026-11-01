@@ -1001,7 +1001,6 @@
   var FB_INVISIBLE_RE = /[​-‍⁠﻿]/g;
   // fbTextOf 內部用的區塊分界記號，最後換成換行。
   var FB_BLOCK_MARK = '\u0000';
-  var FB_BLOCK_EDGE_RE = /[ \t\r\n]*\u0000[\u0000 \t\r\n]*/g;
 
   // 網址 query 字串(開頭的 '?' 可省)中某個參數的值，沒有或解析失敗回傳
   // null。
@@ -1193,7 +1192,7 @@
   // 內文文字:<br> 轉成換行，區塊元素(div、p)前後斷行；略過
   // [role="button"] 子孫(「查看更多」)、aria-hidden 子樹、svg，以及
   // href 只有 query 或 hash 的佔位連結(時間戳的亂碼字元)。文字節點內的空
-  // 白收斂成一格，區塊分界旁的空白一併去掉，結果去頭尾空白。
+  // 白收斂成一格；區塊分界切出的每段去頭尾空白，空段捨棄。
   function fbTextOf(el) {
     function walk(node) {
       var out = '';
@@ -1219,10 +1218,13 @@
       }
       return out;
     }
-    var parts = walk(el).replace(FB_BLOCK_EDGE_RE, FB_BLOCK_MARK).split(FB_BLOCK_MARK);
-    if (parts.length && parts[0] === '') parts.shift();
-    if (parts.length && parts[parts.length - 1] === '') parts.pop();
-    return parts.join('\n').replace(FB_INVISIBLE_RE, '').trim();
+    var parts = walk(el).split(FB_BLOCK_MARK);
+    var lines = [];
+    for (var p = 0; p < parts.length; p++) {
+      var line = parts[p].trim();
+      if (line) lines.push(line);
+    }
+    return lines.join('\n').replace(FB_INVISIBLE_RE, '').trim();
   }
 
   // reel／photo 的說明文字:容器內最長的 span／div[dir="auto"]，只取作者連
