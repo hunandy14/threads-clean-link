@@ -2877,7 +2877,8 @@
 
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
     // 相對時間)→ hasCardPreview 為真時顯示作者列(author 粗體 + @handle
-    // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址。
+    // 灰階，author 或 handle 任一存在即顯示，缺的那一項不渲染)+ excerpt
+    // (兩行截斷);否則降級顯示網址。
     // 無縮圖(刻意，og:image 會過期)。互動照手機版的「選中態」:
     // hover/press 時邊框轉主色、右上浮出複製/分享兩顆快捷 icon，web 用
     // :hover 與 :focus-within 模擬(見 options.html 的 .entry-card 註解);
