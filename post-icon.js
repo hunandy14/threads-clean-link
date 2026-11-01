@@ -703,6 +703,22 @@
     return best ? best.slice(0, EXCERPT_MAX) : undefined;
   }
 
+  // 依頁型取作者 username:reels 先找 /<user>/reels/ 形狀的連結，再退回
+  // /<user>/;feed／post 只看互動列 section 之前的 /<user>/ 連結。其他頁
+  // 型或找不到時回傳 null。
+  function igAuthorUsername(container, type) {
+    if (type === 'reels') {
+      return (
+        igFindUsername(container, IG_REELS_PROFILE_HREF_RE, null) ||
+        igFindUsername(container, IG_PROFILE_HREF_RE, null)
+      );
+    }
+    if (type === 'feed' || type === 'post') {
+      return igFindUsername(container, IG_PROFILE_HREF_RE, igFindSection(container, type === 'post'));
+    }
+    return null;
+  }
+
   // 作者 username:容器內第一個 a[role="link"] 且 href 符合 pattern、第一
   // 段不是站內功能頁者；before 有值時只看文件序在它之前的連結。
   function igFindUsername(container, pattern, before) {
@@ -862,20 +878,15 @@
     },
     // username 同時作為 author 與 handle(不帶 '@')。
     author: function (container, ctx) {
-      var type = ctx ? ctx.pageType : null;
-      var username = null;
-      if (type === 'reels') {
-        username =
-          igFindUsername(container, IG_REELS_PROFILE_HREF_RE, null) ||
-          igFindUsername(container, IG_PROFILE_HREF_RE, null);
-      } else if (type === 'feed' || type === 'post') {
-        username = igFindUsername(container, IG_PROFILE_HREF_RE, igFindSection(container, type === 'post'));
-      }
+      var username = igAuthorUsername(container, ctx ? ctx.pageType : null);
       return username ? { author: username, handle: username } : {};
     },
     // feed:互動列之後最長的 span[dir="auto"]。post:內文 span 外層還包著
-    // 作者名與時間，改取容器內不含 <time> 的最長 span。reels:按鈕欄以外
-    // 最長的 [dir="auto"]。三者都排除 <a> 內的節點(作者名、標籤連結)。
+    // 作者名與時間，改取容器內不含 <time> 的最長 span，並排除互動列
+    // section 內的節點(讚數)與文字等於作者 username 的 span(caption 標頭
+    // 包住作者連結的外層 span);caption 只有作者名、沒有內文時回傳
+    // undefined。reels:按鈕欄以外最長的 [dir="auto"]。三者都排除 <a> 內
+    // 的節點(作者名、標籤連結)。
     excerpt: function (container, ctx) {
       try {
         var type = ctx ? ctx.pageType : null;
@@ -894,9 +905,13 @@
             candidates.push(nodes[i]);
           }
         } else if (type === 'post') {
+          var username = igAuthorUsername(container, type);
+          var row = igFindSection(container, true);
           nodes = container.querySelectorAll('span');
           for (i = 0; i < nodes.length; i++) {
             if (nodes[i].querySelector('time')) continue;
+            if (row && igIsWithin(nodes[i], row)) continue;
+            if (username && igTextOf(nodes[i]).trim() === username) continue;
             if (nodes[i].closest && nodes[i].closest('a')) continue;
             if (isInsideContainerButton(nodes[i], container)) continue;
             candidates.push(nodes[i]);
