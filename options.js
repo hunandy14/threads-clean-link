@@ -341,12 +341,15 @@
     return { merged: TCLCore.capHistory(merged), added: added, skipped: skipped };
   }
 
-  // 帶預覽卡的判定式:與手機版 history-card.tsx 的 hasPreview 邏輯對齊
-  // (author 或 excerpt 任一存在即算有預覽);純邏輯獨立成函式方便直接測，
-  // 也供 buildEntryCard 判斷要渲染預覽區塊還是降級網址列。
+  // 帶預覽卡的判定式:author、handle、excerpt 任一為非空字串即算有預覽;
+  // 純邏輯獨立成函式方便直接測，也供 buildEntryCard 判斷要渲染預覽區塊還是
+  // 降級網址列。與手機版 history-card.tsx 的 hasPreview 差在多認 handle
+  // (手機版只認 author/excerpt，待同步):Instagram 頁面只有 username，
+  // author===handle 時入庫端丟棄重複的 author，只剩 handle。
   function hasCardPreview(entry) {
     return (
       (typeof entry.author === 'string' && entry.author !== '') ||
+      (typeof entry.handle === 'string' && entry.handle !== '') ||
       (typeof entry.excerpt === 'string' && entry.excerpt !== '')
     );
   }
@@ -2874,7 +2877,8 @@
 
     // 單張紀錄卡片:與手機版 history-card.tsx 逐項對齊——卡頭(kind 徽章 +
     // 相對時間)→ hasCardPreview 為真時顯示作者列(author 粗體 + @handle
-    // 灰階，皆存在才顯示 handle)+ excerpt(兩行截斷);否則降級顯示網址。
+    // 灰階，author 或 handle 任一存在即顯示，缺的那一項不渲染)+ excerpt
+    // (兩行截斷);否則降級顯示網址。
     // 無縮圖(刻意，og:image 會過期)。互動照手機版的「選中態」:
     // hover/press 時邊框轉主色、右上浮出複製/分享兩顆快捷 icon，web 用
     // :hover 與 :focus-within 模擬(見 options.html 的 .entry-card 註解);
