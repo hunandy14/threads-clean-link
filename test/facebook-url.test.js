@@ -43,7 +43,8 @@ const NORMALIZE_CASES = [
   ['A1-1-02', `${FB}/${USER}/posts/${PFBID}?fbclid=IwAR0fake`, `${FB}/${USER}/posts/${PFBID}`, `facebook:${PFBID}`],
   ['A1-1-03', `${FB}/${USER}/posts/${PFBID}/?mibextid=abc&rdid=xyz`, `${FB}/${USER}/posts/${PFBID}/`, `facebook:${PFBID}`],
   ['A1-1-04', `http://www.facebook.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`, `facebook:${ID}`],
-  ['A1-1-05', `https://facebook.com/${USER}/posts/${ID}?fbclid=x`, `https://facebook.com/${USER}/posts/${ID}`, `facebook:${ID}`],
+  // E-3 翻轉：原期望保留裸網域 https://facebook.com，現在統一為 www.facebook.com
+  ['A1-1-05', `https://facebook.com/${USER}/posts/${ID}?fbclid=x`, `${FB}/${USER}/posts/${ID}`, `facebook:${ID}`],
   ['A1-1-06', `${FB}/groups/${GID}/posts/${ID}/?__tn__=R`, `${FB}/groups/${GID}/posts/${ID}/`, `facebook:${ID}`],
   ['A1-1-07', `${FB}/${USER}/posts/${ID}/`, `${FB}/${USER}/posts/${ID}/`, `facebook:${ID}`],
   // reel
@@ -127,10 +128,8 @@ const NORMALIZE_NULL_CASES = [
   ['A1-2-03', `${FB}/share/r/AbC123fake/`],
   ['A1-2-04', `${FB}/share/v/AbC123fake/?mibextid=x`],
   ['A1-2-05', `https://fb.watch/AbC123fake/`],
-  ['A1-2-06', `https://m.facebook.com/${USER}/posts/${ID}`],
-  ['A1-2-07', `https://m.facebook.com/story.php?story_fbid=${ID}&id=${GID}`],
-  ['A1-2-08', `https://web.facebook.com/${USER}/posts/${ID}`],
-  ['A1-2-09', `https://fb.com/${USER}/posts/${ID}`],
+  // E-3 翻轉：A1-2-06 至 A1-2-09（m.／web.／fb.com 的貼文網址）原斷言為 null，現在統一成
+  // www.facebook.com 並回非 null，改由 E1-15、E1-16、E1-18 等案例涵蓋。
   ['A1-2-10', `https://www.facebook.com.evil.example/${USER}/posts/${ID}`],
   ['A1-2-11', `https://evilfacebook.com/${USER}/posts/${ID}`],
   ['A1-2-12', `${FB}/`],
@@ -203,18 +202,20 @@ test('A1-3-2 正規化前後 postKeyOf 相同，且為 facebook:<id>', () => {
   }
 });
 
-test('A1-3-3 未列入的參數鍵 __cft__[0] 照契約保留（不自行擴充剝除清單）', () => {
+// E-3 翻轉（實為 E-1／E-2）：原斷言 __cft__[0] 保留，現在 __cft__ 入剝除清單且中括號索引被忽略，必須剝除
+test('A1-3-3 __cft__[0] 與 __tn__ 一併剝除', () => {
   const input = `${FB}/${USER}/posts/${ID}?__cft__[0]=AZfake&__tn__=%2CO%2CP-R`;
   const out = C.normalizePostUrl(input);
   assert.equal(typeof out, 'string', '必須正規化成功');
   const u = new URL(out);
   assert.equal(u.pathname, `/${USER}/posts/${ID}`);
-  assert.equal(u.searchParams.get('__cft__[0]'), 'AZfake', '__cft__[0] 保留');
+  assert.equal(u.searchParams.has('__cft__[0]'), false, '__cft__[0] 剝掉');
   assert.equal(u.searchParams.has('__tn__'), false, '__tn__ 剝掉');
 });
 
-test('A1-3-4 host 原樣：www 有就留、沒有不補', () => {
-  assert.equal(C.normalizePostUrl(`https://facebook.com/reel/${ID}`), `https://facebook.com/reel/${ID}`);
+// E-3 翻轉：原斷言裸網域 facebook.com 不補 www，現在統一為 www.facebook.com
+test('A1-3-4 host 統一：裸網域補 www、www 原樣', () => {
+  assert.equal(C.normalizePostUrl(`https://facebook.com/reel/${ID}`), `${FB}/reel/${ID}`);
   assert.equal(C.normalizePostUrl(`${FB}/reel/${ID}`), `${FB}/reel/${ID}`);
 });
 

@@ -167,10 +167,12 @@ test('D1-08 isAcceptableHistoryUrl：偽冒網域、javascript:、空字串、�
   }
 });
 
-test('D1-09 回歸：normalizePostUrl 不放寬，F3／F7／F8／F9 仍為 null（只放寬下行與顯示層）', () => {
-  for (const url of [F3_GROUP, F7_SHARE_P, F8_M, F9_WATCH]) {
+test('D1-09 回歸：normalizePostUrl 不放寬，F3／F7／F9 仍為 null（只放寬下行與顯示層）', () => {
+  for (const url of [F3_GROUP, F7_SHARE_P, F9_WATCH]) {
     assert.equal(C.normalizePostUrl(url), null, url);
   }
+  // E-3 翻轉：原斷言 F8_M（m. 貼文）為 null，現在統一成 www.facebook.com
+  assert.equal(C.normalizePostUrl(F8_M), `https://www.facebook.com/fx_user_a/posts/${ID}`);
 });
 
 // ============================================================================
