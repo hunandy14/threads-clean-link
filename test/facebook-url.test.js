@@ -377,3 +377,101 @@ GOLDEN.forEach(([input, norm, clean, threads, ig], i) => {
     }
   });
 });
+
+// ============================================================================
+// 車道 E（0.13.0）：鏡射手機 App 的 Facebook 清理新規則
+//   E-1 剝除清單加 __cft__
+//   E-2 鍵名比對前去掉結尾 [數字]（可重複）再不分大小寫查清單
+//   E-3 網域統一：fb.com／facebook.com／m.／mbasic.／web.／mobile.facebook.com → https://www.facebook.com
+//   E-4 /share/r/、/share/p、/share/p/<碼> 回 null（回歸）
+// App 案例（link-cleaner.test.ts）逐字搬入處以「App:」標示；App 用的
+// /groups/1/permalink/2/ 在插件端抽不出 id（A1-2-01 為 null），改用 /groups/<gid>/posts/<id>/。
+// ============================================================================
+
+const E_GP = `/groups/${GID}/posts/${ID}/`;
+
+// [案號, 輸入, 期望輸出]
+const E_NORMALIZE_CASES = [
+  // E-2／E-1：中括號追蹤參數（App 的「Facebook 帶中括號的追蹤參數」）
+  ['E1-01', `${FB}${E_GP}?__cft__[0]=AZX&__tn__=%2CO%2CP-R`, `${FB}${E_GP}`], // App: __cft__[0] 與 __tn__ 一併剝除
+  ['E1-02', `${FB}${E_GP}?__xts__[0]=68.ARB`, `${FB}${E_GP}`], // App: __xts__[0] 被剝除
+  ['E1-03', `${FB}${E_GP}?__CFT__[1]=x`, `${FB}${E_GP}`], // App: 大小寫與索引不影響比對
+  ['E1-04', `${FB}/permalink.php?story_fbid=${ID}&id=${GID}&__cft__[0]=x`, `${FB}/permalink.php?story_fbid=${ID}&id=${GID}`], // App: 功能參數保留，只剝追蹤參數
+  // E-2 補充
+  ['E1-05', `${FB}/${USER}/posts/${ID}?__tn__[1]=x`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-06', `${FB}/${USER}/posts/${ID}?utm_source[2]=x`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-07', `${FB}/${USER}/posts/${ID}?__cft__[0][1]=x`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-08', `${FB}/${USER}/posts/${ID}?__cft__%5B0%5D=x`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-09', `${FB}/${USER}/posts/${ID}?__CFT__[0]=x&__cft__=y`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-10', `${FB}/${USER}/posts/${ID}?a[0]=1`, `${FB}/${USER}/posts/${ID}?a[0]=1`],
+  ['E1-11', `${FB}/${USER}/posts/${ID}?fields[0]=1&__cft__[0]=x&b[1][2]=3`, `${FB}/${USER}/posts/${ID}?fields[0]=1&b[1][2]=3`],
+  ['E1-12', `${FB}/${USER}/posts/${ID}?a%5B0%5D=1&__cft__%5B0%5D=x`, `${FB}/${USER}/posts/${ID}?a%5B0%5D=1`],
+  ['E1-13', `${FB}/${USER}/posts/${ID}?__cft__[0]=x#c`, `${FB}/${USER}/posts/${ID}#c`],
+  // 中括號不在結尾、或括號內非數字：不是追蹤鍵
+  ['E1-14', `${FB}/${USER}/posts/${ID}?__cft__[a]=x&__cft__[0]x=y`, `${FB}/${USER}/posts/${ID}?__cft__[a]=x&__cft__[0]x=y`],
+  // E-3：網域統一（App 的「Facebook 網域統一為 www.facebook.com」）
+  ['E1-15', `https://fb.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`], // App: fb.com 改寫為 www.facebook.com
+  ['E1-16', `http://m.facebook.com/story.php?story_fbid=${ID}&id=${GID}&fbclid=x`, `${FB}/story.php?story_fbid=${ID}&id=${GID}`], // App: m. 的 http 改 https 並剝追蹤參數
+  ['E1-17', `https://mbasic.facebook.com${E_GP}`, `${FB}${E_GP}`], // App: mbasic 改寫為 www
+  ['E1-18', `https://web.facebook.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`], // App: web 子網域改寫為 www
+  ['E1-19', `https://facebook.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`], // App: 裸網域改寫為 www
+  ['E1-20', `http://www.facebook.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`], // App: www 的 http 只改 protocol
+  // E-3 補充
+  ['E1-21', `https://www.fb.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-22', `https://mobile.facebook.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-23', `https://M.Facebook.com/${USER}/posts/${ID}`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-24', `http://FB.COM/${USER}/posts/${ID}?fbclid=x`, `${FB}/${USER}/posts/${ID}`],
+  ['E1-25', `https://m.facebook.com/reel/${ID}/?fbclid=x&s=fakeS1#top`, `${FB}/reel/${ID}/?s=fakeS1#top`],
+  ['E1-26', `https://m.facebook.com/photo/?fbid=${PHID}&set=a.${GID}&__tn__=EH-R`, `${FB}/photo/?fbid=${PHID}&set=a.${GID}`],
+  ['E1-27', `https://mbasic.facebook.com/permalink.php?story_fbid=${ID}&id=${GID}&refsrc=x`, `${FB}/permalink.php?story_fbid=${ID}&id=${GID}`],
+  ['E1-28', `http://web.facebook.com/${PAGE}/videos/${ID}/?__cft__[0]=x`, `${FB}/${PAGE}/videos/${ID}/`],
+  ['E1-29', `https://fb.com/watch/?v=${ID}`, `${FB}/watch/?v=${ID}`],
+  ['E1-30', `https://m.facebook.com/${USER}/posts/${PFBID}/`, `${FB}/${USER}/posts/${PFBID}/`],
+];
+
+for (const [no, input, expected] of E_NORMALIZE_CASES) {
+  test(`${no} normalizeFacebookPostUrl(${input}) → ${expected}`, () => {
+    assert.equal(C.normalizeFacebookPostUrl(input), expected);
+    assert.equal(C.normalizePostUrl(input), expected, 'normalizePostUrl 一致');
+  });
+}
+
+test('E1-31 E 系列輸出冪等且通過 isCleanPostUrl，輸入若與輸出不同則不算乾淨', () => {
+  for (const [no, input, expected] of E_NORMALIZE_CASES) {
+    assert.equal(C.normalizeFacebookPostUrl(expected), expected, `${no} 冪等`);
+    assert.equal(C.isCleanPostUrl(expected), true, `${no} 輸出乾淨`);
+    if (input !== expected) assert.equal(C.isCleanPostUrl(input), false, `${no} 輸入不乾淨`);
+    assert.equal(C.isFacebookPostUrl(input), true, `${no} isFacebookPostUrl`);
+  }
+});
+
+// 回 null：其他子網域、fb.watch、fb.me、抽不出 id、E-4 的 share 短碼
+const E_NULL_CASES = [
+  ['E1-32', 'https://l.facebook.com/l.php?u=x'], // App: l. 的 host 不動
+  ['E1-33', `https://business.facebook.com/${USER}/posts/${ID}`],
+  ['E1-34', `https://developers.facebook.com/${USER}/posts/${ID}`],
+  ['E1-35', 'https://fb.watch/AbC123fake/'], // App: fb.watch 不動
+  ['E1-36', `https://fb.me/${USER}/posts/${ID}`],
+  ['E1-37', 'https://web.archive.org/x'], // App: web.archive.org 不動
+  ['E1-38', 'https://example.com/a?__cft__[0]=x'], // App: 非 Facebook 網域保留（插件端不歸它管）
+  ['E1-39', 'https://www.facebook.com/share/r/AbC123fake/'],
+  ['E1-40', 'https://www.facebook.com/share/p/AbC123fake/'],
+  ['E1-41', 'https://www.facebook.com/share/p'],
+  ['E1-42', 'https://m.facebook.com/share/p/AbC123fake/?fbclid=x'],
+  ['E1-43', 'https://fb.com/share/r/AbC123fake/'],
+  ['E1-44', `https://m.facebook.com/${USER}`],
+  ['E1-45', 'https://fb.com/'],
+  ['E1-46', 'https://mbasic.facebook.com/groups/1/permalink/2/'], // App 有此案例；插件端 permalink 抽不出 id 仍為 null
+  ['E1-47', 'https://www.facebook.com/permalink.php?id=5&__cft__[0]=x'], // App 有此案例；缺 story_fbid 抽不出 id
+  ['E1-48', `https://m.facebook.com.evil.example/${USER}/posts/${ID}`],
+  ['E1-49', `https://evil.example/m.facebook.com/${USER}/posts/${ID}`],
+];
+
+for (const [no, input] of E_NULL_CASES) {
+  test(`${no} 回 null 且不算乾淨：${input}`, () => {
+    assert.equal(C.normalizeFacebookPostUrl(input), null);
+    assert.equal(C.normalizePostUrl(input), null);
+    assert.equal(C.isCleanPostUrl(input), false);
+    assert.equal(C.isFacebookPostUrl(input), false);
+  });
+}
