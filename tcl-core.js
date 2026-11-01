@@ -795,17 +795,25 @@
   //   3. === cleanUrl→undefined(與 cleaned 相同代表沒有額外資訊)
   //   4. 長度 > ORIGINAL_MAX→**整欄丟棄**(不截斷:截半的殘 URL 過不了白名單，
   //      不如整欄不留)
-  //   5. **必須吻合 SHARE_URL_PATTERN 或容尾 POST 樣式**，否則 undefined
-  // 三合法來源全通過:share(短碼分享網址，吻合 SHARE_URL_PATTERN)、strip(剝參
-  // 前的貼文網址，帶追蹤 query，吻合容尾 POST 樣式)、menu(shareUrl)。只擋偽造
-  // /畸形殘 URL。
+  //   5. **必須吻合 SHARE_URL_PATTERN、容尾 POST 樣式，或通過
+  //      isDisplayableFacebookUrl**，否則 undefined
+  // 合法來源全通過:share(短碼分享網址，吻合 SHARE_URL_PATTERN)、strip(剝參
+  // 前的貼文網址，帶追蹤 query，吻合容尾 POST 樣式)、menu(shareUrl)，以及
+  // 手機 App 下行的 Facebook 原始網址(m.／fbclid 等，過 isDisplayableFacebookUrl)。
+  // 只擋偽造／畸形殘 URL。
   function sanitizeOriginal(value, cleanUrl) {
     if (typeof value !== 'string' || value.length === 0) return undefined;
     var stripped = stripControlChars(value);
     if (stripped.length === 0) return undefined;
     if (stripped === cleanUrl) return undefined;
     if (stripped.length > LIMITS.ORIGINAL_MAX) return undefined;
-    if (!SHARE_URL_PATTERN.test(stripped) && normalizePostUrl(stripped) === null) return undefined;
+    if (
+      !SHARE_URL_PATTERN.test(stripped) &&
+      normalizePostUrl(stripped) === null &&
+      !isDisplayableFacebookUrl(stripped)
+    ) {
+      return undefined;
+    }
     return stripped;
   }
 

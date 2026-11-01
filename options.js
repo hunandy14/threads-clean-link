@@ -236,7 +236,8 @@
     return { ok: true, entries: parsed.entries };
   }
 
-  // 匯入檔的單筆整形:url 由呼叫端先過 TCLCore.isAcceptableHistoryUrl 並正規化(容忍尾
+  // 匯入檔的單筆整形:url 由呼叫端先過 TCLCore.isAcceptableHistoryUrl 並盡量正規化(認不得的
+  // Facebook 網址原樣;容忍尾
   // 隨斜線/query/hash);kind 非白名單→'share'，at 非有限數字→now;
   // author/handle/excerpt/seen/original/removedParams 逐條 sanitize(規則同
   // sanitizeEntries——匯入檔是外部輸入，偽造/損毀資料不得混進來)。雲端 schema

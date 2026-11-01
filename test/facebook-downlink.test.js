@@ -420,3 +420,26 @@ for (const [no, label, url] of [
     assert.equal(badges[0].textContent, 'Facebook');
   });
 }
+
+// original 欄位在下行時原樣入庫，由讀取端 sanitizeEntries（sanitizeOriginal）決定
+// 「原始連結」列留不留；以下兩條驗證下行落地後經讀取整形的結果。
+function readAfterDownlink(env, id) {
+  return options.sanitizeEntries(env.storage.history()).find((x) => x.id === id);
+}
+
+test('D1-50 下行：F7 項目帶 m.／fbclid 的 Facebook original，落地並經讀取整形後 original 原樣保留', async () => {
+  const original = 'https://m.facebook.com/share/p/AbCdEfGh12/?fbclid=xyz';
+  const env = await runSync([], [cloudItem('srv-d150', F7_SHARE_P, T0 - 200_000, { original })]);
+  const e = readAfterDownlink(env, 'srv-d150');
+  assert.ok(e, 'F7 項目必須落地且通過讀取整形');
+  assert.equal(e.url, F7_SHARE_P);
+  assert.equal(e.original, original, 'original 原樣保留');
+});
+
+test('D1-51 下行：F7 項目的 original 為 javascript: 時，讀取整形後整欄丟棄、卡片照常保留', async () => {
+  const env = await runSync([], [cloudItem('srv-d151', F7_SHARE_P, T0 - 200_000, { original: 'javascript:alert(1)' })]);
+  const e = readAfterDownlink(env, 'srv-d151');
+  assert.ok(e, 'F7 項目必須落地且通過讀取整形');
+  assert.equal(e.url, F7_SHARE_P);
+  assert.equal(e.original, undefined, 'javascript: original 不得保留');
+});
