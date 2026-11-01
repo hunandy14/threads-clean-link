@@ -248,7 +248,7 @@
    */
   function isUploadable(entry) {
     if (typeof entry.id !== 'string' || entry.id.length < 1 || entry.id.length > 64) return false;
-    if (typeof entry.url !== 'string' || TCLCoreRef.normalizePostUrl(entry.url) === null) return false;
+    if (typeof entry.url !== 'string' || !TCLCoreRef.isAcceptableHistoryUrl(entry.url)) return false;
     return finiteNumber(entry.receivedAt) && entry.receivedAt > 0;
   }
 
@@ -260,13 +260,13 @@
   /**
    * 雲端 item 的形狀閘門。TCLCore.fromSyncItem 是純映射、不做輸入驗證，形狀
    * 不對的欄位會原樣寫進 entry;而 options 讀取端的 sanitizeEntries 是有損
-   * 閘門(url 無法正規化／at 非有限數字／kind 不在白名單就整筆丟掉)，寫進去
+   * 閘門(url 不過 isAcceptableHistoryUrl／at 非有限數字／kind 不在白名單就整筆丟掉)，寫進去
    * 的壞資料會在使用者眼前直接消失。信任邊界在這裡:後端回來的東西一律先驗。
    */
   function acceptIncomingItem(item) {
     if (!item || typeof item !== 'object') return false;
     if (typeof item.id !== 'string' || item.id.length < 1) return false;
-    if (typeof item.cleaned !== 'string' || TCLCoreRef.normalizePostUrl(item.cleaned) === null) return false;
+    if (typeof item.cleaned !== 'string' || !TCLCoreRef.isAcceptableHistoryUrl(item.cleaned)) return false;
     return finiteNumber(item.receivedAt);
   }
 
@@ -276,7 +276,7 @@
    * 頁面讀不出來」的分岔。
    */
   function repairMergedEntry(entry) {
-    if (!entry || typeof entry.url !== 'string' || TCLCoreRef.normalizePostUrl(entry.url) === null) return null;
+    if (!entry || typeof entry.url !== 'string' || !TCLCoreRef.isAcceptableHistoryUrl(entry.url)) return null;
     if (!finiteNumber(entry.at)) return null;
     if (!finiteNumber(entry.receivedAt)) entry.receivedAt = entry.at;
     entry.seen = TCLCoreRef.sanitizeSeenList(entry.seen);

@@ -299,12 +299,12 @@ test('A1-6-4 isPostDetailPath：Facebook 貼文路徑不算 Threads 貼文詳情
 
 // ---- A1-7 sanitizeOriginal：Facebook 剝參前的原網址可入庫 ----
 
-test('A1-7-1 sanitizeOriginal：帶追蹤參數的 Facebook 原網址通過、與 cleaned 相同時丟棄、非貼文不收', () => {
+test('A1-7-1 sanitizeOriginal：帶追蹤參數的 Facebook 原網址通過、與 cleaned 相同時丟棄、可顯示的非貼文網址保留', () => {
   const cleaned = `${FB}/${USER}/posts/${ID}`;
   const original = cleaned + '?fbclid=x&mibextid=y';
   assert.equal(C.sanitizeOriginal(original, cleaned), original);
   assert.equal(C.sanitizeOriginal(cleaned, cleaned), undefined);
-  assert.equal(C.sanitizeOriginal(`${FB}/${USER}?fbclid=x`, cleaned), undefined, '非貼文不收');
+  assert.equal(C.sanitizeOriginal(`${FB}/${USER}?fbclid=x`, cleaned), `${FB}/${USER}?fbclid=x`, '可顯示的 Facebook 非貼文網址保留原樣');
 });
 
 // ---- A1-G Threads／Instagram 既有對照零變動（守門） ----

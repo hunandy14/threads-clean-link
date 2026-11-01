@@ -107,8 +107,8 @@
   // bidi/不合白名單 original 的欄位，讀取時做欄位級剝除/丟棄，整筆保留。
 
   // 從 storage 讀出的清單防禦性整形:非陣列→空;逐筆丟掉核心欄位形狀不對的
-  // 項目——url 除了型別是字串，還要通過 TCLCore.normalizePostUrl 的形狀驗證才
-  // 收。渲染層 buildEntryCard 的 openLink.href = e.url、剪貼簿複製都是 url
+  // 項目——url 除了型別是字串，還要通過 TCLCore.isAcceptableHistoryUrl 的形狀驗證
+  // 才收。渲染層 buildEntryCard 的 openLink.href = e.url、剪貼簿複製都是 url
   // sink，不該仰賴「寫入端永遠沒漏」這個假設，讀取階段就該把形狀不對的
   // url 整筆擋掉。選填欄位(author/handle/excerpt)型別不是字串就整欄
   // 丟棄、字串則截斷至長度上限，entry 本身仍保留(與核心欄位的「整筆
@@ -120,7 +120,7 @@
         return (
           e &&
           typeof e.url === 'string' &&
-          TCLCore.normalizePostUrl(e.url) !== null &&
+          TCLCore.isAcceptableHistoryUrl(e.url) &&
           typeof e.at === 'number' &&
           isFinite(e.at) &&
           Object.prototype.hasOwnProperty.call(KINDS, e.kind)
@@ -236,7 +236,8 @@
     return { ok: true, entries: parsed.entries };
   }
 
-  // 匯入檔的單筆整形:url 過 TCLCore.normalizePostUrl 白名單並正規化(容忍尾
+  // 匯入檔的單筆整形:url 由呼叫端先過 TCLCore.isAcceptableHistoryUrl 並盡量正規化(認不得的
+  // Facebook 網址原樣;容忍尾
   // 隨斜線/query/hash);kind 非白名單→'share'，at 非有限數字→now;
   // author/handle/excerpt/seen/original/removedParams 逐條 sanitize(規則同
   // sanitizeEntries——匯入檔是外部輸入，偽造/損毀資料不得混進來)。雲端 schema
@@ -334,11 +335,12 @@
     var skipped = 0;
     imported.forEach(function (raw) {
       var rawUrl = raw && typeof raw.url === 'string' ? raw.url.trim() : '';
-      var url = TCLCore.normalizePostUrl(rawUrl);
-      if (url === null) {
+      if (!TCLCore.isAcceptableHistoryUrl(rawUrl)) {
         skipped++;
         return;
       }
+      // 認得的貼文網址存正規化結果;其餘 Facebook 網址原樣保留。
+      var url = TCLCore.normalizePostUrl(rawUrl) || rawUrl;
       var entry = buildImportedEntry(raw, url, now);
       if (Object.prototype.hasOwnProperty.call(indexByKey, entry.postKey)) {
         var idx = indexByKey[entry.postKey];
@@ -2910,7 +2912,7 @@
       // 系同字，不走 i18n;Threads 是預設站點，不掛。
       var siteName = TCLCore.isInstagramPostUrl(e.url)
         ? 'Instagram'
-        : TCLCore.isFacebookPostUrl(e.url)
+        : TCLCore.isFacebookPostUrl(e.url) || TCLCore.isDisplayableFacebookUrl(e.url)
           ? 'Facebook'
           : null;
       var siteBadge = siteName && h('span', { class: 'entry-badge entry-site-badge', text: siteName });
