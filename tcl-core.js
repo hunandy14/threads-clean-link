@@ -251,10 +251,25 @@
     return 'https://' + match[1].toLowerCase() + '/' + match[3];
   }
 
+  // 去掉鍵名結尾連續的 [數字] 索引(如 __cft__[0]、__xts__[0][1] → 去掉後為
+  // __cft__、__xts__)，結果與正則 /(?:\[\d+\])+$/ 取代為空字串相同。由尾端往
+  // 前逐段掃描，時間與鍵長成線性;同一正則交給 String.replace 在
+  // '0]['.repeat(n) 這類輸入上是平方時間。
+  function stripTrailingIndexes(key) {
+    var end = key.length;
+    while (end > 0 && key.charAt(end - 1) === ']') {
+      var i = end - 2;
+      while (i >= 0 && key.charAt(i) >= '0' && key.charAt(i) <= '9') i--;
+      if (i < 0 || i === end - 2 || key.charAt(i) !== '[') break;
+      end = i;
+    }
+    return key.slice(0, end);
+  }
+
   // 查詢參數鍵名是否為 Facebook 追蹤參數(FACEBOOK_TRACKING_PARAMS 或 utm_*
   // 開頭)。rawKey 是 query 段未解碼的鍵名，解碼失敗時以原字串比對。解碼後先
-  // 去掉結尾連續的 [數字](如 __cft__[0]、__xts__[0][1])再轉小寫查清單;去
-  // 掉索引後不在清單的鍵(如 a[0])不算追蹤參數。
+  // 以 stripTrailingIndexes 去掉結尾的 [數字] 索引再轉小寫查清單;去掉索引後
+  // 不在清單的鍵(如 a[0])不算追蹤參數。
   function isFacebookTrackingKey(rawKey) {
     var key;
     try {
@@ -262,7 +277,7 @@
     } catch (e) {
       key = rawKey;
     }
-    key = key.replace(/(?:\[\d+\])+$/, '').toLowerCase();
+    key = stripTrailingIndexes(key).toLowerCase();
     return key.slice(0, 4) === 'utm_' || FACEBOOK_TRACKING_PARAMS.indexOf(key) !== -1;
   }
 
