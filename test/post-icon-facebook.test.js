@@ -253,7 +253,15 @@ test('C1-13 post：permalink 取 ctx.pathname，canonical 為 origin＋路徑', 
   const post = doc.getElementById('fx-post');
   assert.equal(fb.permalinkOf(post, POST_CTX), POST_PATH);
   const ctx = Object.assign({}, POST_CTX, { pathname: '/permalink.php', search: '?story_fbid=100000000000003&id=100000000000002' });
-  assert.equal(fb.permalinkOf(post, ctx), '/permalink.php', 'permalink.php 頁也是取 pathname（去 query）');
+  assert.equal(
+    fb.permalinkOf(post, ctx),
+    '/permalink.php?story_fbid=100000000000003&id=100000000000002',
+    'permalink.php 頁保留 story_fbid 與 id，其餘 query 去掉'
+  );
+  assert.equal(
+    fb.canonicalUrl(fb.permalinkOf(post, ctx), ORIGIN),
+    ORIGIN + '/permalink.php?story_fbid=100000000000003&id=100000000000002'
+  );
   assert.equal(fb.canonicalUrl(fb.permalinkOf(post, POST_CTX), ORIGIN), ORIGIN + POST_PATH);
 });
 
