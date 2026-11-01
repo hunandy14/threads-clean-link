@@ -3,13 +3,15 @@
 // isCleanPostUrl／extractPostId），鏡射手機 App 的清理規則。
 //
 // 規則摘要：
-//   - host 限 facebook.com 與 www.facebook.com；其他子網域（m、web）、fb.watch、
-//     fb.com、偽冒網域一律 null。
+//   - host 限 fb.com、www.fb.com、facebook.com 與其 www.、m.、mbasic.、web.、
+//     mobile. 子網域（不分大小寫），輸出一律 www.facebook.com；其他子網域（l.、
+//     business. 等）、fb.watch、fb.me、偽冒網域一律 null。
 //   - scheme 統一 https；路徑必須讓 postKeyOf 取得到 facebook:<id>，否則 null。
-//   - query 只剝 16 個鍵（fbclid, mibextid, rdid, share_url, sfnsn, wtsid, refid,
+//   - query 只剝 17 個鍵（fbclid, mibextid, rdid, share_url, sfnsn, wtsid, refid,
 //     ref, refsrc, __tn__, __xts__, notif_t, notif_id, paipv, extid,
-//     comment_tracking）與所有 utm_*，鍵名大小寫不敏感；其他參數保留且順序不變；
-//     全部剝光時不留 ?。hash 保留；host 與路徑（含尾斜線）原樣。
+//     comment_tracking, __cft__）與所有 utm_*，鍵名解碼後去掉結尾 [數字] 索引、
+//     大小寫不敏感；其他參數逐字保留且順序不變；全部剝光時不留 ?。hash 與路徑
+//     （含尾斜線）原樣。
 //   - isCleanPostUrl：Facebook 網址等於自身正規化結果才算乾淨。
 //   - isFacebookPostUrl：可正規化的 Facebook 貼文網址（帶追蹤參數亦是）。
 //   - extractPostId 維持 Threads 專屬，Facebook 一律 null；警示路徑不吃 Facebook。
